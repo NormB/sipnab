@@ -5,9 +5,10 @@ what it is blocking and why, and can block or unblock an address on your
 behalf, through its REST API and its MCP tools. sipnab never blocks anything on
 its own: every ban through sipnab is one you ask for.
 
-This guide starts where [Add TFPS to an OpenSIPS voice stack](tfps.md) ends,
+This guide starts where [Add TFPS to your voice stack](tfps.md) ends,
 with TFPS installed and enforcing. It covers sipnab on the same machine as TFPS,
-and sipnab on a different machine.
+and sipnab on a different machine. Neither TFPS nor sipnab needs anything from
+the SIP server, so every step is the same beside OpenSIPS or Kamailio.
 
 ## What sipnab asks TFPS
 

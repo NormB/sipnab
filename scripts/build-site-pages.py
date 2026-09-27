@@ -449,9 +449,10 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Add a vCon server to an OpenSIPS voice stack",
         "Add a vCon server to an OpenSIPS voice stack",
         40,
-        "Install vcon-server with Valkey and PostgreSQL, build OpenSIPS and "
-        "rtpengine from their main branches, and have OpenSIPS record every call "
-        "into it over SIPREC. No sipnab involved.",
+        "Install vcon-server with Valkey and PostgreSQL, and have OpenSIPS, from "
+        "its packages or built from source, record every call into it over SIPREC "
+        "through rtpengine. Kamailio cannot: it has no SIPREC module. No sipnab "
+        "involved.",
     ),
     (
         "docs/vcon-sipnab.md",
@@ -461,13 +462,13 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         41,
         "Have sipnab write a vCon for every finished call and forward each one to "
         "vcon-server, on the same machine or another, kept apart from recorded "
-        "calls.",
+        "calls. With Kamailio, this is how the vCon server gets vCons.",
     ),
     (
         "docs/tfps.md",
         "tfps.md",
-        "Add TFPS to an OpenSIPS voice stack",
-        "Add TFPS to an OpenSIPS voice stack",
+        "Add TFPS to your voice stack",
+        "Add TFPS to your voice stack",
         42,
         "Install TFPS, which blocks attacking SIP sources in the kernel with XDP, "
         "tell it whom to trust, watch it block a scanner, and operate it. No "
@@ -485,11 +486,12 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
     (
         "docs/rtpengine-relay.md",
         "rtpengine-relay.md",
-        "Add rtpengine to an OpenSIPS voice stack",
-        "Add rtpengine to an OpenSIPS voice stack",
+        "Add rtpengine to your voice stack",
+        "Add rtpengine to your voice stack",
         44,
-        "Build rtpengine and OpenSIPS, anchor every call's media on the relay, "
-        "prove it with a test call, and operate it. No sipnab involved.",
+        "Build rtpengine, have OpenSIPS or Kamailio anchor every call's media on "
+        "the relay, prove it with a test call, and operate it. No sipnab "
+        "involved.",
     ),
     (
         "docs/rtpengine-sipnab.md",
@@ -499,16 +501,17 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         45,
         "Have sipnab name the media on an rtpengine relay, from the relay's "
         "mirrored control plane or by asking it, with the relay on the same "
-        "machine as OpenSIPS or its own.",
+        "machine as the SIP proxy or its own.",
     ),
     (
         "docs/homer.md",
         "homer.md",
-        "Add Homer to an OpenSIPS voice stack",
-        "Add Homer to an OpenSIPS voice stack",
+        "Add Homer to your voice stack",
+        "Add Homer to your voice stack",
         46,
-        "Run heplify-server, homer-app and PostgreSQL, have OpenSIPS send every "
-        "call to Homer over HEP, and find the call. No sipnab involved.",
+        "Run heplify-server, homer-app and PostgreSQL, have OpenSIPS or Kamailio "
+        "send every call to Homer over HEP, and find the call. No sipnab "
+        "involved.",
     ),
     (
         "docs/homer-sipnab.md",
@@ -516,17 +519,17 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Connect sipnab to Homer",
         "Connect sipnab to Homer",
         47,
-        "Have OpenSIPS send its HEP to sipnab as well as to Homer, and have "
-        "sipnab on another machine forward what it captures to Homer.",
+        "Have sipnab receive the SIP proxy's HEP beside Homer, and have sipnab "
+        "on another machine forward what it captures to Homer.",
     ),
     (
         "docs/prometheus.md",
         "prometheus.md",
-        "Add Prometheus and Grafana to an OpenSIPS voice stack",
-        "Add Prometheus and Grafana to an OpenSIPS voice stack",
+        "Add Prometheus and Grafana to your voice stack",
+        "Add Prometheus and Grafana to your voice stack",
         48,
-        "Run Prometheus and Grafana, have OpenSIPS publish its statistics, and "
-        "watch a test call in the numbers. No sipnab involved.",
+        "Run Prometheus and Grafana, have OpenSIPS or Kamailio publish its "
+        "statistics, and watch a test call in the numbers. No sipnab involved.",
     ),
     (
         "docs/prometheus-sipnab.md",
@@ -536,6 +539,47 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         49,
         "Run sipnab as a service with its metrics beside Prometheus, scrape it, "
         "and import the dashboard that ships with sipnab.",
+    ),
+    # The SIP server guides (2026-09-27): OpenSIPS and Kamailio as the proxy the
+    # add-on guides build on, each on its own or both on one machine. 50-53 were
+    # the next free weights.
+    (
+        "docs/opensips.md",
+        "opensips.md",
+        "Use OpenSIPS as your voice stack's SIP server",
+        "Use OpenSIPS as your voice stack's SIP server",
+        50,
+        "Install OpenSIPS 4.0 from its packages or build it from source, set it up "
+        "as a proxy that stays in each call's path, place a test call, and operate "
+        "it. No sipnab involved.",
+    ),
+    (
+        "docs/opensips-sipnab.md",
+        "opensips-sipnab.md",
+        "Run sipnab beside OpenSIPS",
+        "Run sipnab beside OpenSIPS",
+        51,
+        "Install sipnab on the OpenSIPS machine and watch a call through the proxy "
+        "as one call, from both its legs, with or without Kamailio beside it.",
+    ),
+    (
+        "docs/kamailio.md",
+        "kamailio.md",
+        "Use Kamailio as your voice stack's SIP server",
+        "Use Kamailio as your voice stack's SIP server",
+        52,
+        "Install Kamailio 6.1 from the Kamailio project's packages, set it up as a "
+        "proxy that stays in each call's path, place a test call, operate it, and "
+        "run it beside OpenSIPS. No sipnab involved.",
+    ),
+    (
+        "docs/kamailio-sipnab.md",
+        "kamailio-sipnab.md",
+        "Run sipnab beside Kamailio",
+        "Run sipnab beside Kamailio",
+        53,
+        "Install sipnab on the Kamailio machine and watch a call through the proxy "
+        "as one call, from both its legs, with or without OpenSIPS beside it.",
     ),
 ]
 

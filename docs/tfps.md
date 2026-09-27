@@ -1,14 +1,15 @@
-# Add TFPS to an OpenSIPS voice stack
+# Add TFPS to your voice stack
 
 [TFPS](https://github.com/sippulse/tfps) watches the SIP traffic arriving at a
 machine and blocks the sources that are attacking it: scanners such as
 SIPVicious, password guessers, and callers trying to run up international fraud.
 It blocks them in the kernel with an XDP program, before the packets reach your
-SIP server. It does not sit in the call path and needs nothing from OpenSIPS. It
-reads a copy of the traffic, the way a capture tool does.
+SIP server. It does not sit in the call path and needs nothing from your SIP
+server, OpenSIPS or Kamailio: every step below is the same for both. It reads a
+copy of the traffic, the way a capture tool does.
 
 Install it on the machine that receives SIP from the Internet, which is usually
-the machine running OpenSIPS. This guide does not use sipnab. When TFPS is working,
+the machine running your SIP server. This guide does not use sipnab. When TFPS is working,
 [Let sipnab see and control TFPS](tfps-sipnab.md) adds sipnab.
 
 Two terms used below:
@@ -132,7 +133,10 @@ sudo journalctl -u tfps -n 30 | grep -A4 ignoreip | tail -5
 ```
 
 `ports` are the SIP ports TFPS watches and blocks on. List `5061` as well if
-you take SIP over TLS. TFPS detects attacks only in SIP it can read, which means
+you take SIP over TLS. With OpenSIPS and Kamailio on one machine, Kamailio on
+5062 as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, list both: `"ports": [5060, 5062]`. TFPS detects attacks only in SIP it can read, which means
 UDP: it cannot read encrypted SIP, and it does not reassemble SIP over TCP. A
 source it has blocked, though, loses every listed port, TCP and TLS
 included. TFPS's README lists these limits under "What it does not do".

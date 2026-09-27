@@ -1045,7 +1045,20 @@ fn wiki_intra_docs_links_resolve() {
     // prometheus-sipnab.md and its own last section; prometheus-sipnab.md links
     // prometheus.md three times, prometheus-metrics.md and rtpengine-sipnab.md;
     // docs/README.md lists both pages.
-    const EXPECTED_WIKI_LINKS: usize = 1045;
+    // 1045 -> 1134: the SIP server guides, and the Kamailio and packaged
+    // OpenSIPS routes through every add-on guide. Attributed per file against
+    // main (046a822b): the four new pages opensips.md +10, kamailio.md +10,
+    // opensips-sipnab.md +4, kamailio-sipnab.md +4, each linking its pair, the
+    // other proxy's guide, its own one-machine section and the add-on guides
+    // that build on it. The add-on guides gained a "Before you start" section,
+    // a "With Kamailio" section and a "Tested on" list naming which route ran
+    // where, which link the base guides' install steps and the one-machine
+    // section instead of restating them: rtpengine-relay.md +10, homer.md +11,
+    // prometheus.md +11, vcon-server.md +12 (its Kamailio gap section also
+    // links vcon-sipnab.md's), vcon-sipnab.md +7, homer-sipnab.md +2,
+    // prometheus-sipnab.md +2, rtpengine-sipnab.md +1, tfps.md +1.
+    // docs/README.md +4 lists the four new pages.
+    const EXPECTED_WIKI_LINKS: usize = 1134;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2229,7 +2242,9 @@ fn every_docs_page_is_linked_from_the_index() {
     // 59 -> 61: docs/rtpengine-relay.md and docs/rtpengine-sipnab.md.
     // 61 -> 63: docs/homer.md and docs/homer-sipnab.md.
     // 63 -> 65: docs/prometheus.md and docs/prometheus-sipnab.md.
-    const EXPECTED_DOCS_PAGES: usize = 65;
+    // 65 -> 69: docs/opensips.md, docs/opensips-sipnab.md, docs/kamailio.md
+    // and docs/kamailio-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 69;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

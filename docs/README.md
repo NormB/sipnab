@@ -83,27 +83,38 @@ Each answers "how do I …?" and assumes you already know what you want.
 - **[Build a vCon capture stack](vcon-harness.md)**: OpenSIPS, rtpengine,
   sipnab and a conserver on one node or two, and the failures that look like
   success.
+- **[Use OpenSIPS as your voice stack's SIP server](opensips.md)**: install
+  OpenSIPS 4.0 from its packages or build it from source, as a proxy the
+  guides below build on. No sipnab involved.
+- **[Run sipnab beside OpenSIPS](opensips-sipnab.md)**: watch a call through
+  OpenSIPS as one call, from both its legs.
+- **[Use Kamailio as your voice stack's SIP server](kamailio.md)**: the same
+  with Kamailio 6.1, alone or beside OpenSIPS. No sipnab involved.
+- **[Run sipnab beside Kamailio](kamailio-sipnab.md)**: watch a call through
+  Kamailio as one call, from both its legs.
 - **[Add a vCon server to an OpenSIPS voice stack](vcon-server.md)**:
   vcon-server, Valkey and PostgreSQL, with OpenSIPS recording every call into
-  it over SIPREC. No sipnab involved.
+  it over SIPREC. Kamailio cannot record this way. No sipnab involved.
 - **[Send sipnab's vCons to a vCon server](vcon-sipnab.md)**: a vCon for every
-  finished call, forwarded to vcon-server on the same machine or another.
-- **[Add TFPS to an OpenSIPS voice stack](tfps.md)**: block attacking SIP
-  sources in the kernel before they reach OpenSIPS. No sipnab involved.
+  finished call, forwarded to vcon-server on the same machine or another, and
+  the way a Kamailio stack gets vCons.
+- **[Add TFPS to your voice stack](tfps.md)**: block attacking SIP
+  sources in the kernel before they reach your SIP server. No sipnab involved.
 - **[Let sipnab see and control TFPS](tfps-sipnab.md)**: what TFPS blocks and
   why, and ban or unban on request, locally or over SSH.
-- **[Add rtpengine to an OpenSIPS voice stack](rtpengine-relay.md)**: anchor
-  every call's media on an rtpengine relay. No sipnab involved.
+- **[Add rtpengine to your voice stack](rtpengine-relay.md)**: anchor
+  every call's media on an rtpengine relay, from OpenSIPS or Kamailio. No
+  sipnab involved.
 - **[Let sipnab name rtpengine's media](rtpengine-sipnab.md)**: tie the media
   on a relay to its call, from the relay's control plane or by asking it.
-- **[Add Homer to an OpenSIPS voice stack](homer.md)**: a searchable history
-  of every call, sent by OpenSIPS over HEP. No sipnab involved.
+- **[Add Homer to your voice stack](homer.md)**: a searchable history
+  of every call, sent by OpenSIPS or Kamailio over HEP. No sipnab involved.
 - **[Connect sipnab to Homer](homer-sipnab.md)**: sipnab as a second HEP
   receiver beside Homer, or as a source that forwards to it.
-- **[Add Prometheus and Grafana to an OpenSIPS voice stack](prometheus.md)**:
-  OpenSIPS's statistics, stored and graphed. No sipnab involved.
+- **[Add Prometheus and Grafana to your voice stack](prometheus.md)**:
+  OpenSIPS's or Kamailio's statistics, stored and graphed. No sipnab involved.
 - **[Add sipnab's metrics to Prometheus](prometheus-sipnab.md)**: sipnab's call
-  and media series beside OpenSIPS's, with sipnab's dashboard.
+  and media series beside the proxy's, with sipnab's dashboard.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

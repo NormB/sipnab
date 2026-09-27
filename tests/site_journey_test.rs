@@ -10789,7 +10789,13 @@ fn the_analyze_drop_zone_names_the_archives_it_opens() {
 }
 
 /// The homepage's "Add it to your voice stack" section links exactly the
-/// guides in the docs nav's "Add to your voice stack" group.
+/// guides in the docs nav's "Your SIP server" and "Add to your voice stack"
+/// groups.
+///
+/// The section starts with the SIP server the other guides build on, OpenSIPS
+/// or Kamailio, so it spans both nav groups. The sidebar keeps them apart,
+/// because installing the proxy is a different job from adding a component
+/// beside it.
 ///
 /// The guides are added one at a time (vCon and TFPS first; rtpengine, Homer,
 /// Prometheus, fail2ban, TLS, Kamailio and rtpproxy are planned), and each one
@@ -10810,15 +10816,19 @@ fn homepage_voice_stack_section_links_every_stack_guide() {
         .captures_iter(section)
         .map(|c| c[1].to_string())
         .collect();
-    let guides: BTreeSet<String> = docs_nav_list()
+    const GROUPS: [&str; 2] = ["Your SIP server", "Add to your voice stack"];
+    let nav = docs_nav_list();
+    for group in GROUPS {
+        assert!(
+            nav.iter().any(|e| e.group == group),
+            "website/config.toml has no \"{group}\" docs_nav group — renamed?"
+        );
+    }
+    let guides: BTreeSet<String> = nav
         .into_iter()
-        .filter(|e| e.group == "Add to your voice stack")
+        .filter(|e| GROUPS.contains(&e.group.as_str()))
         .map(|e| e.path)
         .collect();
-    assert!(
-        !guides.is_empty(),
-        "website/config.toml has no \"Add to your voice stack\" docs_nav group — renamed?"
-    );
     assert_eq!(
         linked, guides,
         "the homepage voice-stack section (left) and the nav's voice-stack group (right) \

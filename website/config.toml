@@ -336,6 +336,16 @@ pages = [
 ]
 
 [[extra.docs_nav]]
+id = "sipserver"
+title = "Your SIP server"
+pages = [
+  { path = "docs/opensips.md", menu = true },
+  { path = "docs/opensips-sipnab.md", menu = true },
+  { path = "docs/kamailio.md", menu = true },
+  { path = "docs/kamailio-sipnab.md", menu = true },
+]
+
+[[extra.docs_nav]]
 id = "stack"
 title = "Add to your voice stack"
 pages = [

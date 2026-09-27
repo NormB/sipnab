@@ -3,13 +3,18 @@
 sipnab can write a [vCon](glossary.md#vcon) for every call it sees. Unlike the
 recording in [Add a vCon server to an OpenSIPS voice stack](vcon-server.md),
 sipnab is not in the call path: it reads a copy of the traffic, so it needs
-nothing from OpenSIPS and changes nothing about how OpenSIPS handles calls. It
+nothing from your SIP server and changes nothing about how it handles calls. It
 writes each vCon to a directory. A small forwarder sends them from there to
 vcon-server and deletes each one once the server has taken it.
 
 This guide starts where the vCon server guide ends, with vcon-server running.
 The first part puts sipnab on the same machine. The last section says what
 changes when sipnab runs on another machine.
+
+With Kamailio, this is how a vCon server gets vCons at all: Kamailio has no
+SIPREC module to record with, as
+[the vCon server guide](vcon-server.md#with-kamailio-a-gap) explains.
+[With Kamailio](#with-kamailio) says what changes.
 
 ## Keep recorded and observed vCons apart
 
@@ -23,7 +28,9 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 ## Tested on
 
 Run on 2026-09-25 on the Debian 13 x86_64 machine from the vCon server guide,
-with sipnab from its `.deb`.
+with sipnab from its `.deb`, and again on 2026-09-27 with sipnab 0.5.193: beside
+OpenSIPS built from source on Debian 13, beside Kamailio on Debian 13, and with
+both on one machine on Ubuntu 24.04.5.
 
 ## 1. Add an ingress list and a chain for sipnab
 
@@ -101,11 +108,14 @@ ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:
 ReadWritePaths=/var/spool/sipnab-vcon
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now sipnab
+sudo systemctl enable sipnab
+sudo systemctl restart sipnab
 ```
 
 sipnab needs `ReadWritePaths` because the unit makes the rest of the file system
-read-only to sipnab.
+read-only to sipnab. The last line restarts sipnab rather than using
+`enable --now`: a sipnab that another guide already started would keep running
+with its old flags.
 
 Following [Let sipnab see and control TFPS](tfps-sipnab.md) as well? Both
 guides replace sipnab's `ExecStart` in a drop-in, and systemd uses the last
@@ -199,6 +209,41 @@ call of its own. The SIPREC session's first message goes to the recorder's port,
 ```text
 state == 'Completed' and dst.port != 5090
 ```
+
+## With Kamailio
+
+Set up the vCon server with the vCon server guide's first two steps,
+[Install Docker](vcon-server.md#1-install-docker) and
+[Install the vCon server](vcon-server.md#2-install-the-vcon-server), then follow
+steps 1 to 4 here as they are. sipnab's capture filter from step 3 already admits Kamailio's port, 5060.
+
+For a vCon with audio in it, the call's media has to pass where sipnab
+captures. Anchor it on rtpengine, as
+[With Kamailio](rtpengine-relay.md#with-kamailio) in the rtpengine guide sets
+it up, and place that guide's test call, its
+[step 5](rtpengine-relay.md#5-place-a-test-call). Then run step 5's commands
+here. The test call makes one vCon, not two: with no recorder, there is no
+SIPREC session for sipnab to see.
+
+**With OpenSIPS and Kamailio on one machine,** Kamailio on 5062 as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, sipnab needs Kamailio's port twice: in the capture filter, so that
+the packets reach it, and in `--portrange`, so that it reads them as SIP. By
+default it reads SIP on 5060-5061 only, and with the filter alone it writes no
+vCon for Kamailio's calls. Add both to step 3's drop-in:
+
+```bash
+# Run all of these, in order.
+F=/etc/systemd/system/sipnab.service.d/vcon.conf
+sudo sed -i 's|^  --retain-audio \\$|  --retain-audio --portrange 5060-5062 \\|; s|"port 5060 or port 5090 or|"port 5060 or port 5062 or port 5090 or|' "$F"
+grep -nE 'portrange|port 5062' "$F"
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+sipnab then writes a vCon for the calls through each proxy, and for OpenSIPS's
+SIPREC sessions to the recorder: a call through Kamailio makes one vCon, and a
+call through OpenSIPS two.
 
 ## Run sipnab on a different machine
 

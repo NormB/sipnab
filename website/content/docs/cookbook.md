@@ -2184,10 +2184,14 @@ WantedBy=multi-user.target
    sudo systemctl daemon-reload
    ```
 
-2. Enable and start the service:
+2. Enable the service, and start it. `restart` starts a stopped sipnab, and
+   restarts a running one on the new unit, which `enable --now` would leave as
+   it is:
 
    ```bash
-   sudo systemctl enable --now sipnab
+   # Run all of these, in order.
+   sudo systemctl enable sipnab
+   sudo systemctl restart sipnab
    ```
 
 3. Follow its log:

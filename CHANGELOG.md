@@ -8,6 +8,59 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Two guides for the SIP server the voice-stack guides build on.** [Use
+  OpenSIPS as your voice stack's SIP server](https://sipnab.com/docs/opensips/)
+  installs OpenSIPS 4.0 from the OpenSIPS project's packages, or builds it from
+  source, as a proxy that stays in each call's path, and proves it with a test
+  call. [Use Kamailio as your voice stack's SIP
+  server](https://sipnab.com/docs/kamailio/) does the same with Kamailio 6.1
+  from the Kamailio project's packages. Each has a sipnab companion, [Run
+  sipnab beside OpenSIPS](https://sipnab.com/docs/opensips-sipnab/) and [Run
+  sipnab beside Kamailio](https://sipnab.com/docs/kamailio-sipnab/), and a
+  section for running both proxies on one machine: OpenSIPS on 5060, Kamailio
+  on 5062, and sipnab with `--portrange 5060-5062`. Every command ran as
+  written on clean Debian 13 and Ubuntu 24.04 machines. The home page's
+  voice-stack section links all four.
+
+### Changed
+
+- **Every voice-stack guide now serves four readers:** one with no SIP server
+  yet, one already running OpenSIPS (from the packages or built from source),
+  one running Kamailio, and one running both. Each add-on guide has a "Before
+  you start" section that names the steps to skip, finds the OpenSIPS
+  configuration and module directory of either install, and says which module
+  package the OpenSIPS packages need. The rtpengine, Homer and Prometheus
+  guides each have a "With Kamailio" section with a configuration that ran:
+  Kamailio's `rtpengine`, `siptrace` and `xhttp_prom` modules. TFPS needs
+  nothing from the proxy and says so. Their titles drop "OpenSIPS".
+- **The vCon server guide states Kamailio's gap plainly.** Kamailio has no
+  SIPREC module, in 6.1 or on its development branch, so it cannot record calls
+  into vcon-server. [Send sipnab's vCons to a vCon
+  server](https://sipnab.com/docs/vcon-sipnab/) is how a Kamailio stack gets
+  vCons, and its new Kamailio section ran with Kamailio.
+
+### Fixed
+
+- **Guide steps that failed, or passed by luck, on a reader's machine.**
+  Running each guide as written on a clean virtual machine found them:
+  - The source build's `/usr/local/etc/opensips` is readable by root alone,
+    so a configuration lookup run as the reader found nothing. It now runs
+    under `sudo`.
+  - `systemctl enable --now` left an already-running sipnab on its old flags
+    after a drop-in changed, and the Prometheus guide's next line then waited
+    forever for the new metrics port. The sipnab guides now `enable`, then
+    `restart`.
+  - Homer's and the vCon server's first test queried before heplify-server had
+    created its tables, or before the conserver's worker had started, and
+    found nothing. Both now wait for them.
+  - With both proxies on one machine, a wider capture filter alone gave sipnab
+    no vCons for Kamailio's calls: sipnab reads SIP only on its
+    `--portrange`. The guide sets both.
+
 ## [0.5.193] - 2026-09-27
 
 ### Added

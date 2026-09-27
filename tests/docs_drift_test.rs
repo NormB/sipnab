@@ -1200,6 +1200,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1216,6 +1218,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1232,6 +1236,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
         ],
     ),
     // useradd's, creating the system accounts the voice-stack guides run services as.
@@ -1239,7 +1245,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "create-home",
         &["docs/tfps-sipnab.md", "website/content/docs/tfps-sipnab.md"],
     ),
-    // systemctl's, on `systemctl enable --now` in the voice-stack guides.
+    // systemctl's, on `systemctl enable --now` and `disable --now` in the
+    // voice-stack guides. prometheus-sipnab.md left this list when its drop-in
+    // step changed to `enable` then `restart`: `enable --now` left an already
+    // running sipnab on its old flags.
     (
         "now",
         &[
@@ -1255,9 +1264,23 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
-            "docs/prometheus-sipnab.md",
-            "website/content/docs/prometheus-sipnab.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
+            "docs/kamailio.md",
+            "website/content/docs/kamailio.md",
         ],
+    ),
+    // gpg's, reading the Kamailio project's signing key so the reader can
+    // compare its fingerprint, and converting it for apt's keyring.
+    (
+        "dearmor",
+        &["docs/kamailio.md", "website/content/docs/kamailio.md"],
+    ),
+    // gpg's, reading the Kamailio project's signing key so the reader can
+    // compare its fingerprint, and converting it for apt's keyring.
+    (
+        "show-keys",
+        &["docs/kamailio.md", "website/content/docs/kamailio.md"],
     ),
     // tfps and tfps_ctl's (TFPS, the XDP blocker the TFPS guides install).
     ("all", &["docs/tfps.md", "website/content/docs/tfps.md"]),
@@ -1282,6 +1305,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/homer.md",
             "docs/prometheus.md",
             "website/content/docs/prometheus.md",
+            "docs/opensips.md",
+            "website/content/docs/opensips.md",
         ],
     ),
     // apt-get's and dpkg's, installing the voice stack's build tools.
@@ -3752,7 +3777,10 @@ fn no_documentation_table_repeats_a_row() {
     // their two generated site pages.
     // 245 -> 249: the two Prometheus guides (prometheus, prometheus-sipnab)
     // under docs/ and their two generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 249;
+    // 249 -> 257: the four SIP server guides (opensips, opensips-sipnab,
+    // kamailio, kamailio-sipnab) under docs/ and their four generated site
+    // pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 257;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4204,7 +4232,12 @@ fn no_documentation_table_repeats_a_row() {
     // 1002 -> 1006: docs/prometheus.md's two tables (the parts, and the
     // versions it was tested on) and the same two on its site page;
     // prometheus-sipnab.md has none.
-    const EXPECTED_TABLES: usize = 1006;
+    // 1006 -> 1012: the SIP server guides. docs/opensips.md has two tables
+    // (the versions it was tested on, and which module package each add-on
+    // guide needs with the OpenSIPS packages), docs/kamailio.md one (the
+    // versions); their site mirrors carry the same three. The add-on guides'
+    // table counts held.
+    const EXPECTED_TABLES: usize = 1012;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

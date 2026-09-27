@@ -244,6 +244,10 @@ DOCS_TO_SITE = {
     "homer-sipnab.md": "homer-sipnab.md",
     "prometheus.md": "prometheus.md",
     "prometheus-sipnab.md": "prometheus-sipnab.md",
+    "opensips.md": "opensips.md",
+    "opensips-sipnab.md": "opensips-sipnab.md",
+    "kamailio.md": "kamailio.md",
+    "kamailio-sipnab.md": "kamailio-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
 }

@@ -1,14 +1,17 @@
 # Add sipnab's metrics to Prometheus
 
-OpenSIPS's statistics say what the proxy did: calls routed, transactions,
-memory. sipnab's say what the calls themselves looked like on the wire: how
+Your SIP proxy's statistics say what the proxy did: calls routed,
+transactions, memory. sipnab's say what the calls themselves looked like on the wire: how
 many completed and failed, post-dial delay, and the quality of their audio. In
 the same Prometheus, the two sit side by side on one dashboard.
 
 This guide adds sipnab to the Prometheus and Grafana from
-[Add Prometheus and Grafana to an OpenSIPS voice stack](prometheus.md), and
+[Add Prometheus and Grafana to your voice stack](prometheus.md), and
 imports the dashboard that ships with sipnab. Every series sipnab publishes,
-and what it means, is in [Prometheus metrics](prometheus-metrics.md).
+and what it means, is in [Prometheus metrics](prometheus-metrics.md). The proxy
+is OpenSIPS, from its packages or built from source, or Kamailio, as that
+guide's [With Kamailio](prometheus.md#with-kamailio) section sets it up. sipnab
+reads the calls off the wire, so every step is the same for each.
 
 ## Tested on
 
@@ -52,10 +55,11 @@ ExecStart=
 ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9091
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now sipnab
+sudo systemctl enable sipnab
+sudo systemctl restart sipnab
 systemctl is-active sipnab
 until curl -fs -o /dev/null 127.0.0.1:9091/metrics; do sleep 1; done
-curl -s 127.0.0.1:9091/metrics | grep -m3 '^sipnab_'
+curl -s 127.0.0.1:9091/metrics | awk '/^sipnab_/ && n++ < 3'
 ```
 
 The empty `ExecStart=` line clears the package's command before the next line
@@ -65,7 +69,7 @@ only the last one it reads, so put all the flags in one drop-in.
 ## 3. Scrape sipnab
 
 Add sipnab to Prometheus's targets, and restart Prometheus so that it reads
-the change. The `until` line waits for Prometheus to scrape both targets once:
+the change. The `until` line waits for Prometheus to scrape sipnab once:
 
 ```bash
 # Run all of these, in order.
@@ -77,11 +81,11 @@ cat >> prometheus.yml <<'EOF'
 EOF
 docker compose restart prometheus
 targets() { curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'; }
-until [ "$(targets 2>/dev/null | grep -c ' up$')" = 2 ]; do sleep 2; done
-curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+until targets 2>/dev/null | grep -q '^sipnab up$'; do sleep 2; done
+targets
 ```
 
-It prints `opensips up` and `sipnab up`.
+It prints the proxy's target, `opensips up` or `kamailio up`, and `sipnab up`.
 
 ## 4. Import sipnab's dashboard
 
@@ -119,8 +123,27 @@ curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_t
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
 ```
 
-It prints 1: sipnab saw the call from its `INVITE` to its `BYE`. OpenSIPS's
-own `opensips_processed_dialogs` counted the same call.
+It prints 1: sipnab saw the call from its `INVITE` to its `BYE`. The proxy
+counted the same call in its own series: OpenSIPS's
+`opensips_processed_dialogs`, or Kamailio's `kamailio_core_rcv_requests_invite`.
+
+## With OpenSIPS and Kamailio on one machine
+
+With Kamailio on 5062, as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, sipnab's default capture of ports 5060-5061 misses Kamailio's
+calls. Add `--portrange 5060-5062` to the drop-in in step 2:
+
+```bash
+# Run all of these, in order.
+sudo sed -i 's|--metrics 127.0.0.1:9091$|--metrics 127.0.0.1:9091 --portrange 5060-5062|' /etc/systemd/system/sipnab.service.d/metrics.conf
+grep '^ExecStart=/' /etc/systemd/system/sipnab.service.d/metrics.conf
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+Step 3 then prints three targets, `opensips`, `kamailio` and `sipnab`, all
+`up`, and a call through either proxy adds one to sipnab's count.
 
 ## When something does not work
 

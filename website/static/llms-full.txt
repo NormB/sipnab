@@ -3155,10 +3155,14 @@ WantedBy=multi-user.target
    sudo systemctl daemon-reload
    ```
 
-2. Enable and start the service:
+2. Enable the service, and start it. `restart` starts a stopped sipnab, and
+   restarts a running one on the new unit, which `enable --now` would leave as
+   it is:
 
    ```bash
-   sudo systemctl enable --now sipnab
+   # Run all of these, in order.
+   sudo systemctl enable sipnab
+   sudo systemctl restart sipnab
    ```
 
 3. Follow its log:
@@ -32641,6 +32645,10 @@ OpenSIPS record every call into it. This guide does not use sipnab. When you hav
 this working, [Send sipnab's vCons to a vCon server](vcon-sipnab.md) adds sipnab
 as a second source.
 
+Kamailio cannot record calls this way: it has no SIPREC module.
+[With Kamailio](#with-kamailio-a-gap) says what that means, and what a
+Kamailio stack can send the vCon server instead.
+
 The parts, and what each one does:
 
 | Part | Role |
@@ -32662,18 +32670,27 @@ parts live on different machines.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 on two
-x86_64 virtual machines with 2 cores and 4 GB of memory: a clean Debian 13
-(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
-components to the versions below. Newer commits may behave differently, and
-pinning them keeps the guide describing what you get.
+Every command on this page ran as written, in order, on x86_64 virtual
+machines with 2 cores and 3 or 4 GB of memory:
+
+- Every step, with OpenSIPS built in step 4: on a clean Debian 13 (kernel
+  6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-25, with an earlier
+  step 5 that named the source build's paths.
+- On 2026-09-27, with rtpengine already relaying as
+  [the rtpengine guide](rtpengine-relay.md) sets it up, so without step 3:
+  OpenSIPS rebuilt with `siprec` on Debian 13, and the OpenSIPS 4.0 packages on
+  Ubuntu 24.04.5.
+
+The commands pin the components to the versions below. Newer commits may behave
+differently, and pinning them keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
 | Docker Engine / Compose | 29.8.1 / v5.5.1, from the Docker apt repository |
 | vcon-server | [`d441470b`](https://github.com/vcon-dev/vcon-server/commit/d441470b), main on 2026-09-20 |
 | Valkey / PostgreSQL | `valkey/valkey:9.1.2-alpine` / `postgres:17.11-alpine` |
-| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, built here | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, from packages | 4.0.2, installed as [the OpenSIPS guide](opensips.md) installs it |
 | rtpengine | [`8da4be3355`](https://github.com/sipwise/rtpengine/commit/8da4be3355), master, packaged as 26.3.0.0 |
 | vcon-siprec-adapter | [`fa09b939d3`](https://github.com/vcon-dev/vcon-siprec-adapter/commit/fa09b939d3), main |
 | SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian, 3.7.2 on Ubuntu |
@@ -32682,6 +32699,26 @@ The whole vCon stack used about 165 MiB of memory while idle.
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
+
+## Before you start: your SIP server
+
+Find your case, and follow the steps it names:
+
+- **No SIP server yet.** Follow every step. Step 4 builds OpenSIPS for you. If
+  you would rather run the OpenSIPS 4.0 packages, install them with
+  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips), then take
+  the packages' route in step 4.
+- **OpenSIPS already runs, from the packages or built from source.** Step 4
+  adds the `siprec` module. Step 5 finds your configuration file and replaces
+  it. On a machine whose script you want to keep, add the lines step 5 marks
+  to your own script instead. If rtpengine already relays your calls, as
+  [Add rtpengine to your voice stack](rtpengine-relay.md) sets it up,
+  skip step 3.
+- **Kamailio.** Kamailio cannot record over SIPREC. Read
+  [With Kamailio](#with-kamailio-a-gap) first.
+- **Both OpenSIPS and Kamailio on one machine.** OpenSIPS records the calls
+  that pass through it, and Kamailio's calls go unrecorded.
+  [With Kamailio](#with-kamailio-a-gap) says how to get vCons for both.
 
 ## 1. Install Docker
 
@@ -32846,12 +32883,16 @@ Start it and check that the API answers:
 cd /opt/vcon
 docker compose up -d --build
 until curl -sf localhost:8000/health; do sleep 2; done; echo
+until docker compose logs conserver | grep -q 'Worker-1 started'; do sleep 2; done
 docker compose ps
 ```
 
-The API takes a few seconds to start, so the `until` line waits for `/health`
-to answer `{"status":"healthy",...}`. All four services then show `running`,
-and `valkey` and `postgres` also show `healthy`.
+The API takes a few seconds to start, so the first `until` line waits for
+`/health` to answer `{"status":"healthy",...}`. The conserver, which stores
+what the API queues, starts later: on a fresh machine its worker came up about
+15 seconds after the API answered. The second `until` line waits for it. All
+four services then show `running`, and `valkey` and `postgres` also show
+`healthy`.
 
 ### Prove it stores what it accepts
 
@@ -32913,18 +32954,31 @@ systemctl is-active ngcp-rtpengine-daemon
 It listens for OpenSIPS on `127.0.0.1:2223` and relays media on ports
 30000-39999.
 
-## 4. Build OpenSIPS
+## 4. Install OpenSIPS's recording module
 
+OpenSIPS records with its `siprec` module.
+
+**With the OpenSIPS packages,** it comes in a package of its own. The
+`uac_auth` module, which step 5 loads, comes in another:
+
+```bash
+sudo apt-get install -y opensips-siprec-module opensips-auth-modules
+```
+
+**Or build OpenSIPS with it.** Skip this if you installed the packages.
 OpenSIPS master builds with compiler optimizations turned off, which is right
 for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
 back on before you build, and add the `siprec` module, which the default build
-leaves out:
+leaves out. If you already built OpenSIPS from source by one of these guides,
+the block reuses that tree, `/usr/local/src/voice/opensips`, and rebuilds it
+with `siprec`. With a tree of your own, change `/usr/local/src/voice` in the
+block to the directory that holds it:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y --no-install-recommends bison flex uuid-dev pkg-config libncurses-dev
 cd /usr/local/src/voice
-git clone https://github.com/OpenSIPS/opensips.git
+[ -d opensips ] || git clone https://github.com/OpenSIPS/opensips.git
 cd opensips
 git checkout f46ef9337b
 make Makefile.conf
@@ -32942,9 +32996,10 @@ of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
 including the header that declares it, and only `DBG_MALLOC`'s headers happen
 to supply it.
 
-OpenSIPS installs under `/usr/local`: the binary is `/usr/local/sbin/opensips`,
-modules are in `/usr/local/lib64/opensips/modules/`, and OpenSIPS reads its
-configuration from `/usr/local/etc/opensips/`.
+The build installs under `/usr/local`: the binary is
+`/usr/local/sbin/opensips`, modules are in `/usr/local/lib64/opensips/modules/`,
+and OpenSIPS reads its configuration from `/usr/local/etc/opensips/`. The
+packages install under `/usr`, with the configuration in `/etc/opensips/`.
 
 ## 5. Configure OpenSIPS to record every call
 
@@ -32952,8 +33007,19 @@ This configuration is a minimal proxy with recording added. Your own script
 does much more (registration, authentication, routing to carriers). The
 recording part is the block marked below, and the `loadmodule` lines it needs.
 
+### Write the configuration
+
+The packages and the source build keep their configuration and their modules in
+different places. The first two lines find them: `C` is your configuration
+file, and `M` the directory your install loads modules from, which the script's
+`mpath` names.
+
 ```bash
-sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
 # OpenSIPS as a SIP proxy that records every call over SIPREC.
 log_level=3
 stderror_enabled=no
@@ -32964,7 +33030,7 @@ open_files_limit=4096
 
 socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
 
-mpath="/usr/local/lib64/opensips/modules/"
+mpath="MODULES/"
 
 loadmodule "proto_udp.so"   # built into the core, but still loaded by name
 loadmodule "signaling.so"
@@ -33031,6 +33097,8 @@ route {
 	t_relay();
 }
 EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo grep '^mpath=' "$C"
 ```
 
 What the recording block does, line by line:
@@ -33046,14 +33114,18 @@ What the recording block does, line by line:
 `loadmodule "uac_auth.so"` is there because `b2b_entities` asks for it at
 startup. Leaving it out works, but logs a warning on every start.
 
-Run OpenSIPS as its own user, under systemd:
+### If you built OpenSIPS in step 4: give it a user and a unit
+
+The packages come with an `opensips` user and a systemd unit. If you
+installed them, or if your source build already runs as a service, skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
 sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
-sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chown root:opensips /usr/local/etc/opensips
 sudo chmod 750 /usr/local/etc/opensips
-sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
 sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
 [Unit]
 Description=OpenSIPS SIP server
@@ -33074,9 +33146,19 @@ LimitNOFILE=262144
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
 sudo systemctl daemon-reload
-sudo systemctl enable --now opensips
+```
+
+### Check the configuration and start OpenSIPS
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl enable opensips
+sudo systemctl restart opensips
 systemctl is-active opensips
 ```
 
@@ -33320,6 +33402,32 @@ sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils ngcp-rtpengine-
 sudo apt-get autoremove -y
 ```
 
+## With Kamailio: a gap
+
+Kamailio has no SIPREC module, so it cannot hand a copy of a call to a
+recorder the way step 5 has OpenSIPS do. Neither Kamailio 6.1 nor its
+development branch has one: none of the 256 modules in Kamailio 6.1's source
+tree, or the 258 on its `master` branch, implements SIPREC. The recorder in this
+guide, vcon-siprec-adapter, takes SIPREC only, so with Kamailio it receives
+nothing.
+
+What a Kamailio stack can send the vCon server is sipnab's own vCons. sipnab
+reads the calls off the wire, beside Kamailio, and writes a vCon for each: the
+parties, the signaling and, with the media in its capture, the audio. It is an
+observer's record, not a party's: a packet the capture missed is not in it.
+[Send sipnab's vCons to a vCon server](vcon-sipnab.md) sets it up, and keeps
+those vCons apart from recorded ones. With Kamailio:
+
+1. Follow steps 1 and 2 here, for Docker and the vCon server. Skip steps 3 to 8,
+   the recorder and its test.
+2. Follow [Send sipnab's vCons to a vCon server](vcon-sipnab.md). Its
+   [With Kamailio](vcon-sipnab.md#with-kamailio) section places the test call.
+
+With OpenSIPS and Kamailio on one machine, follow every step here for
+OpenSIPS's calls, then the sipnab guide, whose
+[same section](vcon-sipnab.md#with-kamailio) widens sipnab's capture to
+Kamailio's port.
+
 ## Put the parts on different machines
 
 Nothing above depends on sharing a machine except the addresses:
@@ -33343,7 +33451,8 @@ Nothing above depends on sharing a machine except the addresses:
 - **`loading config file ... Permission denied`.** OpenSIPS runs as `opensips`
   and cannot read its configuration. `make install` creates
   `/usr/local/etc/opensips` readable by root alone, so give the group both the
-  directory and the file, as in step 5.
+  directory and the file, as in step 5. The packages set this up themselves,
+  but a file you wrote as root keeps root's group until step 5 changes it.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
   set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.
 - **`/health` answers but nothing reaches PostgreSQL.** A `204` from the ingress
@@ -33361,13 +33470,18 @@ Nothing above depends on sharing a machine except the addresses:
 sipnab can write a [vCon](glossary.md#vcon) for every call it sees. Unlike the
 recording in [Add a vCon server to an OpenSIPS voice stack](vcon-server.md),
 sipnab is not in the call path: it reads a copy of the traffic, so it needs
-nothing from OpenSIPS and changes nothing about how OpenSIPS handles calls. It
+nothing from your SIP server and changes nothing about how it handles calls. It
 writes each vCon to a directory. A small forwarder sends them from there to
 vcon-server and deletes each one once the server has taken it.
 
 This guide starts where the vCon server guide ends, with vcon-server running.
 The first part puts sipnab on the same machine. The last section says what
 changes when sipnab runs on another machine.
+
+With Kamailio, this is how a vCon server gets vCons at all: Kamailio has no
+SIPREC module to record with, as
+[the vCon server guide](vcon-server.md#with-kamailio-a-gap) explains.
+[With Kamailio](#with-kamailio) says what changes.
 
 ## Keep recorded and observed vCons apart
 
@@ -33381,7 +33495,9 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 ## Tested on
 
 Run on 2026-09-25 on the Debian 13 x86_64 machine from the vCon server guide,
-with sipnab from its `.deb`.
+with sipnab from its `.deb`, and again on 2026-09-27 with sipnab 0.5.193: beside
+OpenSIPS built from source on Debian 13, beside Kamailio on Debian 13, and with
+both on one machine on Ubuntu 24.04.5.
 
 ## 1. Add an ingress list and a chain for sipnab
 
@@ -33459,11 +33575,14 @@ ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:
 ReadWritePaths=/var/spool/sipnab-vcon
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now sipnab
+sudo systemctl enable sipnab
+sudo systemctl restart sipnab
 ```
 
 sipnab needs `ReadWritePaths` because the unit makes the rest of the file system
-read-only to sipnab.
+read-only to sipnab. The last line restarts sipnab rather than using
+`enable --now`: a sipnab that another guide already started would keep running
+with its old flags.
 
 Following [Let sipnab see and control TFPS](tfps-sipnab.md) as well? Both
 guides replace sipnab's `ExecStart` in a drop-in, and systemd uses the last
@@ -33558,6 +33677,41 @@ call of its own. The SIPREC session's first message goes to the recorder's port,
 state == 'Completed' and dst.port != 5090
 ```
 
+## With Kamailio
+
+Set up the vCon server with the vCon server guide's first two steps,
+[Install Docker](vcon-server.md#1-install-docker) and
+[Install the vCon server](vcon-server.md#2-install-the-vcon-server), then follow
+steps 1 to 4 here as they are. sipnab's capture filter from step 3 already admits Kamailio's port, 5060.
+
+For a vCon with audio in it, the call's media has to pass where sipnab
+captures. Anchor it on rtpengine, as
+[With Kamailio](rtpengine-relay.md#with-kamailio) in the rtpengine guide sets
+it up, and place that guide's test call, its
+[step 5](rtpengine-relay.md#5-place-a-test-call). Then run step 5's commands
+here. The test call makes one vCon, not two: with no recorder, there is no
+SIPREC session for sipnab to see.
+
+**With OpenSIPS and Kamailio on one machine,** Kamailio on 5062 as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, sipnab needs Kamailio's port twice: in the capture filter, so that
+the packets reach it, and in `--portrange`, so that it reads them as SIP. By
+default it reads SIP on 5060-5061 only, and with the filter alone it writes no
+vCon for Kamailio's calls. Add both to step 3's drop-in:
+
+```bash
+# Run all of these, in order.
+F=/etc/systemd/system/sipnab.service.d/vcon.conf
+sudo sed -i 's|^  --retain-audio \\$|  --retain-audio --portrange 5060-5062 \\|; s|"port 5060 or port 5090 or|"port 5060 or port 5062 or port 5090 or|' "$F"
+grep -nE 'portrange|port 5062' "$F"
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+sipnab then writes a vCon for the calls through each proxy, and for OpenSIPS's
+SIPREC sessions to the recorder: a call through Kamailio makes one vCon, and a
+call through OpenSIPS two.
+
 ## Run sipnab on a different machine
 
 sipnab has to see the calls, so it runs on a machine the SIP and media traffic
@@ -33593,17 +33747,18 @@ the vCon server.
 
 <!-- source: docs/tfps.md -->
 
-# Add TFPS to an OpenSIPS voice stack
+# Add TFPS to your voice stack
 
 [TFPS](https://github.com/sippulse/tfps) watches the SIP traffic arriving at a
 machine and blocks the sources that are attacking it: scanners such as
 SIPVicious, password guessers, and callers trying to run up international fraud.
 It blocks them in the kernel with an XDP program, before the packets reach your
-SIP server. It does not sit in the call path and needs nothing from OpenSIPS. It
-reads a copy of the traffic, the way a capture tool does.
+SIP server. It does not sit in the call path and needs nothing from your SIP
+server, OpenSIPS or Kamailio: every step below is the same for both. It reads a
+copy of the traffic, the way a capture tool does.
 
 Install it on the machine that receives SIP from the Internet, which is usually
-the machine running OpenSIPS. This guide does not use sipnab. When TFPS is working,
+the machine running your SIP server. This guide does not use sipnab. When TFPS is working,
 [Let sipnab see and control TFPS](tfps-sipnab.md) adds sipnab.
 
 Two terms used below:
@@ -33727,7 +33882,10 @@ sudo journalctl -u tfps -n 30 | grep -A4 ignoreip | tail -5
 ```
 
 `ports` are the SIP ports TFPS watches and blocks on. List `5061` as well if
-you take SIP over TLS. TFPS detects attacks only in SIP it can read, which means
+you take SIP over TLS. With OpenSIPS and Kamailio on one machine, Kamailio on
+5062 as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, list both: `"ports": [5060, 5062]`. TFPS detects attacks only in SIP it can read, which means
 UDP: it cannot read encrypted SIP, and it does not reassemble SIP over TCP. A
 source it has blocked, though, loses every listed port, TCP and TLS
 included. TFPS's README lists these limits under "What it does not do".
@@ -33879,9 +34037,10 @@ what it is blocking and why, and can block or unblock an address on your
 behalf, through its REST API and its MCP tools. sipnab never blocks anything on
 its own: every ban through sipnab is one you ask for.
 
-This guide starts where [Add TFPS to an OpenSIPS voice stack](tfps.md) ends,
+This guide starts where [Add TFPS to your voice stack](tfps.md) ends,
 with TFPS installed and enforcing. It covers sipnab on the same machine as TFPS,
-and sipnab on a different machine.
+and sipnab on a different machine. Neither TFPS nor sipnab needs anything from
+the SIP server, so every step is the same beside OpenSIPS or Kamailio.
 
 ## What sipnab asks TFPS
 
@@ -34138,7 +34297,7 @@ The `curl` commands from section 3 work unchanged.
 
 <!-- source: docs/rtpengine-relay.md -->
 
-# Add rtpengine to an OpenSIPS voice stack
+# Add rtpengine to your voice stack
 
 A SIP proxy such as OpenSIPS carries the signaling of a call, and by default
 the audio flows directly between the two phones. A media relay puts itself in
@@ -34149,8 +34308,9 @@ where you can measure or record every call's media.
 
 [rtpengine](https://github.com/sipwise/rtpengine) is the media relay most
 OpenSIPS and Kamailio deployments use. This guide builds it, has OpenSIPS
-anchor every call's media on it, and proves that with a test call. This guide
-does not use sipnab. When you have this working,
+anchor every call's media on it, and proves that with a test call. With
+Kamailio instead, [one section](#with-kamailio) replaces the OpenSIPS steps.
+This guide does not use sipnab. When you have this working,
 [Let sipnab name rtpengine's media](rtpengine-sipnab.md) adds sipnab beside
 it.
 
@@ -34168,20 +34328,48 @@ rtpengine has a machine to itself.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26 on two
-x86_64 virtual machines with 2 cores and 4 GB of memory: a clean Debian 13
-(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
-components to the versions below. Newer commits may behave differently, and
-pinning them keeps the guide describing what you get.
+Every command on this page ran as written, in order, on x86_64 virtual
+machines with 2 cores and 3 or 4 GB of memory:
+
+- With OpenSIPS built in step 3: on a clean Debian 13 (kernel 6.12.63) on
+  2026-09-27, and on a clean Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with
+  an earlier step 4 that named the source build's paths.
+- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
+- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
+  24.04.5, on 2026-09-27.
+
+The commands pin the components to the versions below. Newer commits may behave
+differently, and pinning them keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
-| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, built here | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, from packages | 4.0.2, installed as [the OpenSIPS guide](opensips.md) installs it |
+| Kamailio | 6.1.4, installed as [the Kamailio guide](kamailio.md) installs it |
 | rtpengine | [`8da4be3355`](https://github.com/sipwise/rtpengine/commit/8da4be3355), master, packaged as 26.3.0.0 |
 | SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian, 3.7.2 on Ubuntu |
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
+
+## Before you start: your SIP server
+
+Find your case, and follow the steps it names:
+
+- **No SIP server yet.** Follow every step. Step 3 builds OpenSIPS for you. If
+  you would rather run the OpenSIPS 4.0 packages, install them with
+  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips) and skip step
+  3 here.
+- **OpenSIPS already runs, from the packages or built from source.** Skip step
+  3. The `rtpengine`, `rtp_relay` and `dialog` modules come with the `opensips`
+  package and with the default build, so there is nothing to add. Step 4 finds
+  your configuration file and replaces it. On a machine whose script you want
+  to keep, add the lines step 4 marks to your own script instead.
+- **Kamailio already runs, or you want Kamailio.** Follow steps 1 and 2, then
+  [With Kamailio](#with-kamailio) in place of steps 3 and 4, then steps 5 and
+  6.
+- **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
+  see [With Kamailio](#with-kamailio), which covers both.
 
 ## 1. Build rtpengine
 
@@ -34246,6 +34434,9 @@ sed -n '/^\[interface-default\]/,/^\[/p' /etc/rtpengine/rtpengine.conf | grep -E
 
 ## 3. Build OpenSIPS
 
+Skip this step if OpenSIPS is already installed, from the packages or from
+source.
+
 OpenSIPS master builds with compiler optimizations turned off, which is right
 for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
 back on before you build. The `rtpengine` module is part of the default build:
@@ -34278,8 +34469,19 @@ This configuration is a minimal proxy with the relay added. Your own script
 does much more (registration, authentication, routing to carriers). The relay
 part is the block marked below, and the `loadmodule` lines it needs.
 
+### Write the configuration
+
+The packages and the source build keep their configuration and their modules in
+different places. The first two lines find them: `C` is your configuration
+file, and `M` the directory your install loads modules from, which the script's
+`mpath` names.
+
 ```bash
-sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
 # OpenSIPS as a SIP proxy that anchors every call's media on rtpengine.
 log_level=3
 stderror_enabled=no
@@ -34290,7 +34492,7 @@ open_files_limit=4096
 
 socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
 
-mpath="/usr/local/lib64/opensips/modules/"
+mpath="MODULES/"
 
 loadmodule "proto_udp.so"   # built into the core, but still loaded by name
 loadmodule "signaling.so"
@@ -34353,6 +34555,8 @@ route {
 	t_relay();
 }
 EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo grep '^mpath=' "$C"
 ```
 
 What the relay block does:
@@ -34365,14 +34569,18 @@ What the relay block does:
   `delete` when the call ends. You do not call `rtpengine_offer()` and
   `rtpengine_answer()` yourself.
 
-Run OpenSIPS as its own user, under systemd:
+### If you built OpenSIPS in step 3: give it a user and a unit
+
+The packages come with an `opensips` user and a systemd unit. If you
+installed them, or if your source build already runs as a service, skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
 sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
-sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chown root:opensips /usr/local/etc/opensips
 sudo chmod 750 /usr/local/etc/opensips
-sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
 sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
 [Unit]
 Description=OpenSIPS SIP server
@@ -34393,14 +34601,25 @@ LimitNOFILE=262144
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
 sudo systemctl daemon-reload
-sudo systemctl enable --now opensips
+```
+
+### Check the configuration and start OpenSIPS
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl enable opensips
+sudo systemctl restart opensips
 systemctl is-active opensips
 ```
 
 `opensips -C` checks the configuration and prints `config file ok` before you
-start anything.
+start anything. `sudo opensips` finds the packaged binary in `/usr/sbin` and
+the built one in `/usr/local/sbin`.
 
 ## 5. Place a test call
 
@@ -34498,6 +34717,115 @@ sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils ngcp-rtpengine-
 sudo apt-get autoremove -y
 ```
 
+## With Kamailio
+
+Kamailio drives rtpengine with its own `rtpengine` module, which comes with the
+`kamailio` package. Set Kamailio up as
+[the Kamailio guide](kamailio.md) does, through its step 2, then follow steps 1
+and 2 here for rtpengine. In place of steps 3 and 4, add the relay to
+Kamailio's configuration.
+
+Kamailio has no `rtp_relay_engage()` that follows the whole dialog. Instead
+the script calls `rtpengine_manage()` at each point where an SDP or the end of
+the call passes: on the `INVITE` (the offer), on the reply that carries the
+callee's SDP (the answer), and on the `BYE` (the delete). The lines marked
+`the relay` are the ones to add to your own script:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/kamailio/kamailio.cfg >/dev/null <<'EOF'
+#!KAMAILIO
+# Kamailio as a SIP proxy that anchors every call's media on rtpengine.
+debug=2
+log_stderror=no
+log_facility=LOG_LOCAL0
+children=2
+
+listen=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+loadmodule "tm.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "siputils.so"
+loadmodule "textops.so"
+loadmodule "pv.so"
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "ctl.so"
+
+# the relay
+loadmodule "rtpengine.so"
+modparam("rtpengine", "rtpengine_sock", "udp:127.0.0.1:2223")
+
+request_route {
+	if (!mf_process_maxfwd_header("10")) {
+		sl_send_reply("483", "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (loose_route()) {
+			if (is_method("BYE")) {
+				rtpengine_manage();   # the relay: release the call's ports
+			}
+			t_relay();
+			exit;
+		}
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		sl_send_reply("405", "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	rtpengine_manage();              # the relay: rewrite the offer
+	t_on_reply("MANAGE_REPLY");      # the relay: and, in the reply, the answer
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+
+# the relay: the reply that carries the callee's SDP
+onreply_route[MANAGE_REPLY] {
+	if (has_body("application/sdp")) {
+		rtpengine_manage();
+	}
+}
+EOF
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl enable kamailio
+sudo systemctl restart kamailio
+systemctl is-active kamailio
+```
+
+Step 5's test call then works unchanged, and so does step 6, with `kamailio` in
+place of `opensips` in the `systemctl` and `journalctl` commands.
+
+**With OpenSIPS on the same machine,** Kamailio listens on 5062, as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up: change `5060` to `5062` in the `listen` line above. One rtpengine
+serves both proxies. Each call is its own session in rtpengine, named by its
+Call-ID, so the two proxies' calls do not collide. Point step 5's caller at
+`192.0.2.10:5062` for a call through Kamailio, and at `192.0.2.10:5060` for one
+through OpenSIPS.
+
 ## Put rtpengine on its own machine
 
 A busy relay usually gets a machine to itself, often with a public address,
@@ -34551,18 +34879,23 @@ and a relay on its own machine never sees the signaling. sipnab can still name
 the media, two ways:
 
 - **It reads the relay's control plane.** rtpengine can copy every request
-  OpenSIPS sends it, such as `offer` and `answer`, to a HEP collector. Each
-  copy carries the Call-ID and the ports rtpengine gave the call, so sipnab
-  can tie the media on those ports to the call.
+  your SIP proxy sends it, such as `offer` and `answer`, to a HEP collector.
+  Each copy carries the Call-ID and the ports rtpengine gave the call, so
+  sipnab can tie the media on those ports to the call.
 - **It asks the relay.** A call that was up before sipnab started left no
   `offer` for sipnab to read. With `--rtpengine-control`, sipnab asks
   rtpengine which calls it holds and which ports each one uses.
 
 This guide sets up both against the stack from
-[Add rtpengine to an OpenSIPS voice stack](rtpengine-relay.md): first on the
-machine that runs OpenSIPS and rtpengine together, then with rtpengine on a
-machine of its own. The [rtpengine reference](rtpengine.md) explains what
-sipnab does with the relay's answers, and how far it trusts them.
+[Add rtpengine to your voice stack](rtpengine-relay.md): first on the
+machine that runs the SIP proxy and rtpengine together, then with rtpengine on
+a machine of its own. The proxy is OpenSIPS, from its packages or built from
+source, or Kamailio, set up as that guide's
+[With Kamailio](rtpengine-relay.md#with-kamailio) section sets it up. sipnab
+never talks to the proxy, so every step is the same for each, apart from the
+one line in step 5 that edits the proxy's configuration. The
+[rtpengine reference](rtpengine.md) explains what sipnab does with the relay's
+answers, and how far it trusts them.
 
 ## What sipnab asks rtpengine
 
@@ -34621,6 +34954,9 @@ portrange 5060-5061 or udp portrange 30000-39999
 sipnab takes the filter as its last argument, in the syntax `tcpdump` uses.
 Check the range against `port-min` and `port-max` in
 `/etc/rtpengine/rtpengine.conf`.
+
+With OpenSIPS and Kamailio on one machine, Kamailio on 5062, widen the
+signaling range to `portrange 5060-5062`.
 
 ## 3. Name a call that was already up
 
@@ -34720,16 +35056,18 @@ covers that case.
 sudo sipnab -N -d any --hep-listen 127.0.0.1:9060 --duration 25 --report "udp portrange 30000-39999"
 ```
 
-While it runs, place a test call on the OpenSIPS machine. The rtpengine
+While it runs, place a test call on the proxy's machine. The rtpengine
 guide's callee listens on `127.0.0.1`, which the relay cannot reach from its
 own machine, so start the callee on the machine's address instead, with its
 media on ports 7000-7100 so that it does not collide with the caller's 6000,
-and point OpenSIPS at it:
+and point the proxy at it. The first line finds the proxy's configuration: the
+OpenSIPS packages', a source build's, or Kamailio's:
 
 ```bash
 # Run all of these, in order.
-sudo sed -i 's|sip:127.0.0.1:5070|sip:192.0.2.10:5070|' /usr/local/etc/opensips/opensips.cfg
-sudo systemctl restart opensips
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i 's|sip:127.0.0.1:5070|sip:192.0.2.10:5070|' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
 cd ~/sipp
 sipp -sn uas -i 192.0.2.10 -p 5070 -min_rtp_port 7000 -max_rtp_port 7100 -rtp_echo -m 1 -bg
 sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
@@ -34752,7 +35090,7 @@ For calls already up when sipnab starts, add `--rtpengine-control
 127.0.0.1:2223` if the relay's control port still listens on the loopback
 address, or the relay's own address if you moved it there. Run sipnab on the
 relay's machine rather than asking across the network: rtpengine's control
-protocol has no authentication, and only OpenSIPS should reach it.
+protocol has no authentication, and only your SIP proxy should reach it.
 
 ## When something does not work
 
@@ -34776,7 +35114,7 @@ protocol has no authentication, and only OpenSIPS should reach it.
 
 <!-- source: docs/homer.md -->
 
-# Add Homer to an OpenSIPS voice stack
+# Add Homer to your voice stack
 
 [Homer](https://github.com/sipcapture/homer) keeps a searchable history of
 your SIP traffic. Your SIP servers send it a copy of every message they handle,
@@ -34785,7 +35123,8 @@ and shows you any past call as a ladder of messages. It answers "what happened
 to that call yesterday" without anyone having run a capture at the time.
 
 This guide stands up Homer beside an OpenSIPS proxy and has OpenSIPS send it
-every call. This guide does not use sipnab. When you have this working,
+every call. With Kamailio instead, [one section](#with-kamailio) replaces
+the OpenSIPS steps. This guide does not use sipnab. When you have this working,
 [Connect sipnab to Homer](homer-sipnab.md) adds sipnab as a second receiver
 and as another source.
 
@@ -34804,10 +35143,18 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26 on two
-x86_64 virtual machines with 2 cores and 4 GB of memory: a clean Debian 13
-(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
-components to the versions below.
+Every command on this page ran as written, in order, on x86_64 virtual
+machines with 2 cores and 3 or 4 GB of memory:
+
+- With OpenSIPS built from source: on a clean Debian 13 (kernel 6.12.63) and
+  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 4 that named
+  the source build's paths; and on Debian 13 on 2026-09-27, with OpenSIPS
+  already built by [the rtpengine guide](rtpengine-relay.md).
+- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
+- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
+  24.04.5, on 2026-09-27.
+
+The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
@@ -34815,11 +35162,31 @@ components to the versions below.
 | heplify-server | `ghcr.io/sipcapture/heplify-server:1.60.9` |
 | homer-app | `ghcr.io/sipcapture/homer-app:1.5.21` |
 | PostgreSQL | `postgres:17.11-alpine` |
-| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, built here | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, from packages | 4.0.2, installed as [the OpenSIPS guide](opensips.md) installs it |
+| Kamailio | 6.1.4, installed as [the Kamailio guide](kamailio.md) installs it |
 | SIPp (for the test call) | the distribution's `sip-tester` |
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
+
+## Before you start: your SIP server
+
+Find your case, and follow the steps it names:
+
+- **No SIP server yet.** Follow every step. Step 3 builds OpenSIPS for you. If
+  you would rather run the OpenSIPS 4.0 packages, install them with
+  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips) and skip step
+  3 here.
+- **OpenSIPS already runs, from the packages or built from source.** Skip step
+  3. The `proto_hep`, `tracer` and `dialog` modules come with the `opensips`
+  package and with the default build, so there is nothing to add. Step 4 finds
+  your configuration file and replaces it. On a machine whose script you want
+  to keep, add the lines step 4 marks to your own script instead.
+- **Kamailio already runs, or you want Kamailio.** Follow steps 1 and 2, then
+  [With Kamailio](#with-kamailio) in place of steps 3 and 4, then steps 5 to 7.
+- **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
+  see [With Kamailio](#with-kamailio), which covers both.
 
 ## 1. Install Docker
 
@@ -34930,10 +35297,15 @@ docker compose up -d
 `HEPLIFYSERVER_DBDROPDAYS` is how long Homer keeps messages: heplify-server
 drops each day's tables after 7 days here.
 
-The first start creates the tables, which takes a few seconds. Wait until the
+The first start creates the tables, which took about 30 seconds on the test
+machines. heplify-server holds back what arrives until then, so a search
+before it has finished finds nothing. Wait until it logs that it has, and the
 web interface answers:
 
 ```bash
+# Run all of these, in order.
+cd /opt/homer
+until docker compose logs heplify-server | grep -q 'end creating tables'; do sleep 2; done
 until curl -fs -o /dev/null localhost:9080; do sleep 2; done; echo ready
 ```
 
@@ -34942,6 +35314,9 @@ Change that password under the user settings before anything else can reach
 the port.
 
 ## 3. Build OpenSIPS
+
+Skip this step if OpenSIPS is already installed, from the packages or from
+source.
 
 OpenSIPS master builds with compiler optimizations turned off, which is right
 for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
@@ -34974,8 +35349,19 @@ This configuration is a minimal proxy with tracing added. Your own script does
 much more. The tracing part is the block marked below, and the `loadmodule`
 lines it needs.
 
+### Write the configuration
+
+The packages and the source build keep their configuration and their modules in
+different places. The first two lines find them: `C` is your configuration
+file, and `M` the directory your install loads modules from, which the script's
+`mpath` names.
+
 ```bash
-sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
 # OpenSIPS as a SIP proxy that sends every call to Homer over HEP.
 log_level=3
 stderror_enabled=no
@@ -34987,7 +35373,7 @@ open_files_limit=4096
 socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
 socket=hep_udp:127.0.0.1:6061   # HEP to Homer leaves through this socket
 
-mpath="/usr/local/lib64/opensips/modules/"
+mpath="MODULES/"
 
 loadmodule "proto_udp.so"   # built into the core, but still loaded by name
 loadmodule "signaling.so"
@@ -35052,6 +35438,8 @@ route {
 	t_relay();
 }
 EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo grep '^mpath=' "$C"
 ```
 
 What the tracing lines do:
@@ -35067,14 +35455,18 @@ What the tracing lines do:
 - `create_dialog()` makes OpenSIPS track the call, and `trace("tid", "d")`
   sends every message of that dialog, both legs, until it ends.
 
-Run OpenSIPS as its own user, under systemd:
+### If you built OpenSIPS in step 3: give it a user and a unit
+
+The packages come with an `opensips` user and a systemd unit. If you
+installed them, or if your source build already runs as a service, skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
 sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
-sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chown root:opensips /usr/local/etc/opensips
 sudo chmod 750 /usr/local/etc/opensips
-sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
 sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
 [Unit]
 Description=OpenSIPS SIP server
@@ -35095,11 +35487,24 @@ LimitNOFILE=262144
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
 sudo systemctl daemon-reload
-sudo systemctl enable --now opensips
+```
+
+### Check the configuration and start OpenSIPS
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl enable opensips
+sudo systemctl restart opensips
 systemctl is-active opensips
 ```
+
+`opensips -C` checks the configuration and prints `config file ok` before you
+start anything.
 
 ## 5. Place a test call
 
@@ -35185,6 +35590,113 @@ cd /opt/homer && docker compose down -v
 sudo systemctl disable --now opensips
 ```
 
+## With Kamailio
+
+Kamailio sends HEP with its own `siptrace` module, which comes with the
+`kamailio` package. Set Kamailio up as [the Kamailio guide](kamailio.md) does,
+through its step 2, then follow steps 1 and 2 here for Homer. In place of steps
+3 and 4, add tracing to Kamailio's configuration. The lines marked `tracing`
+are the ones to add to your own script:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/kamailio/kamailio.cfg >/dev/null <<'EOF'
+#!KAMAILIO
+# Kamailio as a SIP proxy that sends every call to Homer over HEP.
+debug=2
+log_stderror=no
+log_facility=LOG_LOCAL0
+children=2
+
+listen=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+loadmodule "tm.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "siputils.so"
+loadmodule "textops.so"
+loadmodule "pv.so"
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "ctl.so"
+
+# tracing: HEP version 3 to heplify-server, for every message
+loadmodule "siptrace.so"
+modparam("siptrace", "duplicate_uri", "sip:127.0.0.1:9060")
+modparam("siptrace", "hep_mode_on", 1)
+modparam("siptrace", "hep_version", 3)
+modparam("siptrace", "hep_capture_id", 101)
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+modparam("siptrace", "trace_mode", 1)
+
+request_route {
+	if (!mf_process_maxfwd_header("10")) {
+		sl_send_reply("483", "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (loose_route()) {
+			t_relay();
+			exit;
+		}
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		sl_send_reply("405", "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+EOF
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl enable kamailio
+sudo systemctl restart kamailio
+systemctl is-active kamailio
+```
+
+What the tracing lines do:
+
+- `duplicate_uri` is where the copies go: heplify-server on this machine.
+- `hep_mode_on` and `hep_version` wrap each copy in HEP version 3, over UDP.
+- `hep_capture_id` is the number Homer shows as the source of these messages.
+  Give each SIP server its own.
+- `trace_to_database 0` sends the copies to Homer only, not to a database of
+  Kamailio's own.
+- `trace_on 1` and `trace_mode 1` copy every message Kamailio receives and
+  sends, with no call to `sip_trace()` in the script.
+
+Steps 5 to 7 then work unchanged, with `kamailio` in place of `opensips` in the
+`systemctl` commands.
+Kamailio, too, sends most messages twice, as each arrived and as it left: the
+test call's query in step 6 returns 13 rows.
+
+**With OpenSIPS on the same machine,** Kamailio listens on 5062, as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up: change `5060` to `5062` in the `listen` line above, and give it its
+own `hep_capture_id`, such as `102`, so that Homer shows which proxy saw each
+message. Both send to the same heplify-server.
+
 ## Put the parts on different machines
 
 - **Homer on its own machine.** In `hep_id`, replace `127.0.0.1` with that
@@ -35215,15 +35727,18 @@ sudo systemctl disable --now opensips
 Homer and sipnab both speak HEP, the protocol SIP servers use to send Homer a
 copy of their traffic, so they connect in either direction:
 
-- **sipnab as a second receiver.** OpenSIPS sends the same HEP copies to sipnab
-  as to Homer. Homer keeps the history; sipnab analyzes the calls as they
+- **sipnab as a second receiver.** Your SIP server sends the same HEP copies
+  to sipnab as to Homer. Homer keeps the history; sipnab analyzes the calls as they
   happen, with no capture on the wire at all.
 - **sipnab as a source.** On a machine that runs no SIP server of its own, or
   one whose SIP server cannot send HEP, sipnab captures the traffic and
   forwards it to Homer, under a capture id of its own.
 
 This guide sets up both against the stack from
-[Add Homer to an OpenSIPS voice stack](homer.md).
+[Add Homer to your voice stack](homer.md), with OpenSIPS from its
+packages or built from source, or with Kamailio as that guide's
+[With Kamailio](homer.md#with-kamailio) section sets it up. Step 2 differs for
+Kamailio, and says how. Step 3 is the same for both.
 
 ## Tested on
 
@@ -35254,14 +35769,16 @@ sipnab --version
 
 **Send OpenSIPS's HEP to sipnab as well.** OpenSIPS's `tracer` sends to every
 destination defined under the same trace name. Add a second HEP destination,
-`sipnab`, on UDP port 9062, under the name `tid` that `trace()` already uses:
+`sipnab`, on UDP port 9062, under the name `tid` that `trace()` already uses.
+The first line finds your configuration file, the packages' or a source
+build's:
 
 ```bash
 # Run all of these, in order.
-C=/usr/local/etc/opensips/opensips.cfg
-sudo sed -i '/^modparam("tracer", "trace_id", "\[tid\]uri=hep:homer")$/a modparam("proto_hep", "hep_id", "[sipnab] 127.0.0.1:9062; transport=udp; version=3")\nmodparam("tracer", "trace_id", "[tid]uri=hep:sipnab")' $C
-sudo grep -nE 'hep_id|trace_id' $C
-sudo /usr/local/sbin/opensips -C -f $C
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i '/^modparam("tracer", "trace_id", "\[tid\]uri=hep:homer")$/a modparam("proto_hep", "hep_id", "[sipnab] 127.0.0.1:9062; transport=udp; version=3")\nmodparam("tracer", "trace_id", "[tid]uri=hep:sipnab")' "$C"
+sudo grep -nE 'hep_id|trace_id' "$C"
+sudo opensips -C -f "$C"
 sudo systemctl restart opensips
 ```
 
@@ -35305,11 +35822,36 @@ To keep the listener running, give the packaged service the same arguments in
 a drop-in, as
 [Send sipnab's vCons to a vCon server](vcon-sipnab.md) does for its own flags.
 
+**With Kamailio.** Kamailio's `siptrace` sends its copies of every message to
+one destination, its `duplicate_uri`. A second `duplicate_uri` line does not
+add a destination: it replaces the first, and Homer receives nothing. So with
+Kamailio, choose one of two ways:
+
+- **Keep Homer as the destination, and let sipnab watch the wire.** sipnab on
+  the Kamailio machine sees every message as it passes, both legs, with no
+  change to Kamailio at all, as
+  [Run sipnab beside Kamailio](kamailio-sipnab.md) sets it up.
+- **Send Kamailio's copies to sipnab instead of Homer.** Point `duplicate_uri`
+  at sipnab's listener. Homer then receives nothing from Kamailio until you
+  point it back:
+
+```bash
+# Run all of these, in order.
+sudo sed -i 's|"duplicate_uri", "sip:127.0.0.1:9060"|"duplicate_uri", "sip:127.0.0.1:9062"|' /etc/kamailio/kamailio.cfg
+sudo grep -n duplicate_uri /etc/kamailio/kamailio.cfg
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl restart kamailio
+```
+
+Then start sipnab's listener and place the test call as above. The report shows
+the call `Completed` with 13 messages, from `hep:101`, Kamailio's
+`hep_capture_id`.
+
 ## 3. sipnab as a source for Homer
 
 On the second machine, sipnab captures SIP off the wire and forwards it to
 heplify-server. Give it a capture id of its own, so Homer can tell its copies
-from OpenSIPS's:
+from your SIP server's:
 
 ```bash
 sudo sipnab -N -d any -H 192.0.2.10:9060 --hep-id 2002 --duration 30
@@ -35318,8 +35860,8 @@ sudo sipnab -N -d any -H 192.0.2.10:9060 --hep-id 2002 --duration 30
 sipnab forwards SIP, and RTCP so that Homer can report media quality. It never
 forwards RTP, the audio itself.
 
-While it runs, place a call from the second machine through OpenSIPS. The
-callee still runs on the OpenSIPS machine:
+While it runs, place a call from the second machine through your SIP server.
+The callee still runs on the SIP server's machine:
 
 ```bash
 # Run all of these, in order.
@@ -35342,7 +35884,7 @@ grep -m1 -i '^Call-ID:' uac.msg
 ```
 
 **Find sipnab's copies in Homer.** Homer now holds the call twice: once from
-OpenSIPS, capture id 101, and once from sipnab, capture id 2002. On the Homer
+the SIP server, capture id 101, and once from sipnab, capture id 2002. On the Homer
 machine, with the Call-ID the last command printed:
 
 ```bash
@@ -35355,8 +35897,8 @@ docker compose exec -T db psql -U root -d homer_data -c \
      from hep_proto_1_call where data_header->>'callid' = '$CALL' group by 1"
 ```
 
-The test call gave 13 messages under capture id 101 and 7 under 2002. OpenSIPS
-sees both legs of the call. sipnab, on the second machine, sees the messages
+The test call gave 13 messages under capture id 101 and 7 under 2002. The SIP
+server sees both legs of the call. sipnab, on the second machine, sees the messages
 on that machine's own link, which is the caller's leg.
 
 HEP over UDP carries no authentication of its own. heplify-server accepts it
@@ -35365,9 +35907,11 @@ and to the machines where sipnab forwards.
 
 ## When something does not work
 
-- **sipnab shows no messages.** Check that OpenSIPS sends to it: `sudo grep
-  hep_id /usr/local/etc/opensips/opensips.cfg` lists both destinations, and
-  sipnab listens on the port the `sipnab` destination names.
+- **sipnab shows no messages.** Check that the SIP server sends to it. For
+  OpenSIPS, `sudo grep hep_id` on its configuration file lists both
+  destinations; for Kamailio, `sudo grep duplicate_uri
+  /etc/kamailio/kamailio.cfg` names sipnab's port. Then check that sipnab
+  listens on that port.
 - **sipnab's copies are missing from Homer.** Check that the second machine
   can reach UDP port 9060 on the Homer machine, and that sipnab's capture saw
   the call: run it with `--report` and look for the Call-ID.
@@ -35376,7 +35920,7 @@ and to the machines where sipnab forwards.
 
 <!-- source: docs/prometheus.md -->
 
-# Add Prometheus and Grafana to an OpenSIPS voice stack
+# Add Prometheus and Grafana to your voice stack
 
 [Prometheus](https://prometheus.io) collects numbers over time: how many calls
 are up, how many failed, how busy each process is. It reads them from each
@@ -35385,8 +35929,9 @@ program's metrics endpoint every few seconds and keeps the history.
 it.
 
 This guide stands up both beside an OpenSIPS proxy, has OpenSIPS publish its
-statistics, and shows a test call in the numbers. This guide does not use
-sipnab. When you have this working,
+statistics, and shows a test call in the numbers. With Kamailio instead,
+[one section](#with-kamailio) replaces the OpenSIPS steps. This guide does not
+use sipnab. When you have this working,
 [Add sipnab's metrics to Prometheus](prometheus-sipnab.md) adds sipnab's
 own.
 
@@ -35404,21 +35949,48 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26 on two
-x86_64 virtual machines with 2 cores and 3 GB of memory: a clean Debian 13
-(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
-components to the versions below.
+Every command on this page ran as written, in order, on x86_64 virtual
+machines with 2 cores and 3 GB of memory:
+
+- With OpenSIPS built in step 2: on a clean Debian 13 (kernel 6.12.63) and
+  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 3 that named
+  the source build's paths; and on Debian 13 on 2026-09-27, rebuilding the tree
+  [the rtpengine guide](rtpengine-relay.md) had built.
+- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
+- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
+  24.04.5, on 2026-09-27.
+
+The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
 | Docker Engine / Compose | from the Docker apt repository |
 | Prometheus | `prom/prometheus:v3.15.0` |
 | Grafana | `grafana/grafana:13.2.2` |
-| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, built here | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, from packages | 4.0.2, installed as [the OpenSIPS guide](opensips.md) installs it |
+| Kamailio | 6.1.4, installed as [the Kamailio guide](kamailio.md) installs it |
 | SIPp (for the test call) | the distribution's `sip-tester` |
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
+
+## Before you start: your SIP server
+
+Find your case, and follow the steps it names:
+
+- **No SIP server yet.** Follow every step. Step 2 builds OpenSIPS for you. If
+  you would rather run the OpenSIPS 4.0 packages, install them with
+  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips), then take
+  the packages' route in step 2.
+- **OpenSIPS already runs, from the packages or built from source.** Step 2
+  adds the two modules the metrics need. Step 3 finds your configuration file
+  and replaces it. On a machine whose script you want to keep, add the lines
+  step 3 marks to your own script instead.
+- **Kamailio already runs, or you want Kamailio.** Follow step 1, then
+  [With Kamailio](#with-kamailio), which takes you through the rest.
+- **Both OpenSIPS and Kamailio on one machine.** Set up OpenSIPS as above, then
+  see [With Kamailio](#with-kamailio), which covers both.
 
 ## 1. Install Docker
 
@@ -35447,20 +36019,33 @@ then check:
 docker compose version
 ```
 
-## 2. Build OpenSIPS with its metrics endpoint
+## 2. Install OpenSIPS's metrics modules
 
-The `prometheus` module is part of OpenSIPS's default build, but the `httpd`
-module it publishes through is not: it needs `libmicrohttpd`. Install that and
-build `httpd` too. OpenSIPS master also builds with compiler optimizations
-turned off, which is right for OpenSIPS's own developers and wrong for a proxy
-carrying calls, so turn them back on:
+OpenSIPS publishes its statistics with its `prometheus` module, over HTTP
+served by its `httpd` module.
+
+**With the OpenSIPS packages,** the two modules come in two more packages:
+
+```bash
+sudo apt-get install -y opensips-http-modules opensips-prometheus-module
+```
+
+**Or build OpenSIPS with them.** Skip this if you installed the packages. The
+`prometheus` module is part of OpenSIPS's default build, but the `httpd` module
+it publishes through is not: it needs `libmicrohttpd`. Install that and build
+`httpd` too. If you already built OpenSIPS from source by one of these guides,
+the block reuses that tree, `/usr/local/src/voice/opensips`, and rebuilds it
+with `httpd`. With a tree of your own, change `/usr/local/src/voice` in the
+block to the directory that holds it. OpenSIPS master also builds with compiler
+optimizations turned off, which is right for OpenSIPS's own developers and
+wrong for a proxy carrying calls, so turn them back on:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y --no-install-recommends build-essential bison flex uuid-dev pkg-config libncurses-dev libssl-dev libmicrohttpd-dev
 sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
 cd /usr/local/src/voice
-git clone https://github.com/OpenSIPS/opensips.git
+[ -d opensips ] || git clone https://github.com/OpenSIPS/opensips.git
 cd opensips
 git checkout f46ef9337b
 make Makefile.conf
@@ -35480,8 +36065,19 @@ to supply it.
 This configuration is a minimal proxy with the metrics endpoint added. The
 metrics part is the block of `loadmodule` and `modparam` lines marked below.
 
+### Write the configuration
+
+The packages and the source build keep their configuration and their modules in
+different places. The first two lines find them: `C` is your configuration
+file, and `M` the directory your install loads modules from, which the script's
+`mpath` names.
+
 ```bash
-sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
 # OpenSIPS as a SIP proxy that publishes its statistics for Prometheus.
 log_level=3
 stderror_enabled=no
@@ -35492,7 +36088,7 @@ open_files_limit=4096
 
 socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
 
-mpath="/usr/local/lib64/opensips/modules/"
+mpath="MODULES/"
 
 loadmodule "proto_udp.so"   # built into the core, but still loaded by name
 loadmodule "signaling.so"
@@ -35554,6 +36150,8 @@ route {
 	t_relay();
 }
 EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo grep '^mpath=' "$C"
 ```
 
 What the metrics lines do:
@@ -35567,14 +36165,18 @@ What the metrics lines do:
 - `create_dialog()` makes OpenSIPS track each call, which is what the dialog
   statistics count.
 
-Run OpenSIPS as its own user, under systemd:
+### If you built OpenSIPS in step 2: give it a user and a unit
+
+The packages come with an `opensips` user and a systemd unit. If you
+installed them, or if your source build already runs as a service, skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
 sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
-sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chown root:opensips /usr/local/etc/opensips
 sudo chmod 750 /usr/local/etc/opensips
-sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
 sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
 [Unit]
 Description=OpenSIPS SIP server
@@ -35595,11 +36197,21 @@ LimitNOFILE=262144
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
 sudo systemctl daemon-reload
-sudo systemctl enable --now opensips
+```
+
+### Check the configuration and start OpenSIPS
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl enable opensips
+sudo systemctl restart opensips
 systemctl is-active opensips
-curl -s 127.0.0.1:8888/metrics | grep -m3 '^opensips_'
+curl -s 127.0.0.1:8888/metrics | awk '/^opensips_/ && n++ < 3'
 ```
 
 The last line prints the first three series OpenSIPS publishes.
@@ -35740,6 +36352,160 @@ cd /opt/monitoring && docker compose down -v
 sudo systemctl disable --now opensips
 ```
 
+## With Kamailio
+
+Kamailio publishes its statistics with its `xhttp_prom` module, over HTTP
+served by its `xhttp` module. Both come with the `kamailio` package. Set
+Kamailio up as [the Kamailio guide](kamailio.md) does, through its step 2, and
+follow step 1 here for Docker. In place of steps 2 and 3, add the metrics
+endpoint to Kamailio's configuration. The lines marked `metrics` are the ones
+to add to your own script:
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/kamailio/kamailio.cfg >/dev/null <<'EOF'
+#!KAMAILIO
+# Kamailio as a SIP proxy that publishes its statistics for Prometheus.
+debug=2
+log_stderror=no
+log_facility=LOG_LOCAL0
+children=2
+
+listen=udp:192.0.2.10:5060   # the address your phones and carriers reach
+listen=tcp:127.0.0.1:8888    # metrics: the endpoint, on the loopback address
+tcp_accept_no_cl=yes         # metrics: HTTP requests carry no Content-Length
+
+loadmodule "tm.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "siputils.so"
+loadmodule "textops.so"
+loadmodule "pv.so"
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "ctl.so"
+
+# metrics
+loadmodule "xhttp.so"
+loadmodule "xhttp_prom.so"
+modparam("xhttp_prom", "xhttp_prom_stats", "all")
+
+request_route {
+	if (!mf_process_maxfwd_header("10")) {
+		sl_send_reply("483", "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (loose_route()) {
+			t_relay();
+			exit;
+		}
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		sl_send_reply("405", "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+
+# metrics: answer HTTP requests for /metrics
+event_route[xhttp:request] {
+	if ($hu =~ "^/metrics") {
+		prom_dispatch();
+		exit;
+	}
+	xhttp_reply("404", "Not Found", "text/plain", "not found\n");
+}
+EOF
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl enable kamailio
+sudo systemctl restart kamailio
+systemctl is-active kamailio
+curl -s 127.0.0.1:8888/metrics | awk '/^kamailio_/ && n++ < 3'
+```
+
+What the metrics lines do:
+
+- `listen=tcp:127.0.0.1:8888` gives Kamailio a TCP socket on the loopback
+  address, and `xhttp` answers the HTTP requests that arrive on it. Only this
+  machine can read the statistics.
+- `xhttp_prom_stats "all"` publishes every statistic Kamailio keeps. Each
+  becomes a series named `kamailio_`, the group and the statistic's name, such
+  as `kamailio_core_rcv_requests_invite`.
+- `event_route[xhttp:request]` is where Kamailio handles each HTTP request, and
+  `prom_dispatch()` answers the ones for `/metrics`.
+
+Then follow step 4, and name the scrape job after Kamailio:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+sed -i 's/job_name: opensips/job_name: kamailio/' prometheus.yml
+docker compose restart prometheus
+until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
+```
+
+Place step 5's test call, then ask Prometheus how many `INVITE` requests
+Kamailio has received:
+
+```bash
+# Run all of these, in order.
+sleep 6
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=kamailio_core_rcv_requests_invite{job="kamailio"}' \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
+```
+
+It prints 1, the test call. The query names the `kamailio` job because, for
+the few minutes before the rename, Prometheus scraped the same endpoint as
+`opensips`, and a query still finds that series for up to five minutes after
+its last sample.
+Step 6 then works unchanged, with `kamailio` in
+place of `opensips` in the `systemctl` commands.
+
+**With OpenSIPS on the same machine,** OpenSIPS already serves its metrics on
+`127.0.0.1:8888`, and Kamailio listens for SIP on 5062, as [OpenSIPS and
+Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine) sets
+it up. Give Kamailio's endpoint its own port too: in the configuration above,
+change `5060` to `5062` in the first `listen` line, and `8888` to `8889` in the
+second `listen` line and in the `curl` line at the end. Then keep the
+`opensips` scrape job and add one for Kamailio, in place of renaming it:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+cat >> prometheus.yml <<'EOF'
+  - job_name: kamailio
+    static_configs:
+      - targets: ["127.0.0.1:8889"]
+EOF
+docker compose restart prometheus
+until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
+```
+
+Prometheus then shows both targets `up`, and each proxy's series under its own
+name: `opensips_` and `kamailio_`.
+
 ## Put the parts on different machines
 
 - **Prometheus on its own machine.** OpenSIPS's endpoint has no
@@ -35765,15 +36531,18 @@ sudo systemctl disable --now opensips
 
 # Add sipnab's metrics to Prometheus
 
-OpenSIPS's statistics say what the proxy did: calls routed, transactions,
-memory. sipnab's say what the calls themselves looked like on the wire: how
+Your SIP proxy's statistics say what the proxy did: calls routed,
+transactions, memory. sipnab's say what the calls themselves looked like on the wire: how
 many completed and failed, post-dial delay, and the quality of their audio. In
 the same Prometheus, the two sit side by side on one dashboard.
 
 This guide adds sipnab to the Prometheus and Grafana from
-[Add Prometheus and Grafana to an OpenSIPS voice stack](prometheus.md), and
+[Add Prometheus and Grafana to your voice stack](prometheus.md), and
 imports the dashboard that ships with sipnab. Every series sipnab publishes,
-and what it means, is in [Prometheus metrics](prometheus-metrics.md).
+and what it means, is in [Prometheus metrics](prometheus-metrics.md). The proxy
+is OpenSIPS, from its packages or built from source, or Kamailio, as that
+guide's [With Kamailio](prometheus.md#with-kamailio) section sets it up. sipnab
+reads the calls off the wire, so every step is the same for each.
 
 ## Tested on
 
@@ -35817,10 +36586,11 @@ ExecStart=
 ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9091
 EOF
 sudo systemctl daemon-reload
-sudo systemctl enable --now sipnab
+sudo systemctl enable sipnab
+sudo systemctl restart sipnab
 systemctl is-active sipnab
 until curl -fs -o /dev/null 127.0.0.1:9091/metrics; do sleep 1; done
-curl -s 127.0.0.1:9091/metrics | grep -m3 '^sipnab_'
+curl -s 127.0.0.1:9091/metrics | awk '/^sipnab_/ && n++ < 3'
 ```
 
 The empty `ExecStart=` line clears the package's command before the next line
@@ -35830,7 +36600,7 @@ only the last one it reads, so put all the flags in one drop-in.
 ## 3. Scrape sipnab
 
 Add sipnab to Prometheus's targets, and restart Prometheus so that it reads
-the change. The `until` line waits for Prometheus to scrape both targets once:
+the change. The `until` line waits for Prometheus to scrape sipnab once:
 
 ```bash
 # Run all of these, in order.
@@ -35842,11 +36612,11 @@ cat >> prometheus.yml <<'EOF'
 EOF
 docker compose restart prometheus
 targets() { curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'; }
-until [ "$(targets 2>/dev/null | grep -c ' up$')" = 2 ]; do sleep 2; done
-curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+until targets 2>/dev/null | grep -q '^sipnab up$'; do sleep 2; done
+targets
 ```
 
-It prints `opensips up` and `sipnab up`.
+It prints the proxy's target, `opensips up` or `kamailio up`, and `sipnab up`.
 
 ## 4. Import sipnab's dashboard
 
@@ -35884,8 +36654,27 @@ curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum(sipnab_dialogs_t
   | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["result"][0]["value"][1])'
 ```
 
-It prints 1: sipnab saw the call from its `INVITE` to its `BYE`. OpenSIPS's
-own `opensips_processed_dialogs` counted the same call.
+It prints 1: sipnab saw the call from its `INVITE` to its `BYE`. The proxy
+counted the same call in its own series: OpenSIPS's
+`opensips_processed_dialogs`, or Kamailio's `kamailio_core_rcv_requests_invite`.
+
+## With OpenSIPS and Kamailio on one machine
+
+With Kamailio on 5062, as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets it up, sipnab's default capture of ports 5060-5061 misses Kamailio's
+calls. Add `--portrange 5060-5062` to the drop-in in step 2:
+
+```bash
+# Run all of these, in order.
+sudo sed -i 's|--metrics 127.0.0.1:9091$|--metrics 127.0.0.1:9091 --portrange 5060-5062|' /etc/systemd/system/sipnab.service.d/metrics.conf
+grep '^ExecStart=/' /etc/systemd/system/sipnab.service.d/metrics.conf
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+Step 3 then prints three targets, `opensips`, `kamailio` and `sipnab`, all
+`up`, and a call through either proxy adds one to sipnab's count.
 
 ## When something does not work
 
@@ -35895,6 +36684,792 @@ own `opensips_processed_dialogs` counted the same call.
   restarting sipnab. Check the drop-in's `--metrics` port.
 - **The `sipnab` target is `down`.** Check `curl 127.0.0.1:9091/metrics` on
   the machine, then the target in `/opt/monitoring/prometheus.yml`.
+
+---
+
+<!-- source: docs/opensips.md -->
+
+# Use OpenSIPS as your voice stack's SIP server
+
+[OpenSIPS](https://opensips.org) is an open-source SIP server, and with
+Kamailio one of the two most common SIP proxies in front of phones, PBXes and
+carriers. The other voice-stack guides add a component beside it: a vCon
+server, TFPS, rtpengine, Homer, Prometheus.
+
+This guide installs OpenSIPS, sets it up as a proxy that routes each call and
+stays in its signaling path, and proves it with a test call. This guide does
+not use sipnab. When you have this working,
+[Run sipnab beside OpenSIPS](opensips-sipnab.md) adds sipnab. If you use
+Kamailio instead, see [Use Kamailio as your voice stack's SIP server](kamailio.md).
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-27, on
+x86_64 virtual machines with 2 cores and 3 GB of memory. The 4.0 packages ran
+on a clean Ubuntu 24.04.5 (kernel 6.8.0), and on Debian 13 (kernel 6.12.63)
+beside Kamailio. The source build ran on a clean Debian 13 and a clean Ubuntu
+24.04.5.
+[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
+ran on both.
+
+| Software | Version or commit |
+|---|---|
+| OpenSIPS, from packages | 4.0.2, the current stable release, from the OpenSIPS project's own package repository |
+| OpenSIPS, from source | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| SIPp (for the test call) | the distribution's `sip-tester` |
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install OpenSIPS
+
+Choose one of the two installs. The packages are the stable release, and what
+most people run. The source build is OpenSIPS's development branch, which the
+other voice-stack guides build when they install OpenSIPS for you. The steps
+after this one work with either.
+
+Both add the OpenSIPS project's package repository: the packages come from it,
+and the source build takes `opensips-cli`, OpenSIPS's command-line tool, from
+it.
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://apt.opensips.org/opensips-org.gpg -o /etc/apt/keyrings/opensips-org.gpg
+. /etc/os-release
+echo "deb [signed-by=/etc/apt/keyrings/opensips-org.gpg] https://apt.opensips.org $VERSION_CODENAME 4.0-releases" \
+  | sudo tee /etc/apt/sources.list.d/opensips.list >/dev/null
+sudo apt-get update
+sudo apt-get install -y opensips-cli
+```
+
+### Install the 4.0 packages
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y opensips
+sudo opensips -V | head -1
+```
+
+The package installs OpenSIPS under `/usr`, with its configuration in
+`/etc/opensips/opensips.cfg`, and a systemd unit that runs it as the
+`opensips` user. It enables the unit but does not start it.
+
+### Or build master from source
+
+OpenSIPS master builds with compiler optimizations turned off, which is right
+for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
+back on before you build:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y --no-install-recommends git build-essential bison flex uuid-dev pkg-config libncurses-dev libssl-dev
+sudo mkdir -p /usr/local/src/voice && sudo chown "$USER": /usr/local/src/voice
+cd /usr/local/src/voice
+git clone https://github.com/OpenSIPS/opensips.git
+cd opensips
+git checkout f46ef9337b
+make Makefile.conf
+sed -i 's/^DEFS+= -DCC_O0/#DEFS+= -DCC_O0/' Makefile.conf
+make -j2 all
+sudo make install
+/usr/local/sbin/opensips -V | head -1
+```
+
+Leave `DBG_MALLOC` as it is. With both it and `CC_O0` switched off, this commit
+of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
+including the header that declares it, and only `DBG_MALLOC`'s headers happen
+to supply it.
+
+The build installs OpenSIPS under `/usr/local`, with its configuration in
+`/usr/local/etc/opensips/opensips.cfg`. Give it its own user and a systemd
+unit, as the package would:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
+sudo chown root:opensips /usr/local/etc/opensips
+sudo chmod 750 /usr/local/etc/opensips
+sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
+[Unit]
+Description=OpenSIPS SIP server
+After=network.target
+
+[Service]
+Type=forking
+User=opensips
+Group=opensips
+RuntimeDirectory=opensips
+RuntimeDirectoryMode=775
+PIDFile=/run/opensips/opensips.pid
+ExecStart=/usr/local/sbin/opensips -P /run/opensips/opensips.pid -f /usr/local/etc/opensips/opensips.cfg -m 64 -M 8
+Restart=always
+TimeoutStopSec=30s
+LimitNOFILE=262144
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable opensips
+```
+
+## 2. Configure OpenSIPS as a proxy
+
+This configuration is a minimal proxy: it routes every call to one
+destination and stays in the path of the call's later requests. Your own
+script does much more (registration, authentication, routing to carriers).
+
+If Kamailio already runs on this machine on 5060, move it to 5062 first, as
+[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
+explains. Two SIP servers on one UDP port do not refuse each other: the one
+that starts last silently receives all of that port's traffic.
+
+The two installs keep their configuration and their modules in different
+places. The first two lines find them: `C` is your configuration file, and `M`
+the directory your install loads modules from, which the script's `mpath`
+names.
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
+# OpenSIPS as a SIP proxy that stays in the path of every call.
+log_level=3
+stderror_enabled=no
+syslog_enabled=yes
+syslog_facility=LOG_LOCAL0
+udp_workers=2
+open_files_limit=4096
+
+socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+mpath="MODULES/"
+
+loadmodule "proto_udp.so"   # built into the core, but still loaded by name
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "sipmsgops.so"
+
+loadmodule "mi_fifo.so"
+modparam("mi_fifo", "fifo_name", "/run/opensips/opensips_fifo")
+
+route {
+	if (!mf_process_maxfwd_header(10)) {
+		send_reply(483, "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+			exit;
+		}
+		if (!loose_route()) {
+			send_reply(404, "Not here");
+			exit;
+		}
+		t_relay();
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		send_reply(405, "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl restart opensips
+systemctl is-active opensips
+```
+
+What the parts do:
+
+- `record_route()` adds a `Record-Route` header naming OpenSIPS, so the call's
+  later requests, the `ACK` and the `BYE`, come back through it.
+- `loose_route()` routes those later requests along the recorded route.
+- `t_relay()` forwards the request and handles retransmissions and replies.
+- `mi_fifo` is what lets `opensips-cli` talk to the running OpenSIPS.
+
+`opensips -C` checks the configuration and prints `config file ok` before
+anything starts.
+
+## 3. Place a test call
+
+SIPp plays both ends: a callee on this machine, and a caller that dials through
+OpenSIPS. SIPp's built-in caller ignores the `Record-Route` header, so its
+`BYE` would miss the proxy and draw `404 Not here`. The two route `sed` lines
+make it honor the route set, the way a real phone does. The callee writes what
+it receives to `uas.msg`:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester
+mkdir -p ~/sipp && cd ~/sipp
+sipp -sd uac > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -trace_msg -message_file uas.msg -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+At the end SIPp's statistics screen shows `Successful call` at 1, and the last
+line prints the `Record-Route` OpenSIPS added.
+
+## 4. Operate it
+
+**See what OpenSIPS has handled.** `opensips-cli` asks the running OpenSIPS
+through its management interface. OpenSIPS 4 groups the management commands
+by namespace, so `statistics:get` is what OpenSIPS 3 called `get_statistics`:
+
+```bash
+# Run all of these, in order.
+sudo opensips-cli -x mi statistics:get rcv_requests
+sudo opensips-cli -x mi statistics:get tm:
+```
+
+After the test call, `core:rcv_requests` is 3: the `INVITE`, the `ACK` and the
+`BYE`.
+
+**Check health and read the logs.**
+
+```bash
+# Run all of these, in order.
+systemctl is-active opensips
+sudo opensips-cli -x mi core:uptime
+sudo journalctl -u opensips -n 30
+```
+
+**Apply a configuration change.** Check it first, then restart:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo opensips -C -f "$C"
+sudo systemctl restart opensips
+```
+
+**Uninstall.** For the packages, purge them. For the source build, remove what
+it installed under `/usr/local`:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now opensips
+if dpkg -s opensips >/dev/null 2>&1; then sudo apt-get purge -y opensips; fi
+sudo rm -rf /usr/local/sbin/opensips* /usr/local/lib64/opensips /usr/local/etc/opensips /etc/systemd/system/opensips.service
+sudo apt-get purge -y opensips-cli
+sudo rm /etc/apt/sources.list.d/opensips.list /etc/apt/keyrings/opensips-org.gpg
+```
+
+## OpenSIPS in the other voice-stack guides
+
+Each guide works with either install, and says in its "Before you start"
+section which of its steps to skip. With the packages, some guides need a
+module package beside `opensips`:
+
+| Guide | Modules it loads | With the packages, also install |
+|---|---|---|
+| [rtpengine](rtpengine-relay.md) | `rtpengine`, `rtp_relay`, `dialog` | nothing: they come with `opensips` |
+| [Homer](homer.md) | `proto_hep`, `tracer` | nothing: they come with `opensips` |
+| [Prometheus](prometheus.md) | `httpd`, `prometheus` | `opensips-http-modules`, `opensips-prometheus-module` |
+| [Add a vCon server](vcon-server.md) | `siprec`, `b2b_entities`, `uac_auth` | `opensips-siprec-module`, `opensips-auth-modules` |
+| [TFPS](tfps.md) | none | nothing: TFPS needs nothing from OpenSIPS |
+
+## OpenSIPS and Kamailio on one machine
+
+Developers often run both, to compare them or to test against each. They can
+share a machine as long as they do not share a port. Keep OpenSIPS on 5060 and
+move Kamailio to 5062, as
+[the Kamailio guide's section](kamailio.md#opensips-and-kamailio-on-one-machine)
+describes. Give sipnab both ports with `--portrange 5060-5062`.
+
+## When something does not work
+
+- **`opensips -C` reports `could not open module <signaling.so>`.** The
+  `mpath` line is missing or names the wrong directory. OpenSIPS does not
+  fall back to its own module directory without it.
+- **`opensips-cli` cannot connect.** `mi_fifo` is not loaded, or its
+  `fifo_name` is not `/run/opensips/opensips_fifo`, where `opensips-cli` looks.
+- **`opensips-cli` says `no command 'get_statistics' in module 'mi'`.** That
+  is the OpenSIPS 3 name. OpenSIPS 4 calls it `statistics:get`, and the error
+  lists the names it accepts.
+- **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
+  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+
+---
+
+<!-- source: docs/opensips-sipnab.md -->
+
+# Run sipnab beside OpenSIPS
+
+sipnab reads the SIP that passes through OpenSIPS off the wire, so it needs
+nothing from OpenSIPS: no module, no configuration change. On the OpenSIPS
+machine it sees both legs of every call, the caller's side into OpenSIPS and
+OpenSIPS's side out to the callee, and puts them together into one call.
+
+This guide adds sipnab to the OpenSIPS proxy from
+[Use OpenSIPS as your voice stack's SIP server](opensips.md), installed from
+the packages or built from source.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-27, with
+sipnab 0.5.193 from its release package, on the machines
+[the OpenSIPS guide](opensips.md) had set up: Debian 13 (kernel 6.12.63) with
+OpenSIPS built from source, and Ubuntu 24.04.5 (kernel 6.8.0) with OpenSIPS
+both from the packages and from source. The section with Kamailio on the same
+machine ran on Ubuntu 24.04.5. The examples use `192.0.2.10` as the machine's
+address.
+
+## 1. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+sipnab --version
+```
+
+## 2. Watch a call through OpenSIPS
+
+Start sipnab on every interface for 30 seconds, printing each SIP message as
+it passes and a report of the calls at the end:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+While it runs, place a test call from a second terminal, as in
+[step 3 of the OpenSIPS guide](opensips.md#3-place-a-test-call):
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+```
+
+sipnab prints every message OpenSIPS relays twice, once on each leg: the
+caller's `INVITE` to OpenSIPS at `192.0.2.10:5060`, then OpenSIPS's copy of it
+to the callee at `127.0.0.1:5070`, and the same for the replies and the `BYE`.
+OpenSIPS's own `100 Trying` goes to the caller alone. When the 30 seconds are
+up, the report lists the call once, as `Completed`, with 13 messages from both
+legs.
+
+For the same view in a terminal interface, which updates as calls happen, run
+`sudo sipnab -d any` without `-N` and without `--duration`.
+
+## With Kamailio on the same machine
+
+With OpenSIPS on 5060 and Kamailio on 5062, as
+[OpenSIPS and Kamailio on one machine](opensips.md#opensips-and-kamailio-on-one-machine)
+sets them up, give sipnab both ports:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
+```
+
+A call through each proxy then appears in the report, one row per call.
+
+## When something does not work
+
+- **sipnab reports `No SIP traffic found`.** OpenSIPS listens on a port
+  outside 5060-5061, the range sipnab watches by default. Give sipnab
+  OpenSIPS's ports with `--portrange`.
+
+---
+
+<!-- source: docs/kamailio.md -->
+
+# Use Kamailio as your voice stack's SIP server
+
+[Kamailio](https://www.kamailio.org) is an open-source SIP server, and with
+OpenSIPS one of the two most common SIP proxies in front of phones, PBXes and
+carriers. The two share their origins, and a routing script written for one
+reads much like one written for the other.
+
+The other voice-stack guides use OpenSIPS. This guide sets up Kamailio in the
+same role, as a proxy that routes each call and stays in its signaling path,
+and proves it with a test call. This guide does not use sipnab. When you have
+this working, [Run sipnab beside Kamailio](kamailio-sipnab.md) adds sipnab.
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-27, on
+x86_64 virtual machines with 2 cores and 3 GB of memory: on a clean Debian 13
+(kernel 6.12.63) and a clean Ubuntu 24.04.5 (kernel 6.8.0), and on Ubuntu
+24.04.5 machines already running OpenSIPS, from its packages and from source,
+with step 2's changes for that case.
+[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
+ran on both distributions.
+
+| Software | Version |
+|---|---|
+| Kamailio | 6.1.4, from the Kamailio project's own package repository |
+| SIPp (for the test call) | the distribution's `sip-tester` |
+
+The examples use `192.0.2.10` as the machine's address. Replace it with yours
+everywhere it appears.
+
+## 1. Install Kamailio
+
+The distributions carry older Kamailio releases. The Kamailio project publishes
+current ones for Debian and Ubuntu, one repository per release series. Add the
+6.1 series and install:
+
+```bash
+# Run all of these, in order.
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gpg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://deb.kamailio.org/kamailiodebkey.gpg | sudo gpg --dearmor -o /etc/apt/keyrings/kamailio.gpg
+gpg --show-keys /etc/apt/keyrings/kamailio.gpg | grep -A1 '^pub'
+. /etc/os-release
+echo "deb [signed-by=/etc/apt/keyrings/kamailio.gpg] https://deb.kamailio.org/kamailio61 $VERSION_CODENAME main" \
+  | sudo tee /etc/apt/sources.list.d/kamailio.list >/dev/null
+sudo apt-get update
+printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d >/dev/null
+sudo chmod 755 /usr/sbin/policy-rc.d
+sudo apt-get install -y kamailio
+sudo rm /usr/sbin/policy-rc.d
+/usr/sbin/kamailio -v | head -1
+```
+
+The key's fingerprint, which `gpg --show-keys` prints, is
+`E79ACECB87D8DCD23A20AD2FFB40D3E6508EA4C8`, the Kamailio Package Team's.
+
+The Kamailio package starts Kamailio the moment it installs, on its sample
+configuration, which listens on port 5060 of every address. The `policy-rc.d`
+file around the install is Debian's way to tell a package not to start its
+service, and the block removes it straight after. Kamailio stays stopped until the
+next step has given it your configuration.
+
+That matters most on a machine already running a SIP server on 5060, such as
+OpenSIPS. Two SIP servers on one UDP port do not refuse each other: the one
+that starts last silently receives all of that port's traffic. Measured with
+OpenSIPS running, Kamailio's sample configuration answered every request sent
+to 5060 the moment the package started it.
+
+## 2. Configure Kamailio as a proxy
+
+This configuration is a minimal proxy: it routes every call to one
+destination and stays in the path of the call's later requests. Your own
+script does much more (registration, authentication, routing to carriers).
+
+If OpenSIPS already runs on this machine, change `5060` to `5062` in the
+`listen` line before you run this block, and in the caller's
+`192.0.2.10:5060` in step 3, as
+[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
+explains. Otherwise step 3's call reaches OpenSIPS, and tests it instead.
+
+```bash
+# Run all of these, in order.
+sudo tee /etc/kamailio/kamailio.cfg >/dev/null <<'EOF'
+#!KAMAILIO
+# Kamailio as a SIP proxy that stays in the path of every call.
+debug=2
+log_stderror=no
+log_facility=LOG_LOCAL0
+children=2
+
+listen=udp:192.0.2.10:5060   # the address your phones and carriers reach
+
+loadmodule "tm.so"
+loadmodule "sl.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "siputils.so"
+loadmodule "textops.so"
+loadmodule "pv.so"
+loadmodule "kex.so"
+loadmodule "corex.so"
+loadmodule "ctl.so"
+
+request_route {
+	if (!mf_process_maxfwd_header("10")) {
+		sl_send_reply("483", "Too Many Hops");
+		exit;
+	}
+
+	if (has_totag()) {
+		if (loose_route()) {
+			t_relay();
+			exit;
+		}
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+
+	if (is_method("CANCEL")) {
+		if (t_check_trans()) {
+			t_relay();
+		}
+		exit;
+	}
+	t_check_trans();
+
+	if (!is_method("INVITE")) {
+		sl_send_reply("405", "Method Not Allowed");
+		exit;
+	}
+
+	record_route();
+
+	# Where the call goes. Here, a test callee on this machine; in your
+	# stack, lookup("location"), dispatcher or a carrier.
+	$du = "sip:127.0.0.1:5070";
+	t_relay();
+}
+EOF
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl enable kamailio
+sudo systemctl restart kamailio
+systemctl is-active kamailio
+```
+
+What the parts do:
+
+- `record_route()` adds a `Record-Route` header naming Kamailio, so the call's
+  later requests, the `ACK` and the `BYE`, come back through it.
+- `loose_route()` routes those later requests along the recorded route.
+- `t_relay()` forwards the request and handles retransmissions and replies.
+- `ctl.so` is what lets `kamcmd` talk to the running Kamailio.
+
+`kamailio -c` checks the configuration before anything starts.
+
+## 3. Place a test call
+
+SIPp plays both ends: a callee on this machine, and a caller that dials through
+Kamailio. SIPp's built-in caller ignores the `Record-Route` header, so its
+`BYE` would miss the proxy. The two route `sed` lines make it honor the route
+set, the way a real phone does. The callee writes what it receives to
+`uas.msg`:
+
+```bash
+# Run all of these, in order.
+sudo apt-get install -y sip-tester
+mkdir -p ~/sipp && cd ~/sipp
+sipp -sd uac > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -trace_msg -message_file uas.msg -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
+```
+
+At the end SIPp's statistics screen shows `Successful call` at 1, and the last
+line prints the `Record-Route` Kamailio added, such as
+`<sip:192.0.2.10;lr;ftag=14335SIPpTag001>`: Kamailio's address, `lr` for loose
+routing, and the caller's `From` tag.
+
+## 4. Operate it
+
+**See what Kamailio has handled.** `kamcmd` asks the running Kamailio. Name a
+statistic, or a group with a trailing colon. The `core:` group holds the
+counts of requests received and replies relayed:
+
+```bash
+# Run all of these, in order.
+sudo kamcmd stats.get_statistics rcv_requests_invite
+sudo kamcmd stats.get_statistics core: | grep -E 'rcv_(requests|replies_2xx)_invite'
+```
+
+After the test call, `rcv_requests_invite` is 1, and so is
+`rcv_replies_2xx_invite`, the callee's `200 OK`.
+
+**Check health and read the logs.**
+
+```bash
+# Run all of these, in order.
+systemctl is-active kamailio
+sudo kamcmd core.uptime
+sudo journalctl -u kamailio -n 30
+```
+
+**Apply a configuration change.** Check it first, then restart:
+
+```bash
+# Run all of these, in order.
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl restart kamailio
+```
+
+**Uninstall.**
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now kamailio
+sudo apt-get purge -y kamailio
+sudo rm /etc/apt/sources.list.d/kamailio.list /etc/apt/keyrings/kamailio.gpg
+```
+
+## OpenSIPS and Kamailio on one machine
+
+Developers often run both, to compare them or to test against each. They can
+share a machine as long as they do not share a port, and a shared port does
+not fail loudly: whichever server starts last silently takes all of its
+traffic. Keep OpenSIPS on 5060, as [the OpenSIPS guide](opensips.md) sets it
+up, and Kamailio on 5062. If you set Kamailio up on 5060 first, move it before
+OpenSIPS starts:
+
+```bash
+# Run all of these, in order.
+sudo sed -i 's|^listen=udp:192.0.2.10:5060 |listen=udp:192.0.2.10:5062 |' /etc/kamailio/kamailio.cfg
+grep '^listen=' /etc/kamailio/kamailio.cfg
+sudo kamailio -c -f /etc/kamailio/kamailio.cfg
+sudo systemctl restart kamailio
+```
+
+A test call now reaches Kamailio on 5062 and OpenSIPS on 5060. Place one
+through each, from `~/sipp`, with the callee from step 3 running:
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 2 -bg
+sipp -sf uac_rr.xml 192.0.2.10:5062 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+```
+
+Each shows `Successful call` at 1. sipnab watches ports 5060-5061 by default,
+so give it both proxies' ports: `--portrange 5060-5062`.
+
+## Kamailio in the other voice-stack guides
+
+The other guides use OpenSIPS. Each has a section that says what changes with
+Kamailio:
+
+- [rtpengine](rtpengine-relay.md#with-kamailio): Kamailio's `rtpengine` module.
+- [Homer](homer.md#with-kamailio): Kamailio's `siptrace` module sends HEP.
+- [Prometheus](prometheus.md#with-kamailio): Kamailio's `xhttp_prom` module.
+- [TFPS](tfps.md): nothing changes. TFPS needs nothing from the SIP server.
+- [vCon server](vcon-server.md#with-kamailio-a-gap): a gap. Kamailio has no
+  SIPREC module, so it cannot record calls for the vCon server.
+  [sipnab's own vCons](vcon-sipnab.md#with-kamailio) are what a Kamailio stack
+  can send it.
+
+## When something does not work
+
+- **`kamailio -c` reports `ERROR: bad config file`.** It names the line.
+  Check that every function the script calls has its module loaded.
+- **`kamcmd` says it cannot connect.** `ctl.so` is not loaded, or Kamailio is
+  not running.
+- **The test call's `BYE` gets no answer.** The caller ignored the route set.
+  Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+
+---
+
+<!-- source: docs/kamailio-sipnab.md -->
+
+# Run sipnab beside Kamailio
+
+sipnab reads the SIP that passes through Kamailio off the wire, so it needs
+nothing from Kamailio: no module, no configuration change. On the Kamailio
+machine it sees both legs of every call, the caller's side into Kamailio and
+Kamailio's side out to the callee, and puts them together into one call.
+
+This guide adds sipnab to the Kamailio proxy from
+[Use Kamailio as your voice stack's SIP server](kamailio.md).
+
+## Tested on
+
+Every command on this page ran as written, in order, on 2026-09-27, with
+sipnab 0.5.193 from its release package, on the Debian 13 (kernel 6.12.63) and
+Ubuntu 24.04.5 (kernel 6.8.0) machines that [the Kamailio guide](kamailio.md)
+had set up. The section with OpenSIPS on the same machine ran on Debian 13. The
+examples use `192.0.2.10` as the machine's address.
+
+## 1. Install sipnab
+
+```bash
+# Run all of these, in order.
+V=$(curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"].lstrip("v"))')
+curl -fsSLO https://github.com/NormB/sipnab/releases/download/v$V/sipnab_${V}_amd64.deb
+curl -fsSL https://github.com/NormB/sipnab/releases/download/v$V/SHA256SUMS.txt \
+  | grep " sipnab_${V}_amd64.deb$" | sha256sum -c -
+sudo apt-get install -y ./sipnab_${V}_amd64.deb
+sipnab --version
+```
+
+## 2. Watch a call through Kamailio
+
+Start sipnab on every interface for 30 seconds, printing each SIP message as
+it passes and a report of the calls at the end:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report
+```
+
+While it runs, place a test call from a second terminal, as in
+[step 3 of the Kamailio guide](kamailio.md#3-place-a-test-call):
+
+```bash
+# Run all of these, in order.
+cd ~/sipp
+sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
+sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+```
+
+sipnab prints every message Kamailio relays twice, once on each leg: the
+caller's `INVITE` to Kamailio at `192.0.2.10:5060`, then Kamailio's copy of it
+to the callee at `127.0.0.1:5070`, and the same for the replies and the `BYE`.
+Kamailio's own `100 Trying` goes to the caller alone. When the 30 seconds are
+up, the report lists the call once, as `Completed`, with 13 messages from both
+legs.
+
+For the same view in a terminal interface, which updates as calls happen, run
+`sudo sipnab -d any` without `-N` and without `--duration`.
+
+## With OpenSIPS on the same machine
+
+With OpenSIPS on 5060 and Kamailio on 5062, as
+[OpenSIPS and Kamailio on one machine](kamailio.md#opensips-and-kamailio-on-one-machine)
+sets them up, give sipnab both ports:
+
+```bash
+sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
+```
+
+A call through each proxy then appears in the report, one row per call.
+
+## When something does not work
+
+- **sipnab reports `No SIP traffic found`.** Kamailio listens on a port
+  outside 5060-5061, the range sipnab watches by default. Give sipnab
+  Kamailio's ports with `--portrange`.
 
 ---
 
@@ -37455,7 +39030,7 @@ the thing it guards silently rotted at least once.
 | [`api_guidelines_test`](../../tests/api_guidelines_test.rs) | A growth-prone public enum loses `#[non_exhaustive]`, or a shared store stops being `Debug`. |
 | [`summary_consistency_test`](../../tests/summary_consistency_test.rs) | Two serializing surfaces disagree about a dialog or stream field. |
 | [`wasm_exports_test`](../../tests/wasm_exports_test.rs) | The WASM binding loses an export the browser analyzer calls. |
-| [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the two automated-test counts, which must agree with each other and — via `quality.yml` — with the measured total. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Add to your voice stack" group of the docs navigation, so a guide added to one reaches the other. |
+| [`site_journey_test`](../../tests/site_journey_test.rs) / [`mockup_alignment_test`](../../tests/mockup_alignment_test.rs) | A website journey breaks, or a terminal mockup on the site drifts from real output. Also the homepage's advertised numbers: the binary-size ceiling, the glibc floor, the throughput tiles (which must quote a figure that appears on the benchmarks page they link to), and the two automated-test counts, which must agree with each other and — via `quality.yml` — with the measured total. It holds the standards cards to a canonical table naming the code symbol behind every item, the field the program emits for every quality metric, and a citation in `docs/` and the built site mirror, one card per standard. It also holds the homepage's four MCP examples to the files [`gen-mcp-examples.sh`](../../demos/gen-mcp-examples.sh) generated, and holds each of those to the claim the surrounding copy makes about it. That covers the second half of `live binary -> website/data/mcp-examples/*.json -> index.html`; `demos/gen-mcp-examples.sh --check` covers the first and needs a built binary, so CI cannot run it. The homepage's voice-stack section must link exactly the guides in the "Your SIP server" and "Add to your voice stack" groups of the docs navigation, so a guide added to one reaches the other. |
 | [`config_examples_test`](../../tests/config_examples_test.rs) | A config sample in the docs no longer parses. |
 | [`doc_commands_run_test`](../../tests/doc_commands_run_test.rs) | A command shown in `docs/` is one sipnab refuses. It extracts every `sipnab …` line from every shell block and RUNS 323 of the 352 against a capture that ships with the repository, failing on a usage error rather than on a non-zero exit -- plenty of documented commands exit non-zero for honest reasons. A device or root example runs with a device name that cannot exist substituted for the one the page names, so its flags still parse in full; a server example runs under a shared wall-clock bound, because clap refuses in milliseconds and a process still alive after it necessarily parsed its arguments. Only two kinds never run, and it names both: a shell program rather than one invocation, and a command that would exec something of its own or attach to the kernel. A command matching neither fails the test. It prints its own coverage, because the difference between "323 ran" and "3 ran, 349 skipped" is the difference between a gate and a decoration. |
 | [`homepage_claim_truth_test`](../../tests/homepage_claim_truth_test.rs) | A claim the homepage states in PROSE stops being true: the MCP tool counts and their read-only split, which released builds carry the `bpf` feature, what the installer actually puts on a host, a capability the static musl build does not have, the filter language's field and operator counts, a TUI key the page names that nothing binds, and a CLI flag the page names that does not exist, plus the `unsafe` count and the safety claim resting on it — the page said "memory-safe by construction" beside 88 `unsafe` blocks and no `forbid(unsafe_code)`. `site_journey_test` gates the tiles; this gates the sentences, because the two disagreed on one page for months. |

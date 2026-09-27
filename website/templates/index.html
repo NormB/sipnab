@@ -158,15 +158,28 @@
   <div class="features-inner">
     <header class="section-head">
       <h2>Add it to your voice stack</h2>
-      <p class="section-sub">Step-by-step guides that install each piece beside OpenSIPS, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
+      <p class="section-sub">Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and each piece beside it, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
     </header>
     <div class="features-grid">
+      <div class="feature-card feature-card--green fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="8" y1="7" x2="8" y2="7"/><line x1="8" y1="17" x2="8" y2="17"/></svg>
+        </div>
+        <h3>SIP server</h3>
+        <p>Start with the proxy the other guides build on: OpenSIPS, from its packages or from source, or Kamailio, alone or both on one machine.</p>
+        <ul class="stack-links">
+          <li><a href="{{ get_url(path='@/docs/opensips.md') }}">Use OpenSIPS</a></li>
+          <li><a href="{{ get_url(path='@/docs/opensips-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/kamailio.md') }}">Use Kamailio</a></li>
+          <li><a href="{{ get_url(path='@/docs/kamailio-sipnab.md') }}">Run sipnab beside it</a></li>
+        </ul>
+      </div>
       <div class="feature-card feature-card--amber fade-in-up">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v12H7l-3 3z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
         </div>
         <h3>vCon</h3>
-        <p>Keep every call as a vCon: OpenSIPS records it over SIPREC into vcon-server, and sipnab adds what it observed on the wire.</p>
+        <p>Keep every call as a vCon: OpenSIPS records it over SIPREC into vcon-server, and sipnab adds what it observed on the wire, which is all a Kamailio stack has.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/vcon-server.md') }}">Add a vCon server</a></li>
           <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">Send sipnab's vCons to it</a></li>
@@ -177,7 +190,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
         </div>
         <h3>TFPS</h3>
-        <p>Block SIP scanners and fraud in the kernel with XDP before they reach OpenSIPS, then see and control the blocks from sipnab.</p>
+        <p>Block SIP scanners and fraud in the kernel with XDP before they reach your SIP server, then see and control the blocks from sipnab.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/tfps.md') }}">Add TFPS</a></li>
           <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">Let sipnab see and control it</a></li>
@@ -199,7 +212,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="6"/><line x1="15.5" y1="15.5" x2="20" y2="20"/></svg>
         </div>
         <h3>Homer</h3>
-        <p>Keep a searchable history of every call, sent by OpenSIPS over HEP, and connect sipnab to the same feed.</p>
+        <p>Keep a searchable history of every call, sent by OpenSIPS or Kamailio over HEP, and connect sipnab to the same feed.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/homer.md') }}">Add Homer</a></li>
           <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">Connect sipnab to it</a></li>
@@ -210,7 +223,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
         </div>
         <h3>Prometheus</h3>
-        <p>Graph OpenSIPS's statistics and sipnab's call and media series in one Prometheus and Grafana.</p>
+        <p>Graph your SIP proxy's statistics and sipnab's call and media series in one Prometheus and Grafana.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/prometheus.md') }}">Add Prometheus and Grafana</a></li>
           <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Add sipnab's metrics</a></li>

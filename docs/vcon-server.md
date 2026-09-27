@@ -7,6 +7,10 @@ OpenSIPS record every call into it. This guide does not use sipnab. When you hav
 this working, [Send sipnab's vCons to a vCon server](vcon-sipnab.md) adds sipnab
 as a second source.
 
+Kamailio cannot record calls this way: it has no SIPREC module.
+[With Kamailio](#with-kamailio-a-gap) says what that means, and what a
+Kamailio stack can send the vCon server instead.
+
 The parts, and what each one does:
 
 | Part | Role |
@@ -28,18 +32,27 @@ parts live on different machines.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 on two
-x86_64 virtual machines with 2 cores and 4 GB of memory: a clean Debian 13
-(kernel 6.12.63), and Ubuntu 24.04.5 (kernel 6.8.0). The commands pin the
-components to the versions below. Newer commits may behave differently, and
-pinning them keeps the guide describing what you get.
+Every command on this page ran as written, in order, on x86_64 virtual
+machines with 2 cores and 3 or 4 GB of memory:
+
+- Every step, with OpenSIPS built in step 4: on a clean Debian 13 (kernel
+  6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-25, with an earlier
+  step 5 that named the source build's paths.
+- On 2026-09-27, with rtpengine already relaying as
+  [the rtpengine guide](rtpengine-relay.md) sets it up, so without step 3:
+  OpenSIPS rebuilt with `siprec` on Debian 13, and the OpenSIPS 4.0 packages on
+  Ubuntu 24.04.5.
+
+The commands pin the components to the versions below. Newer commits may behave
+differently, and pinning them keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
 | Docker Engine / Compose | 29.8.1 / v5.5.1, from the Docker apt repository |
 | vcon-server | [`d441470b`](https://github.com/vcon-dev/vcon-server/commit/d441470b), main on 2026-09-20 |
 | Valkey / PostgreSQL | `valkey/valkey:9.1.2-alpine` / `postgres:17.11-alpine` |
-| OpenSIPS | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, built here | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
+| OpenSIPS, from packages | 4.0.2, installed as [the OpenSIPS guide](opensips.md) installs it |
 | rtpengine | [`8da4be3355`](https://github.com/sipwise/rtpengine/commit/8da4be3355), master, packaged as 26.3.0.0 |
 | vcon-siprec-adapter | [`fa09b939d3`](https://github.com/vcon-dev/vcon-siprec-adapter/commit/fa09b939d3), main |
 | SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian, 3.7.2 on Ubuntu |
@@ -48,6 +61,26 @@ The whole vCon stack used about 165 MiB of memory while idle.
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
+
+## Before you start: your SIP server
+
+Find your case, and follow the steps it names:
+
+- **No SIP server yet.** Follow every step. Step 4 builds OpenSIPS for you. If
+  you would rather run the OpenSIPS 4.0 packages, install them with
+  [step 1 of the OpenSIPS guide](opensips.md#1-install-opensips), then take
+  the packages' route in step 4.
+- **OpenSIPS already runs, from the packages or built from source.** Step 4
+  adds the `siprec` module. Step 5 finds your configuration file and replaces
+  it. On a machine whose script you want to keep, add the lines step 5 marks
+  to your own script instead. If rtpengine already relays your calls, as
+  [Add rtpengine to your voice stack](rtpengine-relay.md) sets it up,
+  skip step 3.
+- **Kamailio.** Kamailio cannot record over SIPREC. Read
+  [With Kamailio](#with-kamailio-a-gap) first.
+- **Both OpenSIPS and Kamailio on one machine.** OpenSIPS records the calls
+  that pass through it, and Kamailio's calls go unrecorded.
+  [With Kamailio](#with-kamailio-a-gap) says how to get vCons for both.
 
 ## 1. Install Docker
 
@@ -212,12 +245,16 @@ Start it and check that the API answers:
 cd /opt/vcon
 docker compose up -d --build
 until curl -sf localhost:8000/health; do sleep 2; done; echo
+until docker compose logs conserver | grep -q 'Worker-1 started'; do sleep 2; done
 docker compose ps
 ```
 
-The API takes a few seconds to start, so the `until` line waits for `/health`
-to answer `{"status":"healthy",...}`. All four services then show `running`,
-and `valkey` and `postgres` also show `healthy`.
+The API takes a few seconds to start, so the first `until` line waits for
+`/health` to answer `{"status":"healthy",...}`. The conserver, which stores
+what the API queues, starts later: on a fresh machine its worker came up about
+15 seconds after the API answered. The second `until` line waits for it. All
+four services then show `running`, and `valkey` and `postgres` also show
+`healthy`.
 
 ### Prove it stores what it accepts
 
@@ -279,18 +316,31 @@ systemctl is-active ngcp-rtpengine-daemon
 It listens for OpenSIPS on `127.0.0.1:2223` and relays media on ports
 30000-39999.
 
-## 4. Build OpenSIPS
+## 4. Install OpenSIPS's recording module
 
+OpenSIPS records with its `siprec` module.
+
+**With the OpenSIPS packages,** it comes in a package of its own. The
+`uac_auth` module, which step 5 loads, comes in another:
+
+```bash
+sudo apt-get install -y opensips-siprec-module opensips-auth-modules
+```
+
+**Or build OpenSIPS with it.** Skip this if you installed the packages.
 OpenSIPS master builds with compiler optimizations turned off, which is right
 for OpenSIPS's own developers and wrong for a proxy carrying calls. Turn them
 back on before you build, and add the `siprec` module, which the default build
-leaves out:
+leaves out. If you already built OpenSIPS from source by one of these guides,
+the block reuses that tree, `/usr/local/src/voice/opensips`, and rebuilds it
+with `siprec`. With a tree of your own, change `/usr/local/src/voice` in the
+block to the directory that holds it:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y --no-install-recommends bison flex uuid-dev pkg-config libncurses-dev
 cd /usr/local/src/voice
-git clone https://github.com/OpenSIPS/opensips.git
+[ -d opensips ] || git clone https://github.com/OpenSIPS/opensips.git
 cd opensips
 git checkout f46ef9337b
 make Makefile.conf
@@ -308,9 +358,10 @@ of master does not compile: `net/tcp_conn_defs.h` calls `get_ticks()` without
 including the header that declares it, and only `DBG_MALLOC`'s headers happen
 to supply it.
 
-OpenSIPS installs under `/usr/local`: the binary is `/usr/local/sbin/opensips`,
-modules are in `/usr/local/lib64/opensips/modules/`, and OpenSIPS reads its
-configuration from `/usr/local/etc/opensips/`.
+The build installs under `/usr/local`: the binary is
+`/usr/local/sbin/opensips`, modules are in `/usr/local/lib64/opensips/modules/`,
+and OpenSIPS reads its configuration from `/usr/local/etc/opensips/`. The
+packages install under `/usr`, with the configuration in `/etc/opensips/`.
 
 ## 5. Configure OpenSIPS to record every call
 
@@ -318,8 +369,19 @@ This configuration is a minimal proxy with recording added. Your own script
 does much more (registration, authentication, routing to carriers). The
 recording part is the block marked below, and the `loadmodule` lines it needs.
 
+### Write the configuration
+
+The packages and the source build keep their configuration and their modules in
+different places. The first two lines find them: `C` is your configuration
+file, and `M` the directory your install loads modules from, which the script's
+`mpath` names.
+
 ```bash
-sudo tee /usr/local/etc/opensips/opensips.cfg >/dev/null <<'EOF'
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+for d in /usr/lib/*/opensips/modules /usr/local/lib64/opensips/modules; do [ -f "$d/tm.so" ] && M=$d && break; done
+echo "configuration: $C   modules: $M"
+sudo tee "$C" >/dev/null <<'EOF'
 # OpenSIPS as a SIP proxy that records every call over SIPREC.
 log_level=3
 stderror_enabled=no
@@ -330,7 +392,7 @@ open_files_limit=4096
 
 socket=udp:192.0.2.10:5060   # the address your phones and carriers reach
 
-mpath="/usr/local/lib64/opensips/modules/"
+mpath="MODULES/"
 
 loadmodule "proto_udp.so"   # built into the core, but still loaded by name
 loadmodule "signaling.so"
@@ -397,6 +459,8 @@ route {
 	t_relay();
 }
 EOF
+sudo sed -i "s|^mpath=\"MODULES/\"|mpath=\"$M/\"|" "$C"
+sudo grep '^mpath=' "$C"
 ```
 
 What the recording block does, line by line:
@@ -412,14 +476,18 @@ What the recording block does, line by line:
 `loadmodule "uac_auth.so"` is there because `b2b_entities` asks for it at
 startup. Leaving it out works, but logs a warning on every start.
 
-Run OpenSIPS as its own user, under systemd:
+### If you built OpenSIPS in step 4: give it a user and a unit
+
+The packages come with an `opensips` user and a systemd unit. If you
+installed them, or if your source build already runs as a service, skip to
+[Check the configuration and start OpenSIPS](#check-the-configuration-and-start-opensips).
+A fresh build has neither. Run OpenSIPS as its own user, under systemd:
 
 ```bash
 # Run all of these, in order.
 sudo useradd --system --home-dir /run/opensips --shell /usr/sbin/nologin opensips
-sudo chown root:opensips /usr/local/etc/opensips /usr/local/etc/opensips/opensips.cfg
+sudo chown root:opensips /usr/local/etc/opensips
 sudo chmod 750 /usr/local/etc/opensips
-sudo chmod 640 /usr/local/etc/opensips/opensips.cfg
 sudo tee /etc/systemd/system/opensips.service >/dev/null <<'EOF'
 [Unit]
 Description=OpenSIPS SIP server
@@ -440,9 +508,19 @@ LimitNOFILE=262144
 [Install]
 WantedBy=multi-user.target
 EOF
-sudo /usr/local/sbin/opensips -C -f /usr/local/etc/opensips/opensips.cfg
 sudo systemctl daemon-reload
-sudo systemctl enable --now opensips
+```
+
+### Check the configuration and start OpenSIPS
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo chown root:opensips "$C"
+sudo chmod 640 "$C"
+sudo opensips -C -f "$C"
+sudo systemctl enable opensips
+sudo systemctl restart opensips
 systemctl is-active opensips
 ```
 
@@ -686,6 +764,32 @@ sudo apt-get purge -y ngcp-rtpengine-daemon ngcp-rtpengine-utils ngcp-rtpengine-
 sudo apt-get autoremove -y
 ```
 
+## With Kamailio: a gap
+
+Kamailio has no SIPREC module, so it cannot hand a copy of a call to a
+recorder the way step 5 has OpenSIPS do. Neither Kamailio 6.1 nor its
+development branch has one: none of the 256 modules in Kamailio 6.1's source
+tree, or the 258 on its `master` branch, implements SIPREC. The recorder in this
+guide, vcon-siprec-adapter, takes SIPREC only, so with Kamailio it receives
+nothing.
+
+What a Kamailio stack can send the vCon server is sipnab's own vCons. sipnab
+reads the calls off the wire, beside Kamailio, and writes a vCon for each: the
+parties, the signaling and, with the media in its capture, the audio. It is an
+observer's record, not a party's: a packet the capture missed is not in it.
+[Send sipnab's vCons to a vCon server](vcon-sipnab.md) sets it up, and keeps
+those vCons apart from recorded ones. With Kamailio:
+
+1. Follow steps 1 and 2 here, for Docker and the vCon server. Skip steps 3 to 8,
+   the recorder and its test.
+2. Follow [Send sipnab's vCons to a vCon server](vcon-sipnab.md). Its
+   [With Kamailio](vcon-sipnab.md#with-kamailio) section places the test call.
+
+With OpenSIPS and Kamailio on one machine, follow every step here for
+OpenSIPS's calls, then the sipnab guide, whose
+[same section](vcon-sipnab.md#with-kamailio) widens sipnab's capture to
+Kamailio's port.
+
 ## Put the parts on different machines
 
 Nothing above depends on sharing a machine except the addresses:
@@ -709,7 +813,8 @@ Nothing above depends on sharing a machine except the addresses:
 - **`loading config file ... Permission denied`.** OpenSIPS runs as `opensips`
   and cannot read its configuration. `make install` creates
   `/usr/local/etc/opensips` readable by root alone, so give the group both the
-  directory and the file, as in step 5.
+  directory and the file, as in step 5. The packages set this up themselves,
+  but a file you wrote as root keeps root's group until step 5 changes it.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
   set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.
 - **`/health` answers but nothing reaches PostgreSQL.** A `204` from the ingress
