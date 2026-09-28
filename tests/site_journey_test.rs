@@ -10870,3 +10870,45 @@ fn every_homepage_tile_has_a_color_modifier() {
         bare.join("\n")
     );
 }
+
+/// The voice-stack tile for OpenSIPS and Kamailio is headed "SIP proxy".
+///
+/// Both are proxies that stay in each call's path, and every other guide on
+/// the row assumes exactly that (Norm, 2026-09-28: "SIP server" should be
+/// renamed to "SIP proxy").
+#[test]
+fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() {
+    let page = read("website/templates/index.html");
+    let tile = page
+        .split("class=\"feature-card")
+        .find(|card| card.contains("@/docs/opensips.md") && card.contains("@/docs/kamailio.md"))
+        .expect("the home page has a tile linking both SIP proxy guides");
+    assert!(
+        tile.contains("<h3>SIP proxy</h3>"),
+        "the tile's heading is not \"SIP proxy\":\n{tile}"
+    );
+}
+
+/// The rtpengine tile is headed "Media relay", and each relay on it gets the
+/// SIP proxy tile's pair of links: use it, then run sipnab beside it (Norm,
+/// 2026-09-28). rtpproxy joins the tile with its own pair once its guides are
+/// verified; until then only rtpengine's pair is here.
+#[test]
+fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
+    let page = read("website/templates/index.html");
+    let tile = page
+        .split("class=\"feature-card")
+        .find(|card| card.contains("@/docs/rtpengine-relay.md"))
+        .expect("the home page has a tile linking the rtpengine guide");
+    assert!(
+        tile.contains("<h3>Media relay</h3>"),
+        "the tile's heading is not \"Media relay\":\n{tile}"
+    );
+    for (href, text) in [
+        ("@/docs/rtpengine-relay.md", "Use rtpengine"),
+        ("@/docs/rtpengine-sipnab.md", "Run sipnab beside it"),
+    ] {
+        let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+        assert!(tile.contains(&link), "missing {link}:\n{tile}");
+    }
+}

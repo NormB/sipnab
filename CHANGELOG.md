@@ -10,6 +10,13 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The home page's voice-stack tiles name the role, not the product.** The
+  OpenSIPS and Kamailio tile is headed "SIP proxy", and the rtpengine tile
+  "Media relay", with the same pair of links as the proxy tile: "Use
+  rtpengine" and "Run sipnab beside it".
+
 ### Fixed
 
 - **The home page's Homer tile shows its colored top trim without a
