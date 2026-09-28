@@ -668,6 +668,7 @@ fn parallel_config(
         dialog_tracking: cli.dialog_args.dialog_track.unwrap_or_default(),
         no_rtp,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+        rtpproxy_control: cli.rtp_args.rtpproxy_control,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
         retain_audio: audio_retention_wanted(cli),
@@ -4485,6 +4486,7 @@ fn process_parsed_packet(
         no_dialog: cli.dialog_args.no_dialog,
         no_rtp,
         sip_portrange: Some(portrange),
+        rtpproxy_control: cli.rtp_args.rtpproxy_control,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
     };
     #[cfg(feature = "tls")]
@@ -4685,16 +4687,18 @@ fn process_parsed_packet(
         }
         crate::pipeline::PacketAction::RelayControl {
             sdp_links,
+            relay_links,
             implementation,
             delivery,
         } => {
             // A standalone media relay carries no SIP, so on that host this is
             // the ONLY thing that names a call. Without it every stream in the
             // capture reports orphaned.
-            if !sdp_links.is_empty() {
+            if !sdp_links.is_empty() || !relay_links.is_empty() {
                 crate::pipeline::apply_relay_control_links(
                     stream_store,
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     pp.input_origin,

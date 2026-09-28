@@ -819,14 +819,7 @@ pub fn run_tui_mode(
                             &ds,
                             &ss,
                             &mut rtp_heuristic,
-                            &crate::pipeline::PipelineOptions {
-                                no_dialog: cli_clone.dialog_args.no_dialog,
-                                no_rtp,
-                                // Live capture: BPF (auto-generated from
-                                // --portrange) already filtered; no SIP port gate.
-                                sip_portrange: None,
-                                quiet_bad_parse: cli_clone.capture_args.quiet_bad_parse,
-                            },
+                            &tui_pipeline_options(&cli_clone, no_rtp),
                             &mut media_decrypt,
                             relay_orphans.as_ref(),
                         );
@@ -975,6 +968,9 @@ pub fn run_tui_mode(
             // The editor re-scans a single offline input under a new filter;
             // a multi-file input or a live device leaves this None.
             capture_mode: Some(tui_capture_mode(&cli, &config)),
+            // A capture opened inside the session is classified as the live
+            // capture thread classifies, from the same function.
+            capture_options: tui_pipeline_options(&cli, no_rtp),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
             notes,
@@ -1041,6 +1037,21 @@ pub fn run_tui_mode(
 /// Unit tests for the parts of TUI mode that are reachable without a
 /// terminal: the pause/`--count` accounting seam, the store wiring, and the
 /// name-persistence path resolution.
+/// How the TUI classifies packets: the live capture thread, and a capture
+/// opened from inside the session, both use this, so neither can drift.
+///
+/// No SIP port gate: a live capture's BPF, generated from `--portrange`,
+/// already filtered.
+fn tui_pipeline_options(cli: &Cli, no_rtp: bool) -> crate::pipeline::PipelineOptions {
+    crate::pipeline::PipelineOptions {
+        no_dialog: cli.dialog_args.no_dialog,
+        no_rtp,
+        sip_portrange: None,
+        rtpproxy_control: cli.rtp_args.rtpproxy_control,
+        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // ── The TUI's `--notes` file ────────────────────────────────────────
@@ -1216,6 +1227,28 @@ mod tests {
     }
 
     // ── Store wiring ──────────────────────────────────────────────────────
+
+    /// The live capture thread and a capture opened inside the TUI classify
+    /// with the same options, and `--rtpproxy-control` is among them.
+    #[test]
+    fn the_tui_classifies_with_the_command_lines_options() {
+        let cli = cli_from(&["--rtpproxy-control", "192.0.2.40:7722", "--no-dialog"]);
+        let opts = super::tui_pipeline_options(&cli, true);
+        assert_eq!(
+            opts.rtpproxy_control,
+            Some("192.0.2.40:7722".parse().unwrap())
+        );
+        assert!(opts.no_dialog);
+        assert!(opts.no_rtp);
+        assert_eq!(
+            opts.sip_portrange, None,
+            "a live capture's BPF already filtered, so there is no port gate"
+        );
+
+        let plain = super::tui_pipeline_options(&cli_from(&[]), false);
+        assert_eq!(plain.rtpproxy_control, None);
+        assert!(!plain.no_dialog && !plain.no_rtp);
+    }
 
     /// Parse a CLI from arguments, `sipnab` included as argv[0].
     fn cli_from(args: &[&str]) -> Cli {

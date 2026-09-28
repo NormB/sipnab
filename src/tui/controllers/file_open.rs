@@ -385,6 +385,7 @@ fn run_pcap_load(
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &PcapLoadProgress,
     bpf_filter: Option<&str>,
+    options: &crate::pipeline::PipelineOptions,
 ) -> PcapLoadOutcome {
     let filename = path
         .file_name()
@@ -435,6 +436,7 @@ fn run_pcap_load(
             stream_store,
             progress,
             bpf_filter,
+            options,
             &mut totals,
         ) {
             return failed(message);
@@ -560,6 +562,7 @@ fn load_one_capture(
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &PcapLoadProgress,
     bpf_filter: Option<&str>,
+    options: &crate::pipeline::PipelineOptions,
     totals: &mut LoadTotals,
 ) -> Result<(), String> {
     // Transparently handles gzip-compressed captures (libpcap cannot). The
@@ -632,7 +635,7 @@ fn load_one_capture(
         match crate::pipeline::classify_packet(
             &parsed,
             &mut totals.rtp_heuristic,
-            &crate::pipeline::PipelineOptions::default(),
+            options,
             &mut decrypt,
         ) {
             crate::pipeline::PacketAction::None => {}
@@ -655,13 +658,15 @@ fn load_one_capture(
             }
             crate::pipeline::PacketAction::RelayControl {
                 sdp_links,
+                relay_links,
                 implementation,
                 delivery,
             } => {
-                if !sdp_links.is_empty() {
+                if !sdp_links.is_empty() || !relay_links.is_empty() {
                     crate::pipeline::apply_relay_control_links(
                         &mut stream_store.write(),
                         &sdp_links,
+                        &relay_links,
                         // Read off the wire: unauthenticated, and the relay this run watches.
                         implementation,
                         delivery,
@@ -835,6 +840,7 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
     let stream_store = Arc::clone(&app.stream_store);
     let path_owned = path.to_path_buf();
     let filter_owned = bpf_filter.map(str::to_string);
+    let options = app.capture_options;
     let rescanning = filter_owned.is_some();
     let spawned = std::thread::Builder::new()
         .name("pcap-load".to_string())
@@ -846,6 +852,7 @@ pub(in crate::tui) fn begin_pcap_load_confirmed(
                     &stream_store,
                     &worker_progress,
                     filter_owned.as_deref(),
+                    &options,
                 )
             };
             // This load's walks use the session's keyring, with the prompter
@@ -1061,7 +1068,14 @@ mod tests {
         app.protect_input_file(path);
         reset_for_load(app);
         let progress = PcapLoadProgress::new(path_str);
-        let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress, None);
+        let outcome = run_pcap_load(
+            path,
+            &app.dialog_store,
+            &app.stream_store,
+            &progress,
+            None,
+            &Default::default(),
+        );
         let message = outcome.message.clone();
         apply_load_outcome(app, outcome);
         message
@@ -1368,7 +1382,7 @@ mod tests {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
 
-        let unfiltered = run_pcap_load(&fixture, &ds, &ss, &progress, None);
+        let unfiltered = run_pcap_load(&fixture, &ds, &ss, &progress, None, &Default::default());
         assert!(
             unfiltered.sip_count > 0,
             "the fixture has SIP when unfiltered"
@@ -1376,7 +1390,14 @@ mod tests {
 
         ds.write().clear();
         ss.write().clear();
-        let filtered = run_pcap_load(&fixture, &ds, &ss, &progress, Some("udp port 65000"));
+        let filtered = run_pcap_load(
+            &fixture,
+            &ds,
+            &ss,
+            &progress,
+            Some("udp port 65000"),
+            &Default::default(),
+        );
         assert_eq!(
             filtered.sip_count, 0,
             "a filter matching nothing drops all SIP"
@@ -1395,7 +1416,14 @@ mod tests {
         let progress = PcapLoadProgress::new("t");
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        let out = run_pcap_load(&fixture, &ds, &ss, &progress, Some("port and and 5060"));
+        let out = run_pcap_load(
+            &fixture,
+            &ds,
+            &ss,
+            &progress,
+            Some("port and and 5060"),
+            &Default::default(),
+        );
         assert!(
             out.message.contains("rejected"),
             "reports the compile error: {}",
@@ -1649,7 +1677,7 @@ mod browser_tests {
         let progress = PcapLoadProgress::new("t");
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        let out = run_pcap_load(path, &ds, &ss, &progress, None);
+        let out = run_pcap_load(path, &ds, &ss, &progress, None, &Default::default());
         (out, ds, ss)
     }
 

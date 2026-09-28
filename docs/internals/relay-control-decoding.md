@@ -56,10 +56,14 @@ not, so these stay fixed rather than following the input.
 - **No credential of any kind.** Nothing authenticates a sniffed control
   datagram, so the decoder reports it as a bare datagram and never as an
   encapsulated one.
-- **No default UDP port.** rtpproxy documents a UNIX control socket, which a
-  passive capture cannot see at all. An operator names the port or there is
-  nothing to decode. Guessing one would make every datagram on some arbitrary
-  port a candidate control message.
+- **The operator names the socket.** rtpproxy's default control socket is a
+  UNIX socket, which a passive capture cannot see at all. A UDP socket is
+  opt-in (`-s udp:ADDR[:PORT]`), and without a port it listens on 22222
+  ([`rtpproxy.8`](https://github.com/sippy/rtpproxy/blob/630f75e22a/rtpproxy.8),
+  `CPORT` in `src/rtpp_defines.h`). sipnab reads rtpproxy's control only on the
+  address and port given to `--rtpproxy-control`, and never assumes 22222:
+  every datagram on an assumed port would be a candidate control message, and
+  a believed one names a call.
 
 ## Recording streams are not legs
 

@@ -1766,6 +1766,34 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "rtpengine-control", value_name = "ADDR")]
     pub rtpengine_control: Option<String>,
 
+    /// Read rtpproxy's control traffic on this UDP socket and name the calls
+    /// its media belongs to.
+    ///
+    /// rtpproxy is told each call's addresses by the SIP proxy over a text
+    /// control protocol. Its command names the call and its reply names the
+    /// port the relay opened, so a capture that holds both can say which call
+    /// the media on that port belongs to, even on the relay's own machine where
+    /// no SIP passes. Without this, that media is reported as orphaned.
+    ///
+    /// **Name the socket; nothing is assumed.** rtpproxy's default control
+    /// socket is a UNIX socket, which a capture cannot see. Give it a UDP one
+    /// with `-s udp:ADDR:PORT` (22222 when the port is left out) and pass the
+    /// same address and port here. Only datagrams to and from exactly that
+    /// address and port are read, because they carry no credential and a
+    /// believed one names a call.
+    ///
+    /// **Passive.** sipnab never sends rtpproxy anything. rtpproxy has no
+    /// command that lists its sessions, so there is nothing to ask about calls
+    /// already up when the capture starts; those are named from their next
+    /// command. Works on live captures and on files.
+    #[arg(
+        help_heading = "RTP",
+        long = "rtpproxy-control",
+        value_name = "ADDR:PORT",
+        value_parser = clap::value_parser!(std::net::SocketAddr)
+    )]
+    pub rtpproxy_control: Option<std::net::SocketAddr>,
+
     /// Ask the relay named by `--rtpengine-control` for its own statistics and
     /// print them (ST1/C1).
     ///

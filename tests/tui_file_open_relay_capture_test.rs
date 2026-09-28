@@ -97,3 +97,90 @@ fn the_same_media_without_its_control_plane_names_nothing() {
         "without the control plane nothing names the streams:\n{text}"
     );
 }
+
+// ── rtpproxy, whose control plane is named on the command line ──────────────
+
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+
+const RTPPROXY_CALL: &str = "rp-tui@192.0.2.10";
+/// What the Dialog column shows of it: the column truncates.
+const RTPPROXY_CELL: &str = "rp-tui@192.";
+
+/// rtpproxy's `U` command and reply, then media on the port the reply names,
+/// written to `dir`. The shapes are the lab relay's (rtpproxy 3.2.0).
+fn write_rtpproxy_capture(dir: &std::path::Path) -> &'static str {
+    use pcap_build::{udp_frame, write_pcap};
+    let (proxy, relay, party) = ([192, 0, 2, 10], [192, 0, 2, 40], [192, 0, 2, 60]);
+    let command = format!("c1 U {RTPPROXY_CALL} 192.0.2.60 40000 ftag1\n");
+    let mut frames = vec![
+        udp_frame(proxy, relay, 43000, 7722, command.as_bytes()),
+        udp_frame(relay, proxy, 7722, 43000, b"c1 49514 192.0.2.40\n"),
+    ];
+    for seq in 0u16..20 {
+        let mut rtp = vec![0x80, 0x00];
+        rtp.extend_from_slice(&seq.to_be_bytes());
+        rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());
+        rtp.extend_from_slice(&0x1111_2222u32.to_be_bytes());
+        rtp.extend_from_slice(&[0xff; 160]);
+        frames.push(udp_frame(party, relay, 40000, 49514, &rtp));
+    }
+    let name = "rtpproxy-relay.pcap";
+    write_pcap(&dir.join(name), &frames);
+    name
+}
+
+fn open_rtpproxy_capture(control: Option<std::net::SocketAddr>) -> App {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let name = write_rtpproxy_capture(dir.path());
+    // Through the session's startup options, the path `src/app` takes, rather
+    // than a setter a test could call and production never does.
+    let options = sipnab::tui::TuiOptions {
+        capture_options: sipnab::pipeline::PipelineOptions {
+            rtpproxy_control: control,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut app = options.into_app(
+        std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::sip::dialog_store::DialogStore::new(100, false),
+        )),
+        std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::rtp::stream_store::StreamStore::new(100),
+        )),
+    );
+    app.set_open_dir_for_test(dir.path().to_path_buf());
+    app.handle_key(KeyCode::Char('O'));
+    assert_eq!(
+        app.open_entry_names_for_test(),
+        vec!["..".to_string(), name.to_string()]
+    );
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Enter);
+    app
+}
+
+/// `--rtpproxy-control` reaches a capture opened from inside the TUI, not
+/// only the one named on the command line.
+#[test]
+fn an_rtpproxy_capture_opened_in_the_tui_is_named_from_its_control_socket() {
+    let mut app = open_rtpproxy_capture(Some("192.0.2.40:7722".parse().unwrap()));
+    assert_eq!(app.stream_count_for_test(), 1);
+    let text = screen(&mut app);
+    assert!(
+        text.contains(RTPPROXY_CELL),
+        "the stream is named from rtpproxy's reply:\n{text}"
+    );
+}
+
+#[test]
+fn without_the_control_socket_the_tui_names_nothing() {
+    let mut app = open_rtpproxy_capture(None);
+    assert_eq!(app.stream_count_for_test(), 1);
+    let text = screen(&mut app);
+    assert!(
+        !text.contains(RTPPROXY_CELL),
+        "nothing names the stream:\n{text}"
+    );
+}

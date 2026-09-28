@@ -343,6 +343,9 @@ pub struct TuiOptions {
     /// `--relay-stats-interval`. `Some(n)` makes the relay-stats view re-ask
     /// every `n` seconds and label its counters `polled`; `None` asks once.
     pub relay_stats_interval: Option<u64>,
+    /// How a capture opened inside the session is classified: the same
+    /// options the live capture thread uses.
+    pub capture_options: crate::pipeline::PipelineOptions,
     /// Runtime BPF-filter reconfigure control (`Some` only for a single/fanout
     /// live capture): the shared handle the editor's `Enter` stamps a new
     /// filter on. `None` makes the editor validate-only.
@@ -421,6 +424,7 @@ impl TuiOptions {
         app.relay_stats_interval = self.relay_stats_interval;
         app.set_reconfigure(self.reconfigure_control, self.reconfigure_outcomes);
         app.rescan_path = self.rescan_path;
+        app.set_capture_options(self.capture_options);
         app.set_notes(self.notes, self.notes_path);
         app.capture_meter = self.capture_meter;
         if let Some(mode) = self.capture_mode {

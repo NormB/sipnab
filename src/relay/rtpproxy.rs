@@ -32,12 +32,15 @@
 //! recorded no grammar for them, so they are preserved verbatim and left
 //! uninterpreted. Guessing would be inventing protocol.
 //!
-//! # There is no port to key a heuristic on
+//! # The operator names the socket
 //!
-//! The documented control socket is a UNIX socket, which a passive capture
-//! cannot see at all, and no default UDP port is documented anywhere. So this
-//! serves deployments that configured a UDP control socket, and the operator
-//! has to name the port. Nothing here guesses one.
+//! rtpproxy's default control socket is a UNIX socket, which a passive capture
+//! cannot see at all. A UDP socket is opt-in (`-s udp:ADDR[:PORT]`), and one
+//! given without a port listens on 22222 (`rtpproxy.8`; `CPORT` in
+//! `src/rtpp_defines.h`, sippy/rtpproxy 630f75e). So this serves deployments
+//! that configured a UDP control socket, and the operator names its address
+//! and port. Nothing here assumes 22222: a datagram believed at a guessed
+//! socket names a call, and anything that can send to that port could send it.
 
 /// What a command creates, when it creates anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -293,11 +296,11 @@ pub fn decode_reply(payload: &[u8]) -> Option<RtpproxyControl> {
 
 /// The rtpproxy control decoder, behind the relay seam.
 ///
-/// Holds the control port because nothing else can know it. rtpproxy documents
-/// a UNIX socket, which a passive capture cannot see at all, and no default UDP
-/// port is documented anywhere -- so an operator names the port or there is
-/// nothing to decode. Guessing one would make every datagram on some arbitrary
-/// port a candidate control message.
+/// Holds the control port because the operator chose it. rtpproxy's default
+/// control socket is a UNIX socket, which a passive capture cannot see at all;
+/// a UDP one is opt-in, on 22222 when no port is given. An operator names the
+/// port or there is nothing to decode, and assuming 22222 would make every
+/// datagram on that port a candidate control message.
 #[derive(Debug, Clone, Copy)]
 pub struct RtpproxyDecoder {
     /// The UDP port the relay's control socket listens on.
@@ -458,6 +461,160 @@ pub fn interpret(command: &RtpproxyControl, reply: &RtpproxyControl) -> Option<M
             _ => Meaning::Uninterpreted(*n),
         },
     })
+}
+
+use super::reconcile::RelayLink;
+
+/// Pairs rtpproxy's commands with their replies (RP-WIRE).
+///
+/// What sipnab needs is split across two datagrams: the command names the call
+/// and the reply names the port the relay opened, and only the cookie joins
+/// them. So a command that can open the call's media waits here until its
+/// reply arrives, and the pair comes out as the same [`RelayLink`] a relay's
+/// startup snapshot produces, so both reach the stream store one way.
+///
+/// Only `U` and `L` wait. `R` and `C` open recording streams, which are never
+/// the call's own media, and every other command opens nothing, so their
+/// replies have nothing to pair with and pass through.
+///
+/// Bounded. A relay that never answers, or a capture that saw one direction
+/// only, would otherwise grow this without limit; past `capacity` the oldest
+/// waiting command is dropped, and its reply later names nothing.
+#[derive(Debug)]
+pub struct Pairing {
+    /// Most unanswered commands held at once.
+    capacity: usize,
+    /// cookie -> (sequence it was stored under, the call it names).
+    waiting: std::collections::HashMap<String, (u64, String)>,
+    /// Arrival order, for eviction. Entries whose sequence no longer matches
+    /// `waiting` were answered or replaced and are skipped.
+    order: std::collections::VecDeque<(u64, String)>,
+    /// Sequence the next stored command gets.
+    next: u64,
+}
+
+impl Pairing {
+    /// An empty table holding at most `capacity` unanswered commands.
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            waiting: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+            next: 0,
+        }
+    }
+
+    /// Unanswered commands held.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.waiting.len()
+    }
+
+    /// Take one decoded datagram, and return the media it names once a reply
+    /// completes a command.
+    ///
+    /// A retransmitted command (rtpproxy retries reuse the cookie) replaces
+    /// the waiting one rather than adding a second, and a retransmitted reply
+    /// after its pair names nothing, so a retry never multiplies what is named.
+    pub fn observe(&mut self, control: RtpproxyControl) -> Option<RelayLink> {
+        match control {
+            RtpproxyControl::Command {
+                cookie, verb, args, ..
+            } => {
+                if creates(verb) == Some(Stream::Ordinary)
+                    && let Some(call_id) = args.into_iter().next()
+                {
+                    self.wait(cookie, call_id);
+                }
+                None
+            }
+            RtpproxyControl::Reply { cookie, reply } => {
+                let (_, call_id) = self.waiting.remove(&cookie)?;
+                let Reply::Media { port, address } = reply else {
+                    return None;
+                };
+                // Matched against packets, which carry addresses. A name would
+                // need resolving, and resolving what a sniffed datagram says is
+                // a lookup made on its sender's behalf.
+                let address = address.parse().ok()?;
+                Some(RelayLink {
+                    address,
+                    port,
+                    call_id,
+                })
+            }
+        }
+    }
+
+    /// Hold a command that can open the call's media until its reply comes,
+    /// dropping the oldest held command past `capacity`.
+    fn wait(&mut self, cookie: String, call_id: String) {
+        let seq = self.next;
+        self.next += 1;
+        self.waiting.insert(cookie.clone(), (seq, call_id));
+        self.order.push_back((seq, cookie));
+        while self.waiting.len() > self.capacity {
+            let Some((seq, cookie)) = self.order.pop_front() else {
+                break;
+            };
+            if self.waiting.get(&cookie).is_some_and(|(s, _)| *s == seq) {
+                self.waiting.remove(&cookie);
+            }
+        }
+        // Answered and replaced entries leave stale order entries behind;
+        // drop them before they outnumber the live ones.
+        if self.order.len() > self.capacity.saturating_mul(2) {
+            let waiting = &self.waiting;
+            self.order
+                .retain(|(seq, cookie)| waiting.get(cookie).is_some_and(|(s, _)| s == seq));
+        }
+    }
+}
+
+/// Unanswered commands held per relay before the oldest is dropped.
+///
+/// Far above what a healthy relay leaves waiting: rtpproxy answers within a
+/// round trip, so this fills only when replies are not being captured at all.
+const PAIRING_CAPACITY: usize = 4096;
+
+/// One pairing table per relay control socket the operator named.
+static PAIRINGS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, Pairing>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Decode a datagram to or from the relay control socket `control`, and pair
+/// it with what that socket has seen.
+///
+/// `None` when the datagram neither goes to nor comes from `control`, or is
+/// not rtpproxy control at all. `Some` with no link when it is control that
+/// names nothing yet. The table is process-wide so every capture worker pairs
+/// against one definition; `--cores` also sends a command and its reply to
+/// the same worker, since both travel between the same two hosts.
+#[must_use]
+pub fn observe_on(
+    control: std::net::SocketAddr,
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+    payload: &[u8],
+) -> Option<Option<RelayLink>> {
+    let to_relay = if dst == control {
+        true
+    } else if src == control {
+        false
+    } else {
+        return None;
+    };
+    let decoded = decode(payload, to_relay)?;
+    let mut tables = PAIRINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Some(
+        tables
+            .entry(control)
+            .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
+            .observe(decoded),
+    )
 }
 
 /// Statistics from an `I` (info) reply's free text (ST3).

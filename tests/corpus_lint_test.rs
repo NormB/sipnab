@@ -137,12 +137,14 @@ fn ingest(path: &Path) -> Option<Ingested> {
             }
             PacketAction::RelayControl {
                 sdp_links,
+                relay_links,
                 implementation,
                 delivery,
             } => {
                 sipnab::pipeline::apply_relay_control_links(
                     &mut out.streams,
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     parsed.input_origin,

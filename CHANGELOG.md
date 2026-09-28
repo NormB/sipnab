@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--rtpproxy-control ADDR:PORT` names the calls rtpproxy's media belongs
+  to.** sipnab decoded rtpproxy's control protocol but nothing in the binary
+  used it, so media relayed by rtpproxy was reported as orphaned. With this
+  flag sipnab reads the SIP proxy's commands and rtpproxy's replies on that one
+  socket, pairs them, and names each relayed stream's call, in the report, the
+  TUI (including a capture opened inside it) and under `--cores`. It is
+  passive: rtpproxy has no command that lists its sessions, so sipnab never
+  asks it anything. Recording streams are never named as a call's media.
+
 ### Changed
 
 - **The home page's voice-stack tiles name the role, not the product.** The

@@ -155,6 +155,9 @@ pub struct ParallelConfig {
     pub no_rtp: bool,
     /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`).
     pub quiet_bad_parse: bool,
+    /// `--rtpproxy-control`: the rtpproxy control socket whose traffic names
+    /// the relay's media.
+    pub rtpproxy_control: Option<std::net::SocketAddr>,
     /// Correlation header names for B2BUA leg matching (`sip.xcid`).
     /// Empty, the `DialogStore` default, turns the header strategy off.
     pub xcid_headers: Vec<String>,
@@ -365,6 +368,7 @@ fn reconstruct(
         no_dialog: cfg.no_dialog,
         no_rtp: cfg.no_rtp,
         sip_portrange: Some(cfg.portrange),
+        rtpproxy_control: cfg.rtpproxy_control,
         quiet_bad_parse: cfg.quiet_bad_parse,
     };
     let mut decrypt = MediaDecrypt::default();
@@ -390,13 +394,15 @@ fn reconstruct(
         }
         PacketAction::RelayControl {
             sdp_links,
+            relay_links,
             implementation,
             delivery,
         } => {
-            if !cfg.no_dialog && !sdp_links.is_empty() {
+            if !cfg.no_dialog && (!sdp_links.is_empty() || !relay_links.is_empty()) {
                 crate::pipeline::apply_relay_control_links(
                     ss,
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     pp.input_origin,
@@ -2635,6 +2641,7 @@ mod tests {
             dialog_tracking: crate::sip::dialog_store::DialogTracking::default(),
             no_rtp: false,
             quiet_bad_parse: false,
+            rtpproxy_control: None,
             xcid_headers: Vec::new(),
             leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
             reassembly: true,

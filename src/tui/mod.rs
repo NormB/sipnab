@@ -274,6 +274,10 @@ pub struct App {
     /// (which re-applies instead), a multi-file input, or no input, where the
     /// editor stays validate-only. Only the render/controller read it.
     rescan_path: Option<std::path::PathBuf>,
+    /// The command line's classification options, applied to a capture opened
+    /// from inside the TUI exactly as to one named with `-I`. Without them an
+    /// in-session open read the file as if no option had been given.
+    capture_options: crate::pipeline::PipelineOptions,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
     /// Displayed dialog list cache (filter+search+sort, derived per tick).
@@ -490,6 +494,7 @@ impl App {
             reconfigure_outcomes: None,
             bpf_pending: None,
             rescan_path: None,
+            capture_options: crate::pipeline::PipelineOptions::default(),
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -578,6 +583,12 @@ impl App {
             #[cfg(feature = "archive")]
             archive_keyring: Arc::new(parking_lot::Mutex::new(None)),
         }
+    }
+
+    /// Classify a capture opened from inside the TUI with the command line's
+    /// `options`, as a file named with `-I` is.
+    pub(crate) fn set_capture_options(&mut self, options: crate::pipeline::PipelineOptions) {
+        self.capture_options = options;
     }
 
     /// Start the session with `notes`, and make `path` the file the save

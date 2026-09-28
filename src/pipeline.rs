@@ -1766,6 +1766,7 @@ pub fn extract_sdp_links(
 pub fn apply_relay_control_links(
     ss: &mut rtp::stream_store::StreamStore,
     sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
+    relay_links: &[crate::relay::reconcile::RelayLink],
     implementation: crate::relay::RelayImplementation,
     delivery: crate::relay::ControlDelivery,
     input_origin: crate::capture::parse::InputOrigin,
@@ -1779,6 +1780,17 @@ pub fn apply_relay_control_links(
     );
     for (ip, port, call_id, media) in sdp_links {
         ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
+    }
+    // No rtpmap and no ptime: the relay named a port, not a codec.
+    for link in relay_links {
+        ss.link_endpoint_from(
+            link.address,
+            link.port,
+            &link.call_id,
+            &[],
+            None,
+            provenance,
+        );
     }
 }
 
@@ -1928,6 +1940,13 @@ pub struct PipelineOptions {
     /// only; RTP uses SDP-negotiated dynamic ports and is never gated).
     /// `None` disables the gate (live capture, where BPF already filtered).
     pub sip_portrange: Option<(u16, u16)>,
+    /// rtpproxy's control socket, named by `--rtpproxy-control`.
+    ///
+    /// Datagrams to and from this socket are read as rtpproxy control and name
+    /// the relay's media. `None` believes none: rtpproxy's UDP control socket
+    /// is opt-in and its datagrams carry no credential, so no socket is
+    /// assumed, not even the 22222 it uses when given no port.
+    pub rtpproxy_control: Option<std::net::SocketAddr>,
     /// Suppress the per-packet "SIP parse error" diagnostic for SIP-looking
     /// packets that fail to parse (`--quiet-bad-parse`). The
     /// packet is dropped either way; only the notice is silenced.
@@ -1998,6 +2017,11 @@ pub enum PacketAction {
     RelayControl {
         /// `(media_ip, media_port, call_id, media)` links to apply to streams.
         sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+        /// Media the relay named WITHOUT an SDP body. rtpproxy's protocol
+        /// carries no SDP, only the port it opened, so there is no `SdpMedia`
+        /// to put in `sdp_links` and inventing one would state codecs nobody
+        /// sent.
+        relay_links: Vec<crate::relay::reconcile::RelayLink>,
         /// Which relay said it, stated by the DECODER that read the message.
         ///
         /// Carried here so no consuming layer has to name a vendor to apply an
@@ -2278,6 +2302,7 @@ pub fn classify_packet(
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
         return PacketAction::RelayControl {
             sdp_links,
+            relay_links: Vec::new(),
             // `ng` over HEP, read off the wire: the decoder names its own
             // relay and the datagram carried no credential.
             implementation: crate::relay::RelayImplementation::Rtpengine,
@@ -2307,9 +2332,30 @@ pub fn classify_packet(
         // is not a reason to reconsider it as media.
         return PacketAction::RelayControl {
             sdp_links,
+            relay_links: Vec::new(),
             // `ng` over HEP, read off the wire: the decoder names its own
             // relay and the datagram carried no credential.
             implementation: crate::relay::RelayImplementation::Rtpengine,
+            delivery: crate::relay::ControlDelivery::BareDatagram,
+        };
+    }
+
+    // rtpproxy's control plane, on the one socket the operator named. Believed
+    // there and nowhere else: its datagrams carry no credential, so a socket
+    // the operator did not name, 22222 included, is not believed.
+    if pp.transport == TransportProto::Udp
+        && let Some(control) = opts.rtpproxy_control
+        && let Some(named) = crate::relay::rtpproxy::observe_on(
+            control,
+            std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+            std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            &pp.payload,
+        )
+    {
+        return PacketAction::RelayControl {
+            sdp_links: Vec::new(),
+            relay_links: named.into_iter().collect(),
+            implementation: crate::relay::RelayImplementation::Rtpproxy,
             delivery: crate::relay::ControlDelivery::BareDatagram,
         };
     }
@@ -2487,6 +2533,7 @@ pub fn process_packet(
         }
         PacketAction::RelayControl {
             sdp_links,
+            relay_links,
             implementation,
             delivery,
         } => {
@@ -2495,10 +2542,11 @@ pub fn process_packet(
             if opts.no_dialog {
                 return;
             }
-            if !sdp_links.is_empty() {
+            if !sdp_links.is_empty() || !relay_links.is_empty() {
                 apply_relay_control_links(
                     &mut stream_store.write(),
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     pp.input_origin,
@@ -3367,6 +3415,7 @@ mod relay_control_tests {
         super::apply_relay_control_links(
             &mut relay_store,
             &links,
+            &[],
             crate::relay::RelayImplementation::Rtpengine,
             crate::relay::ControlDelivery::BareDatagram,
             InputOrigin::Hep,
@@ -3427,6 +3476,7 @@ mod relay_control_tests {
         super::apply_relay_control_links(
             &mut store,
             &links,
+            &[],
             crate::relay::RelayImplementation::Rtpengine,
             crate::relay::ControlDelivery::BareDatagram,
             InputOrigin::Hep,
@@ -4000,5 +4050,180 @@ mod resolved_media_tests {
             "a foreign resolve replaced the set this test published"
         );
         super::reset_icmp_evidence();
+    }
+}
+
+/// rtpproxy's control plane on the capture path (RP-WIRE).
+///
+/// The relay is believed only on the socket the operator named, in both
+/// directions: commands TO it and replies FROM it. Each test names its own
+/// socket, because the pairing table is keyed by that socket and tests run in
+/// parallel.
+#[cfg(test)]
+mod rtpproxy_control_tests {
+    use super::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
+    use crate::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
+    use crate::relay::reconcile::RelayLink;
+    use crate::rtp::heuristic::RtpHeuristic;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    const PROXY: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+
+    fn udp(src: SocketAddr, dst: SocketAddr, text: &str) -> ParsedPacket {
+        ParsedPacket {
+            frame_bytes: None,
+            frame: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: src.ip(),
+            dst_addr: dst.ip(),
+            src_port: src.port(),
+            dst_port: dst.port(),
+            transport: TransportProto::Udp,
+            payload: text.as_bytes().to_vec().into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            dscp: None,
+            input_origin: InputOrigin::Wire,
+            hep: None,
+        }
+    }
+
+    fn classify(pp: &ParsedPacket, control: Option<SocketAddr>) -> PacketAction {
+        let opts = PipelineOptions {
+            rtpproxy_control: control,
+            ..PipelineOptions::default()
+        };
+        classify_packet(
+            pp,
+            &mut RtpHeuristic::new(),
+            &opts,
+            &mut MediaDecrypt::default(),
+        )
+    }
+
+    /// The links a `RelayControl` names, or `None` when it is not one.
+    fn relay_links(action: PacketAction) -> Option<Vec<RelayLink>> {
+        match action {
+            PacketAction::RelayControl {
+                relay_links,
+                implementation,
+                delivery,
+                ..
+            } => {
+                assert_eq!(implementation, crate::relay::RelayImplementation::Rtpproxy);
+                assert_eq!(delivery, crate::relay::ControlDelivery::BareDatagram);
+                Some(relay_links)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_command_and_its_reply_on_the_named_socket_name_the_relays_media() {
+        let relay: SocketAddr = "10.0.0.40:7722".parse().unwrap();
+        let proxy = SocketAddr::new(PROXY, 5060);
+        let command = udp(proxy, relay, "p2 U rp-cap-1 192.0.2.10 40000 ftag1\n");
+        assert_eq!(
+            relay_links(classify(&command, Some(relay))),
+            Some(vec![]),
+            "the command is control traffic, and names no port on its own"
+        );
+        let reply = udp(relay, proxy, "p2 49514 10.0.0.40\n");
+        assert_eq!(
+            relay_links(classify(&reply, Some(relay))),
+            Some(vec![RelayLink {
+                address: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 40)),
+                port: 49514,
+                call_id: "rp-cap-1".to_owned(),
+            }])
+        );
+    }
+
+    #[test]
+    fn without_a_named_socket_rtpproxy_traffic_is_not_believed() {
+        let relay: SocketAddr = "10.0.0.40:7723".parse().unwrap();
+        let proxy = SocketAddr::new(PROXY, 5060);
+        let command = udp(proxy, relay, "p2 U rp-cap-2 192.0.2.10 40000 ftag1\n");
+        let reply = udp(relay, proxy, "p2 49514 10.0.0.40\n");
+        assert_eq!(relay_links(classify(&command, None)), None);
+        assert_eq!(relay_links(classify(&reply, None)), None);
+    }
+
+    #[test]
+    fn the_same_port_on_another_host_is_not_the_named_relay() {
+        let named: SocketAddr = "10.0.0.40:7724".parse().unwrap();
+        let other: SocketAddr = "10.0.0.41:7724".parse().unwrap();
+        let proxy = SocketAddr::new(PROXY, 5060);
+        let command = udp(proxy, other, "p2 U rp-cap-3 192.0.2.10 40000 ftag1\n");
+        let reply = udp(other, proxy, "p2 49514 10.0.0.41\n");
+        assert_eq!(relay_links(classify(&command, Some(named))), None);
+        assert_eq!(relay_links(classify(&reply, Some(named))), None);
+    }
+
+    #[test]
+    fn a_named_link_attributes_the_media_that_arrives_afterwards() {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream_store::{EndpointAssertion, StreamStore};
+
+        let relay: SocketAddr = "10.0.0.40:7725".parse().unwrap();
+        let proxy = SocketAddr::new(PROXY, 5060);
+        let mut store = StreamStore::new(1000);
+        for pp in [
+            udp(proxy, relay, "a1 U rp-cap-4 192.0.2.10 40000 ftag1\n"),
+            udp(relay, proxy, "a1 49514 10.0.0.40\n"),
+        ] {
+            if let PacketAction::RelayControl {
+                sdp_links,
+                relay_links,
+                implementation,
+                delivery,
+            } = classify(&pp, Some(relay))
+            {
+                super::apply_relay_control_links(
+                    &mut store,
+                    &sdp_links,
+                    &relay_links,
+                    implementation,
+                    delivery,
+                    pp.input_origin,
+                    pp.timestamp,
+                );
+            }
+        }
+
+        let mut media = udp(
+            "192.0.2.30:20000".parse().unwrap(),
+            "10.0.0.40:49514".parse().unwrap(),
+            "",
+        );
+        media.payload = vec![0u8; 12 + 160].into();
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc: 0x0BAD_CAFE,
+            payload_offset: 12,
+        };
+        store.process_rtp(&media, &rtp, media.timestamp);
+
+        let named: Vec<_> = store.streams_for("rp-cap-4").collect();
+        assert_eq!(named.len(), 1, "the relay's port names the call's media");
+        assert_eq!(
+            named[0].dialog_assertion,
+            Some(EndpointAssertion::media_relay(
+                crate::relay::RelayImplementation::Rtpproxy,
+                crate::relay::ControlDelivery::BareDatagram,
+            )),
+            "rtpproxy asserted this over a bare datagram, and says so"
+        );
     }
 }

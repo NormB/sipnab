@@ -353,6 +353,7 @@ impl Mixed {
                 // None, as a live capture does: BPF already filtered.
                 sip_portrange: None,
                 quiet_bad_parse: true,
+                rtpproxy_control: None,
             },
         }
     }

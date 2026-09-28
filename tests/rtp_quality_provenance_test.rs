@@ -93,12 +93,14 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
             // which is how media on a standalone rtpengine host gets named.
             PacketAction::RelayControl {
                 sdp_links,
+                relay_links,
                 implementation,
                 delivery,
             } => {
                 pipeline::apply_relay_control_links(
                     &mut streams,
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     pp.input_origin,
@@ -360,12 +362,14 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
             }
             PacketAction::RelayControl {
                 sdp_links,
+                relay_links,
                 implementation,
                 delivery,
             } => {
                 pipeline::apply_relay_control_links(
                     &mut streams,
                     &sdp_links,
+                    &relay_links,
                     implementation,
                     delivery,
                     pp.input_origin,

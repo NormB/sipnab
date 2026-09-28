@@ -8560,7 +8560,8 @@ mod tests {
     // What is deliberately NOT driven here, by the shipped architecture
     // (ST9, `docs/design/relay-statistics-failures.md`): sipnab has ONE
     // transmitting control client and it speaks rtpengine; it never SENDS to
-    // rtpproxy, which it reads off the wire. So the rtpproxy-only rows -- the
+    // rtpproxy, whose control traffic it only reads, off the wire on the
+    // socket `--rtpproxy-control` names. So the rtpproxy-only rows -- the
     // bulk `G` partial that returns `E68` for the whole set (condition 5), the
     // six numeric rtpproxy `E`-codes (condition 4), the per-name `G` refusal
     // (condition 8) and the `;1` tag-rewrite `E50` (condition 10) -- have no
