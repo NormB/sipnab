@@ -29,6 +29,9 @@ entry that carries them.
   rtpengine" and "Run sipnab beside it". The rest follow: Homer's tile is
   "Call history", Prometheus's "Metrics", TFPS's "Attack blocking" and the
   vCon server's "Call records", each with "Use …" and "Run sipnab beside it".
+  Every tile's text now reads as working together: each voice-stack tile
+  says what its project does and how sipnab works beside it, and the
+  Inspect, Diagnose and Export tiles say how sipnab helps you and your team.
 
 ### Fixed
 

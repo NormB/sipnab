@@ -134,21 +134,21 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
         <h3>Inspect</h3>
-        <p>Ladder diagrams, auth collapse, retransmit folding, mark+delta timing — the whole call at a glance.</p>
+        <p>Read the whole call together with sipnab: ladder diagrams, auth exchanges collapsed, retransmits folded, and mark-and-delta timing to help you follow it at a glance.</p>
       </a>
       <a class="feature-card feature-card--green fade-in-up" href="{{ get_url(path='@/docs/cookbook.md') }}">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         </div>
         <h3>Diagnose</h3>
-        <p>Per-stream jitter, loss, and MOS. One-way audio, NAT mismatch, post-dial delay — found, not guessed.</p>
+        <p>Per-stream jitter, loss and MOS, with one-way audio, NAT mismatches and post-dial delay pointed out, so you and your team can start from the evidence.</p>
       </a>
       <a class="feature-card feature-card--blue fade-in-up" href="{{ get_url(path='@/docs/output-formats.md') }}">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </div>
         <h3>Export</h3>
-        <p>PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban, WAV — pipe it anywhere. The full list is below.</p>
+        <p>Share what you found in the formats your other tools already speak: PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban and WAV. The full list is below.</p>
       </a>
     </div>
   </div>
@@ -166,7 +166,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><line x1="8" y1="7" x2="8" y2="7"/><line x1="8" y1="17" x2="8" y2="17"/></svg>
         </div>
         <h3>SIP proxy</h3>
-        <p>Start with the proxy the other guides build on: OpenSIPS, from its packages or from source, or Kamailio, alone or both on one machine.</p>
+        <p>OpenSIPS and Kamailio carry your calls, and every other guide builds on them. Set up either one from its packages, OpenSIPS from source too, or both on one machine, with sipnab watching beside them.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/opensips.md') }}">Use OpenSIPS</a></li>
           <li><a href="{{ get_url(path='@/docs/opensips-sipnab.md') }}">Run sipnab beside it</a></li>
@@ -179,7 +179,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v12H7l-3 3z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
         </div>
         <h3>Call records</h3>
-        <p>Keep every call as a vCon: OpenSIPS records it over SIPREC into vcon-server, and sipnab adds what it observed on the wire, which is all a Kamailio stack has.</p>
+        <p>A vCon server keeps every call as a vCon. OpenSIPS records calls into it over SIPREC, and sipnab contributes what it observed on the wire, which is what a Kamailio stack can offer.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/vcon-server.md') }}">Use a vCon server</a></li>
           <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">Run sipnab beside it</a></li>
@@ -190,7 +190,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
         </div>
         <h3>Attack blocking</h3>
-        <p>Block SIP scanners and fraud in the kernel with TFPS, which drops them with XDP before they reach your SIP proxy, then see its blocks from sipnab.</p>
+        <p>TFPS stops SIP scanners and fraud in the kernel with XDP, before they reach your SIP proxy, and sipnab works beside it so you can see what it has blocked.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/tfps.md') }}">Use TFPS</a></li>
           <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">Run sipnab beside it</a></li>
@@ -201,7 +201,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 7 10 7 14 17 20 17"/><polyline points="4 17 10 17 14 7 20 7"/></svg>
         </div>
         <h3>Media relay</h3>
-        <p>Anchor every call's audio on a media relay, rtpengine, then let sipnab tie the media on the relay to the call it belongs to.</p>
+        <p>rtpengine anchors every call's audio, and sipnab works beside it to match the media on the relay with the call it belongs to.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/rtpengine-relay.md') }}">Use rtpengine</a></li>
           <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Run sipnab beside it</a></li>
@@ -212,7 +212,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="6"/><line x1="15.5" y1="15.5" x2="20" y2="20"/></svg>
         </div>
         <h3>Call history</h3>
-        <p>Keep a searchable history of every call in Homer, sent by OpenSIPS or Kamailio over HEP, and connect sipnab to the same feed.</p>
+        <p>Homer keeps a searchable history of every call your OpenSIPS or Kamailio sends it over HEP, and sipnab can join the same feed.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/homer.md') }}">Use Homer</a></li>
           <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">Run sipnab beside it</a></li>
@@ -223,7 +223,7 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></svg>
         </div>
         <h3>Metrics</h3>
-        <p>Graph your SIP proxy's statistics and sipnab's call and media series in one Prometheus and Grafana.</p>
+        <p>Prometheus and Grafana graph your SIP proxy's statistics, and sipnab adds its own call and media series beside them.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/prometheus.md') }}">Use Prometheus and Grafana</a></li>
           <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Run sipnab beside it</a></li>
