@@ -10912,3 +10912,51 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
         assert!(tile.contains(&link), "missing {link}:\n{tile}");
     }
 }
+
+/// The voice-stack tiles name the role a component plays, not the product
+/// (Norm, 2026-09-28: "homer is a product. maybe the tile title should not say
+/// homer."), and each pairs "Use <product>" with "Run sipnab beside it", as
+/// the SIP proxy tile does.
+#[test]
+fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
+    let page = read("website/templates/index.html");
+    for (role, guide, use_text, sipnab_guide) in [
+        (
+            "Call history",
+            "@/docs/homer.md",
+            "Use Homer",
+            "@/docs/homer-sipnab.md",
+        ),
+        (
+            "Metrics",
+            "@/docs/prometheus.md",
+            "Use Prometheus and Grafana",
+            "@/docs/prometheus-sipnab.md",
+        ),
+        (
+            "Attack blocking",
+            "@/docs/tfps.md",
+            "Use TFPS",
+            "@/docs/tfps-sipnab.md",
+        ),
+        (
+            "Call records",
+            "@/docs/vcon-server.md",
+            "Use a vCon server",
+            "@/docs/vcon-sipnab.md",
+        ),
+    ] {
+        let tile = page
+            .split("class=\"feature-card")
+            .find(|card| card.contains(guide))
+            .unwrap_or_else(|| panic!("no tile links {guide}"));
+        assert!(
+            tile.contains(&format!("<h3>{role}</h3>")),
+            "the tile linking {guide} is not headed \"{role}\":\n{tile}"
+        );
+        for (href, text) in [(guide, use_text), (sipnab_guide, "Run sipnab beside it")] {
+            let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+            assert!(tile.contains(&link), "missing {link}:\n{tile}");
+        }
+    }
+}

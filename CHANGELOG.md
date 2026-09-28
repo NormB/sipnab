@@ -26,7 +26,9 @@ entry that carries them.
 - **The home page's voice-stack tiles name the role, not the product.** The
   OpenSIPS and Kamailio tile is headed "SIP proxy", and the rtpengine tile
   "Media relay", with the same pair of links as the proxy tile: "Use
-  rtpengine" and "Run sipnab beside it".
+  rtpengine" and "Run sipnab beside it". The rest follow: Homer's tile is
+  "Call history", Prometheus's "Metrics", TFPS's "Attack blocking" and the
+  vCon server's "Call records", each with "Use …" and "Run sipnab beside it".
 
 ### Fixed
 
