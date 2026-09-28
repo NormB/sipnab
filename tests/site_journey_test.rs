@@ -10835,3 +10835,38 @@ fn homepage_voice_stack_section_links_every_stack_guide() {
          list different guides"
     );
 }
+
+/// Every home-page tile draws its colored top trim without a hover.
+///
+/// `.feature-card` alone has a transparent top border that turns to
+/// `inherit` (a white line) on hover; only a color modifier gives the trim
+/// its color at rest. The Homer tile shipped without one, so its trim was
+/// blank until the pointer was over it (reported by Norm, 2026-09-28).
+#[test]
+fn every_homepage_tile_has_a_color_modifier() {
+    let page = read("website/templates/index.html");
+    let bare: Vec<String> = page
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.contains("class=\"feature-card"))
+        .filter(|(_, l)| {
+            ![
+                "feature-card--amber",
+                "feature-card--green",
+                "feature-card--blue",
+            ]
+            .iter()
+            .any(|m| l.contains(m))
+        })
+        .map(|(i, l)| format!("line {}: {}", i + 1, l.trim()))
+        .collect();
+    assert!(
+        page.contains("class=\"feature-card"),
+        "the home page has no tiles; this test reads the wrong file"
+    );
+    assert!(
+        bare.is_empty(),
+        "tiles without a color modifier show no top trim until hovered:\n{}",
+        bare.join("\n")
+    );
+}

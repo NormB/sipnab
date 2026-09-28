@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The home page's Homer tile shows its colored top trim without a
+  hover.** It was the only tile without a color, so its trim was blank until
+  the pointer was over it, and then white. A test now checks that every tile
+  has one.
+
 ## [0.5.195] - 2026-09-28
 
 ### Changed
