@@ -37,6 +37,13 @@ entry that carries them.
   the pointer was over it, and then white. A test now checks that every tile
   has one.
 
+### Security
+
+- The end-to-end browser tests' `ip-address` dependency moves from 10.5.0 to
+  10.7.2, past two advisories published on 2026-09-28 (GHSA-rpw4-54j3-4h4q and
+  GHSA-2vr4-cq9g-pvrc, both fixed in 10.5.1). It is a test-harness dependency;
+  nothing in sipnab's binary or site uses it.
+
 ## [0.5.195] - 2026-09-28
 
 ### Changed
