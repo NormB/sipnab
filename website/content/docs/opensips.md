@@ -12,19 +12,20 @@ server, TFPS, rtpengine, Homer, Prometheus.
 
 This guide installs OpenSIPS, sets it up as a proxy that routes each call and
 stays in its signaling path, and proves it with a test call. This guide does
-not use sipnab. When you have this working,
-[Run sipnab beside OpenSIPS](@/docs/opensips-sipnab.md) adds sipnab. If you use
-Kamailio instead, see [Use Kamailio as your voice stack's SIP server](@/docs/kamailio.md).
+not use sipnab. When you have this working, [Run sipnab beside
+OpenSIPS](@/docs/opensips-sipnab.md) adds sipnab. If you use Kamailio instead, see
+[Use Kamailio as your voice stack's SIP server](@/docs/kamailio.md).
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-27, on
-x86_64 virtual machines with 2 cores and 3 GB of memory. The 4.0 packages ran
-on a clean Ubuntu 24.04.5 (kernel 6.8.0), and on Debian 13 (kernel 6.12.63)
-beside Kamailio. The source build ran on a clean Debian 13 and a clean Ubuntu
-24.04.5.
-[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
-ran on both.
+Every block on this page ran as written, in order, on 2026-09-28, on clean
+x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13 (kernel
+6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, the source build ran on a
+machine with nothing installed, and the 4.0 packages on a machine already
+running Kamailio. [OpenSIPS and Kamailio on one
+machine](#opensips-and-kamailio-on-one-machine) and the uninstall ran on both.
+On Debian 13, causing each fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes.
 
 | Software | Version or commit |
 |---|---|
@@ -319,19 +320,20 @@ module package beside `opensips`:
 
 Developers often run both, to compare them or to test against each. They can
 share a machine as long as they do not share a port. Keep OpenSIPS on 5060 and
-move Kamailio to 5062, as
-[the Kamailio guide's section](@/docs/kamailio.md#opensips-and-kamailio-on-one-machine)
-describes. Give sipnab both ports with `--portrange 5060-5062`.
+move Kamailio to 5062, as [the Kamailio guide's
+section](@/docs/kamailio.md#opensips-and-kamailio-on-one-machine) describes. Give
+sipnab both ports with `--portrange 5060-5062`.
 
 ## When something does not work
 
 - **`opensips -C` reports `could not open module <signaling.so>`.** The
   `mpath` line is missing or names the wrong directory. OpenSIPS does not
   fall back to its own module directory without it.
-- **`opensips-cli` cannot connect.** `mi_fifo` is not loaded, or its
-  `fifo_name` is not `/run/opensips/opensips_fifo`, where `opensips-cli` looks.
+- **`opensips-cli` says `FIFO file /var/run/opensips/opensips_fifo does not
+  exist`.** OpenSIPS is not running, `mi_fifo` is not loaded, or its
+  `fifo_name` is not `/run/opensips/opensips_fifo`, where `opensips-cli`
+  looks.
 - **`opensips-cli` says `no command 'get_statistics' in module 'mi'`.** That
-  is the OpenSIPS 3 name. OpenSIPS 4 calls it `statistics:get`, and the error
-  lists the names it accepts.
+  is the OpenSIPS 3 name. OpenSIPS 4 calls it `statistics:get`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
   set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.

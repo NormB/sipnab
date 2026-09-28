@@ -15,11 +15,12 @@ This guide adds sipnab to the Kamailio proxy from
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-27, with
+Every block on this page ran as written, in order, on 2026-09-28, with
 sipnab 0.5.193 from its release package, on the Debian 13 (kernel 6.12.63) and
 Ubuntu 24.04.5 (kernel 6.8.0) machines that [the Kamailio guide](@/docs/kamailio.md)
-had set up. The section with OpenSIPS on the same machine ran on Debian 13. The
-examples use `192.0.2.10` as the machine's address.
+had set up, alone and beside OpenSIPS. On Debian 13, causing the fault under
+[When something does not work](#when-something-does-not-work) produced the
+message it quotes. The examples use `192.0.2.10` as the machine's address.
 
 ## 1. Install sipnab
 
@@ -65,9 +66,9 @@ For the same view in a terminal interface, which updates as calls happen, run
 
 ## With OpenSIPS on the same machine
 
-With OpenSIPS on 5060 and Kamailio on 5062, as
-[OpenSIPS and Kamailio on one machine](@/docs/kamailio.md#opensips-and-kamailio-on-one-machine)
-sets them up, give sipnab both ports:
+With OpenSIPS on 5060 and Kamailio on 5062, as [OpenSIPS and Kamailio on one
+machine](@/docs/kamailio.md#opensips-and-kamailio-on-one-machine) sets them up, give
+sipnab both ports:
 
 ```bash
 sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062

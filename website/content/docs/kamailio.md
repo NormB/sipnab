@@ -17,13 +17,14 @@ this working, [Run sipnab beside Kamailio](@/docs/kamailio-sipnab.md) adds sipna
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-27, on
-x86_64 virtual machines with 2 cores and 3 GB of memory: on a clean Debian 13
-(kernel 6.12.63) and a clean Ubuntu 24.04.5 (kernel 6.8.0), and on Ubuntu
-24.04.5 machines already running OpenSIPS, from its packages and from source,
-with step 2's changes for that case.
-[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
-ran on both distributions.
+Every block on this page ran as written, in order, on 2026-09-28, on clean
+x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13 (kernel
+6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, the install ran on a
+machine with nothing installed, and on a machine already running OpenSIPS, with
+step 2's changes for that case. [OpenSIPS and Kamailio on one
+machine](#opensips-and-kamailio-on-one-machine) and the uninstall ran on both.
+On Debian 13, causing each fault under [When something does not
+work](#when-something-does-not-work) produced what it describes.
 
 | Software | Version |
 |---|---|
@@ -63,8 +64,8 @@ The key's fingerprint, which `gpg --show-keys` prints, is
 The Kamailio package starts Kamailio the moment it installs, on its sample
 configuration, which listens on port 5060 of every address. The `policy-rc.d`
 file around the install is Debian's way to tell a package not to start its
-service, and the block removes it straight after. Kamailio stays stopped until the
-next step has given it your configuration.
+service, and the block removes it straight after. Kamailio stays stopped until
+the next step has given it your configuration.
 
 That matters most on a machine already running a SIP server on 5060, such as
 OpenSIPS. Two SIP servers on one UDP port do not refuse each other: the one
@@ -164,9 +165,9 @@ What the parts do:
 ## 3. Place a test call
 
 SIPp plays both ends: a callee on this machine, and a caller that dials through
-Kamailio. SIPp's built-in caller ignores the `Record-Route` header, so its
-`BYE` would miss the proxy. The two route `sed` lines make it honor the route
-set, the way a real phone does. The callee writes what it receives to
+Kamailio. SIPp's built-in caller ignores the `Record-Route` header, so Kamailio
+cannot route its `ACK` and `BYE`. The two route `sed` lines make it honor the
+route set, the way a real phone does. The callee writes what it receives to
 `uas.msg`:
 
 ```bash
@@ -274,9 +275,15 @@ Kamailio:
 
 ## When something does not work
 
-- **`kamailio -c` reports `ERROR: bad config file`.** It names the line.
-  Check that every function the script calls has its module loaded.
-- **`kamcmd` says it cannot connect.** `ctl.so` is not loaded, or Kamailio is
-  not running.
-- **The test call's `BYE` gets no answer.** The caller ignored the route set.
-  Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+- **`kamailio -c` reports `parse error in config file` and `unknown command,
+  missing loadmodule?`.** The script calls a function whose module is not
+  loaded. The error names the line and column, and the line before it names
+  the function, such as `failed to find command is_method`. Load the module
+  that provides it.
+- **`kamcmd` says `connect(//var/run/kamailio/kamailio_ctl): No such file or
+  directory`.** Kamailio is not running, or `ctl.so` is not loaded.
+- **The test call's `BYE` gets no answer.** The caller ignored the route set,
+  so Kamailio dropped its `ACK` and `BYE`. SIPp can still report the call as
+  successful: the callee, which never got the `ACK`, sends its `200 OK` again,
+  and SIPp takes one of those for the `BYE`'s answer. Use the edited
+  `uac_rr.xml`, not SIPp's built-in `uac`.

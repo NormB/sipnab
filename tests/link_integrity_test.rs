@@ -1058,7 +1058,11 @@ fn wiki_intra_docs_links_resolve() {
     // links vcon-sipnab.md's), vcon-sipnab.md +7, homer-sipnab.md +2,
     // prometheus-sipnab.md +2, rtpengine-sipnab.md +1, tfps.md +1.
     // docs/README.md +4 lists the four new pages.
-    const EXPECTED_WIKI_LINKS: usize = 1134;
+    // 1134 -> 1138: the four base guides' Tested on sections each name the
+    // "When something does not work" section whose faults were reproduced:
+    // opensips.md, kamailio.md, opensips-sipnab.md and kamailio-sipnab.md +1
+    // each, attributed per file against HEAD (6fb93c6b).
+    const EXPECTED_WIKI_LINKS: usize = 1138;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

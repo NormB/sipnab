@@ -11,13 +11,13 @@ the packages or built from source.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-27, with
-sipnab 0.5.193 from its release package, on the machines
-[the OpenSIPS guide](opensips.md) had set up: Debian 13 (kernel 6.12.63) with
-OpenSIPS built from source, and Ubuntu 24.04.5 (kernel 6.8.0) with OpenSIPS
-both from the packages and from source. The section with Kamailio on the same
-machine ran on Ubuntu 24.04.5. The examples use `192.0.2.10` as the machine's
-address.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.193 from its release package, on the Debian 13 (kernel 6.12.63) and
+Ubuntu 24.04.5 (kernel 6.8.0) machines that [the OpenSIPS guide](opensips.md)
+had set up, with OpenSIPS from source and from the packages, and with
+Kamailio beside it. On Debian 13, causing the fault under
+[When something does not work](#when-something-does-not-work) produced the
+message it quotes. The examples use `192.0.2.10` as the machine's address.
 
 ## 1. Install sipnab
 
@@ -63,9 +63,9 @@ For the same view in a terminal interface, which updates as calls happen, run
 
 ## With Kamailio on the same machine
 
-With OpenSIPS on 5060 and Kamailio on 5062, as
-[OpenSIPS and Kamailio on one machine](opensips.md#opensips-and-kamailio-on-one-machine)
-sets them up, give sipnab both ports:
+With OpenSIPS on 5060 and Kamailio on 5062, as [OpenSIPS and Kamailio on one
+machine](opensips.md#opensips-and-kamailio-on-one-machine) sets them up, give
+sipnab both ports:
 
 ```bash
 sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
