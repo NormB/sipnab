@@ -8,6 +8,31 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Every step of the fourteen voice-stack guides ran as written on clean
+  Debian 13 and Ubuntu 24.04 machines**, including their troubleshooting
+  items and uninstall steps. The runs moved the guides:
+  - Putting rtpengine, Homer, Prometheus or the vCon server on its own
+    machine is now a set of commands, and each ran across two machines.
+  - The pages now wait for the vCon server's database, the recorder, Homer's
+    first capture and Prometheus's first scrape, which each lost a race on
+    some run.
+  - Troubleshooting items quote what the software prints.
+  - The TFPS guides build TFPS from `master` at `984577dc`, the first commit
+    with `tfps_ctl --json`, until a release carries it.
+  - The OpenSIPS and Kamailio guides explain the apt lock that unattended
+    upgrades hold on a new machine.
+  - Each page's "Tested on" section names the machines and the sections they
+    covered.
+
+### Fixed
+
+- Four code comments said `xcid_headers` defaults to `X-Call-ID`. It
+  defaults to empty, as the configuration reference says.
+
 ## [0.5.194] - 2026-09-28
 
 ### Added

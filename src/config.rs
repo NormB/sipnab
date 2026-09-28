@@ -379,8 +379,9 @@ pub struct TfpsConfig {
 #[serde(default)]
 pub struct SipConfig {
     /// Header names used for B2BUA leg correlation (`sip.xcid`).
-    /// Defaults to `["X-Call-ID"]` when unset or empty. Set to add
-    /// carrier-specific headers, e.g. `["X-Call-ID", "X-CID"]`.
+    /// Empty when unset: sipnab picks no `X-` name for you (RFC 6648), and the
+    /// header strategy is off until you name your estate's headers, e.g.
+    /// `["X-Call-ID", "X-CID"]`.
     pub xcid_headers: Option<Vec<String>>,
     /// How far apart, in milliseconds, two legs of one call may be created and
     /// still correlate on timing alone (default: 2000).

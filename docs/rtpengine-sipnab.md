@@ -36,18 +36,16 @@ call.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package:
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): the relay beside OpenSIPS, from source and from the packages, and beside
+Kamailio, and on its own machine with the proxy on another.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
-- On the Ubuntu 24.04.5 machine (kernel 6.8.0) that
-  [the rtpengine guide](rtpengine-relay.md) had set up, with OpenSIPS and
-  rtpengine on one machine.
-- With rtpengine moved to a second machine, a clean Debian 13 (kernel
-  6.12.63), and OpenSIPS left on the first.
-
-Both were x86_64 virtual machines with 2 cores. The examples use `192.0.2.10`
-for the machine that runs OpenSIPS and `192.0.2.20` for the relay's own
-machine. Replace them with yours.
+The examples use `192.0.2.10` for the machine that runs the SIP proxy and
+`192.0.2.20` for the relay's own machine. Replace them with yours.
 
 ## 1. Install sipnab
 

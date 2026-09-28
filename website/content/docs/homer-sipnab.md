@@ -23,13 +23,17 @@ Kamailio, and says how. Step 3 is the same for both.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package: the receiver on the Debian 13
-machine (kernel 6.12.63) that [the Homer guide](@/docs/homer.md) had set up, and the
-source on a second machine, Ubuntu 24.04.5 (kernel 6.8.0). Both were x86_64
-virtual machines with 2 cores. The examples use `192.0.2.10` for the machine
-that runs OpenSIPS and Homer, and `192.0.2.20` for the second machine. Replace
-them with yours.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, and Kamailio, and as a source
+on a second machine.
+On Debian 13, causing the first fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The second needs a firewall between two machines, and did not
+run.
+
+The examples use `192.0.2.10` for the machine that runs the SIP proxy and
+Homer, and `192.0.2.20` for the second machine. Replace them with yours.
 
 ## 1. Install sipnab
 

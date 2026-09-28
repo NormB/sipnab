@@ -32670,19 +32670,21 @@ parts live on different machines.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- Every step, with OpenSIPS built in step 4: on a clean Debian 13 (kernel
-  6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-25, with an earlier
-  step 5 that named the source build's paths.
-- On 2026-09-27, with rtpengine already relaying as
-  [the rtpengine guide](rtpengine-relay.md) sets it up, so without step 3:
-  OpenSIPS rebuilt with `siprec` on Debian 13, and the OpenSIPS 4.0 packages on
-  Ubuntu 24.04.5.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [On different machines](#put-the-parts-on-different-machines), with the
+  vCon server on its own machine.
 
-The commands pin the components to the versions below. Newer commits may behave
-differently, and pinning them keeps the guide describing what you get.
+[With Kamailio](#with-kamailio-a-gap) ran with
+[the sipnab page](vcon-sipnab.md). On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to
+the versions below. Newer commits may behave differently, and pinning them
+keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
@@ -32884,15 +32886,18 @@ cd /opt/vcon
 docker compose up -d --build
 until curl -sf localhost:8000/health; do sleep 2; done; echo
 until docker compose logs conserver | grep -q 'Worker-1 started'; do sleep 2; done
+until docker compose exec -T postgres pg_isready -q -h 127.0.0.1 -U vcon -d vcon; do sleep 2; done
 docker compose ps
 ```
 
 The API takes a few seconds to start, so the first `until` line waits for
 `/health` to answer `{"status":"healthy",...}`. The conserver, which stores
 what the API queues, starts later: on a fresh machine its worker came up about
-15 seconds after the API answered. The second `until` line waits for it. All
-four services then show `running`, and `valkey` and `postgres` also show
-`healthy`.
+15 seconds after the API answered. The second `until` line waits for it. On its
+first start PostgreSQL creates its database with a temporary server, then stops
+it and starts the real one, so the third `until` line waits for that one to
+answer on the network, where the temporary server never listens. All four
+services then show `running`, and `valkey` and `postgres` also show `healthy`.
 
 ### Prove it stores what it accepts
 
@@ -33265,11 +33270,11 @@ services:
     restart: unless-stopped
 EOF
 docker compose up -d --build
-sleep 5
-curl -s 127.0.0.1:8081/healthz
+until curl -fs 127.0.0.1:8081/healthz; do sleep 2; done; echo
 ```
 
-The health check answers `{"status": "ok", ...}`. Four settings deserve a word:
+The recorder takes a few seconds to start after its container does, so the
+last line waits until the health check answers `{"status": "ok", ...}`. Four settings deserve a word:
 
 - **`sip_port_tls: 5091` with no certificate.** TLS stays off. The adapter's
   own `config.yaml` points at certificate files that do not exist, and it does
@@ -33430,18 +33435,40 @@ Kamailio's port.
 
 ## Put the parts on different machines
 
-Nothing above depends on sharing a machine except the addresses:
+**The vCon server on its own machine.** The vCon server, Valkey and PostgreSQL
+can have a machine to themselves, here `192.0.2.20`, while the recorder stays
+beside the SIP proxy and rtpengine, which send it the audio. Follow steps 1 and
+2 on that machine. On the proxy's machine, do steps 3 to 5, then fetch the
+recorder's key before step 6. Step 6 reads it from `/opt/vcon/config.yml`, so
+this writes that file with the key and nothing else, not the database
+password:
 
-- **vcon-server on its own machine.** Change the recorder's webhook `url` to
-  that machine's address. Port 8000 is now reachable from the network, so allow
-  it only from the machines that post vCons.
-- **The recorder on its own machine.** Change the address in
-  `siprec_start_recording()` to the recorder's, set `listen_address` and
-  `SIPREC_PUBLIC_IP` to the address OpenSIPS and rtpengine reach it on, and open
-  its SIP port and its audio range (40000-40999) to them.
-- **rtpengine on its own machine.** Change `rtpengine_sock` to that machine and
-  make rtpengine's control port listen on an address OpenSIPS can reach
-  (`listen-ng` in `/etc/rtpengine/rtpengine.conf`).
+```bash
+# Run all of these, in order.
+sudo mkdir -p /opt/vcon && sudo chown "$USER": /opt/vcon
+ssh 192.0.2.20 "grep '^  siprec: ' /opt/vcon/config.yml" > /opt/vcon/config.yml
+chmod 600 /opt/vcon/config.yml
+grep -c '^  siprec: "' /opt/vcon/config.yml
+```
+
+It prints 1. Then do step 6, and send the recorder's vCons to the vCon server's
+address in place of the loopback one:
+
+```bash
+# Run all of these, in order.
+cd /opt/siprec
+sed -i 's|url: "http://127.0.0.1:8000/|url: "http://192.0.2.20:8000/|' config.yaml
+grep -n 'url:' config.yaml
+docker compose up -d --force-recreate
+```
+
+Steps 7 and 8 then work as written, with step 8's database query run on the
+vCon server's machine. Port 8000 on it is now reachable from the network, so
+allow it only from the machines that post vCons.
+
+This guide covers that split only. The recorder receives the audio from
+rtpengine, so moving either one to another machine changes the addresses both
+of them and OpenSIPS use, and this guide has not run that.
 
 ## When something does not work
 
@@ -33494,10 +33521,13 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 
 ## Tested on
 
-Run on 2026-09-25 on the Debian 13 x86_64 machine from the vCon server guide,
-with sipnab from its `.deb`, and again on 2026-09-27 with sipnab 0.5.193: beside
-OpenSIPS built from source on Debian 13, beside Kamailio on Debian 13, and with
-both on one machine on Ubuntu 24.04.5.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
+machine.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
 ## 1. Add an ingress list and a chain for sipnab
 
@@ -33740,8 +33770,21 @@ the vCon server.
 - **The forwarder stops with `answered 403`.** The key in
   `/etc/sipnab/vcon-forward.env` does not match the `sipnab` key in
   `config.yml`.
-- **Files pile up in `rejected/`.** vcon-server refused them. Its log says why:
-  `docker compose logs conserver`.
+- **Files pile up in `rejected/`.** vcon-server refused them with a `4xx` other
+  than `401`, `403` or `404`. The forwarder's journal names each file it moved
+  there, and vcon-server's API logs only the status, such as `422`. To read the
+  server's reason, post one of them by hand:
+
+  ```bash
+  # Run all of these, in order.
+  F=$(sudo ls /var/spool/sipnab-vcon/rejected | head -1)
+  KEY=$(sudo sed -n 's/^VCON_INGRESS_TOKEN=//p' /etc/sipnab/vcon-forward.env)
+  sudo cat "/var/spool/sipnab-vcon/rejected/$F" | curl -s -w '\n' -X POST \
+    "localhost:8000/vcon/external-ingress?ingress_list=sipnab" \
+    -H "x-conserver-api-token: $KEY" -H 'Content-Type: application/json' --data-binary @-
+  ```
+
+  The answer names the field and what was wrong with it.
 
 ---
 
@@ -33773,12 +33816,15 @@ Two terms used below:
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 on a
-clean Ubuntu 24.04.5 virtual machine (kernel `6.8.0-139-generic`), and step by
-step on a clean Debian 13 one (kernel `6.12.63+deb13-amd64`). Both were x86_64
-with 2 cores and 2 GB of memory, and used the
-[TFPS v0.2.1](https://github.com/sippulse/tfps/releases/tag/v0.2.1) release.
-TFPS's prebuilt binaries are x86_64 only.
+Every block on this page, and every command in step 6's table, ran as
+written, in order, on 2026-09-28, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0), with a second machine playing the
+attacker, with TFPS built from master at
+[`984577dc`](https://github.com/sippulse/tfps/commit/984577dc). On Debian 13,
+causing each fault under
+[When something does not work](#when-something-does-not-work) produced what it
+describes, apart from a kernel without BTF, which none of the machines had: the
+installer's source prints that message.
 
 The examples use `192.0.2.20` for the TFPS machine and `198.51.100.60` for a second
 machine that plays the attacker. Replace both with yours.
@@ -33798,39 +33844,34 @@ it.
 
 ## 2. Install TFPS
 
-Download the release and check it against the checksum published beside it:
+Build TFPS from its master branch, at
+[`984577dc`](https://github.com/sippulse/tfps/commit/984577dc). The latest
+release, v0.2.1, has no `--json` option, which
+[Let sipnab see and control TFPS](tfps-sipnab.md) needs. Master has it, merged
+on 2026-09-18, and no release carries it yet. When one does, install that
+release instead.
+
+The installer compiles the XDP program on this machine. It installs `clang` and
+`bpftool` for that, but not the BPF headers the program includes, so the first
+line installs them with `git`:
 
 ```bash
 # Run all of these, in order.
-mkdir -p ~/tfps && cd ~/tfps
-curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz
-curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz.sha256
-sha256sum -c tfps-x86_64-linux-musl.tar.gz.sha256
-tar xzf tfps-x86_64-linux-musl.tar.gz
-```
-
-`sha256sum` prints `tfps-x86_64-linux-musl.tar.gz: OK`.
-
-The installer compiles the XDP program on this machine. It installs `clang` and
-`bpftool` for that, but not the BPF headers the program includes, so install
-them first:
-
-```bash
-sudo apt-get install -y libbpf-dev
+sudo apt-get install -y git libbpf-dev
+sudo git clone https://github.com/sippulse/tfps.git /usr/local/src/tfps
+sudo git -C /usr/local/src/tfps checkout 984577dc
+cd /usr/local/src/tfps
+sudo TMPDIR=/var/tmp sh packaging/install.sh
 ```
 
 Without `libbpf-dev` the install stops at `fatal error: 'bpf/bpf_helpers.h' file
 not found`.
 
-Run the installer from the tarball you checked. Pointing it at the file with
-`TFPS_TARBALL` makes it install exactly those bytes. The one-line
-`curl ... | sh` form on TFPS's site fetches master's installer script instead:
-
-```bash
-# Run all of these, in order.
-cd ~/tfps
-sudo TFPS_TARBALL="$PWD/tfps-x86_64-linux-musl.tar.gz" sh tfps-x86_64-linux-musl/packaging/install.sh
-```
+The build downloads a temporary Rust toolchain, compiles, installs and removes
+the toolchain again. It needs about 1.5 GB of free memory. `TMPDIR=/var/tmp`
+matters on Debian 13, where `/tmp` is a RAM disk sized to half the memory: on a
+2 GB machine the toolchain does not fit there and the build fails with `No
+space left on device`.
 
 It ends with `tfps is running`. What it installed:
 
@@ -33971,25 +34012,30 @@ instead. Add a drop-in rather than editing the unit, because an upgrade replaces
 the unit:
 
 ```bash
-sudo systemctl edit tfps
-```
-
-```ini
+# Run all of these, in order.
+sudo mkdir -p /etc/systemd/system/tfps.service.d
+sudo tee /etc/systemd/system/tfps.service.d/observe.conf >/dev/null <<'EOF'
 [Service]
 ExecStart=
 ExecStart=/usr/local/bin/tfps --no-enforce
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart tfps
 ```
 
-In this mode TFPS attaches no XDP program, so `tfps_ctl banned` answers `no loaded
-eBPF map called 'blocked'`: there is nothing to list. The journal holds the
-decisions, as `WOULD BLOCK peer=... (observe only)`.
+In this mode TFPS attaches no XDP program, so `tfps_ctl banned` answers
+``no loaded eBPF map called `blocked` — is tfps running, and are you root?``:
+there is nothing to list. The journal holds the decisions, as `WOULD BLOCK
+peer=... (observe only)`.
 
 To start blocking, remove the drop-in and restart:
 
 ```bash
 # Run all of these, in order.
-sudo systemctl revert tfps
+sudo rm /etc/systemd/system/tfps.service.d/observe.conf
+sudo systemctl daemon-reload
 sudo systemctl restart tfps
+sudo tfps_ctl status
 ```
 
 **Upgrade** by running the installer again with the newer tarball. It replaces
@@ -34059,40 +34105,32 @@ The [REST API reference](rest-api.md) gives every request and response.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 and
-2026-09-26, on x86_64 virtual machines. The same-machine setup ran on Ubuntu
-24.04.5. The different-machine setup ran with sipnab on Debian 13, reaching
-TFPS on the Ubuntu one over SSH. Both used sipnab's `.deb`.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): sipnab beside TFPS and on a second machine reaching it over SSH, with TFPS
+built from master.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
-## 1. Build TFPS from master
+## 1. Check that TFPS answers in JSON
 
 sipnab reads `tfps_ctl`'s answers as JSON, asking with `--json`. That option is
 on TFPS's master branch, merged 2026-09-18 as
 [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc), and is in no
-release yet: v0.2.1 answers `unknown option`. Until a release carries it, build
-master. The installer builds from a checkout and upgrades the release in place,
-keeping `/etc/tfps/config.json` and what TFPS has learned:
+release yet: v0.2.1 answers `unknown option: --json`.
+[Add TFPS to your voice stack](tfps.md) builds that commit. If your TFPS is a
+release, run [its step 2](tfps.md#2-install-tfps): the installer builds from the
+checkout and upgrades the release in place, keeping `/etc/tfps/config.json` and
+what TFPS has learned. Then check:
 
 ```bash
-# Run all of these, in order.
-sudo apt-get install -y git libbpf-dev
-sudo git clone https://github.com/sippulse/tfps.git /usr/local/src/tfps
-sudo git -C /usr/local/src/tfps checkout 984577dc
-cd /usr/local/src/tfps
-sudo TMPDIR=/var/tmp sh packaging/install.sh
 sudo tfps_ctl status --json
 ```
 
-The build downloads a temporary Rust toolchain, compiles, installs and removes
-the toolchain again. It needs about 1.5 GB of free memory.
-
-`TMPDIR=/var/tmp` matters on Debian 13, where `/tmp` is a RAM disk sized to half
-the memory: on a 2 GB machine the toolchain does not fit there and the build
-fails with `No space left on device`.
-
-The last command prints one line of JSON, starting
-`{"enforcement":"active",...`. This build still calls itself `0.2.1` in that
-line, because master has not changed its version number since the release.
+It prints one line of JSON, starting `{"enforcement":"active",...`. This build
+still calls itself `0.2.1` in that line, because master has not changed its
+version number since the release.
 
 ## 2. Install sipnab
 
@@ -34141,7 +34179,7 @@ capture does:
 
 - **To read or change blocks,** `tfps_ctl` has to find TFPS's block map in the
   kernel by name. That takes `CAP_BPF` and `CAP_SYS_ADMIN`. With `CAP_BPF` alone
-  it fails with `no loaded eBPF map called 'blocked'`.
+  it fails with ``no loaded eBPF map called `blocked` ``.
 - **To ban,** `tfps_ctl` reads `/etc/tfps/config.json`, to refuse addresses you
   told TFPS to trust. The file is readable by root only.
 
@@ -34284,14 +34322,17 @@ The `curl` commands from section 3 work unchanged.
 
 - **`unknown option: --json`.** The TFPS in use is a release. Build master, as
   in step 1.
-- **`no loaded eBPF map called 'blocked' — is tfps running, and are you root?`**
+- **``no loaded eBPF map called `blocked` — is tfps running, and are you root?``**
   Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
 - **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the
   `sipnab` group, as in section 3.
 - **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
   yet.
-- **`installed: false`.** sipnab cannot find `tfps_ctl`. Check the path given to
-  `--tfps-ctl`.
+- **`installed: false`, and the reason says `tfps_ctl` was not found on
+  `PATH`.** The service runs without `--tfps-ctl`, and its `PATH` has no
+  `tfps_ctl`. Name it with `--tfps-ctl`.
+- **`502` with `cannot run ...: No such file or directory`.** The path given to
+  `--tfps-ctl` does not exist. Check it.
 
 ---
 
@@ -34328,18 +34369,19 @@ rtpengine has a machine to itself.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built in step 3: on a clean Debian 13 (kernel 6.12.63) on
-  2026-09-27, and on a clean Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with
-  an earlier step 4 that named the source build's paths.
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On its own machine](#put-rtpengine-on-its-own-machine), on two machines.
 
-The commands pin the components to the versions below. Newer commits may behave
-differently, and pinning them keeps the guide describing what you get.
+On Debian 13, causing each fault under [When something does not
+work](#when-something-does-not-work) produced what it describes. The commands
+pin the components to the versions below. Newer commits may behave differently,
+and pinning them keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
@@ -34829,34 +34871,57 @@ through OpenSIPS.
 ## Put rtpengine on its own machine
 
 A busy relay usually gets a machine to itself, often with a public address,
-while OpenSIPS stays where it is. Three things change:
+while the SIP proxy stays where it is. The examples use `192.0.2.20` for the
+relay's machine. Set it up with steps 1 and 2 there, then make two changes.
 
-- **The control port.** On the relay, set `listen-ng` to an address OpenSIPS
-  can reach, such as `listen-ng = 192.0.2.20:2223`, and restart rtpengine. The
-  ng protocol has no authentication, so allow that port only from your
-  OpenSIPS machines, in the relay's firewall.
-- **OpenSIPS's socket.** Point `rtpengine_sock` at it:
-  `modparam("rtpengine", "rtpengine_sock", "udp:192.0.2.20:2223")`, then
-  restart OpenSIPS. Several relays can share the load: list them all in one
-  `rtpengine_sock` value, separated by spaces.
-- **The media ports.** Open UDP 30000-39999 on the relay to the phones and
-  carriers that send it audio. In `[interface-default]`, set `address` to the
-  address they reach it on. If that address is a public one mapped by NAT to a
-  private one, set `address` to the private address and add `advertised`
-  with the public one, which is what rtpengine then writes into the SDP.
-- **The test callee.** Step 5's callee listens on `127.0.0.1`, which only a
-  relay on the same machine can reach. With the relay elsewhere, start the
-  callee on the machine's address and point `$du` at it, as
-  [Let sipnab name rtpengine's media](rtpengine-sipnab.md#5-rtpengine-on-its-own-machine)
-  does.
+**On the relay's machine,** have rtpengine take control requests on an address
+the proxy can reach, and restart it:
+
+```bash
+# Run all of these, in order.
+sudo sed -i '0,/^listen-ng = localhost:2223$/s//listen-ng = 192.0.2.20:2223/' /etc/rtpengine/rtpengine.conf
+sed -n '/^\[rtpengine\]/,/^\[/p' /etc/rtpengine/rtpengine.conf | grep '^listen-ng'
+sudo systemctl restart ngcp-rtpengine-daemon
+systemctl is-active ngcp-rtpengine-daemon
+```
+
+The ng protocol has no authentication, so in the relay's firewall allow UDP
+2223 from your SIP proxies only. Open UDP 30000-39999 to the phones and
+carriers that send it audio.
+
+**On the proxy's machine,** point the proxy at it. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i 's|"udp:127.0.0.1:2223"|"udp:192.0.2.20:2223"|' "$C"
+sudo grep -n 'rtpengine_sock' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+```
+
+Several relays can share the load: list them all in one `rtpengine_sock`
+value, separated by spaces.
+
+rtpengine writes one of its machine's addresses into the SDP, the one in
+`[interface-default]`'s `address`, which is `any` in the package's
+configuration. If the phones reach the relay through NAT, set `address` to its
+private address and add `advertised` with the public one, which is what
+rtpengine then writes into the SDP.
+
+Step 5's callee listens on `127.0.0.1`, which a relay on another machine
+cannot reach. [Let sipnab name rtpengine's media](rtpengine-sipnab.md#5-rtpengine-on-its-own-machine)
+starts the callee on the machine's address instead, and places the test call
+through the relay on its own machine.
 
 ## When something does not work
 
 - **rtpengine logs `FAILED TO OPEN KERNEL TABLE 0`.** `table = -1` was not set,
   or the service was not restarted after setting it.
-- **OpenSIPS logs `no available proxies` or `can't send command to
-  rtpengine`.** rtpengine is not running, or `rtpengine_sock` names an address
-  it does not listen on. Compare the socket with `listen-ng`.
+- **OpenSIPS logs `can't send ... command to a RTP proxy (111:Connection
+  refused)` or `timeout waiting reply from a RTP proxy`.** rtpengine is not
+  running, or `rtpengine_sock` names an address it does not listen on. Compare
+  the socket with `listen-ng`.
 - **The callee's SDP still carries the caller's address.** The call did not
   pass through `rtp_relay_engage()`. Check that the INVITE reached that line
   of the route, and that rtpengine logged an `offer` for its Call-ID.
@@ -34909,18 +34974,16 @@ call.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package:
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): the relay beside OpenSIPS, from source and from the packages, and beside
+Kamailio, and on its own machine with the proxy on another.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
-- On the Ubuntu 24.04.5 machine (kernel 6.8.0) that
-  [the rtpengine guide](rtpengine-relay.md) had set up, with OpenSIPS and
-  rtpengine on one machine.
-- With rtpengine moved to a second machine, a clean Debian 13 (kernel
-  6.12.63), and OpenSIPS left on the first.
-
-Both were x86_64 virtual machines with 2 cores. The examples use `192.0.2.10`
-for the machine that runs OpenSIPS and `192.0.2.20` for the relay's own
-machine. Replace them with yours.
+The examples use `192.0.2.10` for the machine that runs the SIP proxy and
+`192.0.2.20` for the relay's own machine. Replace them with yours.
 
 ## 1. Install sipnab
 
@@ -35143,18 +35206,19 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built from source: on a clean Debian 13 (kernel 6.12.63) and
-  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 4 that named
-  the source build's paths; and on Debian 13 on 2026-09-27, with OpenSIPS
-  already built by [the rtpengine guide](rtpengine-relay.md).
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On different machines](#put-the-parts-on-different-machines), with Homer on
+  its own machine.
 
-The commands pin the components to the versions below.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
@@ -35699,12 +35763,42 @@ message. Both send to the same heplify-server.
 
 ## Put the parts on different machines
 
-- **Homer on its own machine.** In `hep_id`, replace `127.0.0.1` with that
-  machine's address, and bind the `hep_udp` socket to an address that can
-  reach it, such as `socket=hep_udp:192.0.2.10:6061`. Open UDP 9060 on it to your SIP servers only, and port
-  9080 to the people who use the interface.
-- **Several SIP servers.** Give each one the same `hep_id` destination and its
-  own `hep_capture_id`, so that Homer shows which server saw each message.
+**Homer on its own machine.** Set Homer up with steps 1 and 2 on that machine,
+here `192.0.2.20`, and point the SIP proxy at it. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's.
+OpenSIPS also sends HEP from an address that reaches the other machine rather
+than from the loopback one:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i -e 's|\[homer\] 127.0.0.1:9060|[homer] 192.0.2.20:9060|' \
+  -e 's|^socket=hep_udp:127.0.0.1:6061|socket=hep_udp:192.0.2.10:6061|' \
+  -e 's|"sip:127.0.0.1:9060"|"sip:192.0.2.20:9060"|' "$C"
+sudo grep -nE 'hep_id|hep_udp|duplicate_uri' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+```
+
+Open UDP 9060 on the Homer machine to your SIP servers only, and port 9080 to
+the people who use the interface. Place step 5's test call on the proxy's
+machine. Its last line prints the call's Call-ID. Find the call on the Homer
+machine, with that Call-ID in place of the example's. As in step 6, the first
+line waits for heplify-server's last batch:
+
+```bash
+# Run all of these, in order.
+sleep 5
+CALL=1-1234@192.0.2.10
+cd /opt/homer
+docker compose exec -T db psql -U root -d homer_data -c \
+  "select create_date, data_header->>'method' as method
+     from hep_proto_1_call where data_header->>'callid' = '$CALL' order by create_date"
+```
+
+**Several SIP servers.** Give each one the same destination and its own
+capture id, so that Homer shows which server saw each message. OpenSIPS and
+Kamailio on one machine is that case, and
+[With Kamailio](#with-kamailio) sets it up.
 
 ## When something does not work
 
@@ -35713,8 +35807,8 @@ message. Both send to the same heplify-server.
 - **The search finds nothing.** Check that heplify-server received anything:
   `docker compose logs heplify-server`. If it logged no packets, check the
   `hep_id` address and `transport=udp`.
-- **`hep_id` without `transport=udp`.** OpenSIPS sends HEP version 3 over TCP
-  by default, and this heplify-server listens on UDP only.
+- **`hep_id` without `transport=udp`.** OpenSIPS then sent nothing at all to
+  heplify-server, which listens on UDP. Keep `transport=udp` in `hep_id`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
   set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
 
@@ -35742,13 +35836,17 @@ Kamailio, and says how. Step 3 is the same for both.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package: the receiver on the Debian 13
-machine (kernel 6.12.63) that [the Homer guide](homer.md) had set up, and the
-source on a second machine, Ubuntu 24.04.5 (kernel 6.8.0). Both were x86_64
-virtual machines with 2 cores. The examples use `192.0.2.10` for the machine
-that runs OpenSIPS and Homer, and `192.0.2.20` for the second machine. Replace
-them with yours.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, and Kamailio, and as a source
+on a second machine.
+On Debian 13, causing the first fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The second needs a firewall between two machines, and did not
+run.
+
+The examples use `192.0.2.10` for the machine that runs the SIP proxy and
+Homer, and `192.0.2.20` for the second machine. Replace them with yours.
 
 ## 1. Install sipnab
 
@@ -35949,18 +36047,19 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built in step 2: on a clean Debian 13 (kernel 6.12.63) and
-  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 3 that named
-  the source build's paths; and on Debian 13 on 2026-09-27, rebuilding the tree
-  [the rtpengine guide](rtpengine-relay.md) had built.
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On different machines](#put-the-parts-on-different-machines), with
+  Prometheus on its own machine.
 
-The commands pin the components to the versions below.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
@@ -36508,20 +36607,55 @@ name: `opensips_` and `kamailio_`.
 
 ## Put the parts on different machines
 
-- **Prometheus on its own machine.** OpenSIPS's endpoint has no
-  authentication, so keep it on an address only Prometheus can reach: set
-  `modparam("httpd", "ip", ...)` to an internal address, allow port 8888 from
-  the Prometheus machine only, and change the scrape target to that address.
-- **Several SIP servers.** Add each one to the `targets` list. Prometheus labels
-  every series with the target it came from.
+**Prometheus on its own machine.** The proxy's metrics endpoint has no
+authentication, so keep it on an internal address that only Prometheus can
+reach, here the proxy machine's own `192.0.2.10`. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i -e 's|modparam("httpd", "ip", "127.0.0.1")|modparam("httpd", "ip", "192.0.2.10")|' \
+  -e 's|^listen=tcp:127.0.0.1:8888|listen=tcp:192.0.2.10:8888|' "$C"
+sudo grep -nE 'httpd", "ip"|^listen=tcp' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+curl -s 192.0.2.10:8888/metrics | awk '/^(opensips|kamailio)_/ && n++ < 3'
+```
+
+Allow port 8888 from the Prometheus machine only. On the Prometheus machine,
+here `192.0.2.20`, follow step 1 and step 4 there, then scrape the proxy's
+address in place of the loopback one:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+sed -i 's|targets: \["127.0.0.1:8888"\]|targets: ["192.0.2.10:8888"]|' prometheus.yml
+grep -n 'targets' prometheus.yml
+docker compose restart prometheus
+until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
+for i in $(seq 1 15); do curl -s localhost:9090/api/v1/targets | grep -qE '"health":"(up|down)"' && break; sleep 2; done
+curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+```
+
+Right after the restart Prometheus lists no target, and then one that reads
+`unknown` until its first scrape, so the loop waits up to 30 seconds for an
+`up` or a `down`. It prints the proxy's job, `up`. With Kamailio, name the job
+as [With Kamailio](#with-kamailio) does.
+
+**Several SIP servers.** Add each one to the `targets` list, or give each its
+own job. Prometheus labels every series with the target it came from. OpenSIPS
+and Kamailio on one machine is that case, and [With Kamailio](#with-kamailio)
+sets it up.
 
 ## When something does not work
 
 - **`curl 127.0.0.1:8888/metrics` prints no `opensips_` lines.** The
   `statistics` parameter is missing. The `prometheus` module publishes nothing
   until it names what to publish.
-- **OpenSIPS does not start: `failed to load module 'httpd.so'`.** It was not
-  built. Build with `include_modules="httpd"`, which needs `libmicrohttpd-dev`.
+- **OpenSIPS does not start: `failed to load module 'httpd.so'`.** The module
+  is not installed. With the packages, install `opensips-http-modules`, as in
+  step 2. With a source build, build with `include_modules="httpd"`, which
+  needs `libmicrohttpd-dev`.
 - **The target shows `down`.** Check `curl 127.0.0.1:8888/metrics` on the
   OpenSIPS machine, then that the target address in `prometheus.yml` matches.
 
@@ -36546,11 +36680,15 @@ reads the calls off the wire, so every step is the same for each.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package, on the Debian 13 (kernel 6.12.63) and
-Ubuntu 24.04.5 (kernel 6.8.0) machines that
-[the Prometheus guide](prometheus.md) had set up. The examples use
-`192.0.2.10` as the machine's address.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
+machine.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
+
+The examples use `192.0.2.10` as the machine's address.
 
 ## 1. Install sipnab
 
@@ -37012,6 +37150,10 @@ sipnab both ports with `--portrange 5060-5062`.
 
 ## When something does not work
 
+- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
+  by process ...`.** Another package tool holds the lock: on a machine that
+  has just booted, usually the system's own scheduled update. Wait for it to
+  finish, then run the block again.
 - **`opensips -C` reports `could not open module <signaling.so>`.** The
   `mpath` line is missing or names the wrong directory. OpenSIPS does not
   fall back to its own module directory without it.
@@ -37385,6 +37527,10 @@ Kamailio:
 
 ## When something does not work
 
+- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
+  by process ...`.** Another package tool holds the lock: on a machine that
+  has just booted, usually the system's own scheduled update. Wait for it to
+  finish, then run the block again.
 - **`kamailio -c` reports `parse error in config file` and `unknown command,
   missing loadmodule?`.** The script calls a function whose module is not
   loaded. The error names the line and column, and the line before it names

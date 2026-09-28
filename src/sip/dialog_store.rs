@@ -661,8 +661,8 @@ impl DialogStore {
     ///
     /// # Returns
     ///
-    /// An empty store (generation 0) with the default `X-Call-ID`
-    /// correlation header configured.
+    /// An empty store (generation 0) with no correlation header configured:
+    /// the header strategy stays off until [`Self::with_xcid_headers`] names one.
     pub fn new(max_dialogs: usize, rotate: bool) -> Self {
         Self {
             dialogs: IndexMap::with_capacity_and_hasher(
@@ -1342,7 +1342,8 @@ impl DialogStore {
     /// 1. **RFC 7989 `Session-ID`** (100): set intersection over the non-nil
     ///    halves, which is what survives a B2BUA swapping them.
     /// 2. **Correlation header** (100): the B-leg carries a configured header
-    ///    (`X-Call-ID` by default) pointing at the source Call-ID, or vice versa.
+    ///    (none by default, see `sip.xcid`) pointing at the source Call-ID, or
+    ///    vice versa.
     /// 3. **RFC 7315 `related-icid`** (95): one leg's `related-icid` names the
     ///    other's `icid-value` — an intermediary declaring the link.
     /// 4. **RFC 8866 SDP origin tuple** (90): the whole uniqueness tuple, never

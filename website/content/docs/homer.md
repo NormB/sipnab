@@ -32,18 +32,19 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built from source: on a clean Debian 13 (kernel 6.12.63) and
-  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 4 that named
-  the source build's paths; and on Debian 13 on 2026-09-27, with OpenSIPS
-  already built by [the rtpengine guide](@/docs/rtpengine-relay.md).
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On different machines](#put-the-parts-on-different-machines), with Homer on
+  its own machine.
 
-The commands pin the components to the versions below.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
@@ -588,12 +589,42 @@ message. Both send to the same heplify-server.
 
 ## Put the parts on different machines
 
-- **Homer on its own machine.** In `hep_id`, replace `127.0.0.1` with that
-  machine's address, and bind the `hep_udp` socket to an address that can
-  reach it, such as `socket=hep_udp:192.0.2.10:6061`. Open UDP 9060 on it to your SIP servers only, and port
-  9080 to the people who use the interface.
-- **Several SIP servers.** Give each one the same `hep_id` destination and its
-  own `hep_capture_id`, so that Homer shows which server saw each message.
+**Homer on its own machine.** Set Homer up with steps 1 and 2 on that machine,
+here `192.0.2.20`, and point the SIP proxy at it. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's.
+OpenSIPS also sends HEP from an address that reaches the other machine rather
+than from the loopback one:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i -e 's|\[homer\] 127.0.0.1:9060|[homer] 192.0.2.20:9060|' \
+  -e 's|^socket=hep_udp:127.0.0.1:6061|socket=hep_udp:192.0.2.10:6061|' \
+  -e 's|"sip:127.0.0.1:9060"|"sip:192.0.2.20:9060"|' "$C"
+sudo grep -nE 'hep_id|hep_udp|duplicate_uri' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+```
+
+Open UDP 9060 on the Homer machine to your SIP servers only, and port 9080 to
+the people who use the interface. Place step 5's test call on the proxy's
+machine. Its last line prints the call's Call-ID. Find the call on the Homer
+machine, with that Call-ID in place of the example's. As in step 6, the first
+line waits for heplify-server's last batch:
+
+```bash
+# Run all of these, in order.
+sleep 5
+CALL=1-1234@192.0.2.10
+cd /opt/homer
+docker compose exec -T db psql -U root -d homer_data -c \
+  "select create_date, data_header->>'method' as method
+     from hep_proto_1_call where data_header->>'callid' = '$CALL' order by create_date"
+```
+
+**Several SIP servers.** Give each one the same destination and its own
+capture id, so that Homer shows which server saw each message. OpenSIPS and
+Kamailio on one machine is that case, and
+[With Kamailio](#with-kamailio) sets it up.
 
 ## When something does not work
 
@@ -602,7 +633,7 @@ message. Both send to the same heplify-server.
 - **The search finds nothing.** Check that heplify-server received anything:
   `docker compose logs heplify-server`. If it logged no packets, check the
   `hep_id` address and `transport=udp`.
-- **`hep_id` without `transport=udp`.** OpenSIPS sends HEP version 3 over TCP
-  by default, and this heplify-server listens on UDP only.
+- **`hep_id` without `transport=udp`.** OpenSIPS then sent nothing at all to
+  heplify-server, which listens on UDP. Keep `transport=udp` in `hep_id`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
   set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.

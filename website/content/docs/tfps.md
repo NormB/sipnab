@@ -29,12 +29,15 @@ Two terms used below:
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 on a
-clean Ubuntu 24.04.5 virtual machine (kernel `6.8.0-139-generic`), and step by
-step on a clean Debian 13 one (kernel `6.12.63+deb13-amd64`). Both were x86_64
-with 2 cores and 2 GB of memory, and used the
-[TFPS v0.2.1](https://github.com/sippulse/tfps/releases/tag/v0.2.1) release.
-TFPS's prebuilt binaries are x86_64 only.
+Every block on this page, and every command in step 6's table, ran as
+written, in order, on 2026-09-28, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0), with a second machine playing the
+attacker, with TFPS built from master at
+[`984577dc`](https://github.com/sippulse/tfps/commit/984577dc). On Debian 13,
+causing each fault under
+[When something does not work](#when-something-does-not-work) produced what it
+describes, apart from a kernel without BTF, which none of the machines had: the
+installer's source prints that message.
 
 The examples use `192.0.2.20` for the TFPS machine and `198.51.100.60` for a second
 machine that plays the attacker. Replace both with yours.
@@ -54,39 +57,34 @@ it.
 
 ## 2. Install TFPS
 
-Download the release and check it against the checksum published beside it:
+Build TFPS from its master branch, at
+[`984577dc`](https://github.com/sippulse/tfps/commit/984577dc). The latest
+release, v0.2.1, has no `--json` option, which
+[Let sipnab see and control TFPS](@/docs/tfps-sipnab.md) needs. Master has it, merged
+on 2026-09-18, and no release carries it yet. When one does, install that
+release instead.
+
+The installer compiles the XDP program on this machine. It installs `clang` and
+`bpftool` for that, but not the BPF headers the program includes, so the first
+line installs them with `git`:
 
 ```bash
 # Run all of these, in order.
-mkdir -p ~/tfps && cd ~/tfps
-curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz
-curl -fsSLO https://github.com/sippulse/tfps/releases/download/v0.2.1/tfps-x86_64-linux-musl.tar.gz.sha256
-sha256sum -c tfps-x86_64-linux-musl.tar.gz.sha256
-tar xzf tfps-x86_64-linux-musl.tar.gz
-```
-
-`sha256sum` prints `tfps-x86_64-linux-musl.tar.gz: OK`.
-
-The installer compiles the XDP program on this machine. It installs `clang` and
-`bpftool` for that, but not the BPF headers the program includes, so install
-them first:
-
-```bash
-sudo apt-get install -y libbpf-dev
+sudo apt-get install -y git libbpf-dev
+sudo git clone https://github.com/sippulse/tfps.git /usr/local/src/tfps
+sudo git -C /usr/local/src/tfps checkout 984577dc
+cd /usr/local/src/tfps
+sudo TMPDIR=/var/tmp sh packaging/install.sh
 ```
 
 Without `libbpf-dev` the install stops at `fatal error: 'bpf/bpf_helpers.h' file
 not found`.
 
-Run the installer from the tarball you checked. Pointing it at the file with
-`TFPS_TARBALL` makes it install exactly those bytes. The one-line
-`curl ... | sh` form on TFPS's site fetches master's installer script instead:
-
-```bash
-# Run all of these, in order.
-cd ~/tfps
-sudo TFPS_TARBALL="$PWD/tfps-x86_64-linux-musl.tar.gz" sh tfps-x86_64-linux-musl/packaging/install.sh
-```
+The build downloads a temporary Rust toolchain, compiles, installs and removes
+the toolchain again. It needs about 1.5 GB of free memory. `TMPDIR=/var/tmp`
+matters on Debian 13, where `/tmp` is a RAM disk sized to half the memory: on a
+2 GB machine the toolchain does not fit there and the build fails with `No
+space left on device`.
 
 It ends with `tfps is running`. What it installed:
 
@@ -227,25 +225,30 @@ instead. Add a drop-in rather than editing the unit, because an upgrade replaces
 the unit:
 
 ```bash
-sudo systemctl edit tfps
-```
-
-```ini
+# Run all of these, in order.
+sudo mkdir -p /etc/systemd/system/tfps.service.d
+sudo tee /etc/systemd/system/tfps.service.d/observe.conf >/dev/null <<'EOF'
 [Service]
 ExecStart=
 ExecStart=/usr/local/bin/tfps --no-enforce
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart tfps
 ```
 
-In this mode TFPS attaches no XDP program, so `tfps_ctl banned` answers `no loaded
-eBPF map called 'blocked'`: there is nothing to list. The journal holds the
-decisions, as `WOULD BLOCK peer=... (observe only)`.
+In this mode TFPS attaches no XDP program, so `tfps_ctl banned` answers
+``no loaded eBPF map called `blocked` — is tfps running, and are you root?``:
+there is nothing to list. The journal holds the decisions, as `WOULD BLOCK
+peer=... (observe only)`.
 
 To start blocking, remove the drop-in and restart:
 
 ```bash
 # Run all of these, in order.
-sudo systemctl revert tfps
+sudo rm /etc/systemd/system/tfps.service.d/observe.conf
+sudo systemctl daemon-reload
 sudo systemctl restart tfps
+sudo tfps_ctl status
 ```
 
 **Upgrade** by running the installer again with the newer tarball. It replaces

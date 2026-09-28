@@ -156,7 +156,7 @@ pub struct ParallelConfig {
     /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`).
     pub quiet_bad_parse: bool,
     /// Correlation header names for B2BUA leg matching (`sip.xcid`).
-    /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
+    /// Empty, the `DialogStore` default, turns the header strategy off.
     pub xcid_headers: Vec<String>,
     /// How far apart, in milliseconds, two legs of one call may be created and
     /// still correlate on timing alone (`--leg-correlation-window`). Carried

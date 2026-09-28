@@ -15,11 +15,15 @@ reads the calls off the wire, so every step is the same for each.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-26, with
-sipnab 0.5.192 from its release package, on the Debian 13 (kernel 6.12.63) and
-Ubuntu 24.04.5 (kernel 6.8.0) machines that
-[the Prometheus guide](prometheus.md) had set up. The examples use
-`192.0.2.10` as the machine's address.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
+machine.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
+
+The examples use `192.0.2.10` as the machine's address.
 
 ## 1. Install sipnab
 

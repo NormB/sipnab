@@ -326,6 +326,10 @@ sipnab both ports with `--portrange 5060-5062`.
 
 ## When something does not work
 
+- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
+  by process ...`.** Another package tool holds the lock: on a machine that
+  has just booted, usually the system's own scheduled update. Wait for it to
+  finish, then run the block again.
 - **`opensips -C` reports `could not open module <signaling.so>`.** The
   `mpath` line is missing or names the wrong directory. OpenSIPS does not
   fall back to its own module directory without it.

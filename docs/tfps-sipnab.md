@@ -27,40 +27,32 @@ The [REST API reference](rest-api.md) gives every request and response.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on 2026-09-25 and
-2026-09-26, on x86_64 virtual machines. The same-machine setup ran on Ubuntu
-24.04.5. The different-machine setup ran with sipnab on Debian 13, reaching
-TFPS on the Ubuntu one over SSH. Both used sipnab's `.deb`.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): sipnab beside TFPS and on a second machine reaching it over SSH, with TFPS
+built from master.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
-## 1. Build TFPS from master
+## 1. Check that TFPS answers in JSON
 
 sipnab reads `tfps_ctl`'s answers as JSON, asking with `--json`. That option is
 on TFPS's master branch, merged 2026-09-18 as
 [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc), and is in no
-release yet: v0.2.1 answers `unknown option`. Until a release carries it, build
-master. The installer builds from a checkout and upgrades the release in place,
-keeping `/etc/tfps/config.json` and what TFPS has learned:
+release yet: v0.2.1 answers `unknown option: --json`.
+[Add TFPS to your voice stack](tfps.md) builds that commit. If your TFPS is a
+release, run [its step 2](tfps.md#2-install-tfps): the installer builds from the
+checkout and upgrades the release in place, keeping `/etc/tfps/config.json` and
+what TFPS has learned. Then check:
 
 ```bash
-# Run all of these, in order.
-sudo apt-get install -y git libbpf-dev
-sudo git clone https://github.com/sippulse/tfps.git /usr/local/src/tfps
-sudo git -C /usr/local/src/tfps checkout 984577dc
-cd /usr/local/src/tfps
-sudo TMPDIR=/var/tmp sh packaging/install.sh
 sudo tfps_ctl status --json
 ```
 
-The build downloads a temporary Rust toolchain, compiles, installs and removes
-the toolchain again. It needs about 1.5 GB of free memory.
-
-`TMPDIR=/var/tmp` matters on Debian 13, where `/tmp` is a RAM disk sized to half
-the memory: on a 2 GB machine the toolchain does not fit there and the build
-fails with `No space left on device`.
-
-The last command prints one line of JSON, starting
-`{"enforcement":"active",...`. This build still calls itself `0.2.1` in that
-line, because master has not changed its version number since the release.
+It prints one line of JSON, starting `{"enforcement":"active",...`. This build
+still calls itself `0.2.1` in that line, because master has not changed its
+version number since the release.
 
 ## 2. Install sipnab
 
@@ -109,7 +101,7 @@ capture does:
 
 - **To read or change blocks,** `tfps_ctl` has to find TFPS's block map in the
   kernel by name. That takes `CAP_BPF` and `CAP_SYS_ADMIN`. With `CAP_BPF` alone
-  it fails with `no loaded eBPF map called 'blocked'`.
+  it fails with ``no loaded eBPF map called `blocked` ``.
 - **To ban,** `tfps_ctl` reads `/etc/tfps/config.json`, to refuse addresses you
   told TFPS to trust. The file is readable by root only.
 
@@ -252,11 +244,14 @@ The `curl` commands from section 3 work unchanged.
 
 - **`unknown option: --json`.** The TFPS in use is a release. Build master, as
   in step 1.
-- **`no loaded eBPF map called 'blocked' — is tfps running, and are you root?`**
+- **``no loaded eBPF map called `blocked` — is tfps running, and are you root?``**
   Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
 - **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the
   `sipnab` group, as in section 3.
 - **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
   yet.
-- **`installed: false`.** sipnab cannot find `tfps_ctl`. Check the path given to
-  `--tfps-ctl`.
+- **`installed: false`, and the reason says `tfps_ctl` was not found on
+  `PATH`.** The service runs without `--tfps-ctl`, and its `PATH` has no
+  `tfps_ctl`. Name it with `--tfps-ctl`.
+- **`502` with `cannot run ...: No such file or directory`.** The path given to
+  `--tfps-ctl` does not exist. Check it.

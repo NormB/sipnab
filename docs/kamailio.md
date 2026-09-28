@@ -270,6 +270,10 @@ Kamailio:
 
 ## When something does not work
 
+- **`apt-get` says `Could not get lock /var/lib/dpkg/lock-frontend. It is held
+  by process ...`.** Another package tool holds the lock: on a machine that
+  has just booted, usually the system's own scheduled update. Wait for it to
+  finish, then run the block again.
 - **`kamailio -c` reports `parse error in config file` and `unknown command,
   missing loadmodule?`.** The script calls a function whose module is not
   loaded. The error names the line and column, and the line before it names

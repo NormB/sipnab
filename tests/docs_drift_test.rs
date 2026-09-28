@@ -1417,6 +1417,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "storage",
         &["docs/prometheus.md", "website/content/docs/prometheus.md"],
     ),
+    // docker compose's, recreating the recorder after its URL changes in the
+    // vCon server guide's own-machine section.
+    (
+        "force-recreate",
+        &["docs/vcon-server.md", "website/content/docs/vcon-server.md"],
+    ),
+    // curl's, posting a rejected vCon by hand to read the server's reason.
+    (
+        "data-binary",
+        &["docs/vcon-sipnab.md", "website/content/docs/vcon-sipnab.md"],
+    ),
 ];
 
 /// True when `flag` is a known foreign-tool flag excused in `doc` specifically.

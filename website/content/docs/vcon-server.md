@@ -37,19 +37,21 @@ parts live on different machines.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- Every step, with OpenSIPS built in step 4: on a clean Debian 13 (kernel
-  6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-25, with an earlier
-  step 5 that named the source build's paths.
-- On 2026-09-27, with rtpengine already relaying as
-  [the rtpengine guide](@/docs/rtpengine-relay.md) sets it up, so without step 3:
-  OpenSIPS rebuilt with `siprec` on Debian 13, and the OpenSIPS 4.0 packages on
-  Ubuntu 24.04.5.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [On different machines](#put-the-parts-on-different-machines), with the
+  vCon server on its own machine.
 
-The commands pin the components to the versions below. Newer commits may behave
-differently, and pinning them keeps the guide describing what you get.
+[With Kamailio](#with-kamailio-a-gap) ran with
+[the sipnab page](@/docs/vcon-sipnab.md). On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to
+the versions below. Newer commits may behave differently, and pinning them
+keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
@@ -251,15 +253,18 @@ cd /opt/vcon
 docker compose up -d --build
 until curl -sf localhost:8000/health; do sleep 2; done; echo
 until docker compose logs conserver | grep -q 'Worker-1 started'; do sleep 2; done
+until docker compose exec -T postgres pg_isready -q -h 127.0.0.1 -U vcon -d vcon; do sleep 2; done
 docker compose ps
 ```
 
 The API takes a few seconds to start, so the first `until` line waits for
 `/health` to answer `{"status":"healthy",...}`. The conserver, which stores
 what the API queues, starts later: on a fresh machine its worker came up about
-15 seconds after the API answered. The second `until` line waits for it. All
-four services then show `running`, and `valkey` and `postgres` also show
-`healthy`.
+15 seconds after the API answered. The second `until` line waits for it. On its
+first start PostgreSQL creates its database with a temporary server, then stops
+it and starts the real one, so the third `until` line waits for that one to
+answer on the network, where the temporary server never listens. All four
+services then show `running`, and `valkey` and `postgres` also show `healthy`.
 
 ### Prove it stores what it accepts
 
@@ -632,11 +637,11 @@ services:
     restart: unless-stopped
 EOF
 docker compose up -d --build
-sleep 5
-curl -s 127.0.0.1:8081/healthz
+until curl -fs 127.0.0.1:8081/healthz; do sleep 2; done; echo
 ```
 
-The health check answers `{"status": "ok", ...}`. Four settings deserve a word:
+The recorder takes a few seconds to start after its container does, so the
+last line waits until the health check answers `{"status": "ok", ...}`. Four settings deserve a word:
 
 - **`sip_port_tls: 5091` with no certificate.** TLS stays off. The adapter's
   own `config.yaml` points at certificate files that do not exist, and it does
@@ -797,18 +802,40 @@ Kamailio's port.
 
 ## Put the parts on different machines
 
-Nothing above depends on sharing a machine except the addresses:
+**The vCon server on its own machine.** The vCon server, Valkey and PostgreSQL
+can have a machine to themselves, here `192.0.2.20`, while the recorder stays
+beside the SIP proxy and rtpengine, which send it the audio. Follow steps 1 and
+2 on that machine. On the proxy's machine, do steps 3 to 5, then fetch the
+recorder's key before step 6. Step 6 reads it from `/opt/vcon/config.yml`, so
+this writes that file with the key and nothing else, not the database
+password:
 
-- **vcon-server on its own machine.** Change the recorder's webhook `url` to
-  that machine's address. Port 8000 is now reachable from the network, so allow
-  it only from the machines that post vCons.
-- **The recorder on its own machine.** Change the address in
-  `siprec_start_recording()` to the recorder's, set `listen_address` and
-  `SIPREC_PUBLIC_IP` to the address OpenSIPS and rtpengine reach it on, and open
-  its SIP port and its audio range (40000-40999) to them.
-- **rtpengine on its own machine.** Change `rtpengine_sock` to that machine and
-  make rtpengine's control port listen on an address OpenSIPS can reach
-  (`listen-ng` in `/etc/rtpengine/rtpengine.conf`).
+```bash
+# Run all of these, in order.
+sudo mkdir -p /opt/vcon && sudo chown "$USER": /opt/vcon
+ssh 192.0.2.20 "grep '^  siprec: ' /opt/vcon/config.yml" > /opt/vcon/config.yml
+chmod 600 /opt/vcon/config.yml
+grep -c '^  siprec: "' /opt/vcon/config.yml
+```
+
+It prints 1. Then do step 6, and send the recorder's vCons to the vCon server's
+address in place of the loopback one:
+
+```bash
+# Run all of these, in order.
+cd /opt/siprec
+sed -i 's|url: "http://127.0.0.1:8000/|url: "http://192.0.2.20:8000/|' config.yaml
+grep -n 'url:' config.yaml
+docker compose up -d --force-recreate
+```
+
+Steps 7 and 8 then work as written, with step 8's database query run on the
+vCon server's machine. Port 8000 on it is now reachable from the network, so
+allow it only from the machines that post vCons.
+
+This guide covers that split only. The recorder receives the audio from
+rtpengine, so moving either one to another machine changes the addresses both
+of them and OpenSIPS use, and this guide has not run that.
 
 ## When something does not work
 

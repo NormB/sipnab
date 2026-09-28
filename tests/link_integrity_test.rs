@@ -1062,7 +1062,13 @@ fn wiki_intra_docs_links_resolve() {
     // "When something does not work" section whose faults were reproduced:
     // opensips.md, kamailio.md, opensips-sipnab.md and kamailio-sipnab.md +1
     // each, attributed per file against HEAD (6fb93c6b).
-    const EXPECTED_WIKI_LINKS: usize = 1138;
+    // 1138 -> 1154: the add-on guides' rewritten Tested on sections name the
+    // sections each run covered (the own-machine, With Kamailio and
+    // troubleshooting sections) rather than describing them, and TFPS's pages
+    // link each other's install and JSON steps: homer.md +2, prometheus.md +3,
+    // rtpengine-relay.md +2, tfps-sipnab.md +3, tfps.md +2, vcon-server.md +3,
+    // vcon-sipnab.md +1, attributed per file against HEAD (e9835a61).
+    const EXPECTED_WIKI_LINKS: usize = 1154;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

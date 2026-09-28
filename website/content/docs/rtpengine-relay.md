@@ -34,18 +34,19 @@ rtpengine has a machine to itself.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 or 4 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built in step 3: on a clean Debian 13 (kernel 6.12.63) on
-  2026-09-27, and on a clean Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with
-  an earlier step 4 that named the source build's paths.
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On its own machine](#put-rtpengine-on-its-own-machine), on two machines.
 
-The commands pin the components to the versions below. Newer commits may behave
-differently, and pinning them keeps the guide describing what you get.
+On Debian 13, causing each fault under [When something does not
+work](#when-something-does-not-work) produced what it describes. The commands
+pin the components to the versions below. Newer commits may behave differently,
+and pinning them keeps the guide describing what you get.
 
 | Software | Version or commit |
 |---|---|
@@ -535,34 +536,57 @@ through OpenSIPS.
 ## Put rtpengine on its own machine
 
 A busy relay usually gets a machine to itself, often with a public address,
-while OpenSIPS stays where it is. Three things change:
+while the SIP proxy stays where it is. The examples use `192.0.2.20` for the
+relay's machine. Set it up with steps 1 and 2 there, then make two changes.
 
-- **The control port.** On the relay, set `listen-ng` to an address OpenSIPS
-  can reach, such as `listen-ng = 192.0.2.20:2223`, and restart rtpengine. The
-  ng protocol has no authentication, so allow that port only from your
-  OpenSIPS machines, in the relay's firewall.
-- **OpenSIPS's socket.** Point `rtpengine_sock` at it:
-  `modparam("rtpengine", "rtpengine_sock", "udp:192.0.2.20:2223")`, then
-  restart OpenSIPS. Several relays can share the load: list them all in one
-  `rtpengine_sock` value, separated by spaces.
-- **The media ports.** Open UDP 30000-39999 on the relay to the phones and
-  carriers that send it audio. In `[interface-default]`, set `address` to the
-  address they reach it on. If that address is a public one mapped by NAT to a
-  private one, set `address` to the private address and add `advertised`
-  with the public one, which is what rtpengine then writes into the SDP.
-- **The test callee.** Step 5's callee listens on `127.0.0.1`, which only a
-  relay on the same machine can reach. With the relay elsewhere, start the
-  callee on the machine's address and point `$du` at it, as
-  [Let sipnab name rtpengine's media](@/docs/rtpengine-sipnab.md#5-rtpengine-on-its-own-machine)
-  does.
+**On the relay's machine,** have rtpengine take control requests on an address
+the proxy can reach, and restart it:
+
+```bash
+# Run all of these, in order.
+sudo sed -i '0,/^listen-ng = localhost:2223$/s//listen-ng = 192.0.2.20:2223/' /etc/rtpengine/rtpengine.conf
+sed -n '/^\[rtpengine\]/,/^\[/p' /etc/rtpengine/rtpengine.conf | grep '^listen-ng'
+sudo systemctl restart ngcp-rtpengine-daemon
+systemctl is-active ngcp-rtpengine-daemon
+```
+
+The ng protocol has no authentication, so in the relay's firewall allow UDP
+2223 from your SIP proxies only. Open UDP 30000-39999 to the phones and
+carriers that send it audio.
+
+**On the proxy's machine,** point the proxy at it. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i 's|"udp:127.0.0.1:2223"|"udp:192.0.2.20:2223"|' "$C"
+sudo grep -n 'rtpengine_sock' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+```
+
+Several relays can share the load: list them all in one `rtpengine_sock`
+value, separated by spaces.
+
+rtpengine writes one of its machine's addresses into the SDP, the one in
+`[interface-default]`'s `address`, which is `any` in the package's
+configuration. If the phones reach the relay through NAT, set `address` to its
+private address and add `advertised` with the public one, which is what
+rtpengine then writes into the SDP.
+
+Step 5's callee listens on `127.0.0.1`, which a relay on another machine
+cannot reach. [Let sipnab name rtpengine's media](@/docs/rtpengine-sipnab.md#5-rtpengine-on-its-own-machine)
+starts the callee on the machine's address instead, and places the test call
+through the relay on its own machine.
 
 ## When something does not work
 
 - **rtpengine logs `FAILED TO OPEN KERNEL TABLE 0`.** `table = -1` was not set,
   or the service was not restarted after setting it.
-- **OpenSIPS logs `no available proxies` or `can't send command to
-  rtpengine`.** rtpengine is not running, or `rtpengine_sock` names an address
-  it does not listen on. Compare the socket with `listen-ng`.
+- **OpenSIPS logs `can't send ... command to a RTP proxy (111:Connection
+  refused)` or `timeout waiting reply from a RTP proxy`.** rtpengine is not
+  running, or `rtpengine_sock` names an address it does not listen on. Compare
+  the socket with `listen-ng`.
 - **The callee's SDP still carries the caller's address.** The call did not
   pass through `rtp_relay_engage()`. Check that the INVITE reached that line
   of the route, and that rtpengine logged an `offer` for its Call-ID.

@@ -32,18 +32,19 @@ they are apart.
 
 ## Tested on
 
-Every command on this page ran as written, in order, on x86_64 virtual
-machines with 2 cores and 3 GB of memory:
+Every block on this page ran as written, in order, on 2026-09-28, on
+clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
 
-- With OpenSIPS built in step 2: on a clean Debian 13 (kernel 6.12.63) and
-  Ubuntu 24.04.5 (kernel 6.8.0) on 2026-09-26, with an earlier step 3 that named
-  the source build's paths; and on Debian 13 on 2026-09-27, rebuilding the tree
-  [the rtpengine guide](@/docs/rtpengine-relay.md) had built.
-- With the OpenSIPS 4.0 packages: on Ubuntu 24.04.5, on 2026-09-27.
-- [With Kamailio](#with-kamailio): on Debian 13, and beside OpenSIPS on Ubuntu
-  24.04.5, on 2026-09-27.
+- With OpenSIPS built from source on a machine with nothing installed.
+- With the OpenSIPS 4.0 packages.
+- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
+- [On different machines](#put-the-parts-on-different-machines), with
+  Prometheus on its own machine.
 
-The commands pin the components to the versions below.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes. The commands pin the components to the versions below.
 
 | Software | Version or commit |
 |---|---|
@@ -591,19 +592,54 @@ name: `opensips_` and `kamailio_`.
 
 ## Put the parts on different machines
 
-- **Prometheus on its own machine.** OpenSIPS's endpoint has no
-  authentication, so keep it on an address only Prometheus can reach: set
-  `modparam("httpd", "ip", ...)` to an internal address, allow port 8888 from
-  the Prometheus machine only, and change the scrape target to that address.
-- **Several SIP servers.** Add each one to the `targets` list. Prometheus labels
-  every series with the target it came from.
+**Prometheus on its own machine.** The proxy's metrics endpoint has no
+authentication, so keep it on an internal address that only Prometheus can
+reach, here the proxy machine's own `192.0.2.10`. The first line finds the
+proxy's configuration: the OpenSIPS packages', a source build's, or Kamailio's:
+
+```bash
+# Run all of these, in order.
+for f in /etc/opensips/opensips.cfg /usr/local/etc/opensips/opensips.cfg /etc/kamailio/kamailio.cfg; do sudo test -f "$f" && C=$f && break; done
+sudo sed -i -e 's|modparam("httpd", "ip", "127.0.0.1")|modparam("httpd", "ip", "192.0.2.10")|' \
+  -e 's|^listen=tcp:127.0.0.1:8888|listen=tcp:192.0.2.10:8888|' "$C"
+sudo grep -nE 'httpd", "ip"|^listen=tcp' "$C"
+case "$C" in */kamailio/*) sudo systemctl restart kamailio;; *) sudo systemctl restart opensips;; esac
+curl -s 192.0.2.10:8888/metrics | awk '/^(opensips|kamailio)_/ && n++ < 3'
+```
+
+Allow port 8888 from the Prometheus machine only. On the Prometheus machine,
+here `192.0.2.20`, follow step 1 and step 4 there, then scrape the proxy's
+address in place of the loopback one:
+
+```bash
+# Run all of these, in order.
+cd /opt/monitoring
+sed -i 's|targets: \["127.0.0.1:8888"\]|targets: ["192.0.2.10:8888"]|' prometheus.yml
+grep -n 'targets' prometheus.yml
+docker compose restart prometheus
+until curl -fs -o /dev/null localhost:9090/-/ready; do sleep 2; done
+for i in $(seq 1 15); do curl -s localhost:9090/api/v1/targets | grep -qE '"health":"(up|down)"' && break; sleep 2; done
+curl -s localhost:9090/api/v1/targets | python3 -c 'import sys,json; [print(t["labels"]["job"], t["health"]) for t in json.load(sys.stdin)["data"]["activeTargets"]]'
+```
+
+Right after the restart Prometheus lists no target, and then one that reads
+`unknown` until its first scrape, so the loop waits up to 30 seconds for an
+`up` or a `down`. It prints the proxy's job, `up`. With Kamailio, name the job
+as [With Kamailio](#with-kamailio) does.
+
+**Several SIP servers.** Add each one to the `targets` list, or give each its
+own job. Prometheus labels every series with the target it came from. OpenSIPS
+and Kamailio on one machine is that case, and [With Kamailio](#with-kamailio)
+sets it up.
 
 ## When something does not work
 
 - **`curl 127.0.0.1:8888/metrics` prints no `opensips_` lines.** The
   `statistics` parameter is missing. The `prometheus` module publishes nothing
   until it names what to publish.
-- **OpenSIPS does not start: `failed to load module 'httpd.so'`.** It was not
-  built. Build with `include_modules="httpd"`, which needs `libmicrohttpd-dev`.
+- **OpenSIPS does not start: `failed to load module 'httpd.so'`.** The module
+  is not installed. With the packages, install `opensips-http-modules`, as in
+  step 2. With a source build, build with `include_modules="httpd"`, which
+  needs `libmicrohttpd-dev`.
 - **The target shows `down`.** Check `curl 127.0.0.1:8888/metrics` on the
   OpenSIPS machine, then that the target address in `prometheus.yml` matches.

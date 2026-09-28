@@ -27,10 +27,13 @@ table, `vcons_observed`. The recorder's vCons stay in `vcons_recorded`.
 
 ## Tested on
 
-Run on 2026-09-25 on the Debian 13 x86_64 machine from the vCon server guide,
-with sipnab from its `.deb`, and again on 2026-09-27 with sipnab 0.5.193: beside
-OpenSIPS built from source on Debian 13, beside Kamailio on Debian 13, and with
-both on one machine on Ubuntu 24.04.5.
+Every block on this page ran as written, in order, on 2026-09-28, with
+sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): OpenSIPS, from source and from the packages, Kamailio, and both on one
+machine.
+On Debian 13, causing each fault under
+[When something does not work](#when-something-does-not-work) produced what
+it describes.
 
 ## 1. Add an ingress list and a chain for sipnab
 
@@ -273,5 +276,18 @@ the vCon server.
 - **The forwarder stops with `answered 403`.** The key in
   `/etc/sipnab/vcon-forward.env` does not match the `sipnab` key in
   `config.yml`.
-- **Files pile up in `rejected/`.** vcon-server refused them. Its log says why:
-  `docker compose logs conserver`.
+- **Files pile up in `rejected/`.** vcon-server refused them with a `4xx` other
+  than `401`, `403` or `404`. The forwarder's journal names each file it moved
+  there, and vcon-server's API logs only the status, such as `422`. To read the
+  server's reason, post one of them by hand:
+
+  ```bash
+  # Run all of these, in order.
+  F=$(sudo ls /var/spool/sipnab-vcon/rejected | head -1)
+  KEY=$(sudo sed -n 's/^VCON_INGRESS_TOKEN=//p' /etc/sipnab/vcon-forward.env)
+  sudo cat "/var/spool/sipnab-vcon/rejected/$F" | curl -s -w '\n' -X POST \
+    "localhost:8000/vcon/external-ingress?ingress_list=sipnab" \
+    -H "x-conserver-api-token: $KEY" -H 'Content-Type: application/json' --data-binary @-
+  ```
+
+  The answer names the field and what was wrong with it.
