@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.194] - 2026-09-28
 
 ### Added
 
@@ -60,6 +60,15 @@ entry that carries them.
   - With both proxies on one machine, a wider capture filter alone gave sipnab
     no vCons for Kamailio's calls: sipnab reads SIP only on its
     `--portrange`. The guide sets both.
+- **The OpenSIPS and Kamailio guides' troubleshooting now quotes what the
+  software says.** Causing each fault they describe showed three wrong:
+  Kamailio 6.1 reports a function with no module loaded as `parse error in
+  config file` and `unknown command, missing loadmodule?`, not `bad config
+  file`; `opensips-cli`'s error for OpenSIPS 3's command name does not list the
+  accepted names; and SIPp can report a call through Kamailio as successful
+  when its `BYE` got no answer, which the page now explains. Every block of
+  the four SIP server guides ran as written on clean Debian 13 and Ubuntu 24.04
+  machines, uninstall included.
 
 ## [0.5.193] - 2026-09-27
 
