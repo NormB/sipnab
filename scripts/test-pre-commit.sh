@@ -259,10 +259,42 @@ HOOK_OUT=""
 HOOK_RC=0
 run_hook() { # run_hook <sandbox-dir>
 	set +e
-	HOOK_OUT=$(cd "$1" && PATH="$1/bin:$PATH" bash "$HOOK" 2>&1)
+	# SIPNAB_HOOK_ANY_TREE=1: the repository's hook, run against a sandbox,
+	# is the "hook from another checkout" shape its first check refuses;
+	# Scenario 0 proves that it does.
+	HOOK_OUT=$(cd "$1" && PATH="$1/bin:$PATH" SIPNAB_HOOK_ANY_TREE=1 bash "$HOOK" 2>&1)
 	HOOK_RC=$?
 	set -e
 }
+
+# ── Scenario 0: a hook from another checkout refuses to gate this one ──────
+# `core.hooksPath` was an absolute path into one checkout, so every worktree
+# ran that checkout's branch's hooks: on 2026-09-29 that was a branch whose
+# pre-commit lacked the sipnab-bpf-types step, and commits on main went
+# through without it, silently. The hook now checks it is the tree's own.
+D=$(sandbox 1)
+set +e
+FOREIGN_OUT=$(cd "$D" && PATH="$D/bin:$PATH" env -u SIPNAB_HOOK_ANY_TREE bash "$HOOK" 2>&1)
+FOREIGN_RC=$?
+set -e
+if [ "$FOREIGN_RC" -ne 0 ] && printf '%s' "$FOREIGN_OUT" | grep -qF 'core.hooksPath .githooks'; then
+	ok "a hook from another checkout blocks and says how to point git at this tree's"
+else
+	bad "a hook from another checkout gated this tree (rc=$FOREIGN_RC): $FOREIGN_OUT"
+fi
+# ...and the same file installed as the tree's OWN hook gets past that check.
+mkdir -p "$D/.githooks"
+cp "$HOOK" "$D/.githooks/pre-commit"
+set +e
+OWN_OUT=$(cd "$D" && PATH="$D/bin:$PATH" env -u SIPNAB_HOOK_ANY_TREE bash .githooks/pre-commit 2>&1)
+set -e
+if printf '%s' "$OWN_OUT" | grep -qF 'Formatting' \
+	&& ! printf '%s' "$OWN_OUT" | grep -qF 'core.hooksPath .githooks'; then
+	ok "the tree's own hook passes the same-checkout check"
+else
+	bad "the tree's own hook was refused as foreign: $OWN_OUT"
+fi
+rm -rf "$D"
 
 # ── Scenario 1: exactly one full-suite invocation, measured by running it ──
 D=$(sandbox 264 1600 974)

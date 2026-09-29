@@ -413,12 +413,19 @@ commit — CI still enforces it, and blocking would make the hook unusable
 without both installed — but the run says so rather than staying quiet.
 
 Both hooks skip the prose gates entirely when the branch does not carry that
-script, and report the skip. `core.hooksPath` holds an absolute path into one
-worktree's `.githooks/`, so every worktree and every branch runs the same hook
-FILE while the script it sources is branch CONTENT. A branch cut before
-the script existed, or a `git bisect` across the commit that added it, got
-`No such file or directory` and could not commit at all — found the first time
-the hook met a branch two commits behind.
+script, and report the skip. While `core.hooksPath` held an absolute path into
+one worktree's `.githooks/`, every worktree and every branch ran that one hook
+FILE while the script it sources is branch CONTENT, so a branch cut before the
+script existed could not commit at all.
+
+The same absolute path let whichever branch that one worktree had checked out
+gate every commit, from any worktree. On 2026-09-29 that branch's pre-commit
+lacked the `sipnab-bpf-types` step, and commits on `main` went through without
+it. So both hooks now open by checking that they belong to the tree they are
+checking, and refuse otherwise, naming the fix: `git config core.hooksPath
+.githooks`. `SIPNAB_HOOK_ANY_TREE=1` turns that check off and says so. The hook
+test scripts need it, because they run the repository's hooks against throwaway
+trees.
 
 Two of the thirteen cannot fail the commit. Gate 6 prints
 `WARN: N TODO/FIXME comments` and falls through — a count, not a veto. Gate 8

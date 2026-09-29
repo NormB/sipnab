@@ -13,6 +13,27 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# ── The hook must be this checkout's own ─────────────────────────────
+# `core.hooksPath` was once an absolute path into one checkout, so every
+# worktree ran THAT checkout's branch's hooks. On 2026-09-29 that branch's
+# pre-commit lacked the sipnab-bpf-types step, and commits on main went
+# through without it -- no error, just a gate that was not there. A hook
+# that is not this tree's own would gate with another branch's rules, so it
+# refuses. SIPNAB_HOOK_ANY_TREE=1 turns the check off (the hook test
+# harnesses need it: they run this file against throwaway trees), and says so.
+# The same check opens .githooks/pre-commit and .githooks/pre-push; each
+# harness proves its copy.
+HOOK_OWN_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+HOOK_TREE=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ "${SIPNAB_HOOK_ANY_TREE:-}" = 1 ]; then
+	echo "  Hook belongs to this tree... NOT CHECKED (SIPNAB_HOOK_ANY_TREE=1)"
+elif [ -n "$HOOK_TREE" ] && [ "$HOOK_OWN_DIR" != "$(CDPATH='' cd -- "$HOOK_TREE" && pwd -P)/.githooks" ]; then
+	echo "This hook is $HOOK_OWN_DIR/$(basename -- "$0"), but the tree being" >&2
+	echo "checked is $HOOK_TREE. It would gate it with another checkout's rules." >&2
+	echo "Point git at this tree's own hooks:  git config core.hooksPath .githooks" >&2
+	exit 1
+fi
+
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
 
 # ── Naming what failed ─────────────────────────────────────────────
@@ -113,13 +134,13 @@ echo -e "${GREEN}OK${NC}"
 # still enforces it and blocking here would make the hook unusable on a machine
 # without both; it is reported instead, so nobody reads silence as green.
 #
-# SOURCED ONLY IF THE BRANCH HAS IT, and that guard is not defensive padding.
-# `core.hooksPath` is an absolute path to one worktree's .githooks/, so every
-# worktree and every branch runs THIS file -- while the script it sources is
-# branch content. A branch that predates the script, a `git bisect` across the
-# commit that added it, or a contributor branch cut earlier, all got a hard
-# `No such file or directory` and could not commit at all. Found the first time
-# this hook met a branch two commits behind.
+# SOURCED ONLY IF THE BRANCH HAS IT. While `core.hooksPath` was an absolute
+# path into one worktree's .githooks/, every worktree and every branch ran
+# THAT file while the script it sources is branch content: a branch that
+# predated the script, or a `git bisect` across the commit that added it, got
+# a hard `No such file or directory` and could not commit at all. hooksPath is
+# `.githooks` now, and the first check above refuses a hook from another
+# checkout; the skip stays for a hook run by hand against an older tree.
 #
 # Skipping is the same answer the script gives for a missing tool: the gate did
 # not run, and it says so, rather than blocking work it cannot check. pre-push

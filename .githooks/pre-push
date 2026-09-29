@@ -46,6 +46,27 @@ else
 	NC=''
 fi
 
+# ── The hook must be this checkout's own ─────────────────────────────
+# `core.hooksPath` was once an absolute path into one checkout, so every
+# worktree ran THAT checkout's branch's hooks. On 2026-09-29 that branch's
+# pre-commit lacked the sipnab-bpf-types step, and commits on main went
+# through without it -- no error, just a gate that was not there. A hook
+# that is not this tree's own would gate with another branch's rules, so it
+# refuses. SIPNAB_HOOK_ANY_TREE=1 turns the check off (the hook test
+# harnesses need it: they run this file against throwaway trees), and says so.
+# The same check opens .githooks/pre-commit and .githooks/pre-push; each
+# harness proves its copy.
+HOOK_OWN_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+HOOK_TREE=$(git rev-parse --show-toplevel 2>/dev/null || true)
+if [ "${SIPNAB_HOOK_ANY_TREE:-}" = 1 ]; then
+	echo "  Hook belongs to this tree... NOT CHECKED (SIPNAB_HOOK_ANY_TREE=1)"
+elif [ -n "$HOOK_TREE" ] && [ "$HOOK_OWN_DIR" != "$(CDPATH='' cd -- "$HOOK_TREE" && pwd -P)/.githooks" ]; then
+	echo "This hook is $HOOK_OWN_DIR/$(basename -- "$0"), but the tree being" >&2
+	echo "checked is $HOOK_TREE. It would gate it with another checkout's rules." >&2
+	echo "Point git at this tree's own hooks:  git config core.hooksPath .githooks" >&2
+	exit 1
+fi
+
 printf '%bRunning pre-push checks...%b\n' "$YELLOW" "$NC"
 
 # Emergency bypass.
@@ -1051,9 +1072,10 @@ prose_fail=0
 #
 # Return 2 is NOT a pass and is not rendered as one: a gate that cannot run has
 # to say so.
-# Guarded for the reason .githooks/pre-commit records at length: hooksPath is
-# absolute, so every branch runs this file while the script it sources is
-# branch content, and a branch that predates the script could not push at all.
+# Guarded for the reason .githooks/pre-commit records at length: while
+# hooksPath was absolute, every branch ran one checkout's copy of this file
+# while the script it sources is branch content, and a branch that predated
+# the script could not push at all.
 # `|| true` is load-bearing: `set -e` is on, and the exit status of an
 # assignment IS the exit status of its command substitution. Outside a
 # repository `git rev-parse` exits 128, so the bare form killed the hook

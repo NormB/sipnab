@@ -37,6 +37,13 @@ entry that carries them.
   and the hook died before reaching the gates four scenarios test. The list
   now comes from the hook itself, and the `Git hook scenarios` CI job runs the
   harness beside the pre-push one.
+- **A git hook from another checkout refuses to run.** `core.hooksPath` was
+  set to an absolute path into one checkout, so a commit in any worktree was
+  gated by that checkout's branch's hooks: on 2026-09-29 a branch whose
+  pre-commit lacked the `sipnab-bpf-types` step, and commits on `main` went
+  through without it. Both hooks now check first that they are the tree's
+  own, and otherwise exit naming the fix, `git config core.hooksPath
+  .githooks`. `SIPNAB_HOOK_ANY_TREE=1` turns the check off, and says so.
 - **`crash_test` resolves a crash report's frames in one symbolizer run.**
   Each `addr2line` run loads the whole 184 MB debug binary, so one call per
   frame made it the slowest test binary, at 55.8 s; it now takes about 9 s.

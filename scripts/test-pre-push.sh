@@ -220,7 +220,12 @@ run_hook() {
 	# them. Inheriting the caller's SIPNAB_CORPUS would make every scenario
 	# above behave differently on a machine that holds the corpus, which is
 	# every machine where this script gets run in anger.
+	#
+	# SIPNAB_HOOK_ANY_TREE=1 because this runs the repository's hook against a
+	# throwaway crate: exactly the "hook from another checkout" shape the
+	# hook's first check refuses. The scenario after the rest proves it does.
 	( cd "$CRATE" && env -u SKIP_FMT_HOOK -u SIPNAB_CORPUS -u SKIP_CORPUS_HOOK \
+		SIPNAB_HOOK_ANY_TREE=1 \
 		${1:+SKIP_FMT_HOOK="$1"} \
 		${HOOK_CORPUS_DIR:+SIPNAB_CORPUS="$HOOK_CORPUS_DIR"} \
 		${HOOK_CORPUS_SKIP:+SKIP_CORPUS_HOOK="$HOOK_CORPUS_SKIP"} \
@@ -1062,6 +1067,35 @@ write_unformatted
 ( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
 
 # -- Summary ------------------------------------------------------------------
+# -- GIVEN a hook from ANOTHER checkout, THEN it refuses to gate this one ---
+# `core.hooksPath` was an absolute path into one checkout, so every worktree
+# ran that checkout's branch's hooks: on 2026-09-29 that was a branch whose
+# pre-commit lacked the sipnab-bpf-types step, and commits on main went
+# through without it, silently. The hook now checks it is the tree's own.
+ensure_repo_shape
+: >"$TMP/refs.in"
+# The exit status is captured, not tested bare: the harness runs under
+# `set -e`, and this run is EXPECTED to fail.
+foreign_rc=0
+( cd "$CRATE" && env -u SIPNAB_HOOK_ANY_TREE SKIP_FMT_HOOK=1 "$HOOK" <"$TMP/refs.in" ) >"$TMP/out.log" 2>&1 \
+	|| foreign_rc=$?
+if [ "$foreign_rc" -ne 0 ] && grep -qF 'core.hooksPath .githooks' "$TMP/out.log"; then
+	ok "a hook from another checkout blocks and says how to point git at this tree's"
+else
+	bad "a hook from another checkout gated this tree: $(cat "$TMP/out.log")"
+fi
+# ...and the same file installed as the tree's OWN hook gets past that check.
+mkdir -p "$CRATE/.githooks"
+cp "$HOOK" "$CRATE/.githooks/pre-push"
+( cd "$CRATE" && env -u SIPNAB_HOOK_ANY_TREE SKIP_FMT_HOOK=1 sh .githooks/pre-push <"$TMP/refs.in" ) >"$TMP/out.log" 2>&1 \
+	|| true
+if grep -qF 'Running pre-push checks' "$TMP/out.log" && ! grep -qF 'core.hooksPath .githooks' "$TMP/out.log"; then
+	ok "the tree's own hook passes the same-checkout check"
+else
+	bad "the tree's own hook was refused as foreign: $(cat "$TMP/out.log")"
+fi
+rm -rf "$CRATE/.githooks"
+
 printf '\n--- test-pre-push summary: %d passed, %d failed, %d skipped (host: %s) ---\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$FAIL" -ne 0 ]; then
