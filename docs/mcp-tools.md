@@ -4387,7 +4387,7 @@ regular-expression operator would produce a pattern the author never wrote.
 
 TFPS is the toll-fraud prevention system an operator may run on the same host
 as sipnab: it condemns sources and enforces that decision in the firewall.
-sipnab never bans anything, so the question an agent reading
+sipnab never decides a ban itself, so the question an agent reading
 `security_findings` asks next is what TFPS did with the evidence. This tool
 answers whether TFPS is there at all, and what it reports about itself.
 

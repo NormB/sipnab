@@ -1344,7 +1344,8 @@ Ask whether the toll-fraud prevention system (TFPS) runs on this host, and
 what it reports about itself.
 
 TFPS is optional peer software: it condemns sources and enforces that decision
-in the firewall, and sipnab never bans anything. Point sipnab at it with
+in the firewall. sipnab never decides a ban itself: it asks TFPS to ban only
+when an operator asks, and only where `--allow-action` enables it. Point sipnab at it with
 `--tfps-ctl /path/to/tfps_ctl` or `[tfps] ctl` in the config file, or leave
 `tfps_ctl` on `PATH`. sipnab looks for it only when one of these routes runs —
 it probes nothing at startup, and a machine without TFPS logs nothing.

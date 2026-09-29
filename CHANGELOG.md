@@ -73,6 +73,11 @@ entry that carries them.
 
 ### Fixed
 
+- **The home page no longer says sipnab asks rtpproxy for its counters.** It
+  asks rtpengine only; with rtpproxy it reads the control traffic and asks
+  nothing. Pages that said sipnab "never bans anything" now say what is true:
+  it never decides a ban itself, and asks TFPS only when an operator asks and
+  `--allow-action` enables it.
 - **The home page's Homer tile shows its colored top trim without a
   hover.** It was the only tile without a color, so its trim was blank until
   the pointer was over it, and then white. A test now checks that every tile

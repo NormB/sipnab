@@ -138,8 +138,9 @@ output because their SSRCs differ.
 
 A toll-fraud prevention system: optional separate software that decides which
 sources to ban and enforces that in the firewall. sipnab can ask it what it
-decided (the `tfps_*` MCP tools and the `/v1/tfps/` routes) and never bans
-anything itself.
+decided (the `tfps_*` MCP tools and the `/v1/tfps/` routes). sipnab never
+decides a ban itself: it asks TFPS to ban only when an operator asks, and only
+where `--allow-action` enables it.
 
 ## TUI
 
