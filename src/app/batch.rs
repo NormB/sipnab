@@ -353,6 +353,10 @@ struct ProcessingState<'a> {
     /// DTLS handshakes and feeds them into `srtp`.
     #[cfg(feature = "tls")]
     dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+    /// `--pcap-export-mode decrypted` (PCAPX-DEC): told when this packet's
+    /// SRTP decrypted, or it was RTCP, so the export can rewrite or count it.
+    #[cfg(feature = "tls")]
+    export: Option<&'a mut crate::capture::decrypted_export::DecryptedExport>,
     /// `--group-by` buffer. `Some` reroutes per-message output into it so the
     /// capture can be replayed grouped at the end; `None` keeps the ordinary
     /// streaming path, including the allocation-free `--json` fast path.
@@ -3308,6 +3312,17 @@ impl BatchRunner {
         // so a capture truncated by ENOSPC reported success and any
         // `sipnab -O out.pcap && next-step` pipeline ran on partial data.
         let mut output_failed = false;
+        // `--pcap-export-mode decrypted` (PCAPX-DEC): `-O` goes through a short
+        // reorder buffer that rewrites what sipnab decrypted as plaintext.
+        #[cfg(feature = "tls")]
+        let mut decrypted_export = (export_mode == PcapExportMode::Decrypted
+            && cli.capture_args.output.is_some())
+        .then(|| {
+            capture::decrypted_export::DecryptedExport::new(
+                capture::decrypted_export::reorder_window(),
+                capture::decrypted_export::REORDER_BYTE_CAP,
+            )
+        });
         // Set when the capture thread ends in an error or a panic, i.e. the
         // input was not read to the end. Separate from `output_failed` so the
         // two causes stay distinguishable in the code even though both land on
@@ -3562,7 +3577,13 @@ impl BatchRunner {
                         // the capture device for live, the input file for replay.
                         let capture_source =
                             cli.capture_args.device.as_deref().or(cli.primary_input());
-                        match PcapWriter::with_interface(
+                        // A decrypted export says so in its section comment.
+                        #[cfg(feature = "tls")]
+                        let section_note = (export_mode == PcapExportMode::Decrypted)
+                            .then(|| capture::decrypted_export::SECTION_NOTE.to_string());
+                        #[cfg(not(feature = "tls"))]
+                        let section_note: Option<String> = None;
+                        match PcapWriter::with_provenance(
                             &PathBuf::from(output_path),
                             packet.link_type,
                             split_bytes,
@@ -3570,6 +3591,7 @@ impl BatchRunner {
                             use_pcapng,
                             export_mode,
                             capture_source,
+                            section_note,
                         )
                         .map(|w| w.keep_last_splits(split_keep))
                         {
@@ -3606,8 +3628,20 @@ impl BatchRunner {
                         }
                     }
 
-                    // Write to output pcap if configured
-                    if let Some(ref mut w) = writer
+                    // Write to output pcap if configured. A decrypted export holds
+                    // the packet instead, and writes it once its wait is over.
+                    #[cfg(feature = "tls")]
+                    let held = match decrypted_export.as_mut() {
+                        Some(x) if writer.is_some() => {
+                            x.captured(&packet);
+                            true
+                        }
+                        _ => false,
+                    };
+                    #[cfg(not(feature = "tls"))]
+                    let held = false;
+                    if !held
+                        && let Some(ref mut w) = writer
                         && let Err(e) = w.write(&packet)
                     {
                         tracing::error!("Failed to write packet: {e}");
@@ -3677,6 +3711,21 @@ impl BatchRunner {
                 #[cfg(feature = "tls")]
                 let effective_pps = {
                     let tls_yield = try_tls_decrypt(pp, &mut tls_decryptor, &mut tls_reassembler);
+                    if let Some(x) = decrypted_export.as_mut() {
+                        for d in tls_yield.recovered.iter().chain(tls_yield.decrypted.iter()) {
+                            x.sip_decrypted(
+                                std::net::SocketAddr::new(d.src_addr, d.src_port),
+                                std::net::SocketAddr::new(d.dst_addr, d.dst_port),
+                                d.timestamp,
+                                &d.payload,
+                                if d.transport == TransportProto::Wss {
+                                    capture::decrypted_export::Source::Wss
+                                } else {
+                                    capture::decrypted_export::Source::Tls
+                                },
+                            );
+                        }
+                    }
                     packets_after_tls(pp, tls_yield)
                 };
 
@@ -3707,6 +3756,8 @@ impl BatchRunner {
                             srtp: srtp_context.as_mut(),
                             #[cfg(feature = "tls")]
                             dtls: dtls_extractor.as_mut(),
+                            #[cfg(feature = "tls")]
+                            export: decrypted_export.as_mut(),
                             group: group_buf.as_mut(),
                         };
                         process_parsed_packet(
@@ -3752,6 +3803,18 @@ impl BatchRunner {
                         && let Err(e) = sender.forward_parsed(effective_pp)
                     {
                         tracing::debug!("HEP forward failed: {e:#}");
+                    }
+                }
+            }
+
+            // The decrypted export: write what has waited long enough.
+            #[cfg(feature = "tls")]
+            if let (Some(x), Some(w)) = (decrypted_export.as_mut(), writer.as_mut()) {
+                for frame in x.ready() {
+                    if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
+                        tracing::error!("Failed to write packet: {e}");
+                        output_failed = true;
+                        break;
                     }
                 }
             }
@@ -3838,6 +3901,24 @@ impl BatchRunner {
         if let Some(e) = sink.hard_error() {
             tracing::error!("Failed to write output: {e}");
             output_failed = true;
+        }
+
+        // The decrypted export's held frames: a stop discards them (stop means
+        // stop), the end of the input writes them. Then the counts, once.
+        #[cfg(feature = "tls")]
+        if let Some(mut x) = decrypted_export.take() {
+            if signals::shutdown_requested() {
+                x.discard();
+            } else if let Some(ref mut w) = writer {
+                for frame in x.finish() {
+                    if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
+                        tracing::error!("Failed to write packet: {e}");
+                        output_failed = true;
+                        break;
+                    }
+                }
+            }
+            eprintln!("sipnab: {}", x.counts().summary_line());
         }
 
         // Flush the output writer explicitly: BufWriter's Drop discards
@@ -4465,6 +4546,8 @@ fn process_parsed_packet(
     let stream_store = &mut *state.stream_store;
     let event_exec = &mut *state.event_exec;
     let group = &mut state.group;
+    #[cfg(feature = "tls")]
+    let export = &mut state.export;
     let scanner_detector = &mut engines.scanner;
     let fraud_detector = &mut engines.fraud;
     let digest_detector = &mut engines.digest;
@@ -4516,6 +4599,7 @@ fn process_parsed_packet(
     let mut decrypt = crate::pipeline::MediaDecrypt {
         srtp: state.srtp.as_deref_mut(),
         dtls: state.dtls.as_deref_mut(),
+        export: None,
     };
     #[cfg(not(feature = "tls"))]
     let mut decrypt = crate::pipeline::MediaDecrypt::default();
@@ -4730,6 +4814,10 @@ fn process_parsed_packet(
             }
         }
         crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
+            #[cfg(feature = "tls")]
+            if let Some(x) = export.as_deref_mut() {
+                x.rtcp_seen(std::net::SocketAddr::new(pp.src_addr, pp.src_port));
+            }
             stream_store.process_rtcp(&rtcp_packets, pp.timestamp, pp.frame);
         }
         crate::pipeline::PacketAction::Rtp {
@@ -4754,6 +4842,10 @@ fn process_parsed_packet(
                 d
             });
             let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
+            #[cfg(feature = "tls")]
+            if let (Some(x), Some(plain)) = (export.as_deref_mut(), srtp_decrypted.as_ref()) {
+                x.srtp_decrypted(&plain.payload);
+            }
 
             stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
             *rtp_count += 1;
@@ -11581,6 +11673,8 @@ mod tests {
                 srtp: None,
                 #[cfg(feature = "tls")]
                 dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
                 group: None,
             };
             process_parsed_packet(
@@ -11951,6 +12045,8 @@ mod tests {
                 srtp: None,
                 #[cfg(feature = "tls")]
                 dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
                 group: None,
             };
             process_parsed_packet(pp, &ctx, &mut state, engines, &mut counters, &mut effects);
@@ -12345,6 +12441,8 @@ mod tests {
                 srtp: None,
                 #[cfg(feature = "tls")]
                 dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
                 group: None,
             };
             process_parsed_packet(
@@ -12426,6 +12524,8 @@ mod tests {
                 srtp: None,
                 #[cfg(feature = "tls")]
                 dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
                 group: None,
             };
             process_parsed_packet(
@@ -12600,6 +12700,8 @@ mod tests {
                     srtp: None,
                     #[cfg(feature = "tls")]
                     dtls: None,
+                    #[cfg(feature = "tls")]
+                    export: None,
                     group: None,
                 };
                 process_parsed_packet(
@@ -12794,6 +12896,8 @@ mod tests {
                     srtp: None,
                     #[cfg(feature = "tls")]
                     dtls: None,
+                    #[cfg(feature = "tls")]
+                    export: None,
                     group: None,
                 };
                 process_parsed_packet(
@@ -12949,6 +13053,8 @@ mod tests {
                 event_exec: &mut event_exec,
                 srtp: Some(srtp),
                 dtls: None,
+                #[cfg(feature = "tls")]
+                export: None,
                 group: None,
             };
             process_parsed_packet(

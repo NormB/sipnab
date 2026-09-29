@@ -94,6 +94,14 @@ impl EpbComment {
     /// [`CommentTooLong`] when the pointer is long enough to push the comment
     /// past the option length.
     ///
+    /// A fixed label sipnab writes itself, such as the decrypted export's
+    /// "sipnab: decrypted from TLS". `&'static` on purpose: a label is a
+    /// compile-time constant, never text an operator or an agent supplied, so
+    /// no note can travel through this door (Invariant 13).
+    pub(crate) fn fixed_label(text: &'static str) -> Self {
+        Self(text.to_owned())
+    }
+
     /// Built with the `tui` feature: the TUI's save dialog is the one exporter
     /// that writes rebuilt frames with notes.
     #[cfg(feature = "tui")]

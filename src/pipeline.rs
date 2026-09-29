@@ -1965,6 +1965,11 @@ pub struct MediaDecrypt<'a> {
     /// DTLS-SRTP extractor that recovers SRTP keys from DTLS handshakes.
     #[cfg(feature = "tls")]
     pub dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+    /// `--pcap-export-mode decrypted` (PCAPX-DEC), for callers that go
+    /// through [`process_packet`]: told when a packet's SRTP decrypted, or it
+    /// was RTCP. Batch mode applies actions itself and tells its own export.
+    #[cfg(feature = "tls")]
+    pub export: Option<&'a mut crate::capture::decrypted_export::DecryptedExport>,
     /// Holds the `'a` lifetime when neither decrypt field is compiled in.
     #[cfg(not(feature = "tls"))]
     _marker: std::marker::PhantomData<&'a ()>,
@@ -2555,6 +2560,10 @@ pub fn process_packet(
             }
         }
         PacketAction::Rtcp(rtcp_packets) => {
+            #[cfg(feature = "tls")]
+            if let Some(x) = decrypt.export.as_deref_mut() {
+                x.rtcp_seen(std::net::SocketAddr::new(pp.src_addr, pp.src_port));
+            }
             stream_store
                 .write()
                 .process_rtcp(&rtcp_packets, pp.timestamp, pp.frame);
@@ -2567,6 +2576,10 @@ pub fn process_packet(
             let mut ss = stream_store.write();
             match decrypted_payload {
                 Some(payload) => {
+                    #[cfg(feature = "tls")]
+                    if let Some(x) = decrypt.export.as_deref_mut() {
+                        x.srtp_decrypted(&payload);
+                    }
                     let mut d = pp.clone();
                     d.payload = payload;
                     ss.process_rtp(&d, &hdr, d.timestamp);

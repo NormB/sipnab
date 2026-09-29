@@ -1306,7 +1306,15 @@ fn top_level_of(block: &str) -> String {
 fn the_shard_peek_dispatch_is_exhaustive_over_link_type() {
     let src = parse_source();
     let wildcard = regex::Regex::new(r"(^|[^A-Za-z0-9_])_([^A-Za-z0-9_]|$)").expect("regex");
-    for func in ["fn peek_host_pair(", "fn slice_link_layer<'a>("] {
+    // The peek's dispatch lives in `outer_ip_offset`, which the decrypted
+    // export shares (one walk, not two), so that is where it is checked; the
+    // peek must still go through it.
+    assert!(
+        body_of(&src, "fn peek_host_pair(").contains("outer_ip_offset(packet)"),
+        "`peek_host_pair` no longer finds its IP header through `outer_ip_offset`, \
+         so the dispatch checked below is not the peek's"
+    );
+    for func in ["fn outer_ip_offset(", "fn slice_link_layer<'a>("] {
         // Both functions bind the resolved link type to `link` and match on
         // it; `LinkType::from_dlt` is what turns an unrecognized DLT number
         // away BEFORE the dispatch, which is what lets the dispatch be

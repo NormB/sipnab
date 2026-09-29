@@ -1045,7 +1045,11 @@ const LIVE_CALLEE: [u8; 4] = [10, 2, 0, 1];
 
 /// One complete call, INVITE/100/180/200/ACK/BYE/200, as (SIP text, source,
 /// destination), for the live `--hep-listen` vCon tests.
-#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[cfg(all(
+    feature = "hep",
+    any(feature = "vcon", feature = "tls"),
+    target_os = "linux"
+))]
 fn live_hep_call(call_id: &str) -> Vec<(String, [u8; 4], [u8; 4])> {
     let head = |start: &str, via_branch: &str, to_tag: bool, cseq: &str| {
         format!(
@@ -1106,7 +1110,11 @@ fn live_hep_call(call_id: &str) -> Vec<(String, [u8; 4], [u8; 4])> {
 }
 
 /// The HEP endpoint for one message of [`live_hep_call`].
-#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[cfg(all(
+    feature = "hep",
+    any(feature = "vcon", feature = "tls"),
+    target_os = "linux"
+))]
 fn live_hep_endpoint(src: [u8; 4], dst: [u8; 4]) -> sipnab::capture::hep::HepEndpoint {
     sipnab::capture::hep::HepEndpoint {
         src_addr: std::net::IpAddr::from(src),
@@ -1463,6 +1471,127 @@ fn a_stopped_live_single_vcon_export_writes_nothing() {
         !out.exists(),
         "a stopped live run wrote the call's container on its way out; a stop \
          must leave no residual data:\n{stderr}"
+    );
+}
+
+/// PCAPX-DEC D4: a live `--pcap-export-mode decrypted` run stopped by a signal
+/// writes none of the frames its reorder buffer held, and says how many it
+/// discarded. Stop means stop (Norm, 2026-09-24): nothing held is drained on
+/// the way out. The call's seven messages arrive well inside the buffer's
+/// five-second window, so every one of them is still held at the stop.
+#[cfg(all(feature = "hep", feature = "tls", target_os = "linux"))]
+#[test]
+fn a_stopped_live_decrypted_export_writes_nothing_it_held() {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepProtocol, build_hep_v3};
+    use std::io::BufRead;
+    const CALL: &str = "live-decrypted-stopped@10.1.0.1";
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("held.pcapng");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "--hep-listen",
+            "127.0.0.1:0",
+            "--hep-parse",
+            "--pcapng",
+            "-O",
+            out.to_str().expect("utf-8 temp path"),
+            "--pcap-export-mode",
+            "decrypted",
+        ])
+        .env("NO_COLOR", "1")
+        .env("SIPNAB_LOG", "info")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab");
+    let drain = |pipe: Box<dyn std::io::Read + Send>| {
+        let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let into = std::sync::Arc::clone(&text);
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(pipe).lines() {
+                let Ok(line) = line else { break };
+                let mut all = into.lock().expect("pipe buffer");
+                all.push_str(&line);
+                all.push('\n');
+            }
+        });
+        (text, reader)
+    };
+    let (stdout, out_reader) = drain(Box::new(child.stdout.take().expect("stdout piped")));
+    let (stderr, err_reader) = drain(Box::new(child.stderr.take().expect("stderr piped")));
+    let bind = wait_for_own_udp_listener(&mut child, &|| {
+        stderr.lock().expect("stderr buffer").clone()
+    });
+    let sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("sender socket");
+    let call = live_hep_call(CALL);
+    for (sip, src, dst) in &call {
+        let hep = build_hep_v3(
+            &live_hep_endpoint(*src, *dst),
+            Utc::now(),
+            HepProtocol::Sip,
+            0,
+            None,
+            sip.as_bytes(),
+        );
+        sock.send_to(&hep, &bind).expect("send HEP");
+    }
+    let by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while stdout.lock().expect("stdout buffer").lines().count() < call.len() {
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "sipnab exited before reading the call:\n{}",
+            stderr.lock().expect("stderr buffer")
+        );
+        assert!(
+            std::time::Instant::now() < by,
+            "the call was never read, so the stop below would prove nothing:\n{}",
+            stderr.lock().expect("stderr buffer")
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -TERM failed");
+    let exit_by = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let exit = loop {
+        if let Some(exit) = child.try_wait().expect("try_wait") {
+            break exit;
+        }
+        if std::time::Instant::now() >= exit_by {
+            let _ = child.kill();
+            panic!("sipnab did not exit within 30 s of SIGTERM");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    out_reader.join().expect("stdout reader");
+    err_reader.join().expect("stderr reader");
+    let stderr = std::mem::take(&mut *stderr.lock().expect("stderr buffer"));
+    assert!(exit.success(), "a stop is not an error ({exit}):\n{stderr}");
+
+    let frames = std::fs::read(&out).map_or(0, |raw| {
+        let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..]).expect("pcapng");
+        let mut n = 0;
+        while let Some(block) = reader.next_block() {
+            if matches!(
+                block.expect("a block"),
+                pcap_file::pcapng::Block::EnhancedPacket(_)
+            ) {
+                n += 1;
+            }
+        }
+        n
+    });
+    assert_eq!(frames, 0, "a stopped run wrote frames it held:\n{stderr}");
+    let discarded = format!("{} discarded at stop", call.len());
+    assert!(
+        stderr.contains(&discarded),
+        "expected {discarded:?}:\n{stderr}"
     );
 }
 

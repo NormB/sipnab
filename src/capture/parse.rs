@@ -1592,8 +1592,34 @@ pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
         return Some((meta.src_addr, meta.dst_addr));
     }
     let d: &[u8] = &packet.data;
+    let ip_off = outer_ip_offset(packet)?;
+    match d.get(ip_off)? >> 4 {
+        4 => {
+            let s: [u8; 4] = d.get(ip_off + 12..ip_off + 16)?.try_into().ok()?;
+            let t: [u8; 4] = d.get(ip_off + 16..ip_off + 20)?.try_into().ok()?;
+            Some((IpAddr::V4(s.into()), IpAddr::V4(t.into())))
+        }
+        6 => {
+            let s: [u8; 16] = d.get(ip_off + 8..ip_off + 24)?.try_into().ok()?;
+            let t: [u8; 16] = d.get(ip_off + 24..ip_off + 40)?.try_into().ok()?;
+            Some((IpAddr::V6(s.into()), IpAddr::V6(t.into())))
+        }
+        _ => None,
+    }
+}
+
+/// Where the outermost IP header of a captured frame begins, for every link
+/// type sipnab decodes; `None` for a frame with no IP header this walk can
+/// name, and for pre-parsed (HEP) packets, whose bytes are a transport
+/// payload. Shared by [`peek_host_pair`] and the decrypted export, which
+/// rebuilds a frame around this offset.
+pub(crate) fn outer_ip_offset(packet: &Packet) -> Option<usize> {
+    if packet.pre_parsed.is_some() {
+        return None;
+    }
+    let d: &[u8] = &packet.data;
     let link = LinkType::from_dlt(packet.link_type)?;
-    let ip_off = match link {
+    Some(match link {
         LinkType::Ethernet => eth_payload(d, 0, &mut Budget::new())?.ip_offset()?,
         // `ip_offset()`, never a fixed header skip — see "A payload the walk
         // cannot name yields NO key" above.
@@ -1617,20 +1643,7 @@ pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
         LinkType::BareIpv4 | LinkType::BareIpv6 => bare_ip_offset(d, link)?,
         LinkType::BsdNull | LinkType::BsdLoop => loopback_ip_offset(d, link)?,
         LinkType::Ppp | LinkType::PppSerial | LinkType::PppEther => ppp_link_ip_offset(d, link)?,
-    };
-    match d.get(ip_off)? >> 4 {
-        4 => {
-            let s: [u8; 4] = d.get(ip_off + 12..ip_off + 16)?.try_into().ok()?;
-            let t: [u8; 4] = d.get(ip_off + 16..ip_off + 20)?.try_into().ok()?;
-            Some((IpAddr::V4(s.into()), IpAddr::V4(t.into())))
-        }
-        6 => {
-            let s: [u8; 16] = d.get(ip_off + 8..ip_off + 24)?.try_into().ok()?;
-            let t: [u8; 16] = d.get(ip_off + 24..ip_off + 40)?.try_into().ok()?;
-            Some((IpAddr::V6(s.into()), IpAddr::V6(t.into())))
-        }
-        _ => None,
-    }
+    })
 }
 
 // ── GRE constants ─────────────────────────────────────────────────────

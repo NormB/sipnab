@@ -695,7 +695,19 @@ sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
        --pcapng -O wireshark-friendly.pcapng --pcap-export-mode encrypted+dsb
 ```
 
-`decrypted` plaintext-frame export is not supported. Requesting it exits 2.
+To write what sipnab decrypted as plaintext, with no keys in the file, use
+`decrypted`. SIP over TLS and WSS comes out as plain SIP, and SRTP as plain RTP:
+
+```bash
+sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
+       --pcapng -O plaintext.pcapng --pcap-export-mode decrypted
+```
+
+This file holds readable signaling and, when sipnab has SRTP keys, listenable
+audio, so treat it like the call itself. Its PCAP-NG section comment says
+sipnab decrypted it, and each rebuilt frame names its source (TLS, WSS or SRTP). The
+run ends with one line of counts, including what it copied as captured because
+it could not decrypt it.
 
 ### 7d. Decrypt SRTP from a DTLS keylog
 

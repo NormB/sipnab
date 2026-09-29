@@ -17,6 +17,8 @@ pub mod bpf_filter;
 pub mod channel;
 #[cfg(feature = "tls")]
 pub mod decrypt;
+#[cfg(feature = "tls")]
+pub mod decrypted_export;
 #[cfg(feature = "native")]
 pub mod device;
 #[cfg(feature = "tls")]

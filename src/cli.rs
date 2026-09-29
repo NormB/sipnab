@@ -5497,9 +5497,13 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Decrypted export needs the decryption it writes out (PCAPX-DEC).
+        #[cfg(not(feature = "tls"))]
         if self.tls_args.pcap_export_mode == "decrypted" {
             return Err(crate::Error::CliValidation(
-                "--pcap-export-mode decrypted is not supported: use raw for original packets without keys, or encrypted+dsb to explicitly embed TLS keys in PCAP-NG".to_string(),
+                "--pcap-export-mode decrypted requires the 'tls' feature (not compiled in): \
+                 use raw for original packets without keys"
+                    .to_string(),
             ));
         }
 

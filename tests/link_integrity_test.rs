@@ -1073,7 +1073,10 @@ fn wiki_intra_docs_links_resolve() {
     // flags and [action_limits]; config-reference.md links [actions] and
     // [journal] from the sections that depend on them; mcp-tools.md's index
     // row for actions_revert. Attributed per file against 9e839a8a.
-    const EXPECTED_WIKI_LINKS: usize = 1160;
+    // 1160 -> 1161: output-formats.md's pcap section links examples.md for
+    // the decrypted export (PCAPX-DEC). Attributed by measurement: with HEAD's
+    // output-formats.md the extractor finds 1160.
+    const EXPECTED_WIKI_LINKS: usize = 1161;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

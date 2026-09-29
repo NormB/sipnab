@@ -48,9 +48,12 @@ fn exported_secrets_require_an_explicit_mode() {
     }
 }
 
-/// Asking for unsupported plaintext export fails before creating an artifact.
+/// RVW1's guard, now that `decrypted` works (PCAPX-DEC, 2026-09-29): the mode
+/// used to embed TLS keys while the docs promised plaintext, then refused to
+/// run. It runs now, and what RVW1 was about still holds: the file carries no
+/// Decryption Secrets Block, and a library caller's writer never embeds one.
 #[test]
-fn unsupported_plaintext_export_is_refused() {
+fn plaintext_export_runs_and_embeds_no_keys() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("plaintext.pcapng");
     let (_, stderr, code) = run_support::run(
@@ -67,17 +70,23 @@ fn unsupported_plaintext_export_is_refused() {
         ],
         Some("warn"),
     );
-    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(code, Some(0), "{stderr}");
+    let raw = std::fs::read(&output).expect("the export was written");
+    let mut reader = pcap_file::pcapng::PcapNgReader::new(&raw[..]).unwrap();
+    while let Some(block) = reader.next_block() {
+        if let pcap_file::pcapng::Block::Unknown(block) = block.unwrap() {
+            assert_ne!(block.type_, 0x0000_000a, "a decrypted export holds a DSB");
+        }
+    }
+    let library = dir.path().join("library.pcapng");
     assert!(
-        stderr.contains("decrypted") && stderr.contains("not supported"),
-        "{stderr}"
+        PcapWriter::with_format(&library, 1, None, None, true, PcapExportMode::Decrypted).is_ok(),
+        "library callers can open a decrypted export"
     );
-    assert!(!output.exists(), "refusal must precede creating the output");
     assert!(
-        PcapWriter::with_format(&output, 1, None, None, true, PcapExportMode::Decrypted).is_err(),
-        "library callers must receive the same refusal"
+        !PcapExportMode::Decrypted.include_dsb(),
+        "and it never embeds keys"
     );
-    assert!(!output.exists());
 }
 
 /// A registration-flood rule controls the actual detector's emitted kind.

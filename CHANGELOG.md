@@ -28,6 +28,21 @@ entry that carries them.
   rebuild, and the run takes 174 s instead of 161 s. About twelve minutes
   off every push that changes the library.
 
+- **`--pcap-export-mode decrypted` works.** It has exited 2 since
+  0.5.181, which made it refuse because it used to embed TLS keys while the
+  docs promised plaintext. It now writes what sipnab decrypted as plaintext, and
+  no key material: SIP from TLS and WSS as one plain TCP frame per message,
+  SRTP as plain RTP with the authentication tag removed, on the captured
+  addresses, ports and capture times, with everything else as captured. A
+  decrypted TLS connection's captured segments are replaced by the rebuilt
+  frames, which carry sequence numbers that run on, so a stream reassembler
+  reads the SIP in order. Frames wait up to 5 s of capture time for a late
+  decryption and leave in capture order; a stop discards what is still
+  waiting. PCAP-NG exports say they were decrypted in the section comment
+  and name each rebuilt frame's source; the run ends with a line of counts.
+  The TUI's live `-O` rewrites SRTP only, because the TUI does not decrypt
+  TLS. The file can hold readable signaling and listenable audio.
+
 ### Fixed
 
 - **A build in a git worktree no longer rebuilds everything every time.** The

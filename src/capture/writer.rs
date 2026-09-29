@@ -30,8 +30,9 @@ use crate::signals;
 
 /// Controls how encrypted traffic is written to output pcap files.
 ///
-/// - `Decrypted`: Reserved for synthetic plaintext frames; refused until
-///   implemented. It never authorizes embedding TLS secrets.
+/// - `Decrypted`: What sipnab decrypted, written as plaintext frames (see
+///   [`crate::capture::decrypted_export`], which the caller feeds; the writer
+///   only writes what it is given). It never authorizes embedding TLS secrets.
 /// - `EncryptedWithDsb`: Write original (encrypted) frames and include DSBs
 ///   containing the TLS key material so Wireshark can decrypt on load.
 /// - `Raw`: Write original (encrypted) frames with no DSBs. The output file
@@ -39,7 +40,7 @@ use crate::signals;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PcapExportMode {
-    /// Reserved plaintext export mode; writer construction returns an error.
+    /// Plaintext export: SIP from TLS/WSS and RTP from SRTP, rebuilt; no keys.
     Decrypted,
     /// Write encrypted frames + DSBs for Wireshark decryption.
     EncryptedWithDsb,
@@ -353,9 +354,6 @@ impl PcapWriter {
         interface: Option<&str>,
         provenance: Option<String>,
     ) -> Result<Self> {
-        if export_mode == PcapExportMode::Decrypted {
-            anyhow::bail!("decrypted export is not supported; use raw or encrypted+dsb");
-        }
         // M5: Warn on path traversal components
         if path
             .components()
@@ -695,7 +693,22 @@ impl PcapWriter {
         self.truncated_written
     }
 
-    /// Return the current export mode.
+    /// Write `packet` with `label`, a fixed sipnab-written text, as its
+    /// PCAP-NG comment; on classic pcap, which has no comment field, write it
+    /// bare. The decrypted export labels each frame it rebuilt this way.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`write`](Self::write) fails on.
+    pub fn write_labeled(&mut self, packet: &Packet, label: &'static str) -> Result<()> {
+        if self.use_pcapng {
+            self.write_annotated(packet, &[EpbComment::fixed_label(label)])
+        } else {
+            self.write(packet)
+        }
+    }
+
+    /// The export mode this writer was opened with.
     pub fn export_mode(&self) -> PcapExportMode {
         self.export_mode
     }

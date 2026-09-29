@@ -713,6 +713,18 @@ pub fn run_tui_mode(
             let mut writer: Option<PcapWriter> = None;
             let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.tls_args.pcap_export_mode)
                 .unwrap_or(PcapExportMode::Raw);
+            // `--pcap-export-mode decrypted` (PCAPX-DEC). The TUI decrypts SRTP
+            // but not TLS, so its export rewrites SRTP as RTP and copies TLS as
+            // captured, counting it.
+            #[cfg(feature = "tls")]
+            let mut decrypted_export = (tui_export_mode == PcapExportMode::Decrypted
+                && cli_clone.capture_args.output.is_some())
+            .then(|| {
+                crate::capture::decrypted_export::DecryptedExport::new(
+                    crate::capture::decrypted_export::reorder_window(),
+                    crate::capture::decrypted_export::REORDER_BYTE_CAP,
+                )
+            });
             // Wall time for a live device, the capture's own timeline for
             // `-I`: the TUI reads files too, and there the packet clock and
             // `Utc::now()` are unrelated. See `batch::SweepClock`.
@@ -763,7 +775,12 @@ pub fn run_tui_mode(
                         .device
                         .as_deref()
                         .or(cli_clone.primary_input());
-                    match PcapWriter::with_interface(
+                    #[cfg(feature = "tls")]
+                    let section_note = (tui_export_mode == PcapExportMode::Decrypted)
+                        .then(|| crate::capture::decrypted_export::SECTION_NOTE.to_string());
+                    #[cfg(not(feature = "tls"))]
+                    let section_note: Option<String> = None;
+                    match PcapWriter::with_provenance(
                         &PathBuf::from(output_path),
                         packet.link_type,
                         policy.split_bytes,
@@ -771,6 +788,7 @@ pub fn run_tui_mode(
                         cli_clone.capture_args.pcapng,
                         tui_export_mode,
                         capture_source,
+                        section_note,
                     )
                     .map(|w| w.keep_last_splits(policy.split_keep))
                     {
@@ -791,7 +809,18 @@ pub fn run_tui_mode(
                     }
                 }
 
-                if let Some(ref mut w) = writer
+                #[cfg(feature = "tls")]
+                let held = match decrypted_export.as_mut() {
+                    Some(x) if writer.is_some() => {
+                        x.captured(&packet);
+                        true
+                    }
+                    _ => false,
+                };
+                #[cfg(not(feature = "tls"))]
+                let held = false;
+                if !held
+                    && let Some(ref mut w) = writer
                     && let Err(e) = w.write(&packet)
                 {
                     tracing::error!("Failed to write packet: {e}");
@@ -811,6 +840,7 @@ pub fn run_tui_mode(
                         let mut media_decrypt = crate::pipeline::MediaDecrypt {
                             srtp: srtp_context.as_mut(),
                             dtls: dtls_extractor.as_mut(),
+                            export: decrypted_export.as_mut(),
                         };
                         #[cfg(not(feature = "tls"))]
                         let mut media_decrypt = crate::pipeline::MediaDecrypt::default();
@@ -832,6 +862,21 @@ pub fn run_tui_mode(
                     }
                 }
 
+                #[cfg(feature = "tls")]
+                if let (Some(x), Some(w)) = (decrypted_export.as_mut(), writer.as_mut()) {
+                    let mut failed = false;
+                    for frame in x.ready() {
+                        if let Err(e) = crate::capture::decrypted_export::write_frame(w, &frame) {
+                            tracing::error!("Failed to write packet: {e}");
+                            failed = true;
+                            break;
+                        }
+                    }
+                    if failed {
+                        break;
+                    }
+                }
+
                 if count_and_check_limit(is_paused, &mut total_count, capture_config.count) {
                     break;
                 }
@@ -845,6 +890,23 @@ pub fn run_tui_mode(
 
             // Flush the output writer explicitly: BufWriter's Drop
             // discards flush errors (silent truncation on ENOSPC).
+            // The decrypted export: a stop (quitting the TUI, a signal)
+            // discards what it held; the end of an input writes it.
+            #[cfg(feature = "tls")]
+            if let Some(mut x) = decrypted_export.take() {
+                if signals::shutdown_requested() {
+                    x.discard();
+                } else if let Some(ref mut w) = writer {
+                    for frame in x.finish() {
+                        if let Err(e) = crate::capture::decrypted_export::write_frame(w, &frame) {
+                            tracing::error!("Failed to write packet: {e}");
+                            break;
+                        }
+                    }
+                }
+                tracing::info!("sipnab: {}", x.counts().summary_line());
+            }
+
             if let Some(ref mut w) = writer
                 && let Err(e) = w.finish()
             {
