@@ -1653,7 +1653,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.195",
+  "version": "0.5.196",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
