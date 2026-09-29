@@ -92,15 +92,34 @@ def golden(name: str) -> list[dict]:
     return [json.loads(l) for l in (FIXTURES / name).read_text().splitlines() if l.strip()]
 
 
-def test_tfps_answers_are_reported_as_given_including_each_refusal():
-    lines = [sb.describe_action(a, "scanner") for a in golden("tfps-ban-golden.jsonl")]
-    assert lines == [
-        "banned 198.51.100.20 (scanner) until 2025-09-03T17:40:10Z",
-        "banned 198.51.100.23 (scanner) with no expiry",
-        "refused 192.0.2.1 (scanner): it is an address of the TFPS host (local)",
-        "refused 192.0.2.77 (scanner): TFPS's ignoreip says never enforce against it (declared)",
-        "refused 198.51.100.7 (scanner): TFPS could not write the block (kernel)",
+def test_each_answer_is_reported_as_given_including_each_tfps_refusal():
+    # sipnab answers a ban with the action it journaled and TFPS's verdict:
+    # {id, applied, refused}. The refusal words are TFPS's own, taken from the
+    # pinned fixture rather than restated here.
+    refusals = [a["refused"] for a in golden("tfps-ban-golden.jsonl") if not a["applied"]]
+    answers = [{"id": "a-r-1-1", "applied": True, "refused": None}] + [
+        {"id": f"a-r-1-{n}", "applied": False, "refused": r} for n, r in enumerate(refusals, 2)
     ]
+    lines = [sb.describe_action(a, "198.51.100.20", "scanner", 600) for a in answers]
+    assert lines == [
+        "banned 198.51.100.20 (scanner) for 600 s",
+        "refused 198.51.100.20 (scanner): it is an address of the TFPS host (local)",
+        "refused 198.51.100.20 (scanner): TFPS's ignoreip says never enforce against it (declared)",
+        "refused 198.51.100.20 (scanner): TFPS could not write the block (kernel)",
+    ]
+
+
+def test_a_ban_always_asks_for_a_lifetime_and_never_forever():
+    # sipnab refuses 0 (TFPS's "forever"); the program refuses it first, and
+    # says why, rather than sending a request it knows will be refused.
+    assert sb.lifetime("600") == 600
+    for bad in ["0", "-5", "soon"]:
+        try:
+            sb.lifetime(bad)
+        except Exception as e:  # argparse.ArgumentTypeError
+            assert "at least 1" in str(e) or "whole number" in str(e), e
+        else:
+            raise AssertionError(f"{bad!r} accepted")
 
 
 def test_a_ban_counts_only_once_tfps_lists_it_as_enforced():

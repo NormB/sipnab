@@ -635,16 +635,22 @@ sipnab recommends and applies nothing ([recipe 10c](examples.md#10c-block-a-scan
 with no counter-evidence, and counts a ban only once `GET /v1/tfps/banned`
 lists it as enforced. A source that completed a registration before its
 credentials went wrong is the device recipe 23 finds, and a ban would cut
-off a working peer. The program withholds that source and names it:
+off a working peer. The program withholds that source and names it.
+
+A ban changes another system, so sipnab takes it only when started with
+`--allow-action tfps:rest`, and only from a token minted with
+`--token-scope actions`. The program reads with `SIPNAB_API_KEY` and bans with
+`SIPNAB_ACTION_TOKEN`. Every ban expires, after `--ttl` seconds (an hour by
+default):
 
 <!-- snippet: clients/python/scanner_ban.py#tfps-ban -->
 ```python
 failed, applied = False, []
 for a in ban:
-    body = {"ip": a["ip"]} if args.ttl is None else {"ip": a["ip"], "ttl_secs": args.ttl}
-    action = call("POST", "/v1/tfps/ban", body)["action"]
-    print(describe_action(action, a["rules"]))
-    if action["applied"]:
+    body = {"ip": a["ip"], "ttl_secs": args.ttl}
+    done = call("POST", "/v1/tfps/ban", body, ACTION_TOKEN)
+    print(describe_action(done, a["ip"], a["rules"], args.ttl))
+    if done["applied"]:
         applied.append(a["ip"])
     else:
         failed = True
@@ -657,14 +663,17 @@ print(f"verified {len(applied) - len(missing)} of {len(applied)} ban(s) in TFPS'
 ```
 
 ```bash
-python3 clients/python/scanner_ban.py capture.pcap --ttl 3600 --reg-flood-threshold 10
+# Run all of these, in order.
+export SIPNAB_ACTION_TOKEN=$(sipnab --mint-token --token-scope actions --token-id scanner-ban \
+  --api-signing-key-file /etc/sipnab/signing.key)
+python3 clients/python/scanner_ban.py capture.pcap --ttl 600 --reg-flood-threshold 10
 ```
 
-Against [`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap), with `--ttl 0`:
+Against [`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap):
 
 ```text
-banned 198.51.100.77 (reg_flood) with no expiry
-banned 203.0.113.42 (scanner) with no expiry
+banned 198.51.100.77 (reg_flood) for 600 s
+banned 203.0.113.42 (scanner) for 600 s
 withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in this capture
 verified 2 of 2 ban(s) in TFPS's banned list
 ```

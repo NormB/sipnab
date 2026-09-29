@@ -412,11 +412,19 @@ grep -q "does not exist" "$WORK/err" || fail "triage.py did not pass on why sipn
 # by writing a BPF map as root, which no runner allows. The fake answers in
 # the documents the real one prints (clients/python/tests/
 # test_fake_tfps_ctl.py holds it to the pinned fixtures) and keeps its block
-# list in FAKE_TFPS_STATE, which sipnab passes on to it.
+# list in FAKE_TFPS_STATE, which sipnab passes on to it. A ban changes another
+# system, so this sipnab enables it for REST (--allow-action), journals it
+# (--journal-dir), and holds a signing key from which the one credential that
+# may act is minted: the API key reads and cannot ban.
 export FAKE_TFPS_STATE="$WORK/tfps-block-list.json"
 OPS_PORT="$(free_port)"
 OPS="http://127.0.0.1:$OPS_PORT"
+OPS_SIGNING_KEY="smoke-$$-signing"
+OPS_ACTION_TOKEN="$("$BIN" --mint-token --token-scope actions --token-id smoke-ops \
+	--api-signing-key "$OPS_SIGNING_KEY")"
 serve ops "$OPS_PORT" --node-name ops --ack-timeout 5 \
+	--api-signing-key "$OPS_SIGNING_KEY" \
+	--allow-action tfps:rest --journal-dir "$WORK/journal" \
 	--tfps-ctl clients/python/tests/fake_tfps_ctl.py \
 	-I tests/pcap-samples/sip-problem-call.pcap \
 	-I tests/fixtures/sip-answered-never-acked.pcap \
@@ -463,20 +471,28 @@ refuse "python one_way_audio" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/
 # A scanner and a flooding device banned through POST /v1/tfps/ban, and the
 # banned list read back (recipes 10 and 23). sipnab accuses three sources;
 # the PBX completed a registration before its credentials went wrong, so it
-# is withheld. --ttl 0 makes the expiry "none" and the lines exact.
+# is withheld. The ban uses the actions token; the reads use the API key.
 SCAN_CAPTURE=tests/fixtures/sip-scanner-and-register-flood.pcap
 expect "python scanner_ban (two banned, the PBX withheld)" \
-	"banned 198.51.100.77 (reg_flood) with no expiry" \
-	"banned 203.0.113.42 (scanner) with no expiry" \
+	"banned 198.51.100.77 (reg_flood) for 600 s" \
+	"banned 203.0.113.42 (scanner) for 600 s" \
 	"withheld 192.0.2.10 (reg_flood): it also completed a registration or a call in this capture" \
 	"verified 2 of 2 ban(s) in TFPS's banned list" \
-	-- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" \
-	--ttl 0 --reg-flood-threshold 10
+	-- env SIPNAB_URL="$OPS" SIPNAB_ACTION_TOKEN="$OPS_ACTION_TOKEN" \
+	"$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" \
+	--ttl 600 --reg-flood-threshold 10
 # The peer's own record, not the program's report of it: what reached it.
 BLOCKED="$("$PYTHON" -c 'import json, sys; print(" ".join(sorted(json.load(open(sys.argv[1])))))' "$FAKE_TFPS_STATE")"
 [ "$BLOCKED" = "198.51.100.77 203.0.113.42" ] ||
 	fail "the TFPS stand-in holds '$BLOCKED', not the two banned sources"
-refuse "python scanner_ban" -- env SIPNAB_URL="$OPS" "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE"
+refuse "python scanner_ban" -- env SIPNAB_URL="$OPS" SIPNAB_ACTION_TOKEN="$OPS_ACTION_TOKEN" \
+	"$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE"
+# The API key reads and cannot act: a ban with it alone is refused, and the
+# stand-in's block list does not change.
+expect_exit "python scanner_ban (the API key cannot ban)" 1 \
+	-- env SIPNAB_URL="$OPS" SIPNAB_ACTION_TOKEN="$SIPNAB_API_KEY" \
+	"$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" --reg-flood-threshold 10
+grep -q "HTTP 401" "$WORK/err" || fail "scanner_ban.py with the API key did not name the 401: $(head -c 400 "$WORK/err")"
 # The first sipnab has no TFPS beside it, and saying so is the answer.
 expect_exit "python scanner_ban (no TFPS)" 1 \
 	-- "$PYTHON" clients/python/scanner_ban.py "$SCAN_CAPTURE" --reg-flood-threshold 10
