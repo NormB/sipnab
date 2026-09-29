@@ -281,63 +281,24 @@ fi
 fi
 fi
 
-# -- Hard gate: CI's feature matrix -------------------------------------------
+# -- CI's feature matrix: on the local runners, not in this hook ------------
 #
-# The class this closes is invisible to every other gate in this repo. The
-# pre-commit hook builds `--features full`; the clippy gate above builds
-# `--all-features`. Both turn features ON, and the break here is one that only
-# appears when a feature is OFF -- a test helper used solely from a
-# `#[cfg(feature = "vcon")]` module, say, which every combo without `vcon`
-# reports as dead code. Until now that surfaced only in CI, so the loop for it
-# was push-and-wait.
+# Every combination ci.yml's Features job lists used to be rebuilt here, on
+# every push, as a hard gate. Since 2026-09-29 that job runs on the aarch64
+# self-hosted runners (Norm: "move the feature matrix to the local runners"),
+# which build all of it on the same machine within minutes of the push, so the
+# hook no longer repeats it. The break it catches only appears with a feature
+# OFF -- an item used solely under `#[cfg(feature = ...)]` without that gate
+# itself -- and the reduced-combo gate above still catches the commonest cases
+# before the push.
 #
-# Combos AND flags are read from .github/workflows/ci.yml, never restated. A
-# local gate that checks a stale combo set, or checks it without CI's
-# `-Dwarnings`, reports a pass CI contradicts -- which is worse than no gate.
-# That is not hypothetical: the first version of this script had the combos
-# right and the flags missing, and passed the very break it was written for.
-MATRIX_GATE="$(dirname "$0")/../scripts/check-feature-matrix.py"
-if [ ! -f "$MATRIX_GATE" ]; then
-	printf '%b  feature matrix: NOT CHECKED -- scripts/check-feature-matrix.py is missing%b\n' \
-		"$YELLOW" "$NC"
-	printf '    CI builds every combo and blocks there. The script is tracked, so a\n'
-	printf '    missing one means this checkout is incomplete rather than misconfigured.\n'
-else
-	printf '  feature matrix (every combo CI builds, with CI'"'"'s flags) ... '
-	set +e
-	MATRIX_OUTPUT=$(python3 "$MATRIX_GATE" 2>&1)
-	MATRIX_RC=$?
-	set -e
-	case "$MATRIX_RC" in
-	0)
-		printf '%bOK%b\n' "$GREEN" "$NC"
-		;;
-	2)
-		# Could not run: no cargo, no workflow, or no RUSTFLAGS to match. It
-		# says which on its first line. NOT CHECKED and never silence.
-		printf '%b%s%b\n' "$YELLOW" "$(printf '%s\n' "$MATRIX_OUTPUT" | head -1)" "$NC"
-		;;
-	*)
-		printf '%bFAIL%b\n' "$RED" "$NC"
-		MATRIX_LOG="$(git rev-parse --git-dir 2>/dev/null || echo .)/sipnab-pre-push-matrix.log"
-		printf '%s\n' "$MATRIX_OUTPUT" >"$MATRIX_LOG"
-		printf '%s\n' "$MATRIX_OUTPUT" | head -24 | sed 's/^/  /'
-		printf '  Full output: %s\n' "$MATRIX_LOG"
-		printf '\n'
-		printf '%bPush blocked: a feature combo CI builds does not compile.%b\n' "$RED" "$NC"
-		printf 'Reproduce one combo with:\n'
-		printf '    RUSTFLAGS=-Dwarnings cargo check --no-default-features --features <combo> --tests\n'
-		printf '`--tests` is not optional: without it no test file is built, so the\n'
-		printf 'break compiles nowhere and the check passes while CI goes red.\n'
-		printf '\n'
-		printf 'Usually an item used only under a `#[cfg(feature = ...)]` gate but not\n'
-		printf 'carrying one itself -- dead code in every build without that feature.\n'
-		printf 'Gate the ITEM, or mark it `#[allow(dead_code)]` if it is shared test\n'
-		printf 'support that different binaries use different slices of.\n'
-		exit 1
-		;;
-	esac
-fi
+# To see the whole matrix before pushing, run it by hand; it reads the combos
+# and CI's RUSTFLAGS from ci.yml, never a restated copy:
+#
+#     python3 scripts/check-feature-matrix.py
+#
+# scripts/test-pre-push.sh holds both halves: this hook does not run it, and
+# the script still blocks an item dead without its feature.
 
 # -- Hard gate: the non-Linux arm of every platform cfg -----------------------
 # Sibling of the feature-combination gates above, for the same reason and one

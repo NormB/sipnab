@@ -554,8 +554,8 @@ echo -e "${GREEN}OK${NC}"
 # declared dep:hmac. `--features full` hid it, because mcp supplies hmac
 # anyway, so every ordinary build passed while one matrix combination failed.
 #
-# The feature matrix in pre-push exists for exactly this and still missed it:
-# it builds the WORKING TREE, and the working tree held the fix while the
+# The feature matrix (then in pre-push, now CI's Features job) exists for
+# exactly this and still missed it: the hook's copy built the WORKING TREE, and the working tree held the fix while the
 # commit did not. This reads the source, so it answers about what is written
 # rather than about what happens to be checked out, in milliseconds rather
 # than eleven compilations.

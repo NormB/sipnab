@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **CI's feature matrix runs on the project's own runners, and the pre-push
+  hook no longer repeats it.** The Features job builds every reduced
+  combination on the aarch64 self-hosted runners instead of GitHub's hosted
+  queue. Steps that assume a disposable VM (freeing disk by deleting
+  preinstalled software, restoring and uploading the cargo cache) now run only
+  on hosted runners. `python3 scripts/check-feature-matrix.py` still builds the
+  whole matrix by hand before a push, and the hook keeps its reduced-combination
+  check.
+
 ### Fixed
 
 - **A build in a git worktree no longer rebuilds everything every time.** The

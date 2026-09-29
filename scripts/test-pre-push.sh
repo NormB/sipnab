@@ -919,28 +919,21 @@ fi
 HOOK_CORPUS_DIR=
 HOOK_CORPUS_SKIP=
 
-# -- SCENARIO: the feature-matrix gate ----------------------------------------
+# -- SCENARIO: the feature matrix, run by hand and in CI, not by this hook ----
 #
-# The gate this pair covers exists because `--features full` (pre-commit) and
-# `--all-features` (the clippy gate) both turn features ON, and the break is
-# one that only appears with a feature OFF. Both cases are exercised: an
-# ungated item that every combo without the feature reports as dead code, and
-# the same item once it carries the gate.
+# The break this covers only appears with a feature OFF: `--features full`
+# (pre-commit) and `--all-features` (the clippy gate) both turn features ON.
+# CI's Features job builds every combo, and since 2026-09-29 it runs on the
+# aarch64 self-hosted runners (Norm: "move the feature matrix to the local
+# runners"), so this hook no longer repeats it on every push.
+# `scripts/check-feature-matrix.py` still runs the same combos with CI's flags
+# by hand, and this scenario holds it to both cases: an ungated item that the
+# combo without the feature reports as dead code, and the same item gated.
 #
 # The fixture gets its own minimal workflow. check-feature-matrix.py reads the
-# combos and RUSTFLAGS from the crate being pushed, so without one it exits 2
+# combos and RUSTFLAGS from the crate it runs in, so without one it exits 2
 # and reports NOT CHECKED -- correct, and the reason this scenario has to
 # write one rather than rely on the real repo's.
-matrix_gate_verdict() {
-	if ! grep -q 'feature matrix' "$TMP/out.log" 2>/dev/null; then
-		printf 'not-reached'
-	elif grep -q 'feature matrix.*NOT CHECKED' "$TMP/out.log" 2>/dev/null; then
-		printf 'not-checked'
-	else
-		printf 'decided'
-	fi
-}
-
 write_matrix_workflow() {
 	mkdir -p "$CRATE/.github/workflows"
 	cat >"$CRATE/.github/workflows/ci.yml" <<'EOF'
@@ -1018,33 +1011,47 @@ EOF
 	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
 }
 
-MATRIX_BLOCKED='Push blocked: a feature combo CI builds does not compile'
+# run_matrix_script: run the script by hand in the fixture, as a developer
+# would before pushing, and leave its exit status in MX_RC.
+run_matrix_script() {
+	MX_RC=0
+	( cd "$CRATE" && python3 "$REPO_ROOT/scripts/check-feature-matrix.py" ) \
+		>"$TMP/out.log" 2>&1 || MX_RC=$?
+}
 
 write_matrix_workflow
 write_matrix_lib ''
-MX_RC=0
-run_hook "" || MX_RC=$?
-MX_V=$(matrix_gate_verdict)
-if [ "$MX_V" != decided ]; then
-	skip "feature-matrix gate blocks an item that is dead without its feature -- gate $MX_V on $(uname -s)"
-elif [ "$MX_RC" -ne 0 ] && grep -qF "$MATRIX_BLOCKED" "$TMP/out.log"; then
-	ok "feature-matrix gate blocks an item that is dead without its feature"
+
+# The hook leaves the matrix to CI: it neither runs nor mentions it, so an
+# item dead only without its feature does not block here.
+run_hook "" || true
+if grep -q 'feature matrix' "$TMP/out.log"; then
+	bad "the pre-push hook still runs the feature matrix CI runs on the local runners"
+	sed 's/^/    /' "$TMP/out.log"
 else
-	bad "feature-matrix gate did NOT block an item that is dead without its feature"
+	ok "the pre-push hook leaves the feature matrix to CI on the local runners"
+fi
+
+# By hand, the script blocks the ungated item...
+run_matrix_script
+if [ "$MX_RC" -eq 2 ]; then
+	skip "check-feature-matrix.py blocks an item that is dead without its feature -- NOT CHECKED on $(uname -s)"
+elif [ "$MX_RC" -ne 0 ]; then
+	ok "check-feature-matrix.py blocks an item that is dead without its feature"
+else
+	bad "check-feature-matrix.py did NOT block an item that is dead without its feature"
 	sed 's/^/    /' "$TMP/out.log"
 fi
 
 # ...and passes once the item carries the same gate its only caller has.
 write_matrix_lib '#[cfg(any(not(feature = "plain"), feature = "extra"))]'
-MX_RC=0
-run_hook "" || MX_RC=$?
-MX_V=$(matrix_gate_verdict)
-if [ "$MX_V" != decided ]; then
-	skip "feature-matrix gate passes once the item is gated -- gate $MX_V on $(uname -s), so a green hook proves nothing about it"
-elif [ "$MX_RC" -eq 0 ] || ! grep -qF "$MATRIX_BLOCKED" "$TMP/out.log"; then
-	ok "feature-matrix gate passes once the item is gated"
+run_matrix_script
+if [ "$MX_RC" -eq 2 ]; then
+	skip "check-feature-matrix.py passes once the item is gated -- NOT CHECKED on $(uname -s)"
+elif [ "$MX_RC" -eq 0 ]; then
+	ok "check-feature-matrix.py passes once the item is gated"
 else
-	bad "feature-matrix gate blocked a correctly gated item"
+	bad "check-feature-matrix.py blocked a correctly gated item"
 	sed 's/^/    /' "$TMP/out.log"
 fi
 

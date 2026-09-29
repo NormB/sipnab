@@ -17,8 +17,8 @@
 # that were already passing.
 #
 # So this checks the cheap things first and says what to do about each. It is
-# NOT a replacement for the hook: it does not run the test suite, clippy, the
-# corpus gate, or the feature matrix. A green preflight means "the hook will
+# NOT a replacement for the hook: it does not run the test suite, clippy or the
+# corpus gate. A green preflight means "the hook will
 # probably not bounce you on paperwork", not "this is correct".
 #
 # # Usage
@@ -400,7 +400,7 @@ if [ "$FAILED" = "0" ] && [ "$DEGRADED" != "0" ]; then
     printf 'rather than a green one. PREFLIGHT_STRICT=1 fails on them instead.\n'
 elif [ "$FAILED" = "0" ]; then
     printf '%bPreflight clean.%b The hook still runs the suite, clippy, the corpus\n' "$GREEN" "$NC"
-    printf 'gate and the feature matrix -- this only means the paperwork is right.\n'
+    printf 'gate -- this only means the paperwork is right.\n'
 else
     printf '%bPreflight found something.%b Fixing it now costs seconds; finding it\n' "$RED" "$NC"
     printf 'from the hook costs a full suite run.\n'

@@ -712,7 +712,17 @@ jobs:
     # group, which never supersedes. Observed: 7.2 min slowest combo.
     timeout-minutes: 30
     name: Features (${{ matrix.features }})
-    runs-on: ubuntu-24.04-arm
+    # The aarch64 self-hosted runners (four of them), not the hosted queue:
+    # every push builds these legs, and the pre-push hook no
+    # longer repeats them locally (Norm, 2026-09-29: "move the feature matrix
+    # to the local runners"). This workflow also runs on pull_request, which
+    # is safe on a self-hosted runner only because the repository requires
+    # approval before an external contributor's workflow runs
+    # (fork-pr-contributor-approval = all_external_contributors). The steps
+    # below that assume a disposable hosted VM are skipped here: they would
+    # delete software and docker images from a real machine, and upload its
+    # cargo registry.
+    runs-on: [self-hosted, thor-02]
     strategy:
       fail-fast: false
       matrix:
@@ -776,6 +786,7 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
       - name: Free disk space
+        if: runner.environment == 'github-hosted'
         uses: ./.github/actions/free-disk
 
       - name: Install system deps
@@ -784,7 +795,11 @@ jobs:
           packages: libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # A self-hosted runner keeps its workspace, and with it `target`, between
+      # runs, and its ~/.cargo is the machine's own: nothing to restore, and
+      # nothing that should be uploaded.
+      - if: runner.environment == 'github-hosted'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             ~/.cargo/registry
