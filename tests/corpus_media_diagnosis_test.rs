@@ -42,18 +42,17 @@ mod run_support;
 /// not captures at all, and each file is parsed in full.
 const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// How many captures of each kind to exercise. Both halves are needed and
-/// neither substitutes for the other: the media-carrying captures are the only
-/// place `nat_mismatch` can fire, and the RTP-free ones are the only place the
-/// capture-level `no_media` guard is under any pressure. Taking the first N
-/// files in path order filled the whole budget with signaling-only captures
-/// and left the flag under test never exercised — passing, and proving
-/// nothing.
-const WANT_PER_KIND: usize = 4;
-
-/// Files to open before giving up on filling either bucket. Bounds runtime on
-/// a corpus whose media-carrying captures sort late.
-const MAX_SCANNED: usize = 60;
+/// How many RTP-free captures to exercise: the only place the capture-level
+/// `no_media` guard is under any pressure.
+///
+/// Captures that DO carry RTP are all taken, never a sample. They are the only
+/// place `nat_mismatch` can fire, and which of them shows NAT is a property of
+/// the corpus nobody chose. Taking the first four in path order stopped
+/// reaching the only NAT captures when three directories were added in
+/// September 2026 that sort ahead of them: `nat_mismatch` fired on 21 dialogs
+/// in `direct-01.pcap0`-`pcap3` and the test reported zero, on `main` and on
+/// the code that introduced it alike (checked 2026-09-29).
+const WANT_WITHOUT_MEDIA: usize = 4;
 
 /// A diagnosis that fires on more than this share of the calls that carry
 /// media is describing the capture, not the calls in it.
@@ -121,18 +120,14 @@ fn dialogs(capture: &Path) -> (Vec<serde_json::Value>, Option<i32>) {
     (parsed, code)
 }
 
-/// Readable captures under the size cap, as `(filename, dialogs)`, balanced
-/// between those that carry RTP and those that do not.
+/// Readable captures under the size cap, as `(filename, dialogs)`: every one
+/// that carries RTP, and [`WANT_WITHOUT_MEDIA`] that do not.
 fn corpus_captures(root: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
     let (mut with_media, mut without_media) = (Vec::new(), Vec::new());
     let (mut too_big, mut unreadable, mut scanned) = (0usize, 0usize, 0usize);
+    // The whole corpus: a cap on files opened is a cap on which captures can
+    // show NAT, and so the same blind spot as a sample.
     for path in walk(root) {
-        if with_media.len() == WANT_PER_KIND && without_media.len() == WANT_PER_KIND {
-            break;
-        }
-        if scanned == MAX_SCANNED {
-            break;
-        }
         if path.metadata().map(|m| m.len()).unwrap_or(0) > MAX_FILE_BYTES {
             too_big += 1;
             continue;
@@ -143,14 +138,15 @@ fn corpus_captures(root: &Path) -> Vec<(String, Vec<serde_json::Value>)> {
             unreadable += 1;
             continue;
         }
-        let bucket = if all.iter().any(has_streams) {
+        let carries_media = all.iter().any(has_streams);
+        if !carries_media && without_media.len() == WANT_WITHOUT_MEDIA {
+            continue;
+        }
+        let bucket = if carries_media {
             &mut with_media
         } else {
             &mut without_media
         };
-        if bucket.len() == WANT_PER_KIND {
-            continue;
-        }
         let name = path
             .strip_prefix(root)
             .unwrap_or(&path)
