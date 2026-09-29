@@ -25,6 +25,11 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# /var/lib/sipnab, private to the sipnab user: the one place the service
+# may write. The actions journal lives there, and it is required only when
+# a drop-in enables an action with --allow-action.
+StateDirectory=sipnab
+StateDirectoryMode=0700
 
 # Resource limits
 LimitNOFILE=65535

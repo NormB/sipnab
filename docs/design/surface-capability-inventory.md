@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 288, TUI 25, REST 40, MCP 69.
+Totals: CLI 292, TUI 25, REST 41, MCP 70.
 
-## CLI flags (288)
+## CLI flags (292)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -21,6 +21,7 @@ Totals: CLI 288, TUI 25, REST 40, MCP 69.
 - `--alert`
 - `--alert-exec`
 - `--alert-json`
+- `--allow-action`
 - `--allow-coredump`
 - `--analyze`
 - `--api`
@@ -120,6 +121,8 @@ Totals: CLI 288, TUI 25, REST 40, MCP 69.
 - `--invert`
 - `--jitter-bad-ms`
 - `--jitter-warn-ms`
+- `--journal-dir`
+- `--journal-show`
 - `--json`
 - `--json-analyze`
 - `--json-dialogs`
@@ -246,6 +249,7 @@ Totals: CLI 288, TUI 25, REST 40, MCP 69.
 - `--resolve`
 - `--retain-audio`
 - `--reverse-dns`
+- `--revert-actions`
 - `--rotate`
 - `--rtpengine-control`
 - `--rtpproxy-control`
@@ -332,10 +336,11 @@ Totals: CLI 288, TUI 25, REST 40, MCP 69.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (40)
+## REST routes (41)
 
 - `/health`
 - `/metrics`
+- `/v1/actions/revert`
 - `/v1/aggregate`
 - `/v1/capabilities`
 - `/v1/captures/compare`
@@ -375,8 +380,9 @@ Totals: CLI 288, TUI 25, REST 40, MCP 69.
 - `/v1/timeline`
 - `/v1/vcon/validate`
 
-## MCP tools (69)
+## MCP tools (70)
 
+- `actions_revert`
 - `aggregate_dialogs`
 - `await_condition`
 - `build_evidence_package`

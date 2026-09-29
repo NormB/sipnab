@@ -2483,6 +2483,9 @@ pub struct BatchRunner {
     /// Handles to the companion-server thread (REST API / MCP), when any
     /// server started.
     servers: Option<crate::app::servers::ServerHandles>,
+    /// What this run may do to other systems; told when the run stops, so
+    /// the journal can record a clean stop.
+    actions: crate::security::actions::Actions,
     /// Split/autostop policy resolved from the CLI.
     policy: CapturePolicy,
     /// Where `--evidence-out` publishes findings. Opened in `new`, so an
@@ -3118,6 +3121,15 @@ impl BatchRunner {
                 None
             };
 
+        // Actions, with their journal, before any server listens: a journal
+        // that cannot be used refuses the run here.
+        let actions = crate::app::servers::start_actions(&cli, config).map_err(|message| {
+            crate::app::bootstrap::PlanError {
+                exit_code: 2,
+                message,
+            }
+        })?;
+
         // Start the companion servers (REST API + MCP) on one shared runtime
         // thread. They read the SAME stores the packet loop writes to — no
         // mirror, no second parse; MCP additionally reads the AlertEngine for
@@ -3136,6 +3148,7 @@ impl BatchRunner {
                 api_rate_limit_per_peer: cli.api_peer_rate_limit(config),
                 max_tracked_peers: cli.tracked_peer_capacity(config),
                 metrics_max_conn: cli.metrics_conn_cap(config),
+                actions: actions.clone(),
                 mcp_max_findings: cli.mcp_findings_cap(config),
                 tfps: cli.tfps_locator(config),
                 api: true,
@@ -3207,6 +3220,7 @@ impl BatchRunner {
             #[cfg(feature = "tls")]
             dtls_extractor,
             servers,
+            actions,
             policy,
             relay_orphans,
             relay_thread,
@@ -3278,6 +3292,7 @@ impl BatchRunner {
             #[cfg(feature = "tls")]
             mut dtls_extractor,
             servers,
+            actions,
             policy,
             relay_orphans,
             relay_thread,
@@ -4282,6 +4297,14 @@ impl BatchRunner {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         }
+
+        // A clean stop, journaled if no action is in flight; one that is
+        // stays in doubt for the next start, and is not waited for.
+        actions.stop(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        );
 
         // Report a truncated output as a failure. This runs after the sink
         // flush, the writer's finish(), the kill-worker shutdown and the

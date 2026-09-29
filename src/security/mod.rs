@@ -7,6 +7,7 @@
 //! scanner reconnaissance, toll fraud patterns, digest authentication
 //! vulnerabilities, registration floods, and a rule-based alerting engine.
 
+pub mod actions;
 pub mod alerting;
 pub mod ami;
 // Names `output::render_absent`, the fail2ban formatter's quoting rule for the

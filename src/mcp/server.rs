@@ -175,6 +175,10 @@ pub struct SipnabMcp {
     /// is probed when the server is built, so a machine without TFPS pays
     /// nothing for this field and logs nothing about it.
     pub(crate) tfps: crate::security::tfps::TfpsLocator,
+    /// The actions this server may take on another system (`--allow-action`,
+    /// `[actions]`). Empty by default, so `tfps_ban` and `tfps_unban` refuse
+    /// and name the setting that would enable them.
+    pub(crate) actions: crate::security::actions::Actions,
     /// Whether `start_tls_capture` may install kernel uprobes.
     ///
     /// Separate from `allow_open_capture` because it is a different act. That
@@ -355,6 +359,7 @@ impl SipnabMcp {
             relay_query: None,
             control_decoder: None,
             tfps: Default::default(),
+            actions: Default::default(),
             allow_tls_capture: false,
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
@@ -770,6 +775,14 @@ impl SipnabMcp {
     #[must_use]
     pub fn with_tfps(mut self, locator: crate::security::tfps::TfpsLocator) -> Self {
         self.tfps = locator;
+        self
+    }
+
+    /// Enable the actions `policy` names for this server, as
+    /// `--allow-action` and `[actions]` do. None is enabled by default.
+    #[must_use]
+    pub fn with_actions(mut self, policy: impl Into<crate::security::actions::Actions>) -> Self {
+        self.actions = policy.into();
         self
     }
 
@@ -8581,6 +8594,40 @@ fn caller_of(_extensions: &rmcp::model::Extensions) -> String {
     "stdio".to_string()
 }
 
+/// Who made a call, as an action's journal record names them: `token:<id>`
+/// (see [`crate::security::actions::token_caller`]), `peer:<address>` for an
+/// HTTP caller no credential was checked for, and `stdio`.
+///
+/// Narrower than [`caller_of`], which is written for the audit line: the
+/// journal wants the one name the per-caller rate limit counts against, the
+/// same one REST gives the same credential.
+#[cfg(feature = "mcp-http")]
+pub(crate) fn action_caller(extensions: &rmcp::model::Extensions) -> String {
+    use crate::mcp::transport::McpAuth;
+    let Some(parts) = extensions.get::<axum::http::request::Parts>() else {
+        return "stdio".to_string();
+    };
+    match parts.extensions.get::<McpAuth>() {
+        Some(McpAuth::BearerVerified { token_id, .. }) => {
+            crate::security::actions::token_caller(token_id.as_deref())
+        }
+        Some(McpAuth::Unauthenticated) | None => {
+            let addr = parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map_or_else(|| "unknown-peer".to_string(), |ci| ci.0.ip().to_string());
+            format!("peer:{addr}")
+        }
+    }
+}
+
+/// Without the HTTP transport compiled in, stdio is the only way a call can
+/// arrive.
+#[cfg(not(feature = "mcp-http"))]
+pub(crate) fn action_caller(_extensions: &rmcp::model::Extensions) -> String {
+    "stdio".to_string()
+}
+
 /// The peer a call is rate-limited against.
 ///
 /// Derived from the same HTTP `Parts` `caller_of` reads, but deliberately
@@ -8608,9 +8655,11 @@ fn peer_key_of(_extensions: &rmcp::model::Extensions) -> PeerKey {
 /// The scope the caller's admission record grants, for the per-tool check in
 /// `call_tool`.
 ///
-/// - Stdio (no HTTP `Parts` in the extensions) is FULL: whoever spawned the
-///   process owns its stdin, and process ownership is the boundary there —
-///   a scope claim would restrict the very operator who configured the server.
+/// - Stdio (no HTTP `Parts` in the extensions) holds every scope, `actions`
+///   included: whoever spawned the process owns its stdin, and process
+///   ownership is the boundary there — a scope claim would restrict the very
+///   operator who configured the server. An action is still refused unless
+///   `--allow-action` enabled it for MCP; that policy is stdio's lock.
 /// - HTTP with a verified bearer token carries the token's scope claim.
 /// - HTTP admitted without credentials (loopback, no verifier configured) is
 ///   FULL: the boundary there is network position, and narrowing it would
@@ -8627,17 +8676,20 @@ fn scope_of(extensions: &rmcp::model::Extensions) -> String {
     match extensions.get::<axum::http::request::Parts>() {
         Some(parts) => match parts.extensions.get::<McpAuth>() {
             Some(McpAuth::BearerVerified { scope, .. }) => scope.clone(),
+            // No token to carry `actions`, so an action is refused here even
+            // when enabled: acting over HTTP needs a verifier and a token.
             Some(McpAuth::Unauthenticated) | None => crate::auth::SCOPE_FULL.to_string(),
         },
-        None => crate::auth::SCOPE_FULL.to_string(),
+        None => crate::auth::SCOPE_ACTIONS.to_string(),
     }
 }
 
-/// Without the HTTP transport compiled in, every call is stdio and stdio is
-/// full-scope: process ownership is the boundary.
+/// Without the HTTP transport compiled in, every call is stdio, and stdio
+/// holds every scope: process ownership is the boundary, and `--allow-action`
+/// is the lock on actions.
 #[cfg(not(feature = "mcp-http"))]
 fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
-    crate::auth::SCOPE_FULL.to_string()
+    crate::auth::SCOPE_ACTIONS.to_string()
 }
 
 /// JSON-RPC error code for a refused-because-busy tool call.
@@ -8831,16 +8883,28 @@ fn scope_refusal(
     tool_name: &str,
     tool: Option<&rmcp::model::Tool>,
 ) -> Option<rmcp::ErrorData> {
-    if scope == crate::auth::SCOPE_FULL {
+    if scope == crate::auth::SCOPE_ACTIONS {
         return None;
     }
     let tool = tool?;
-    let read_only = tool
-        .annotations
-        .as_ref()
-        .and_then(|a| a.read_only_hint)
-        .unwrap_or(false);
-    if read_only {
+    let annotations = tool.annotations.as_ref();
+    let read_only = annotations.and_then(|a| a.read_only_hint).unwrap_or(false);
+    // Unstated means open-world: that is the MCP specification's default for
+    // `openWorldHint`, and here it is also the direction that fails safe.
+    let open_world = annotations.and_then(|a| a.open_world_hint).unwrap_or(true);
+    if !read_only && open_world {
+        // An action: it changes a system outside sipnab. Only an `actions`
+        // token reaches it, whatever else the token may do.
+        return Some(rmcp::ErrorData::invalid_params(
+            format!(
+                "tool {tool_name} changes a system outside sipnab and this \
+                 token's scope is \"{scope}\" — calling it requires an \
+                 \"actions\"-scope token, and the server must enable the action"
+            ),
+            None,
+        ));
+    }
+    if scope == crate::auth::SCOPE_FULL || read_only {
         return None;
     }
     Some(rmcp::ErrorData::invalid_params(
@@ -9472,10 +9536,39 @@ impl ServerHandler for SipnabMcp {
              `capture_identity`, so a swap is visible rather than silent. File \
              exports write only under the configured file root, and stopping \
              the server requires an explicit server-side opt-in."
-                .to_string(),
+                .to_string()
+                + &actions_sentence(self.actions.policy()),
         );
         info
     }
+}
+
+/// The handshake's sentence about actions: that this server changes no
+/// external system, or which actions the operator enabled for MCP.
+fn actions_sentence(policy: &crate::security::actions::ActionPolicy) -> String {
+    use crate::security::actions::ActionSurface;
+    let targets = policy.targets_on(ActionSurface::Mcp);
+    if targets.is_empty() {
+        return " This server changes no external system: the tools that would \
+                (tfps_ban, tfps_unban) refuse unless the operator enables them \
+                with --allow-action."
+            .to_string();
+    }
+    let tools: Vec<String> = targets
+        .iter()
+        .map(|t| format!("{t}_ban and {t}_unban"))
+        .collect();
+    format!(
+        " The operator enabled actions that change another system from MCP \
+         (--allow-action {}): {}. Over HTTP they also need an \"actions\"-scope \
+         token.",
+        targets
+            .iter()
+            .map(|t| format!("{t}:mcp"))
+            .collect::<Vec<_>>()
+            .join(" "),
+        tools.join(", ")
+    )
 }
 
 /// Write held SIP messages to a pcap by re-synthesizing a frame per message.
@@ -10586,6 +10679,45 @@ mod tests {
         assert!(
             !info.server_info.version.is_empty(),
             "an empty version is not an identity"
+        );
+    }
+
+    /// The handshake tells every client, before it calls anything, whether
+    /// this server can change another system and on what.
+    #[test]
+    fn the_handshake_says_which_actions_are_enabled() {
+        let text = |srv: SipnabMcp| srv.get_info().instructions.unwrap_or_default();
+        let default = text(empty_server());
+        assert!(
+            default.contains("changes no external system"),
+            "the default says so: {default}"
+        );
+        let enabled = text(
+            empty_server().with_actions(
+                crate::security::actions::ActionPolicy::from_settings(
+                    &["tfps:mcp".to_string()],
+                    &[],
+                )
+                .expect("valid"),
+            ),
+        );
+        assert!(
+            enabled.contains("tfps_ban") && enabled.contains("--allow-action"),
+            "an enabled action is named, with how it was enabled: {enabled}"
+        );
+        assert!(!enabled.contains("changes no external system"), "{enabled}");
+        let rest_only = text(
+            empty_server().with_actions(
+                crate::security::actions::ActionPolicy::from_settings(
+                    &["tfps:rest".to_string()],
+                    &[],
+                )
+                .expect("valid"),
+            ),
+        );
+        assert!(
+            rest_only.contains("changes no external system"),
+            "enabled for REST only, MCP still acts on nothing: {rest_only}"
         );
     }
 
@@ -14861,9 +14993,39 @@ mod tests {
     /// a build that refuses everything fails the accept half, a build that
     /// accepts everything fails the refuse half. That is the gate — either
     /// degenerate implementation is caught by name.
+    /// An action tool -- one annotated as reaching the world outside sipnab
+    /// AND not read-only -- is refused to a `full` token over HTTP, and an
+    /// `actions` token reaches every tool. Reading must not imply acting.
+    #[test]
+    fn a_full_scope_is_refused_by_exactly_the_action_tools() {
+        let router = empty_server().tool_router; // the router dispatch uses
+        let mut refused = Vec::new();
+        for tool in router.list_all() {
+            let name = tool.name.to_string();
+            assert!(
+                scope_refusal(crate::auth::SCOPE_ACTIONS, &name, router.get(&name)).is_none(),
+                "{name}: an actions token must reach every tool"
+            );
+            if let Some(err) = scope_refusal(crate::auth::SCOPE_FULL, &name, router.get(&name)) {
+                assert!(
+                    err.message.contains(&name) && err.message.contains("\"actions\""),
+                    "{name}: the refusal names the tool and the scope it needs: {}",
+                    err.message
+                );
+                refused.push(name);
+            }
+        }
+        refused.sort();
+        assert_eq!(
+            refused,
+            ["actions_revert", "tfps_ban", "tfps_unban"],
+            "the action tools are exactly the open-world, non-read-only ones"
+        );
+    }
+
     #[test]
     fn a_read_scope_is_refused_by_exactly_the_non_read_only_tools() {
-        let router = SipnabMcp::tool_router();
+        let router = empty_server().tool_router; // the router dispatch uses
         let mut accepted = Vec::new();
         let mut refused = Vec::new();
 
@@ -14911,31 +15073,43 @@ mod tests {
             "no tool refused the read scope — the check is not narrowing anything"
         );
         // The refused set is exactly the annotation-declared writes, pinned
-        // by name so this test fails loudly when the write set changes.
+        // by name so this test fails loudly when the write set changes. Read
+        // from the router dispatch uses: until 2026-09-28 this read only the
+        // base router and never saw the five tools the sub-routers register.
         refused.sort();
         assert_eq!(
             refused,
             vec![
+                "actions_revert",
+                "build_evidence_package",
+                "compare_captures",
                 "export_audio",
                 "export_capture",
+                "generate_repro",
                 "open_capture",
                 "save_findings",
                 "shutdown_server",
                 "start_tls_capture",
-                "stop_tls_capture"
+                "stop_tls_capture",
+                "tfps_ban",
+                "tfps_unban"
             ],
             "the tools a read token cannot call must be exactly the \
              non-read-only set"
         );
     }
 
-    /// A full scope reaches every registered tool, writes included — adding
-    /// per-tool scoping must not narrow any existing full-token deployment.
+    /// A full scope reaches every registered tool, local writes included,
+    /// except the action tools, which change a system outside sipnab and need
+    /// an `actions` token (see `a_full_scope_is_refused_by_exactly_the_action_tools`).
     #[test]
     fn a_full_scope_reaches_every_tool() {
-        let router = SipnabMcp::tool_router();
+        let router = empty_server().tool_router; // the router dispatch uses
         for tool in router.list_all() {
             let name = tool.name.to_string();
+            if ["actions_revert", "tfps_ban", "tfps_unban"].contains(&name.as_str()) {
+                continue;
+            }
             assert!(
                 scope_refusal(crate::auth::SCOPE_FULL, &name, router.get(&name)).is_none(),
                 "{name}: a full scope must never be refused"
@@ -15224,8 +15398,9 @@ mod tests {
         );
         assert_eq!(
             scope_of(&rmcp::model::Extensions::default()),
-            crate::auth::SCOPE_FULL,
-            "stdio is full: process ownership is the boundary"
+            crate::auth::SCOPE_ACTIONS,
+            "stdio holds every scope: process ownership is the boundary, and \
+             an action is still refused unless --allow-action enables it for MCP"
         );
     }
 
@@ -15294,6 +15469,35 @@ mod tests {
             "stdio",
             "stdio names the boundary it can prove and nothing else"
         );
+    }
+
+    /// An action's journal record names its caller the way REST does: a
+    /// token by its id, a credential without one as `token`, an unchecked
+    /// HTTP caller by its address, and stdio as `stdio`.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn an_actions_caller_is_named_as_the_journal_names_it() {
+        use crate::mcp::transport::McpAuth;
+        assert_eq!(
+            action_caller(&http_extensions(Some(McpAuth::BearerVerified {
+                scope: crate::auth::SCOPE_ACTIONS.to_string(),
+                token_id: Some("agent-7".to_string()),
+            }))),
+            "token:agent-7"
+        );
+        assert_eq!(
+            action_caller(&http_extensions(Some(McpAuth::BearerVerified {
+                scope: crate::auth::SCOPE_ACTIONS.to_string(),
+                token_id: None,
+            }))),
+            "token"
+        );
+        assert_eq!(
+            action_caller(&http_extensions(Some(McpAuth::Unauthenticated))),
+            "peer:unknown-peer"
+        );
+        assert_eq!(action_caller(&http_extensions(None)), "peer:unknown-peer");
+        assert_eq!(action_caller(&rmcp::model::Extensions::default()), "stdio");
     }
 
     /// A token id cannot forge a field or a line on the audit record, and

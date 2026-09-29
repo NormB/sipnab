@@ -222,7 +222,7 @@ TERMS:
   SSRC     Synchronization source: the ID of one RTP stream
   BPF      Berkeley Packet Filter: the kernel's capture filter
   HEP      Homer Encapsulation Protocol: SIP mirrored by a proxy
-  TFPS     Optional peer that bans sources (sipnab only asks it)
+  TFPS     Optional peer that bans sources (this view only reads it)
 
 ARCHIVE PASSWORD (a load waits on an encrypted archive member):
   Enter            Try the password (three attempts per archive)

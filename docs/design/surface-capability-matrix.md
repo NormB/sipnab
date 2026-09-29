@@ -710,6 +710,17 @@ Relay an operator's decision to condemn or release a source, and read the verdic
 | REST | `/v1/tfps/ban`, `/v1/tfps/unban` and `/v1/tfps/labels` |
 | MCP | `tfps_ban`, `tfps_unban` and `tfps_labels` |
 
+### Back out sipnab's actions
+
+See what sipnab did to another system, and undo it: one action by id, or every ban it still holds.
+
+| Surface | Detail |
+|---|---|
+| CLI | `--revert-actions` backs out, `--journal-show` lists what sipnab holds; both work with actions switched off |
+| TUI | decision: an undo button would put an action verb on a passive observer surface, and the CLI works with actions switched off, which is when undoing matters |
+| REST | `/v1/actions/revert` |
+| MCP | `actions_revert` |
+
 ### Diff two SIP messages
 
 Put two SIP messages side by side and highlight what differs.

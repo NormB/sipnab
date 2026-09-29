@@ -77,6 +77,9 @@ pub struct Selection {
     /// Resolved by the caller with `cli.tfps_locator(config)`, and carried
     /// here for the same reason `mcp_row_cap` is.
     pub tfps: crate::security::tfps::TfpsLocator,
+    /// The actions this run may take on another system, for both doors.
+    /// Resolved by the caller with `cli.action_policy(config)`.
+    pub actions: crate::security::actions::Actions,
     /// Start the REST API server when `--api` is configured.
     pub api: bool,
     /// Start the MCP server when `--mcp` is configured.
@@ -236,6 +239,74 @@ fn api_rate_limiter(selection: &Selection) -> crate::output::api::RateLimiter {
         selection.api_rate_limit_per_peer,
         selection.max_tracked_peers,
     )
+}
+
+/// What this run may do to other systems, with the service that does it.
+///
+/// With nothing enabled this opens nothing: sipnab changes no other system,
+/// and needs no journal. With anything enabled it opens the journal, resolves
+/// whatever the last run left in doubt, and rebuilds the rate limits, before
+/// any server listens. A damaged journal starts with actions off and says so;
+/// a journal that cannot be used at all refuses the run.
+///
+/// # Errors
+///
+/// A message naming the setting or the journal directory, for the caller to
+/// refuse the run with.
+pub fn start_actions(
+    cli: &Cli,
+    config: &crate::config::Config,
+) -> Result<crate::security::actions::Actions, String> {
+    let policy = cli.action_policy(config)?;
+    if policy.is_empty() {
+        return Ok(policy.into());
+    }
+    #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+    {
+        use crate::security::actions::{ActionService, Actions, TfpsCtl};
+        let limits = cli.action_limits(config)?;
+        let dir = cli.journal_dir(config);
+        let tfps = Arc::new(TfpsCtl::new(cli.tfps_locator(config)));
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let (service, report) = ActionService::start(
+            policy.clone(),
+            limits,
+            &dir,
+            tfps,
+            now_unix,
+            std::time::Instant::now(),
+        )
+        .map_err(|e| format!("actions journal {}: {e}", dir.display()))?;
+        if let Some(why) = &report.disabled {
+            tracing::error!("actions are off for this run: {why}");
+        }
+        if report.reconciled > 0 {
+            tracing::info!(
+                "actions journal: {} action(s) left in doubt by the last run resolved against TFPS",
+                report.reconciled
+            );
+        }
+        if report.still_in_doubt > 0 {
+            tracing::warn!(
+                "actions journal: {} action(s) from the last run are still in doubt because TFPS \
+                 could not be asked; new actions are refused until they are resolved",
+                report.still_in_doubt
+            );
+        }
+        let service = Arc::new(service);
+        // Once a minute: TFPS forgets manual bans when it restarts, and a
+        // ban sipnab no longer holds must stop showing as held.
+        if let Err(e) = ActionService::watch(&service, std::time::Duration::from_secs(60)) {
+            return Err(format!(
+                "actions: the check against TFPS could not start: {e}"
+            ));
+        }
+        Ok(Actions::with_service(policy, service))
+    }
+    #[cfg(not(all(unix, any(feature = "api", feature = "mcp"))))]
+    Ok(policy.into())
 }
 
 /// Start every server that is both selected and configured, on one shared
@@ -464,6 +535,7 @@ pub fn start_servers(
             started_at: std::time::Instant::now(),
             persistence_gate: Arc::clone(&persistence_gate),
             tfps: selection.tfps.clone(),
+            actions: selection.actions.clone(),
             // ST5: relay access for GET /v1/relay/... . The address comes from
             // --rtpengine-control and nowhere else; the permit is present only
             // when the run is live AND --api-allow-relay-query is set. A missing
@@ -666,6 +738,7 @@ pub fn start_servers(
                 s
             };
             let s = s.with_tfps(selection.tfps.clone());
+            let s = s.with_actions(selection.actions.clone());
             let s = s.with_armed_detections(selection.armed_detections.iter().copied());
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
@@ -897,6 +970,7 @@ mod tests {
             api_rate_limit_per_peer: rate,
             max_tracked_peers: peers,
             metrics_max_conn: 1,
+            actions: Default::default(),
             tfps: Default::default(),
             mcp_max_findings: 1,
             api: true,

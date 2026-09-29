@@ -40,9 +40,9 @@
 use std::net::IpAddr;
 
 use crate::mcp::server::SipnabMcp;
+use crate::security::actions::{ActionDone, ActionError, ActionService, Actions};
 use crate::security::tfps::{
-    TfpsActionAnswer, TfpsBanned, TfpsDropped, TfpsError, TfpsLabel, TfpsListAnswer, TfpsLocator,
-    TfpsStatusAnswer,
+    TfpsBanned, TfpsDropped, TfpsError, TfpsLabel, TfpsListAnswer, TfpsLocator, TfpsStatusAnswer,
 };
 use rmcp::handler::server::tool::schema_for_output;
 use rmcp::handler::server::wrapper::Parameters;
@@ -67,8 +67,9 @@ pub struct TfpsBanParams {
     /// The source to condemn, as an IPv4 address. TFPS's block map is IPv4,
     /// so an IPv6 address is `invalid_params` and TFPS is never asked.
     pub ip: String,
-    /// How long the ban lasts, in seconds; `0` is forever. Absent takes
-    /// TFPS's default of an hour.
+    /// How long the ban lasts, in seconds: an hour when absent, 7 days at
+    /// most, and never `0`, TFPS's "forever", so a ban nobody lifts still
+    /// ends. `[action_limits]` changes the default and the maximum.
     pub ttl_secs: Option<u64>,
 }
 
@@ -79,6 +80,17 @@ pub struct TfpsUnbanParams {
     /// The source to release, as an IPv4 address. An IPv6 address is
     /// `invalid_params`: TFPS's block map cannot hold one.
     pub ip: String,
+}
+
+/// Arguments for `actions_revert`: exactly one of `id` or `all: true`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ActionsRevertParams {
+    /// The id of the action to back out, as `tfps_ban`'s answer gives it.
+    pub id: Option<String>,
+    /// `true` to back out every ban sipnab placed that is still in force,
+    /// newest first.
+    pub all: Option<bool>,
 }
 
 /// The peer's failure, as the MCP error a caller sees.
@@ -99,6 +111,73 @@ fn peer_error(e: TfpsError) -> rmcp::ErrorData {
 /// [`crate::security::tfps::tfps_address`], shared with the REST routes.
 fn parse_ip(s: &str) -> Result<IpAddr, rmcp::ErrorData> {
     crate::security::tfps::tfps_address(s).map_err(|why| rmcp::ErrorData::invalid_params(why, None))
+}
+
+/// A permit to act on TFPS from MCP, or the refusal naming how to enable it.
+///
+/// Asked before the address is even parsed, so a server with nothing enabled
+/// answers every call the same way and never reaches `tfps_ctl`.
+fn mcp_permit(
+    policy: &crate::security::actions::ActionPolicy,
+) -> Result<crate::security::actions::ActionPermit, rmcp::ErrorData> {
+    policy
+        .permit(
+            crate::security::actions::ActionTarget::Tfps,
+            crate::security::actions::ActionSurface::Mcp,
+        )
+        .map_err(|refusal| rmcp::ErrorData::invalid_params(refusal.to_string(), None))
+}
+
+/// Run one action through the service, off the async runtime: the service
+/// writes the journal with `fsync` and waits for `tfps_ctl`.
+async fn act<T, F>(actions: &Actions, f: F) -> Result<CallToolResult, rmcp::ErrorData>
+where
+    T: serde::Serialize + Send + 'static,
+    F: FnOnce(&ActionService, u64, std::time::Instant) -> Result<T, ActionError> + Send + 'static,
+{
+    let Some(service) = actions.service().cloned() else {
+        return action_refusal(ActionError::JournalUnusable(
+            "actions are enabled but their journal is not open, so none may run".to_string(),
+        ));
+    };
+    let now_unix = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0);
+    let done =
+        tokio::task::spawn_blocking(move || f(&service, now_unix, std::time::Instant::now()))
+            .await
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("action task failed: {e}"), None)
+            })?;
+    match done {
+        Ok(done) => answer(&done, false),
+        Err(e) => action_refusal(e),
+    }
+}
+
+/// How an action's refusal reaches an agent.
+///
+/// An argument that breaks a rule is `invalid_params`, as a bad address is.
+/// A well-formed call sipnab or TFPS would not carry out is an error result
+/// the agent can read: `{"error", "refusal", "retry_after_secs"?}`, with
+/// `refusal` one of `rate`, `not_owned`, `in_doubt`, `journal`, `tfps`.
+fn action_refusal(e: ActionError) -> Result<CallToolResult, rmcp::ErrorData> {
+    let message = e.to_string();
+    let (refusal, retry_after) = match e {
+        ActionError::NotEnabled(_) | ActionError::Rule(_) => {
+            return Err(rmcp::ErrorData::invalid_params(message, None));
+        }
+        ActionError::Throttled(t) => ("rate", Some(t.retry_after().as_secs().max(1))),
+        ActionError::NotOwned => ("not_owned", None),
+        ActionError::InDoubt(_) => ("in_doubt", None),
+        ActionError::JournalUnusable(_) => ("journal", None),
+        ActionError::Tfps(_) => ("tfps", None),
+    };
+    let mut body = serde_json::json!({ "error": message, "refusal": refusal });
+    if let Some(secs) = retry_after {
+        body["retry_after_secs"] = secs.into();
+    }
+    Ok(CallToolResult::error(vec![ContentBlock::text(
+        body.to_string(),
+    )]))
 }
 
 /// Run one blocking question to the peer off the async runtime.
@@ -263,14 +342,20 @@ impl SipnabMcp {
         name = "tfps_ban",
         description = "Ask TFPS to condemn one source: an operator action \
                        relayed through sipnab, not a decision sipnab makes. \
-                       TFPS refuses its host's own addresses and anything in \
-                       its ignoreip, and answers with what it did -- applied, \
-                       or refused and why -- which is reported as given. \
-                       ttl_secs is optional; 0 is forever. Answers \
-                       {installed: false, reason} without TFPS. The automated \
-                       path from sipnab's own findings to TFPS is a separate \
-                       channel, never this tool.",
-        output_schema = schema_for_output::<TfpsActionAnswer>(),
+                       Off unless the operator enabled TFPS actions for MCP \
+                       (--allow-action tfps:mcp); over HTTP it also needs an \
+                       actions-scope token. Every ban expires: ttl_secs, or \
+                       an hour, 7 days at most, never 0. Loopback, \
+                       broadcast, multicast and 0.0.0.0 are never banned. \
+                       Rate limited: 10 actions a minute for the server, 5 \
+                       per caller, one per address a minute. Journaled before \
+                       TFPS is asked; the answer carries the action's id. \
+                       TFPS refuses its host's own addresses and its \
+                       ignoreip: applied false, with refused saying why. A \
+                       refusal by sipnab is an error result whose JSON names \
+                       it: rate (with retry_after_secs), in_doubt, journal, \
+                       or tfps when TFPS could not be asked.",
+        output_schema = schema_for_output::<ActionDone>(),
         annotations(
             read_only_hint = false,
             destructive_hint = true,
@@ -281,11 +366,23 @@ impl SipnabMcp {
     pub async fn tfps_ban(
         &self,
         Parameters(params): Parameters<TfpsBanParams>,
+        extensions: rmcp::model::Extensions,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        mcp_permit(self.actions.policy())?;
         let ip = parse_ip(&params.ip)?;
         let ttl = params.ttl_secs;
-        let reply = ask(self.tfps.clone(), move |l| l.ban(ip, ttl)).await?;
-        answer(&TfpsActionAnswer::from(reply), false)
+        let caller = crate::mcp::server::action_caller(&extensions);
+        act(&self.actions, move |service, now_unix, now| {
+            service.ban(
+                crate::security::actions::ActionSurface::Mcp,
+                &caller,
+                ip,
+                ttl,
+                now_unix,
+                now,
+            )
+        })
+        .await
     }
 
     /// Relay an operator's decision to release a source.
@@ -295,12 +392,17 @@ impl SipnabMcp {
     /// As `tfps_ban`.
     #[tool(
         name = "tfps_unban",
-        description = "Ask TFPS to release one condemned source: an operator \
-                       action relayed through sipnab. TFPS answers with what \
-                       it did -- applied, or refused because the source was \
-                       not blocked -- and the answer is reported as given. \
-                       Answers {installed: false, reason} without TFPS.",
-        output_schema = schema_for_output::<TfpsActionAnswer>(),
+        description = "Ask TFPS to release a source sipnab banned: an \
+                       operator action relayed through sipnab. Off unless the \
+                       operator enabled TFPS actions for MCP (--allow-action \
+                       tfps:mcp); over HTTP it also needs an actions-scope \
+                       token. sipnab lifts only a ban it placed and still \
+                       holds; anything else is an error result with refusal \
+                       not_owned, and TFPS is not asked. The same rate \
+                       limits as tfps_ban apply, so an address acted on a \
+                       moment ago rests first. Journaled before TFPS is \
+                       asked; the answer carries the action's id.",
+        output_schema = schema_for_output::<ActionDone>(),
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -311,10 +413,80 @@ impl SipnabMcp {
     pub async fn tfps_unban(
         &self,
         Parameters(params): Parameters<TfpsUnbanParams>,
+        extensions: rmcp::model::Extensions,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        mcp_permit(self.actions.policy())?;
         let ip = parse_ip(&params.ip)?;
-        let reply = ask(self.tfps.clone(), move |l| l.unban(ip)).await?;
-        answer(&TfpsActionAnswer::from(reply), false)
+        let caller = crate::mcp::server::action_caller(&extensions);
+        act(&self.actions, move |service, now_unix, now| {
+            service.unban(
+                crate::security::actions::ActionSurface::Mcp,
+                &caller,
+                ip,
+                now_unix,
+                now,
+            )
+        })
+        .await
+    }
+
+    /// Back out what sipnab did to TFPS: one action, or every ban it holds.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` when actions are off for MCP, or the arguments do
+    /// not name exactly one of `id` or `all: true`.
+    #[tool(
+        name = "actions_revert",
+        description = "Back out a ban sipnab placed ({id}) or every ban it \
+                       still holds, newest first ({all: true}). Off unless \
+                       the operator enabled TFPS actions for MCP \
+                       (--allow-action tfps:mcp); over HTTP it also needs an \
+                       actions-scope token. Each unban is journaled as a \
+                       revert and counts against the same rate limits as \
+                       tfps_ban. A ban TFPS already dropped is listed under \
+                       lapsed, not unbanned; a ban sipnab cannot prove it \
+                       placed is left alone under skipped_unknown. A refusal \
+                       is an error result naming it, as for tfps_ban.",
+        output_schema = schema_for_output::<crate::security::actions::RevertReport>(),
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true
+        )
+    )]
+    pub async fn actions_revert(
+        &self,
+        Parameters(params): Parameters<ActionsRevertParams>,
+        extensions: rmcp::model::Extensions,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        use crate::security::actions::RevertTarget;
+        mcp_permit(self.actions.policy())?;
+        let target = match (params.id, params.all) {
+            (Some(id), None) if !id.trim().is_empty() => RevertTarget::One(id),
+            (None, Some(true)) => RevertTarget::All,
+            _ => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    "name one action: {\"id\": \"a-...\"}, or {\"all\": true} for every ban \
+                     sipnab holds",
+                    None,
+                ));
+            }
+        };
+        let caller = crate::mcp::server::action_caller(&extensions);
+        act(&self.actions, move |service, now_unix, now| {
+            service.revert(
+                crate::security::actions::Reverter::Surface {
+                    surface: crate::security::actions::ActionSurface::Mcp,
+                    caller: &caller,
+                },
+                target,
+                now_unix,
+                now,
+            )
+        })
+        .await
     }
 }
 
@@ -376,13 +548,64 @@ mod tests {
                 .collect()
         }
 
-        /// A server whose locator names this fake outright.
+        /// A server whose locator names this fake outright, with no action
+        /// enabled: the default every deployment starts from.
         fn server(&self) -> SipnabMcp {
             stock().with_tfps(TfpsLocator::new(
                 Some(self.dir.path().join("tfps_ctl")),
                 None,
             ))
         }
+
+        /// The same server with TFPS actions enabled for MCP, as
+        /// `--allow-action tfps:mcp` does, journaled beside the fake.
+        fn acting_server(&self) -> SipnabMcp {
+            let locator = TfpsLocator::new(Some(self.dir.path().join("tfps_ctl")), None);
+            self.server().with_actions(acting(&self.dir, &locator))
+        }
+
+        /// Whether the fake was run at all.
+        fn ran(&self) -> bool {
+            self.dir.path().join("argv").exists()
+        }
+    }
+
+    /// A call over stdio, which carries no credential to name.
+    fn stdio() -> rmcp::model::Extensions {
+        rmcp::model::Extensions::default()
+    }
+
+    /// TFPS actions enabled for MCP, through a service that asks `locator`
+    /// and journals into a fresh directory under `dir`. The address cooldown
+    /// is a millisecond, so a test can ban and then unban one address.
+    fn acting(dir: &tempfile::TempDir, locator: &TfpsLocator) -> crate::security::actions::Actions {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let limits =
+            crate::security::actions::ActionLimits::new(10, 5, std::time::Duration::from_millis(1))
+                .expect("valid limits");
+        let (service, _) = crate::security::actions::ActionService::start(
+            policy("tfps:mcp"),
+            limits,
+            &dir.path().join(format!("journal-for-server-{n}")),
+            Arc::new(crate::security::actions::TfpsCtl::new(locator.clone())),
+            1_756_900_000,
+            std::time::Instant::now(),
+        )
+        .expect("a journal in a fresh directory");
+        crate::security::actions::Actions::with_service(policy("tfps:mcp"), Arc::new(service))
+    }
+
+    /// The JSON body of an error result: sipnab's refusal of an action.
+    fn refusal(result: &CallToolResult) -> serde_json::Value {
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        payload(result)
+    }
+
+    /// The policy one `--allow-action` value enables.
+    fn policy(flag: &str) -> crate::security::actions::ActionPolicy {
+        crate::security::actions::ActionPolicy::from_settings(&[flag.to_string()], &[])
+            .expect("a valid --allow-action value")
     }
 
     /// A server with empty stores.
@@ -413,7 +636,12 @@ mod tests {
 
     #[tokio::test]
     async fn every_tool_answers_installed_false_on_a_bare_machine() {
-        let (srv, _dir) = absent();
+        // Actions enabled, so ban and unban reach the service; with nothing
+        // enabled they refuse first, which
+        // `by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs` covers.
+        let (srv, dir) = absent();
+        let locator = TfpsLocator::new(None, None).with_search_path(dir.path().as_os_str());
+        let srv = srv.with_actions(acting(&dir, &locator));
         let expect_absent = |r: CallToolResult| {
             assert_eq!(r.is_error, Some(false), "a result, not an error: {r:?}");
             let p = payload(&r);
@@ -434,21 +662,38 @@ mod tests {
                 .await
                 .expect("labels"),
         );
-        expect_absent(
-            srv.tfps_ban(Parameters(TfpsBanParams {
-                ip: "198.51.100.20".into(),
-                ttl_secs: None,
-            }))
+        // An action is not a read: it was asked for and could not run, so it
+        // is a refusal naming what is missing, not an `installed: false`.
+        let ban = refusal(
+            &srv.tfps_ban(
+                Parameters(TfpsBanParams {
+                    ip: "198.51.100.20".into(),
+                    ttl_secs: None,
+                }),
+                stdio(),
+            )
             .await
             .expect("ban"),
         );
-        expect_absent(
-            srv.tfps_unban(Parameters(TfpsUnbanParams {
-                ip: "198.51.100.20".into(),
-            }))
+        assert_eq!(ban["refusal"], "tfps", "{ban}");
+        assert!(
+            ban["error"]
+                .as_str()
+                .is_some_and(|e| e.contains(crate::security::tfps::NOT_INSTALLED_REASON)),
+            "{ban}"
+        );
+        // sipnab placed no ban, so there is none of its own to lift.
+        let unban = refusal(
+            &srv.tfps_unban(
+                Parameters(TfpsUnbanParams {
+                    ip: "198.51.100.20".into(),
+                }),
+                stdio(),
+            )
             .await
             .expect("unban"),
         );
+        assert_eq!(unban["refusal"], "not_owned", "{unban}");
     }
 
     // ── the present peer: each contract shape reaches the caller ──────
@@ -568,18 +813,22 @@ mod tests {
         let fake = Fake::recording(line(BAN, 1));
         let p = payload(
             &fake
-                .server()
-                .tfps_ban(Parameters(TfpsBanParams {
-                    ip: "198.51.100.20".into(),
-                    ttl_secs: Some(86_400),
-                }))
+                .acting_server()
+                .tfps_ban(
+                    Parameters(TfpsBanParams {
+                        ip: "198.51.100.20".into(),
+                        ttl_secs: Some(86_400),
+                    }),
+                    stdio(),
+                )
                 .await
                 .expect("ban"),
         );
-        assert_eq!(p["installed"], true);
-        assert_eq!(p["action"]["action"], "ban");
-        assert_eq!(p["action"]["applied"], true);
-        assert_eq!(p["action"]["source"], "operator");
+        assert_eq!(p["applied"], true, "{p}");
+        assert!(
+            p["id"].as_str().is_some_and(|id| id.starts_with("a-")),
+            "the answer names the action's journal id: {p}"
+        );
         assert_eq!(
             fake.argv(),
             ["ban", "--json", "198.51.100.20", "--ttl", "86400"]
@@ -596,32 +845,123 @@ mod tests {
             line(BAN, 3)
         ));
         let r = fake
-            .server()
-            .tfps_ban(Parameters(TfpsBanParams {
-                ip: "192.0.2.1".into(),
-                ttl_secs: None,
-            }))
+            .acting_server()
+            .tfps_ban(
+                Parameters(TfpsBanParams {
+                    ip: "192.0.2.1".into(),
+                    ttl_secs: None,
+                }),
+                stdio(),
+            )
             .await
             .expect("a refusal is a result");
         let p = payload(&r);
-        assert_eq!(p["action"]["applied"], false);
-        assert_eq!(p["action"]["refused"], "local");
+        assert_eq!(p["applied"], false);
+        assert_eq!(p["refused"], "local");
     }
 
     #[tokio::test]
     async fn unban_sends_the_agreed_argv() {
-        let fake = Fake::recording(line(UNBAN, 1));
-        let p = payload(
-            &fake
-                .server()
-                .tfps_unban(Parameters(TfpsUnbanParams {
+        // sipnab lifts only its own bans, so this server bans first.
+        let fake = Fake::with_body(&format!(
+            "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\n\
+             case \"$1\" in\n\
+             ban) echo '{}';;\n\
+             unban) echo '{}';;\n\
+             esac",
+            line(BAN, 1),
+            line(UNBAN, 1)
+        ));
+        let srv = fake.acting_server();
+        let ban = payload(
+            &srv.tfps_ban(
+                Parameters(TfpsBanParams {
                     ip: "198.51.100.20".into(),
-                }))
-                .await
-                .expect("unban"),
+                    ttl_secs: None,
+                }),
+                stdio(),
+            )
+            .await
+            .expect("ban"),
         );
-        assert_eq!(p["action"]["action"], "unban");
+        assert_eq!(ban["applied"], true, "{ban}");
+        // Past the address cooldown, which is a millisecond here.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let p = payload(
+            &srv.tfps_unban(
+                Parameters(TfpsUnbanParams {
+                    ip: "198.51.100.20".into(),
+                }),
+                stdio(),
+            )
+            .await
+            .expect("unban"),
+        );
+        assert_eq!(p["applied"], true, "{p}");
         assert_eq!(fake.argv(), ["unban", "--json", "198.51.100.20"]);
+    }
+
+    // ── actions are off unless enabled ────────────────────────────────
+
+    /// sipnab changes no external system by default. Norm, 2026-09-28:
+    /// "Default is secure, sipnab doesn't update external systems."
+    #[tokio::test]
+    async fn by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs() {
+        let fake = Fake::recording(line(BAN, 1));
+        let ban = fake
+            .server()
+            .tfps_ban(
+                Parameters(TfpsBanParams {
+                    ip: "198.51.100.20".into(),
+                    ttl_secs: None,
+                }),
+                stdio(),
+            )
+            .await
+            .expect_err("no action is enabled");
+        let unban = fake
+            .server()
+            .tfps_unban(
+                Parameters(TfpsUnbanParams {
+                    ip: "198.51.100.20".into(),
+                }),
+                stdio(),
+            )
+            .await
+            .expect_err("no action is enabled");
+        for err in [ban, unban] {
+            assert!(
+                err.message.contains("--allow-action tfps:mcp")
+                    && err.message.contains("[actions]"),
+                "the refusal names how to enable it: {}",
+                err.message
+            );
+        }
+        assert!(!fake.ran(), "a refused action reached tfps_ctl");
+    }
+
+    /// Enabled for REST only, the MCP door stays shut.
+    #[tokio::test]
+    async fn enabled_for_rest_only_the_mcp_tools_still_refuse() {
+        let fake = Fake::recording(line(BAN, 1));
+        let err = fake
+            .server()
+            .with_actions(policy("tfps:rest"))
+            .tfps_ban(
+                Parameters(TfpsBanParams {
+                    ip: "198.51.100.20".into(),
+                    ttl_secs: None,
+                }),
+                stdio(),
+            )
+            .await
+            .expect_err("enabled for REST, not MCP");
+        assert!(
+            err.message.contains("--allow-action tfps:mcp"),
+            "{}",
+            err.message
+        );
+        assert!(!fake.ran(), "a refused action reached tfps_ctl");
     }
 
     // ── refusals and failures ─────────────────────────────────────────
@@ -636,17 +976,20 @@ mod tests {
         ));
         for bad in ["not-an-ip", "", "-x", "198.51.100.20; rm -rf /"] {
             let err = fake
-                .server()
-                .tfps_ban(Parameters(TfpsBanParams {
-                    ip: bad.into(),
-                    ttl_secs: None,
-                }))
+                .acting_server()
+                .tfps_ban(
+                    Parameters(TfpsBanParams {
+                        ip: bad.into(),
+                        ttl_secs: None,
+                    }),
+                    stdio(),
+                )
                 .await
                 .expect_err("not an address");
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{bad:?}");
             let err = fake
-                .server()
-                .tfps_unban(Parameters(TfpsUnbanParams { ip: bad.into() }))
+                .acting_server()
+                .tfps_unban(Parameters(TfpsUnbanParams { ip: bad.into() }), stdio())
                 .await
                 .expect_err("not an address");
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{bad:?}");

@@ -89,6 +89,19 @@ const PINNED: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// A permit to act on TFPS: what `--allow-action tfps:rest` grants. The
+/// contract under test is the argv and the reply, so these calls are made as
+/// an enabled server would make them.
+fn permit() -> sipnab::security::actions::ActionPermit {
+    sipnab::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])
+        .expect("a valid value")
+        .permit(
+            sipnab::security::actions::ActionTarget::Tfps,
+            sipnab::security::actions::ActionSurface::Rest,
+        )
+        .expect("enabled")
+}
+
 /// The source most fixtures are about.
 fn the_ip() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(198, 51, 100, 20))
@@ -311,7 +324,7 @@ fn upstreams_own_goldens_read_through_sipnabs_readers() {
     let ban = answered(
         FakeCtl::echoing(UPSTREAM_BAN)
             .explicit()
-            .ban(the_ip(), Some(3600))
+            .ban(&permit(), the_ip(), Some(3600))
             .expect("ban"),
     );
     assert_eq!(
@@ -970,7 +983,7 @@ fn a_refused_ban_exits_one_and_is_still_an_answer() {
     let fake = FakeCtl::echoing_then_exiting(line(BAN, 3), 1, "error: 1 of 1 refused");
     let reply = fake
         .explicit()
-        .ban(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), None)
+        .ban(&permit(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), None)
         .expect("a refusal is a result, not an error");
     match reply {
         Reply::Answered { value, .. } => {
@@ -982,7 +995,7 @@ fn a_refused_ban_exits_one_and_is_still_an_answer() {
     let fake = FakeCtl::echoing_then_exiting(line(UNBAN, 2), 1, "error: 1 of 1 not lifted");
     let reply = fake
         .explicit()
-        .unban(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 21)))
+        .unban(&permit(), IpAddr::V4(Ipv4Addr::new(198, 51, 100, 21)))
         .expect("a refusal is a result, not an error");
     assert!(
         matches!(reply, Reply::Answered { value, .. } if value.refused.as_deref() == Some("not-blocked"))
@@ -996,7 +1009,7 @@ fn a_ban_that_exits_one_without_a_result_is_a_failure() {
     let fake = FakeCtl::with_body("echo 'error: cannot open block map: CAP_BPF' >&2; exit 1");
     let err = fake
         .explicit()
-        .ban(the_ip(), None)
+        .ban(&permit(), the_ip(), None)
         .expect_err("no result line means it failed");
     assert!(
         matches!(&err, TfpsError::Failed { status: Some(1), stderr, .. } if stderr.contains("CAP_BPF")),
@@ -1039,7 +1052,10 @@ fn output_that_is_not_the_contract_is_an_error() {
     }
     // One address asked, two results answered: reported, not resolved.
     let fake = FakeCtl::echoing(&format!("{}\n{}", line(BAN, 1), line(BAN, 2)));
-    let err = fake.explicit().ban(the_ip(), None).expect_err("two lines");
+    let err = fake
+        .explicit()
+        .ban(&permit(), the_ip(), None)
+        .expect_err("two lines");
     assert!(
         matches!(&err, TfpsError::Unparseable { what, .. } if what.contains("2 result lines")),
         "{err}"
@@ -1133,13 +1149,13 @@ fn the_typed_readers_reach_every_shape() {
 
     let ban = FakeCtl::echoing(first_line(BAN))
         .explicit()
-        .ban(the_ip(), Some(3600))
+        .ban(&permit(), the_ip(), Some(3600))
         .expect("ban");
     assert!(matches!(ban, Reply::Answered { value, .. } if value.applied));
 
     let unban = FakeCtl::echoing(first_line(UNBAN))
         .explicit()
-        .unban(the_ip())
+        .unban(&permit(), the_ip())
         .expect("unban");
     assert!(matches!(unban, Reply::Answered { value, .. } if value.action == "unban"));
 }

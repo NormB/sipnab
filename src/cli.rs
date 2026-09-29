@@ -2056,13 +2056,84 @@ pub struct SecurityArgs {
     /// the `tfps_*` MCP tools and the `/v1/tfps/` REST routes.
     ///
     /// TFPS is optional peer software that condemns sources and enforces
-    /// the decision in the firewall; sipnab asks it and never bans anything
-    /// itself. Absent, sipnab looks for `tfps_ctl` on `PATH` only when a
+    /// the decision in the firewall. sipnab reads its state; asking it to ban
+    /// or unban a source is an action, off unless `--allow-action` enables
+    /// it. Absent, sipnab looks for `tfps_ctl` on `PATH` only when a
     /// TFPS tool is called -- nothing is probed at startup -- and a machine
     /// without one answers `installed: false` rather than failing. Config:
     /// `[tfps] ctl`; the database is `[tfps] db`.
     #[arg(help_heading = "Security", long = "tfps-ctl", value_name = "PATH")]
     pub tfps_ctl: Option<std::path::PathBuf>,
+
+    /// Where sipnab records the actions it takes on other systems, so a
+    /// restart knows what it did: which bans are its own, what was in flight
+    /// when it stopped, and how much of each rate limit is already spent.
+    ///
+    /// Required whenever `--allow-action` enables anything: sipnab refuses
+    /// to start if it cannot use this directory. Default
+    /// `/var/lib/sipnab/journal`, which the packaged unit creates. Config:
+    /// `[journal] dir`.
+    #[arg(help_heading = "Security", long = "journal-dir", value_name = "DIR")]
+    pub journal_dir: Option<std::path::PathBuf>,
+
+    /// Print what the actions journal says, then exit: the bans sipnab
+    /// placed that are still in force, newest first, with their action ids;
+    /// actions left in doubt by a crash; bans TFPS shows that sipnab cannot
+    /// prove it placed; and the last hour's refusals.
+    ///
+    /// Read-only, and works while another sipnab holds the journal. The
+    /// journal is `--journal-dir`, `[journal] dir`, or
+    /// `/var/lib/sipnab/journal`.
+    #[arg(help_heading = "Security", long = "journal-show")]
+    pub journal_show: bool,
+
+    /// Back out what sipnab did to another system, then exit: `all` lifts
+    /// every ban sipnab placed that is still in force, newest first; an
+    /// action id (from `--journal-show`) lifts that one.
+    ///
+    /// Works with actions switched off, because after abuse the first thing
+    /// to do is switch them off. Each unban is journaled as a revert. A ban
+    /// TFPS already dropped is reported, not unbanned, and a ban sipnab
+    /// cannot prove it placed is left alone. Refused while another sipnab
+    /// holds the journal: revert through it (`POST /v1/actions/revert` or
+    /// the `actions_revert` MCP tool), or stop it first. Exits 0 when
+    /// everything asked for was backed out or had already ended, 1 when
+    /// something was not, 2 when the revert could not run.
+    #[arg(
+        help_heading = "Security",
+        long = "revert-actions",
+        value_name = "all|ACTION_ID",
+        value_parser = |v: &str| if v.trim().is_empty() {
+            Err("give `all` or an action id from --journal-show".to_string())
+        } else {
+            Ok(v.trim().to_string())
+        }
+    )]
+    pub revert_actions: Option<String>,
+
+    /// Enable an action that changes another system, from the named surfaces.
+    ///
+    /// sipnab changes no external system by default. It publishes what it saw
+    /// to destinations you name and asks read-only questions; an ACTION, such
+    /// as asking TFPS to ban a source, runs only when enabled here or under
+    /// `[actions]` in the config file, per target and per surface:
+    /// `--allow-action tfps:rest`, `--allow-action tfps:rest,mcp`. Repeatable,
+    /// and added to what the config file enables.
+    ///
+    /// Enabling is one of two locks. A REST caller also needs a token minted
+    /// with scope `actions` (`--token-scope actions`), and so does an MCP
+    /// client over HTTP: a `full` token, or a static `--api-key`, reads
+    /// everything and acts on nothing. Over MCP stdio the enabling is the
+    /// only lock, because the client is a local process you started.
+    ///
+    /// Targets: `tfps`. Surfaces: `rest`, `mcp`.
+    #[arg(
+        help_heading = "Security",
+        long = "allow-action",
+        value_name = "TARGET:SURFACE[,SURFACE]",
+        value_parser = |v: &str| crate::security::actions::parse_flag(v).map(|_| v.to_string())
+    )]
+    pub allow_action: Vec<String>,
 
     /// Enable fraud detection heuristics.
     #[arg(help_heading = "Security", long)]
@@ -2070,7 +2141,8 @@ pub struct SecurityArgs {
 
     /// Publish every finding that names a source as JSON Lines, for a system that
     /// decides what to do with it. `-` is standard output, for a pipe; a path is
-    /// appended to. sipnab still bans nothing. No TFPS build reads these lines
+    /// appended to. sipnab takes no action on these lines: the system reading
+    /// them decides. No TFPS build reads these lines
     /// yet: its `ingest` subcommand is on an unmerged branch of the NormB/tfps fork.
     #[arg(
         help_heading = "Security",
@@ -3933,7 +4005,8 @@ pub struct TokenArgs {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
-    /// Scope for --mint-token: `full` (default), `metrics`, or `read`.
+    /// Scope for --mint-token: `full` (default), `metrics`, `read`, or
+    /// `actions`.
     ///
     /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
     /// a scrape job rather than handing it a credential that also reads
@@ -3943,12 +4016,17 @@ pub struct TokenArgs {
     /// else — mint one for a diagnostic agent rather than handing it a
     /// credential that can also stop the server, export files, or repoint the
     /// capture. MCP tokens only.
+    ///
+    /// An `actions` token reaches everything a `full` token does, plus the
+    /// actions that change another system, such as TFPS ban and unban, where
+    /// the server has enabled them with `--allow-action`. A `full` token never
+    /// reaches an action. REST and MCP tokens.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read"]
+        value_parser = ["full", "metrics", "read", "actions"]
     )]
     pub token_scope: String,
 }
@@ -4771,6 +4849,58 @@ impl Cli {
             Some(spec) => crate::config::parse_business_hours(spec).map(Some),
             None => Ok(None),
         }
+    }
+
+    /// The actions this run may take, from `--allow-action` and `[actions]`.
+    ///
+    /// # Errors
+    ///
+    /// A message naming an unknown target or surface in the config file (the
+    /// flag's values were checked when parsed).
+    pub fn action_policy(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<crate::security::actions::ActionPolicy, String> {
+        crate::security::actions::ActionPolicy::from_settings(
+            &self.security_args.allow_action,
+            &config.actions.entries(),
+        )
+    }
+
+    /// Where the actions journal lives: `--journal-dir`, else `[journal]
+    /// dir`, else `/var/lib/sipnab/journal`.
+    #[must_use]
+    pub fn journal_dir(&self, config: &crate::config::Config) -> std::path::PathBuf {
+        self.security_args
+            .journal_dir
+            .clone()
+            .or_else(|| config.journal.dir.clone())
+            .unwrap_or_else(|| std::path::PathBuf::from("/var/lib/sipnab/journal"))
+    }
+
+    /// The action limits: `[action_limits]` over the shipped values.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the problem when a limit is `0` or the default ban
+    /// lifetime is over the maximum.
+    pub fn action_limits(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<crate::security::actions::ActionLimits, String> {
+        let shipped = crate::security::actions::ActionLimits::default();
+        let c = &config.action_limits;
+        crate::security::actions::ActionLimits::new(
+            c.per_minute.unwrap_or(shipped.per_minute()),
+            c.per_caller_per_minute
+                .unwrap_or(shipped.per_caller_per_minute()),
+            c.address_cooldown_secs
+                .map_or(shipped.address_cooldown(), std::time::Duration::from_secs),
+        )?
+        .with_ban_lifetimes(
+            c.default_ban_secs.unwrap_or(shipped.default_ban_secs()),
+            c.max_ban_secs.unwrap_or(shipped.max_ban_secs()),
+        )
     }
 
     /// Where `tfps_ctl` is: the flag, else `[tfps] ctl`, else `PATH` at call

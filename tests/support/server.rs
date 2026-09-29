@@ -35,17 +35,25 @@ pub struct Resp {
     pub body: String,
     /// The `Content-Type` response header, lowercased, when present.
     pub content_type: Option<String>,
+    /// The `Retry-After` response header, when present: how a refusal for
+    /// rate says when to come back.
+    pub retry_after: Option<String>,
+}
+
+/// The value of header `name` from an HTTP header block, if present.
+fn header_of(head: &str, name: &str) -> Option<String> {
+    head.lines().find_map(|l| {
+        l.split_once(':').and_then(|(k, v)| {
+            k.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| v.trim().to_string())
+        })
+    })
 }
 
 /// The lowercased `Content-Type` value from an HTTP header block, if present.
 fn content_type_of(head: &str) -> Option<String> {
-    head.lines().find_map(|l| {
-        l.split_once(':').and_then(|(k, v)| {
-            k.trim()
-                .eq_ignore_ascii_case("content-type")
-                .then(|| v.trim().to_lowercase())
-        })
-    })
+    header_of(head, "content-type").map(|v| v.to_lowercase())
 }
 
 impl Resp {
@@ -297,11 +305,13 @@ fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
             (h.to_string(), b.to_string())
         });
     let content_type = content_type_of(&head);
+    let retry_after = header_of(&head, "retry-after");
 
     Resp {
         status,
         body,
         content_type,
+        retry_after,
     }
 }
 
@@ -344,11 +354,13 @@ fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
             (h.to_string(), b.to_string())
         });
     let content_type = content_type_of(&head);
+    let retry_after = header_of(&head, "retry-after");
 
     Resp {
         status,
         body,
         content_type,
+        retry_after,
     }
 }
 

@@ -60,6 +60,11 @@ fn mint(scope: &str) -> String {
 /// receiver once the listen line appears, which is fine for status-code
 /// probes and useless for asserting what was audited.
 fn spawn_with_stderr() -> (Child, String, mpsc::Receiver<String>) {
+    spawn_with_stderr_and(&[])
+}
+
+/// [`spawn_with_stderr`], with `extra` flags after the fixed ones.
+fn spawn_with_stderr_and(extra: &[&str]) -> (Child, String, mpsc::Receiver<String>) {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = mcp::fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -78,6 +83,7 @@ fn spawn_with_stderr() -> (Child, String, mpsc::Receiver<String>) {
             SIGNING_KEY,
             "--quiet",
         ])
+        .args(extra)
         // The audit line is emitted at info under the `mcp_audit` target.
         .env("SIPNAB_LOG", "info")
         .stdout(Stdio::piped())
@@ -452,5 +458,70 @@ fn the_audit_line_names_the_token_that_made_the_call() {
         "the audit line must name the token that made the call, as the last \
          field inside the quoted caller — a token named outside those quotes \
          is not attributed to this caller: {line}"
+    );
+}
+
+/// An action over HTTP is journaled under the id of the token that asked:
+/// the name an operator revokes, and the one the per-caller limit counts.
+#[test]
+fn an_action_over_http_is_journaled_under_the_tokens_id() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ctl = dir.path().join("tfps_ctl");
+    std::fs::write(
+        &ctl,
+        "#!/bin/sh\necho '{\"ip\":\"198.51.100.20\",\"action\":\"ban\",\"applied\":true,\
+         \"refused\":null,\"expires\":null,\"source\":\"operator\"}'\n",
+    )
+    .expect("write the fake");
+    std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let journal = dir.path().join("journal");
+    let ctl = ctl.display().to_string();
+    let journal_arg = journal.display().to_string();
+    let (child, addr, _stderr) = spawn_with_stderr_and(&[
+        "--tfps-ctl",
+        &ctl,
+        "--allow-action",
+        "tfps:mcp",
+        "--journal-dir",
+        &journal_arg,
+    ]);
+    let token = mint_with_id("agent-7", sipnab::auth::SCOPE_ACTIONS);
+    let session = establish_session(&addr, &token);
+    let reply = call_tool(
+        &addr,
+        &token,
+        &session,
+        2,
+        "tfps_ban",
+        serde_json::json!({"ip": "198.51.100.20"}),
+    );
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no result: {reply}"));
+    let answer: serde_json::Value = serde_json::from_str(text).expect("JSON");
+    assert_eq!(answer["applied"], true, "{answer}");
+    mcp::shutdown(child);
+
+    let records: Vec<serde_json::Value> = std::fs::read_dir(&journal)
+        .expect("journal")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        .flat_map(|p| {
+            std::fs::read_to_string(p)
+                .expect("segment")
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("record"))
+                .collect::<Vec<serde_json::Value>>()
+        })
+        .collect();
+    let intent = records
+        .iter()
+        .find(|r| r["kind"] == "action_intent")
+        .unwrap_or_else(|| panic!("no intent: {records:?}"));
+    assert_eq!(intent["caller"], "token:agent-7", "{intent}");
+    assert!(
+        !records.iter().any(|r| r.to_string().contains(&token)),
+        "the token itself reached the journal"
     );
 }

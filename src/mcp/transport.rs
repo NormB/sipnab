@@ -251,7 +251,11 @@ mod http {
             serde_json::json!({
                 "resource": self.resource,
                 "resource_name": "sipnab MCP server",
-                "scopes_supported": [crate::auth::SCOPE_FULL, crate::auth::SCOPE_READ],
+                "scopes_supported": [
+                    crate::auth::SCOPE_FULL,
+                    crate::auth::SCOPE_READ,
+                    crate::auth::SCOPE_ACTIONS
+                ],
                 "bearer_methods_supported": ["header"],
                 "resource_documentation": "https://sipnab.com/docs/mcp-deploy/",
             })
@@ -904,7 +908,11 @@ mod http {
             assert_eq!(doc["resource"], "https://sipnab.example.com/mcp");
             assert_eq!(
                 doc["scopes_supported"],
-                serde_json::json!([crate::auth::SCOPE_FULL, crate::auth::SCOPE_READ])
+                serde_json::json!([
+                    crate::auth::SCOPE_FULL,
+                    crate::auth::SCOPE_READ,
+                    crate::auth::SCOPE_ACTIONS
+                ])
             );
             assert_eq!(
                 doc["bearer_methods_supported"],

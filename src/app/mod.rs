@@ -7,6 +7,8 @@
 
 pub mod batch;
 pub mod bootstrap;
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+pub mod journal_cli;
 pub mod relay_poller;
 pub mod relay_reconciler;
 pub mod run_provenance;

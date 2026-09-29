@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5075`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5075)) returns the parsed
+- `get_message` ([`server.rs:5111`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5111)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -377,7 +377,7 @@ and it is not incidental — it is the tool working:
   gap — `extension_headers` now carries every header outside that closed list,
   in wire form — so the sentence is true today, and it is worth recording that
   a threat-model section leaned on it for a release in which it was not.
-- `search_messages` ([`server.rs:5489`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5489)) returns
+- `search_messages` ([`server.rs:5525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5525)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.

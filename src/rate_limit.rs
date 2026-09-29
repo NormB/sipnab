@@ -154,6 +154,9 @@ pub struct FixedWindowLimiter<K> {
     max_tracked_peers: usize,
     /// Start of the current window.
     window_start: Instant,
+    /// How long a window lasts: [`WINDOW`] unless [`Self::with_window`] says
+    /// otherwise.
+    window: Duration,
     /// Lifetime count of events either cap refused, for log lines and audit.
     refused_total: u64,
 }
@@ -184,8 +187,35 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
             per_peer: HashMap::new(),
             max_tracked_peers: max_tracked_peers.max(MIN_TRACKED_PEERS),
             window_start: Instant::now(),
+            window: WINDOW,
             refused_total: 0,
         }
+    }
+
+    /// The same limiter counting over `window` instead of [`WINDOW`].
+    ///
+    /// For a cap stated per minute rather than per second, such as the
+    /// action limits in [`crate::security::actions`]. One counter, one
+    /// boundary rule, whatever the window.
+    #[must_use]
+    pub fn with_window(mut self, window: Duration) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// The same limiter with its first window starting at `now`, the
+    /// caller's clock, rather than at construction.
+    #[must_use]
+    pub fn starting_at(mut self, now: Instant) -> Self {
+        self.window_start = now;
+        self
+    }
+
+    /// How long until the current window ends, from `now`.
+    #[must_use]
+    pub fn retry_after(&self, now: Instant) -> Duration {
+        self.window
+            .saturating_sub(now.saturating_duration_since(self.window_start))
     }
 
     /// Count one event from `key` and decide whether it may proceed.
@@ -208,7 +238,7 @@ impl<K: Eq + Hash> FixedWindowLimiter<K> {
     /// naming which bound stopped it. Every refusal increments
     /// [`Self::refused_total`].
     pub fn check(&mut self, key: K, now: Instant) -> Result<(), Refusal> {
-        if now.duration_since(self.window_start) >= WINDOW {
+        if now.duration_since(self.window_start) >= self.window {
             self.window_start = now;
             self.count_this_window = 0;
             self.per_peer.clear();

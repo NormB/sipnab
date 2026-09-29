@@ -6,8 +6,10 @@
 //!
 //! TFPS is a toll-fraud prevention system an operator may run on the same host
 //! as sipnab. It decides which sources to condemn and enforces that decision
-//! in the firewall; sipnab captures and analyzes and never bans anything. The
-//! two meet through one program, `tfps_ctl`, which sipnab runs as a child
+//! in the firewall. sipnab reads TFPS's state, and asks it to ban or unban a
+//! source only when the operator enables that action (`--allow-action`,
+//! `[actions]`; see [`crate::security::actions`]); by default it changes
+//! nothing. The two meet through one program, `tfps_ctl`, which sipnab runs as a child
 //! process and reads JSON from. There is no `tfps` crate in the manifest and
 //! `tfps_label_corpus_test::sipnab_does_not_depend_on_tfps` keeps it that way.
 //!
@@ -263,7 +265,16 @@ impl TfpsLocator {
     ///
     /// As [`Self::status`], except that exit 1 beside a readable result is a
     /// refusal, not an error.
-    pub fn ban(&self, ip: IpAddr, ttl_secs: Option<u64>) -> Result<Reply<TfpsAction>, TfpsError> {
+    ///
+    /// Takes an [`ActionPermit`](crate::security::actions::ActionPermit):
+    /// banning changes another system, which sipnab does only when the
+    /// operator enabled it for the surface asking.
+    pub fn ban(
+        &self,
+        _permit: &crate::security::actions::ActionPermit,
+        ip: IpAddr,
+        ttl_secs: Option<u64>,
+    ) -> Result<Reply<TfpsAction>, TfpsError> {
         self.ask(&TfpsCommand::Ban { ip, ttl_secs }, parse_action)
     }
 
@@ -272,7 +283,14 @@ impl TfpsLocator {
     /// # Errors
     ///
     /// As [`Self::ban`].
-    pub fn unban(&self, ip: IpAddr) -> Result<Reply<TfpsAction>, TfpsError> {
+    ///
+    /// Takes an [`ActionPermit`](crate::security::actions::ActionPermit), as
+    /// [`Self::ban`] does.
+    pub fn unban(
+        &self,
+        _permit: &crate::security::actions::ActionPermit,
+        ip: IpAddr,
+    ) -> Result<Reply<TfpsAction>, TfpsError> {
         self.ask(&TfpsCommand::Unban { ip }, parse_action)
     }
 

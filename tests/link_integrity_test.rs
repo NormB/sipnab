@@ -1068,7 +1068,12 @@ fn wiki_intra_docs_links_resolve() {
     // link each other's install and JSON steps: homer.md +2, prometheus.md +3,
     // rtpengine-relay.md +2, tfps-sipnab.md +3, tfps.md +2, vcon-server.md +3,
     // vcon-sipnab.md +1, attributed per file against HEAD (e9835a61).
-    const EXPECTED_WIKI_LINKS: usize = 1154;
+    // 1154 -> 1160 by actions and the journal: cli-reference.md links the TFPS
+    // guide for the privileges a revert needs; rest-api.md links the journal
+    // flags and [action_limits]; config-reference.md links [actions] and
+    // [journal] from the sections that depend on them; mcp-tools.md's index
+    // row for actions_revert. Attributed per file against 9e839a8a.
+    const EXPECTED_WIKI_LINKS: usize = 1160;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -356,7 +356,36 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         ("tfps_labels", json!({"limit": 3})),
         ("tfps_ban", json!({"ip": "198.51.100.20", "ttl_secs": 60})),
         ("tfps_unban", json!({"ip": "198.51.100.20"})),
+        // After the unban nothing is held, so this reports and lifts nothing:
+        // the shape of an answer without another ban to wait out.
+        ("actions_revert", json!({"all": true})),
     ]
+}
+
+/// The flags that let `tfps_ban` and `tfps_unban` act against the fake in
+/// `fake`: enabled for MCP, journaled beside it, and an address cooldown of
+/// one second rather than a minute, so the unban probe can follow the ban.
+fn tfps_action_args(fake: &tempfile::TempDir) -> Vec<String> {
+    let config = fake.path().join("sipnab.toml");
+    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
+    vec![
+        "--tfps-ctl".to_string(),
+        fake.path().join("tfps_ctl").display().to_string(),
+        "--allow-action".to_string(),
+        "tfps:mcp".to_string(),
+        "--journal-dir".to_string(),
+        fake.path().join("journal").display().to_string(),
+        "--config".to_string(),
+        config.display().to_string(),
+    ]
+}
+
+/// Wait out the one-second address cooldown before the unban probe, which
+/// acts on the address the ban probe just banned.
+fn before_probe(tool: &str) {
+    if tool == "tfps_unban" {
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+    }
 }
 
 /// A `tfps_ctl` that answers each subcommand with the TFPS emitter's own
@@ -460,7 +489,14 @@ fn no_tool_answers_with_a_top_level_array() {
     // drives the same probe list, and a file tool that refuses returns an
     // error rather than the payload whose shape is under test.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
-    let mut wire = Wire::start_with(&["--mcp-file-root", &root.display().to_string()]);
+    let root = root.display().to_string();
+    // The fake, for the reason `fake_tfps_ctl` gives: a probe of `tfps_ban`
+    // against `PATH` would be a real ban on a machine with TFPS.
+    let fake = fake_tfps_ctl();
+    let actions = tfps_action_args(&fake);
+    let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
+    args.extend(["--mcp-file-root", &root]);
+    let mut wire = Wire::start_with(&args);
     let call_id = wire.a_call_id();
 
     // Driven, not asserted from source: a shape is a property of the wire.
@@ -490,6 +526,7 @@ fn no_tool_answers_with_a_top_level_array() {
         if SCHEMA_NOT_DRIVEN.iter().any(|(t, _)| *t == tool) {
             continue;
         }
+        before_probe(tool);
         let reply = wire.call(tool, args, None);
         let payload = text_payload(&reply);
         assert!(
@@ -827,14 +864,16 @@ fn the_input_schema_scan_finds_a_union_wherever_one_hides() {
 #[test]
 fn every_declared_output_schema_matches_the_payload_it_describes() {
     let fake = fake_tfps_ctl();
-    let ctl = fake.path().join("tfps_ctl").display().to_string();
     // A file root, so the file-tool group answers instead of refusing. Without
     // one `find_in_captures` returns invalid_params and the probe would have
     // to be exempted -- which would leave the schema of the tool most in need
     // of a precise one checked by nothing.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
     let root = root.display().to_string();
-    let mut wire = Wire::start_with(&["--tfps-ctl", &ctl, "--mcp-file-root", &root]);
+    let actions = tfps_action_args(&fake);
+    let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
+    args.extend(["--mcp-file-root", &root]);
+    let mut wire = Wire::start_with(&args);
     let call_id = wire.a_call_id();
     let probes = schema_probes(&call_id);
 
@@ -873,6 +912,7 @@ fn every_declared_output_schema_matches_the_payload_it_describes() {
 
         let validator = jsonschema::validator_for(schema)
             .unwrap_or_else(|e| panic!("{name}'s outputSchema does not compile: {e}"));
+        before_probe(name);
         let reply = wire.call(name, args.clone(), None);
         let structured = &reply["result"]["structuredContent"];
         assert!(

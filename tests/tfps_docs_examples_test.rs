@@ -263,12 +263,96 @@ fn assert_page(rel: &str, at_least: usize) {
     );
 }
 
+// 7 -> 5 on each page: the ban and unban examples stopped being TFPS's reply
+// when every action went through the actions journal. They now show
+// sipnab's own answer, which `the_*_reference_shows_the_action_answers_*`
+// below checks against sipnab's own type.
 #[test]
 fn the_rest_reference_shows_the_tfps_answers_sipnab_sends() {
-    assert_page("docs/rest-api.md", 7);
+    assert_page("docs/rest-api.md", 5);
 }
 
 #[test]
 fn the_mcp_reference_shows_the_tfps_answers_sipnab_sends() {
-    assert_page("docs/mcp-tools.md", 7);
+    assert_page("docs/mcp-tools.md", 5);
+}
+
+/// Every action answer and revert report a page shows, checked against the
+/// keys sipnab serializes for them: `(actions, reverts, problems)`.
+///
+/// An action answer leads with `applied` and an `id`; a revert report with
+/// `reverted`. The keys come from serializing sipnab's own types, not from a
+/// list here.
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+fn action_problems_in(page: &str) -> (usize, usize, Vec<String>) {
+    use sipnab::security::actions::{ActionDone, RevertReport};
+    let object_keys = |v: Value| match v {
+        Value::Object(m) => m.keys().cloned().collect::<BTreeSet<String>>(),
+        other => panic!("not an object: {other}"),
+    };
+    let done = object_keys(
+        serde_json::to_value(ActionDone {
+            id: String::new(),
+            applied: true,
+            refused: None,
+        })
+        .expect("serializes"),
+    );
+    let report = object_keys(serde_json::to_value(RevertReport::default()).expect("serializes"));
+    let (mut actions, mut reverts, mut problems) = (0, 0, Vec::new());
+    for (line, v) in json_blocks(page) {
+        if v.get("applied").is_some() && v.get("id").is_some() {
+            actions += 1;
+            if keys(&v) != done {
+                problems.push(format!(
+                    "{line}: action answer keys {:?}, sipnab sends {done:?}",
+                    keys(&v)
+                ));
+            }
+            if let Some(r) = v.get("refused").and_then(Value::as_str)
+                && !REFUSALS.contains(&r)
+            {
+                problems.push(format!(
+                    "{line}: refused {r:?} is not a word TFPS answers with {REFUSALS:?}"
+                ));
+            }
+        } else if v.get("reverted").is_some() {
+            reverts += 1;
+            if keys(&v) != report {
+                problems.push(format!(
+                    "{line}: revert report keys {:?}, sipnab sends {report:?}",
+                    keys(&v)
+                ));
+            }
+        }
+    }
+    (actions, reverts, problems)
+}
+
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+fn assert_action_page(rel: &str) {
+    let (actions, reverts, problems) = action_problems_in(&repo_file(rel));
+    // A ban, a refused ban and an unban; one revert report.
+    assert!(
+        actions >= 3 && reverts >= 1,
+        "{rel}: found {actions} action answers and {reverts} revert reports, expected at \
+         least 3 and 1; the block reader has stopped matching and this gate proves nothing"
+    );
+    assert!(
+        problems.is_empty(),
+        "{rel} shows action answers sipnab does not send:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+#[test]
+fn the_rest_reference_shows_the_action_answers_sipnab_sends() {
+    assert_action_page("docs/rest-api.md");
+}
+
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+#[test]
+fn the_mcp_reference_shows_the_action_answers_sipnab_sends() {
+    assert_action_page("docs/mcp-tools.md");
 }

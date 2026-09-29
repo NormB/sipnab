@@ -12,6 +12,30 @@ entry that carries them.
 
 ### Added
 
+- **sipnab records the actions it takes on other systems, and can undo
+  them.** Every ban and unban sipnab asks TFPS for is written to an actions
+  journal before TFPS is asked, and its outcome after: by default in
+  `/var/lib/sipnab/journal`, or `--journal-dir` / `[journal] dir`. After a
+  restart or a crash sipnab knows which bans are its own, what was in flight
+  (it asks TFPS and settles it before any new action), and how much of each
+  rate limit is spent. `sipnab --journal-show` prints what the journal holds;
+  `sipnab --revert-actions all` or `--revert-actions <id>` lifts bans sipnab
+  placed, and works with actions switched off. Over REST,
+  `POST /v1/actions/revert` does the same, and over MCP the new
+  `actions_revert` tool. Once a minute sipnab checks its bans against TFPS,
+  which forgets manual bans when it restarts, and stops counting a ban TFPS
+  dropped as its own. The packaged unit gains `StateDirectory=sipnab`, the
+  one directory the hardened service may write.
+- **Rules and rate limits on every action.** `0.0.0.0`, broadcast, loopback
+  and multicast addresses are never banned. Every ban expires: an hour unless
+  the caller says otherwise, 7 days at most. At most 10 actions a minute for
+  the server, 5 for one caller, and one per address a minute; a refusal says
+  when to retry (`429` with `Retry-After` over REST). `[action_limits]`
+  changes them, and none can be turned off.
+- **`--allow-action TARGET:SURFACE` and `[actions]`** enable an action per
+  target and surface, and `--token-scope actions` mints the only token that
+  may act.
+
 - **`--rtpproxy-control ADDR:PORT` names the calls rtpproxy's media belongs
   to.** sipnab decoded rtpproxy's control protocol but nothing in the binary
   used it, so media relayed by rtpproxy was reported as orphaned. With this
@@ -23,6 +47,20 @@ entry that carries them.
 
 ### Changed
 
+- **Breaking: sipnab changes no system outside itself unless you enable
+  it.** `POST /v1/tfps/ban` and `/unban`, and the `tfps_ban` and `tfps_unban`
+  MCP tools, used to run `tfps_ctl` for any credential that could read. They
+  now refuse unless the server was started with `--allow-action tfps:rest`
+  (or `tfps:mcp`), and the caller holds a token minted with
+  `--token-scope actions`; a `full` token or a static `--api-key` reads
+  everything and acts on nothing. With an action enabled, sipnab needs a
+  journal directory it can use, and refuses to start without one.
+- **Breaking: ban and unban answer with the action, not TFPS's raw reply.**
+  The answer is `{"id", "applied", "refused"}`, where `id` names the action in
+  the journal. An unban lifts only a ban sipnab placed and still holds (`409`,
+  or an MCP error result, otherwise). `ttl_secs: 0` is refused rather than
+  banning forever. With no TFPS installed, a ban is refused as one TFPS could
+  not be asked about (`502`) instead of answering `installed: false`.
 - **The home page's voice-stack tiles name the role, not the product.** The
   OpenSIPS and Kamailio tile is headed "SIP proxy", and the rtpengine tile
   "Media relay", with the same pair of links as the proxy tile: "Use

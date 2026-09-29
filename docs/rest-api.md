@@ -279,7 +279,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
-`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban` and `POST /v1/vcon/validate`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
+`--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban`, `POST /v1/actions/revert` and `POST /v1/vcon/validate`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
 ## OpenAPI specification
 
@@ -1541,15 +1541,30 @@ Unix seconds.
 
 Ask TFPS to condemn one source.
 
+**Off by default.** Banning changes another system, and sipnab changes no
+system outside itself unless you turn that on. This route acts only when you
+start the server with `--allow-action tfps:rest` (or `[actions] tfps =
+["rest"]`) and the caller holds a token minted with `--token-scope actions`.
+A `full` token or a static `--api-key` reads every route and acts on none:
+they get `401` here. Enabled but not for REST, it answers `403` naming the
+setting.
+
 **An operator action relayed through sipnab, not a decision sipnab makes.**
-TFPS refuses its host's own addresses and anything in its `ignoreip`,
-answers with what it did, and sipnab reports that answer as given, refusal
-included. The automated path — sipnab's own findings reaching TFPS as they
-happen — is a separate channel, and nothing sipnab detects ever comes through
-this route.
+Nothing sipnab detects ever comes through this route. Before it asks TFPS,
+sipnab checks the request against fixed rules and rate limits, and writes it
+to the [actions journal](cli-reference.md#security):
+
+- sipnab never bans `0.0.0.0`, the broadcast address, or a loopback or
+  multicast address (`422`);
+- every ban expires: `ttl_secs`, or an hour when absent, and 7 days at most.
+  sipnab refuses `0`, TFPS's "forever", and anything longer (`422`) rather
+  than shortening them. [`[action_limits]`](config-reference.md#action_limits) changes
+  the default and the maximum;
+- at most 10 actions a minute for the server, 5 for one caller, and one per
+  address a minute (`429` with `Retry-After`).
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_ACTIONS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"ip":"198.51.100.20","ttl_secs":3600}' \
   http://127.0.0.1:8080/v1/tfps/ban | jq .
@@ -1557,62 +1572,55 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 ```json
 {
-  "installed": true,
-  "tfps_ctl": "/usr/local/bin/tfps_ctl",
-  "action": {
-    "ip": "198.51.100.20",
-    "action": "ban",
-    "applied": true,
-    "refused": null,
-    "expires": 1789746010,
-    "source": "operator"
-  }
+  "id": "a-r-68d9c1f2-4412-3",
+  "applied": true,
+  "refused": null
 }
 ```
 
-**Body shape:** a JSON object with `ip`, required and an IPv4 address. The
-TFPS block map is IPv4, and `tfps_ctl` fails outright on an IPv6 address
-rather than refusing it, so sipnab answers `400` for one and never asks.
+`id` names the action in the journal: `sipnab --journal-show` lists it, and
+`POST /v1/actions/revert` or `sipnab --revert-actions` takes it.
 
-`ttl_secs` is optional: seconds the ban lasts, `0` for forever, and the
-TFPS default of an hour when absent. The TFPS `ban` command records no
-free-text reason, so the body carries none.
-
-Anything else — a missing or malformed
-`ip`, an unknown key, an array — answers `400` and TFPS is never asked. The
-address and the duration reach `tfps_ctl` as arguments and never through a
-shell.
+**Body shape:** a JSON object with `ip`, required and an IPv4 address, and
+optionally `ttl_secs`. The TFPS block map is IPv4, and `tfps_ctl` fails
+outright on an IPv6 address rather than refusing it, so sipnab answers `400`
+for one and never asks. The TFPS `ban` command records no free-text reason,
+so the body carries none. Anything else — a missing or malformed `ip`, an
+unknown key, an array — answers `400` and TFPS is never asked. The address and
+the duration reach `tfps_ctl` as arguments and never through a shell.
 
 A ban TFPS refuses is `200` with `applied: false` and `refused` saying why in
-the words TFPS uses, even though `tfps_ctl` signals the refusal with exit 1:
-`local` for one of the host's own addresses, `declared` for one its
-`ignoreip` exempts, and `kernel` when it could not write the block map. That
-is the answer TFPS gave, not an error:
+the words TFPS uses: `local` for one of the host's own addresses, `declared`
+for one its `ignoreip` exempts, and `kernel` when it could not write the block
+map. That is the answer TFPS gave, not an error:
 
 ```json
 {
-  "installed": true,
-  "tfps_ctl": "/usr/local/bin/tfps_ctl",
-  "action": {
-    "ip": "127.0.0.1",
-    "action": "ban",
-    "applied": false,
-    "refused": "local",
-    "expires": null,
-    "source": "operator"
-  }
+  "id": "a-r-68d9c1f2-4412-4",
+  "applied": false,
+  "refused": "local"
 }
 ```
+
+`tfps_ctl` missing or failing is `502`, with its reason in `detail`. `503`
+means no action may run just now: sipnab cannot use the journal, or actions a
+crash left unfinished are waiting for TFPS to answer for them.
 
 ---
 
 ### POST /v1/tfps/unban
 
-Ask TFPS to release one condemned source. The same operator action in the
-other direction, reported as given.
+Ask TFPS to release a source **sipnab banned**. Off by default, behind the
+same two locks, rules and limits as the ban.
+
+sipnab lifts only a ban it placed and still holds, as its journal records.
+A ban TFPS placed itself, or anyone else did, answers `409`, and TFPS is not
+asked: a stolen token cannot use sipnab to lift TFPS's own bans. Because an
+address rests for a minute after an action on it, an unban straight after
+the ban answers `429` with `Retry-After`.
 
 ```bash
-curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_ACTIONS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"ip":"198.51.100.20"}' \
   http://127.0.0.1:8080/v1/tfps/unban | jq .
@@ -1620,26 +1628,60 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
 
 ```json
 {
-  "installed": true,
-  "tfps_ctl": "/usr/local/bin/tfps_ctl",
-  "action": {
-    "ip": "198.51.100.20",
-    "action": "unban",
-    "applied": true,
-    "refused": null,
-    "expires": null,
-    "source": "operator"
-  }
+  "id": "a-r-68d9c1f2-4412-5",
+  "applied": true,
+  "refused": null
 }
 ```
 
 **Body shape:** a JSON object with exactly `ip`, an IPv4 address. Anything
-else answers `400`. A source that was not blocked comes back `200` with
-`applied: false` and `refused: "not-blocked"`.
+else answers `400`. When TFPS no longer held the ban (it forgets manual bans
+when it restarts), the answer is `200` with `applied: false` and
+`refused: "not-blocked"`, and sipnab no longer counts the ban as its own.
 
-All six `/v1/tfps/` routes sit behind the same authentication as every other
-`/v1/` route. What a firewall is dropping is not a public fact, and a route
-that can ask for a ban is not one an unauthenticated caller reaches.
+---
+
+### POST /v1/actions/revert
+
+Back out what sipnab did: the ban one action placed, or every ban sipnab
+placed that is still in force, newest first. Off by default, behind the same
+two locks as the ban, and each unban counts against the same rate limits, so
+a stolen token cannot use it to act more often.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_ACTIONS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"all":true}' \
+  http://127.0.0.1:8080/v1/actions/revert | jq .
+```
+
+```json
+{
+  "reverted": ["a-r-68d9c1f2-4412-3"],
+  "lapsed": [],
+  "skipped_unknown": [],
+  "failed": [],
+  "left": []
+}
+```
+
+**Body shape:** exactly one of `{"id": "a-..."}` or `{"all": true}`. Anything
+else answers `400`. An `id` sipnab holds no ban for answers `409`.
+
+sipnab first asks TFPS what it holds. `reverted` lists the actions backed out.
+`lapsed` lists addresses whose ban TFPS had already dropped, so there was
+nothing to lift. `skipped_unknown` lists bans TFPS shows that sipnab cannot
+prove it placed (a crash between asking and hearing back, and TFPS reporting a
+different expiry), which sipnab never lifts. `failed` lists reverts TFPS
+refused or sipnab could not ask it for, and `left` the ones a rate limit
+stopped before sipnab reached them.
+
+On the TFPS host, `sipnab --revert-actions all` does the same without a
+server, and works with actions switched off.
+
+All seven action and TFPS routes sit behind the same authentication as every
+other `/v1/` route. What a firewall is dropping is not a public fact, and a
+route that can ask for a ban is not one an unauthenticated caller reaches.
 
 ---
 

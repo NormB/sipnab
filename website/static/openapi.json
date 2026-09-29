@@ -1,6 +1,52 @@
 {
   "components": {
     "schemas": {
+      "ActionDone": {
+        "description": "An action that ran: the answer `tfps_ban` and `tfps_unban` give on every\nsurface.",
+        "properties": {
+          "applied": {
+            "description": "Whether TFPS applied it.",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "The id every journal record about this action carries, such as\n`a-r-68d9c1f2-4412-3`.",
+            "type": "string"
+          },
+          "refused": {
+            "description": "Why TFPS refused, in its own words: `local`, `declared`, `kernel`, or\n`not-blocked` for an unban. `null` when applied.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "applied"
+        ],
+        "type": "object"
+      },
+      "ActionsRevertRequest": {
+        "additionalProperties": false,
+        "description": "The body `POST /v1/actions/revert` accepts: one action id, or `all`.",
+        "properties": {
+          "all": {
+            "description": "`true` to back out every ban sipnab placed that is still in force,\nnewest first.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The id of the action to back out, as a ban's answer or\n`sipnab --journal-show` gives it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "Aggregate": {
         "description": "A \"how many, by what\" count over the dialog store, one dimension.",
         "properties": {
@@ -3384,6 +3430,77 @@
         ],
         "type": "object"
       },
+      "RevertFailure": {
+        "description": "One revert that did not happen.",
+        "properties": {
+          "address": {
+            "description": "Its address.",
+            "type": "string"
+          },
+          "id": {
+            "description": "The action it would have backed out.",
+            "type": "string"
+          },
+          "why": {
+            "description": "Why not, in TFPS's words or sipnab's.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "address",
+          "why"
+        ],
+        "type": "object"
+      },
+      "RevertReport": {
+        "description": "What a revert did.",
+        "properties": {
+          "failed": {
+            "description": "Reverts TFPS refused or could not be asked for.",
+            "items": {
+              "$ref": "#/components/schemas/RevertFailure"
+            },
+            "type": "array"
+          },
+          "lapsed": {
+            "description": "Addresses whose ban TFPS had already dropped, so there was nothing\nto lift; sipnab no longer owns them.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "left": {
+            "description": "Ids not reached because a rate limit stopped the revert part way.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "reverted": {
+            "description": "The ids of the actions backed out, in the order they were.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "skipped_unknown": {
+            "description": "Addresses TFPS shows banned that sipnab cannot prove it placed, left\nalone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "reverted",
+          "lapsed",
+          "skipped_unknown",
+          "failed",
+          "left"
+        ],
+        "type": "object"
+      },
       "RtpStream": {
         "additionalProperties": false,
         "description": "Serialized form of StreamJson (src/output/json.rs); also embedded in a dialog/call-report `streams` array and returned by GET /v1/streams/{id}.",
@@ -4844,44 +4961,6 @@
         ],
         "type": "object"
       },
-      "TfpsActionAnswer": {
-        "description": "`tfps_ban`'s and `tfps_unban`'s answer, on every surface.",
-        "properties": {
-          "action": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/TfpsAction",
-                "description": "What TFPS did, when it was asked -- a refusal included."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "installed": {
-            "description": "Whether a `tfps_ctl` was found to ask.",
-            "type": "boolean"
-          },
-          "reason": {
-            "description": "Why not, when `installed` is false.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "tfps_ctl": {
-            "description": "The executable that answered, when one did.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "installed"
-        ],
-        "type": "object"
-      },
       "TfpsBanRequest": {
         "additionalProperties": false,
         "description": "The body `POST /v1/tfps/ban` accepts.\n\n`deny_unknown_fields` for the reason `PersistenceRequest` gives: a caller\nwho misspells `ttl_secs` is told, rather than getting a ban of the wrong\nduration.",
@@ -4891,7 +4970,7 @@
             "type": "string"
           },
           "ttl_secs": {
-            "description": "How long the ban lasts, in seconds; `0` is forever. Absent takes\nTFPS's default of an hour. TFPS's `ban` takes no reason.",
+            "description": "How long the ban lasts, in seconds: an hour when absent, 7 days at\nmost, and never `0`, TFPS's \"forever\", so a ban nobody lifts still\nends. `[action_limits]` changes the default and the maximum.\nTFPS's `ban` takes no reason.",
             "format": "int64",
             "minimum": 0,
             "type": [
@@ -5871,6 +5950,124 @@
         "summary": "Prometheus metrics",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/actions/revert": {
+      "post": {
+        "description": "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
+        "operationId": "post_actions_revert",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionsRevertRequest"
+              }
+            }
+          },
+          "description": "Exactly one of `id` or `all: true`. Unknown keys are refused, and so is a JSON array.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevertReport"
+                }
+              }
+            },
+            "description": "What was backed out, what had already ended, what was left alone, and what TFPS refused."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body did not name exactly one of a non-empty `id` or `all: true`, or carried an unknown key."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`id` names no ban sipnab holds. `tfps_ctl` was not run."
+          },
+          "413": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is over the 1 MiB request limit."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An action rate limit refused the first unban. `Retry-After` says when to try again. A limit reached part way through `all` is a `200` listing what was `left`."
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "TFPS could not be asked what it holds; nothing was reverted."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are unresolved."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Back out a ban sipnab placed, or every one",
+        "tags": [
+          "tfps"
         ]
       }
     },
@@ -8184,7 +8381,7 @@
     },
     "/v1/tfps/ban": {
       "post": {
-        "description": "An operator action relayed through sipnab, not a decision sipnab makes: TFPS refuses its host's own addresses and anything in its `ignoreip`, and answers with what it did -- applied, or refused and why -- which is reported as given. The automated path from sipnab's own findings to TFPS is a separate channel, never this route.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "description": "**Off by default.** Banning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nAn operator action relayed through sipnab, not a decision sipnab makes. Every ban expires: after `ttl_secs`, or an hour when none is given, and never more than 7 days (`[action_limits]` changes both). The unspecified, broadcast, loopback and multicast addresses are never banned. Actions are rate limited: 10 a minute for the server, 5 for one caller, and one per address a minute.\n\nThe request is recorded in the actions journal before TFPS is asked and its outcome after, under the `id` the answer carries. TFPS refuses its host's own addresses and anything in its `ignoreip`; a refusal is `applied: false` with `refused` saying why, not an error.",
         "operationId": "post_tfps_ban",
         "requestBody": {
           "content": {
@@ -8202,11 +8399,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TfpsActionAnswer"
+                  "$ref": "#/components/schemas/ActionDone"
                 }
               }
             },
-            "description": "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`. A refusal is `applied: false` with `refused` saying why, not an error."
+            "description": "What TFPS did, with the action's journal `id`."
           },
           "400": {
             "content": {
@@ -8216,7 +8413,7 @@
                 }
               }
             },
-            "description": "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key."
+            "description": "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key."
           },
           "401": {
             "content": {
@@ -8226,7 +8423,17 @@
                 }
               }
             },
-            "description": "No bearer credential, or one this server does not accept."
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run."
           },
           "413": {
             "content": {
@@ -8238,6 +8445,26 @@
             },
             "description": "The body is over the 1 MiB request limit."
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The address is one sipnab never bans, or the lifetime is `0` (forever) or over the maximum. `tfps_ctl` was not run."
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An action rate limit: the server's, the caller's, or the address's. `Retry-After` says when to try again. `tfps_ctl` was not run."
+          },
           "502": {
             "content": {
               "application/problem+json": {
@@ -8246,7 +8473,7 @@
                 }
               }
             },
-            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+            "description": "TFPS could not be asked: `tfps_ctl` is not installed or failed; `detail` says which, with its standard error."
           },
           "503": {
             "content": {
@@ -8256,7 +8483,7 @@
                 }
               }
             },
-            "description": "Over the per-source-IP rate limit of 100 requests per second."
+            "description": "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are still unresolved because TFPS could not be asked."
           }
         },
         "security": [
@@ -8513,7 +8740,7 @@
     },
     "/v1/tfps/unban": {
       "post": {
-        "description": "An operator action relayed through sipnab. TFPS answers with what it did, and the answer is reported as given.\n\nA machine without TFPS answers `200` with `installed: false`.",
+        "description": "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
         "operationId": "post_tfps_unban",
         "requestBody": {
           "content": {
@@ -8531,11 +8758,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TfpsActionAnswer"
+                  "$ref": "#/components/schemas/ActionDone"
                 }
               }
             },
-            "description": "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`."
+            "description": "What TFPS did, with the action's journal `id`."
           },
           "400": {
             "content": {
@@ -8545,7 +8772,7 @@
                 }
               }
             },
-            "description": "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key."
+            "description": "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key."
           },
           "401": {
             "content": {
@@ -8555,7 +8782,27 @@
                 }
               }
             },
-            "description": "No bearer credential, or one this server does not accept."
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run."
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "sipnab did not place this ban, or it has already ended, so sipnab will not lift it. `tfps_ctl` was not run."
           },
           "413": {
             "content": {
@@ -8567,6 +8814,16 @@
             },
             "description": "The body is over the 1 MiB request limit."
           },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An action rate limit: the server's, the caller's, or the address's. `Retry-After` says when to try again. `tfps_ctl` was not run."
+          },
           "502": {
             "content": {
               "application/problem+json": {
@@ -8575,7 +8832,7 @@
                 }
               }
             },
-            "description": "`tfps_ctl` failed; `detail` carries its standard error verbatim."
+            "description": "TFPS could not be asked: `tfps_ctl` is not installed or failed; `detail` says which, with its standard error."
           },
           "503": {
             "content": {
@@ -8585,7 +8842,7 @@
                 }
               }
             },
-            "description": "Over the per-source-IP rate limit of 100 requests per second."
+            "description": "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are still unresolved because TFPS could not be asked."
           }
         },
         "security": [
@@ -8593,7 +8850,7 @@
             "bearer": []
           }
         ],
-        "summary": "Ask TFPS to release a source",
+        "summary": "Ask TFPS to release a source sipnab banned",
         "tags": [
           "tfps"
         ]

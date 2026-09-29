@@ -130,3 +130,27 @@ fn the_unit_does_not_stream_every_message_into_the_journal() {
         "packaging/sipnab.service runs -N without --no-cli-print: {argv:?}"
     );
 }
+
+/// The shipped unit runs under `ProtectSystem=strict`, which leaves the
+/// service no writable state directory. The actions journal needs one, so
+/// the unit asks systemd for `/var/lib/sipnab`, private to the service user,
+/// and sipnab's default journal lies inside it.
+#[test]
+fn the_unit_gives_the_actions_journal_a_private_writable_home() {
+    let unit = read("packaging/sipnab.service");
+    let value = |key: &str| {
+        unit.lines()
+            .find_map(|l| l.trim().strip_prefix(key))
+            .map(str::trim)
+            .map(str::to_owned)
+    };
+    let state = value("StateDirectory=").expect("the unit has no StateDirectory=");
+    assert_eq!(value("StateDirectoryMode=").as_deref(), Some("0700"));
+    let cli = Cli::try_parse_from(["sipnab"]).expect("parse");
+    let journal = cli.journal_dir(&sipnab::config::Config::default());
+    assert!(
+        journal.starts_with(Path::new("/var/lib").join(&state)),
+        "the default journal {} is outside the unit's /var/lib/{state}",
+        journal.display()
+    );
+}

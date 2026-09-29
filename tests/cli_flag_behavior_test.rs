@@ -2116,6 +2116,21 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() {
         verifier.verify(&full, now, sipnab::auth::SCOPE_FULL),
         "--token-scope full must mint a full-access token"
     );
+    assert!(
+        !verifier.verify(&full, now, sipnab::auth::SCOPE_ACTIONS),
+        "a full token must NOT be accepted for actions: reading must not imply \
+         changing another system"
+    );
+
+    let actions = mint("actions");
+    assert!(
+        verifier.verify(&actions, now, sipnab::auth::SCOPE_ACTIONS),
+        "--token-scope actions must mint a token accepted for actions"
+    );
+    assert!(
+        verifier.verify(&actions, now, sipnab::auth::SCOPE_FULL),
+        "and one that reads everything a full token can"
+    );
 }
 
 /// `--token-scope metrics` is refused for the MCP surface at mint time.

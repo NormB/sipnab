@@ -103,6 +103,31 @@ pub const SCOPE_METRICS: &str = "metrics";
 /// list that could drift from it.
 pub const SCOPE_READ: &str = "read";
 
+/// Everything [`SCOPE_FULL`] reaches, plus the actions that change another
+/// system, such as asking TFPS to ban a source.
+///
+/// The one scope `full` does NOT satisfy. sipnab changes no external system by
+/// default: an action needs the server to enable it for the surface
+/// (`--allow-action` / `[actions]`) AND a caller holding this scope. Reading
+/// must not imply acting, so a dashboard's `full` token, and a static
+/// `--api-key` (which is `full`), read everything and act on nothing.
+pub const SCOPE_ACTIONS: &str = "actions";
+
+/// Whether a token holding `held` may reach something that requires `required`.
+///
+/// One rule for every surface. `actions` satisfies everything; `full`
+/// satisfies everything except `actions`; a narrower scope satisfies only
+/// itself. `full` stopping short of `actions` is the point: reading must not
+/// imply changing another system.
+#[must_use]
+pub fn scope_satisfies(held: &str, required: &str) -> bool {
+    match held {
+        SCOPE_ACTIONS => true,
+        SCOPE_FULL => required != SCOPE_ACTIONS,
+        _ => held == required,
+    }
+}
+
 /// Constant-time byte comparison for API keys and token signatures.
 ///
 /// Re-exported from `crate::crypto` (the always-compiled home for this
@@ -396,16 +421,24 @@ impl TokenVerifier {
     /// `chrono::Utc::now().timestamp()`); injecting it keeps expiry logic
     /// deterministically testable. Fails closed on any parse/format error.
     pub fn verify(&self, presented: &str, now_unix: i64, required_scope: &str) -> bool {
-        match self.verify_claims(presented, now_unix) {
-            Some(accepted) => {
-                // A `full` token satisfies any requirement; a narrower one
-                // satisfies only its own. Absent-means-full is resolved inside
-                // `verify_claims` — see `Payload::scope` for why that
-                // direction is safe and `aud`'s is not.
-                accepted.scope == SCOPE_FULL || accepted.scope == required_scope
-            }
-            None => false,
-        }
+        self.verify_for(presented, now_unix, required_scope)
+            .is_some()
+    }
+
+    /// [`verify`](Self::verify), returning the accepted credential so the
+    /// caller can say WHICH one acted: an action's journal record names the
+    /// token's id.
+    #[must_use]
+    pub fn verify_for(
+        &self,
+        presented: &str,
+        now_unix: i64,
+        required_scope: &str,
+    ) -> Option<AcceptedToken> {
+        // Absent-means-full is resolved inside `verify_claims` — see
+        // `Payload::scope` for why that direction is safe and `aud`'s is not.
+        self.verify_claims(presented, now_unix)
+            .filter(|accepted| scope_satisfies(&accepted.scope, required_scope))
     }
 
     /// Verify a presented Authorization value and return the accepted claims,

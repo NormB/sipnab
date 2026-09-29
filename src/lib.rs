@@ -378,6 +378,10 @@ pub mod provenance;
 // It was a real break rather than a tidy-up: `--no-default-features --features
 // api` stopped compiling, which the full-feature build could not show and the
 // pre-push feature matrix did.
+// The operations journal. Only actions write it, and actions are reachable
+// only through the REST and MCP servers.
+#[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+pub mod journal;
 #[cfg(any(feature = "hep", feature = "mcp", feature = "api"))]
 pub mod rate_limit;
 // Native only, alongside `rtpengine`, which together with the MCP surface is

@@ -40,9 +40,31 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "media",
             "quality",
             "tfps",
+            "actions",
+            "action_limits",
+            "journal",
         ]
         .as_slice(),
     );
+    // [actions] enables what changes another system, one key per target, each
+    // a list of surfaces. `the_actions_keys_are_the_action_targets` pins these
+    // to `ActionTarget::ALL`, so a new target cannot miss this list.
+    m.insert("actions", ["tfps"].as_slice());
+    // [action_limits] tightens or loosens the limits every action passes;
+    // none of them can be turned off.
+    m.insert(
+        "action_limits",
+        [
+            "per_minute",
+            "per_caller_per_minute",
+            "address_cooldown_secs",
+            "default_ban_secs",
+            "max_ban_secs",
+        ]
+        .as_slice(),
+    );
+    // [journal] says where sipnab records the actions it takes.
+    m.insert("journal", ["dir"].as_slice());
     // [tfps] says where optional peer software is, and nothing else: no
     // threshold, no behavior. Two keys, both paths.
     m.insert("tfps", ["ctl", "db"].as_slice());
@@ -355,12 +377,70 @@ pub struct Config {
     /// [`TfpsConfig`].
     #[serde(default)]
     pub tfps: TfpsConfig,
+    /// Actions that change another system, enabled per target and surface:
+    /// `tfps = ["rest", "mcp"]`. Empty by default, which is the secure
+    /// default: sipnab changes no external system unless enabled here or with
+    /// `--allow-action`.
+    #[serde(default)]
+    pub actions: ActionsConfig,
+    /// The limits every action passes -- see [`ActionLimitsConfig`].
+    #[serde(default)]
+    pub action_limits: ActionLimitsConfig,
+    /// Where the actions journal lives -- see [`JournalConfig`].
+    #[serde(default)]
+    pub journal: JournalConfig,
+}
+
+/// `[actions]`: what may change another system, per target, as a list of the
+/// surfaces allowed to ask. Empty by default, which is the secure default.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct ActionsConfig {
+    /// Surfaces that may ask TFPS to ban and unban: `["rest"]`,
+    /// `["mcp"]`, or both.
+    pub tfps: Vec<String>,
+}
+
+impl ActionsConfig {
+    /// Each target's surface list, keyed by the target's spelling.
+    #[must_use]
+    pub fn entries(&self) -> Vec<(&'static str, &[String])> {
+        vec![("tfps", self.tfps.as_slice())]
+    }
+}
+
+/// `[action_limits]`: how many actions sipnab takes and how long a ban
+/// lasts. Each key absent keeps the shipped value; none can be `0`, because
+/// `0` would turn the limit off.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ActionLimitsConfig {
+    /// Actions per minute across the server (shipped: 10).
+    pub per_minute: Option<u64>,
+    /// Actions per minute from one caller (shipped: 5).
+    pub per_caller_per_minute: Option<u64>,
+    /// Seconds an address rests after an action on it (shipped: 60).
+    pub address_cooldown_secs: Option<u64>,
+    /// Lifetime of a ban whose caller gave none, seconds (shipped: 3600).
+    pub default_ban_secs: Option<u64>,
+    /// Longest ban sipnab asks for, seconds (shipped: 604800, 7 days).
+    pub max_ban_secs: Option<u64>,
+}
+
+/// `[journal]`: where sipnab records the actions it takes on other systems,
+/// so a restart knows what it did. Required whenever an action is enabled.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct JournalConfig {
+    /// The journal directory (default `/var/lib/sipnab/journal`).
+    pub dir: Option<PathBuf>,
 }
 
 /// Where the toll-fraud prevention system (TFPS) is, when one runs here.
 ///
 /// TFPS is optional peer software: it condemns sources and enforces that
-/// decision in the firewall, and sipnab never bans anything. This section
+/// decision in the firewall. sipnab reads its state, and asks it to ban or
+/// unban only when `[actions]` or `--allow-action` enables that. This section
 /// only says where its `tfps_ctl` program and database are, for the `tfps_*`
 /// MCP tools and the `/v1/tfps/` REST routes. Absent, sipnab looks for
 /// `tfps_ctl` on `PATH` when a TFPS tool is called and does nothing about
@@ -3276,6 +3356,19 @@ column_selector = "F10"
             listed, actual,
             "the root section list and Config's sections must agree"
         );
+    }
+
+    /// The `[actions]` keys are exactly the action targets sipnab knows.
+    #[test]
+    fn the_actions_keys_are_the_action_targets() {
+        let mut registered: Vec<&str> = KNOWN_KEYS["actions"].to_vec();
+        registered.sort_unstable();
+        let mut targets: Vec<&str> = crate::security::actions::ActionTarget::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        targets.sort_unstable();
+        assert_eq!(registered, targets);
     }
 
     /// Every field of every config section is registered in `KNOWN_KEYS`.

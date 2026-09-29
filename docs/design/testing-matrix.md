@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 288 | 222 | 39 | 26 | 1 |
-| HTTP routes | 40 | 40 | -- | 0 | 0 |
-| MCP tools | 69 | 69 | -- | 0 | 0 |
+| CLI flags | 292 | 227 | 39 | 25 | 1 |
+| HTTP routes | 41 | 41 | -- | 0 | 0 |
+| MCP tools | 70 | 70 | -- | 0 | 0 |
 
 **Flags with no occurrence at all:** `--syslog`
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 26 flags it could only call
+The generator understates. Of the 25 flags it could only call
 `referenced`, a read of the tests found 67 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +3 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +3 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +84 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +87 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/archive_password_prompt_test.rs`, `tests/batch_run_paths_test.rs` +9 |  |  |
@@ -117,7 +117,7 @@ behind them.
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/analyze_test.rs` +84 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +87 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +3 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -220,7 +220,11 @@ behind them.
 | `--kill-target` | `-K` |  | Security | e2e | `tests/offline_never_transmits_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--kill-spoof` |  | `MODE` | Security | e2e | `tests/offline_never_transmits_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
 | `--hep-allow-kill` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs`, `tests/scanner_kill_process_test.rs` |  |  |
-| `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/mcp_protocol_features_test.rs`, `tests/tfps_surfaces_test.rs` |  |  |
+| `--tfps-ctl` |  | `PATH` | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
+| `--journal-dir` |  | `DIR` | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
+| `--journal-show` |  |  | Security | e2e | `tests/actions_cli_test.rs` |  |  |
+| `--revert-actions` |  |  | Security | e2e | `tests/actions_cli_test.rs` |  |  |
+| `--allow-action` |  |  | Security | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_mcp_test.rs` +5 |  |  |
 | `--fraud-detect` |  |  | Security | e2e | `src/app/tui_mode.rs`, `tests/cli_options_test.rs` +1 |  |  |
 | `--evidence-out` |  |  | Security | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--fraud-destination` |  |  | Security | parsed | `src/cli.rs` |  |  |
@@ -261,11 +265,11 @@ behind them.
 | `--metrics` |  | `ADDR` | Network listeners | e2e | `tests/batch_run_paths_test.rs`, `tests/config_wiring_test.rs` +3 |  |  |
 | `--metrics-auth` |  |  | Network listeners | referenced | `src/cli.rs`, `src/output/prometheus_server.rs` +1 | **mention-only** | CREDENTIAL. Only whole-token occurrences are comments. It passes flag_coverage_test only because --metrics-auth-file contains the string |
 | `--metrics-auth-file` |  | `FILE` | Network listeners | parsed | `src/cli.rs` |  |  |
-| `--api` |  | `ADDR` | Network listeners | e2e | `tests/app_servers_wiring_test.rs`, `tests/archive_password_test.rs` +3 |  |  |
-| `--api-key` |  | `KEY` | Network listeners | e2e | `tests/api_test.rs`, `tests/api_token_test.rs` +4 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
-| `--api-signing-key` |  | `KEY` | Network listeners | e2e | `tests/api_token_test.rs` | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
+| `--api` |  | `ADDR` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/app_servers_wiring_test.rs` +4 |  |  |
+| `--api-key` |  | `KEY` | Network listeners | e2e | `tests/actions_optin_rest_test.rs`, `tests/api_test.rs` +5 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
+| `--api-signing-key` |  | `KEY` | Network listeners | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` +3 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--api-revoked-file` |  | `FILE` | Network listeners | e2e | `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
+| `--api-revoked-file` |  | `FILE` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
 | `--api-token-ttl` |  | `SECS` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--api-tls-cert` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | tls_flags_fail_fast_and_do_not_serve. NOTE: what is proven is that TLS is unimplemented and fails closed |
 | `--api-tls-key` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | same test. The XOR consistency check that stops one-flag-alone serving plaintext has NO test |
@@ -275,8 +279,8 @@ behind them.
 | `--api-allow-relay-query` |  |  | Network listeners | e2e | `tests/app_servers_wiring_test.rs` |  |  |
 | `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/archive_password_test.rs` |  |  |
 | `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
-| `--api-rate-limit-per-peer` |  | `N` | Network listeners | referenced | `src/cli.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
-| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/analyze_test.rs`, `tests/app_servers_wiring_test.rs` +15 |  |  |
+| `--api-rate-limit-per-peer` |  | `N` | Network listeners | e2e | `tests/actions_journal_rest_test.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
+| `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +16 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/mcp_audit_sink_test.rs`, `tests/mcp_metrics_wiring_test.rs` +5 |  |  |
 | `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_http_test.rs` +2 |  |  |
 | `--mcp-token` |  | `TOKEN` | MCP (Model Context Protocol) | e2e | `tests/mcp_http_test.rs`, `tests/mcp_token_test.rs` +1 |  |  |
@@ -366,7 +370,7 @@ behind them.
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +7 |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +12 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +10 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
@@ -378,6 +382,7 @@ behind them.
 |---|---|---|
 | `/health` | exercised | `tests/api_test.rs`, `tests/harness_teardown_test.rs` +1 |
 | `/metrics` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
+| `/v1/actions/revert` | exercised | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` |
 | `/v1/aggregate` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_test.rs` |
 | `/v1/captures/compare` | exercised | `tests/api_test.rs`, `tests/archive_password_test.rs` +1 |
@@ -408,12 +413,12 @@ behind them.
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
 | `/v1/talkers` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
-| `/v1/tfps/ban` | exercised | `tests/tfps_surfaces_test.rs` |
-| `/v1/tfps/banned` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/ban` | exercised | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` +2 |
+| `/v1/tfps/banned` | exercised | `tests/actions_optin_rest_test.rs`, `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/dropped` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/labels` | exercised | `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/status` | exercised | `tests/tfps_surfaces_test.rs` |
-| `/v1/tfps/unban` | exercised | `tests/tfps_surfaces_test.rs` |
+| `/v1/tfps/unban` | exercised | `tests/actions_journal_rest_test.rs`, `tests/actions_optin_rest_test.rs` +1 |
 | `/v1/timeline` | exercised | `tests/api_test.rs` |
 | `/v1/vcon/validate` | exercised | `tests/api_test.rs` |
 
@@ -421,6 +426,7 @@ behind them.
 
 | Tool | Evidence | Where |
 |---|---|---|
+| `actions_revert` | exercised | `tests/actions_journal_mcp_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `aggregate_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `await_condition` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `build_evidence_package` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
@@ -478,12 +484,12 @@ behind them.
 | `start_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +3 |
-| `tfps_ban` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_ban` | exercised | `tests/actions_journal_mcp_test.rs`, `tests/mcp_protocol_features_test.rs` +3 |
 | `tfps_banned` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `tfps_dropped` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `tfps_labels` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `tfps_status` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
-| `tfps_unban` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
+| `tfps_unban` | exercised | `tests/actions_journal_mcp_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `timeline` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `top_talkers` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `triage_call` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |

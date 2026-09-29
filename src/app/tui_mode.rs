@@ -859,6 +859,13 @@ pub fn run_tui_mode(
         }
     };
 
+    // Actions, with their journal, before any server listens: a journal that
+    // cannot be used refuses the run here.
+    let actions = crate::app::servers::start_actions(&cli, &config).unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        crate::capture::archive::release_run_and_exit(2);
+    });
+
     // Start the REST API server if --api is specified. The TUI owns stdio,
     // so MCP stdio is never selected here.
     let _servers_thread = crate::app::servers::start_servers(
@@ -879,6 +886,7 @@ pub fn run_tui_mode(
             api_rate_limit_per_peer: cli.api_peer_rate_limit(&config),
             max_tracked_peers: cli.tracked_peer_capacity(&config),
             metrics_max_conn: cli.metrics_conn_cap(&config),
+            actions: actions.clone(),
             mcp_max_findings: cli.mcp_findings_cap(&config),
             tfps: cli.tfps_locator(&config),
             api: true,
@@ -981,6 +989,13 @@ pub fn run_tui_mode(
     if let Some(e) = tui_failure.as_ref() {
         tracing::error!("TUI error: {e}");
     }
+    // A clean stop, journaled if no action is in flight; one that is stays
+    // in doubt for the next start, and is not waited for.
+    actions.stop(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    );
 
     // AFTER the TUI returns, so the terminal has left the alternate screen and
     // this line survives on the operator's scrollback. Point 4 of the decision

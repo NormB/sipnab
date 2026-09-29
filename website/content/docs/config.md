@@ -274,7 +274,8 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 Where the toll-fraud prevention system (TFPS) is, when one runs on this host.
 
 TFPS is optional peer software: it condemns sources and enforces that
-decision in the firewall, and sipnab never bans anything. The `tfps_*` MCP
+decision in the firewall. sipnab bans nothing on its own, and asks TFPS to ban
+only when you turn that on under [`[actions]`](#actions). The `tfps_*` MCP
 tools and the `/v1/tfps/` REST routes ask it through its `tfps_ctl` program,
 and this section says where that program and its database are. Leave the
 section out and sipnab looks for `tfps_ctl` on `PATH` the moment a TFPS tool
@@ -282,13 +283,81 @@ runs, and does nothing about TFPS at any other time.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs, and a machine with no `tfps_ctl` anywhere answers `installed: false` on every TFPS surface |
+| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs. On a machine with no `tfps_ctl` anywhere, every read answers `installed: false`, and sipnab refuses a ban that actions allow, as one it could not ask TFPS about (`502` over REST) |
 | `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default |
 
 ```toml
 [tfps]
 ctl = "/usr/local/bin/tfps_ctl"
 db = "/var/lib/tfps/tfps.db"
+```
+
+### `[actions]`
+
+What sipnab may change in another system, and from where. **Empty by
+default: sipnab changes no system outside itself.** It publishes what it saw
+to destinations you name and asks other software read-only questions. An
+action, such as asking TFPS to ban a source, runs only when enabled here or
+with `--allow-action`. The two add together.
+
+One key per target, each a list of the surfaces that may ask: `"rest"` for
+the REST API, `"mcp"` for the MCP tools. A target or surface sipnab does not
+know stops it at startup, rather than sipnab reading it as "nothing enabled".
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tfps` | list of strings | `[]` | Surfaces that may ask TFPS to ban and unban, and back a ban out: `POST /v1/tfps/ban`, `/unban` and `/v1/actions/revert` over REST; `tfps_ban`, `tfps_unban` and `actions_revert` over MCP. A REST caller also needs a token minted with `--token-scope actions`, and so does an MCP client over HTTP |
+
+Enabling anything needs the [actions journal](#journal): sipnab refuses to
+start without a directory it can use for it.
+
+```toml
+[actions]
+tfps = ["rest"]
+```
+
+### `[action_limits]`
+
+The limits every action passes, so a stolen credential or a runaway agent
+can do only so much, and so that every ban ends on its own. Each key left out
+keeps the value shown. None can be `0`: that would turn the limit off, and
+sipnab refuses to start instead. The limits survive a restart: sipnab rebuilds
+them from the journal, so crashing it does not reset them.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `per_minute` | integer | `10` | Actions per minute from everyone together |
+| `per_caller_per_minute` | integer | `5` | Actions per minute from one caller: one token, or one MCP stdio client. Cannot be above `per_minute` |
+| `address_cooldown_secs` | integer | `60` | Seconds an address rests after an action on it before the next, so no one can flip a ban on and off |
+| `default_ban_secs` | integer | `3600` | How long a ban lasts when the caller does not say |
+| `max_ban_secs` | integer | `604800` | The longest ban sipnab asks for (7 days). sipnab refuses a longer request, or `0` (TFPS's "forever"), rather than shortening it |
+
+Some addresses are never banned whatever these say: `0.0.0.0`, the broadcast
+address, loopback and multicast addresses.
+
+```toml
+[action_limits]
+per_minute = 20
+per_caller_per_minute = 5
+address_cooldown_secs = 60
+default_ban_secs = 1800
+max_ban_secs = 86400
+```
+
+### `[journal]`
+
+Where sipnab records the actions it takes, so that after a restart or a
+crash it knows which bans are its own, what was in flight, and how much of
+each limit it has spent. `sipnab --journal-show` prints what it holds, and
+`sipnab --revert-actions` backs actions out.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `dir` | string | `/var/lib/sipnab/journal` | The journal directory. `--journal-dir` overrides it. sipnab creates it with mode 0700 if absent, and the packaged service gets `/var/lib/sipnab` from systemd. Each record reaches the disk before the action it describes runs, and the files hold no token or request body. Files close at 16 MiB, and sipnab deletes closed files more than 90 days old when the next one starts |
+
+```toml
+[journal]
+dir = "/srv/sipnab/journal"
 ```
 
 ### [diagnosis]

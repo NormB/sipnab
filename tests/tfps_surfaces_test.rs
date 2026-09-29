@@ -35,6 +35,19 @@ const LABELS: &str = include_str!("fixtures/tfps-labels-golden.jsonl");
 
 const PCAP: &str = "tests/fixtures/sip_call.pcap";
 const KEY: &str = "tfps-surfaces-test-key";
+/// Signs the `actions` token the REST ban and unban need: a static key is
+/// `full`, which reads everything and acts on nothing.
+const SIGNING_KEY: &str = "tfps-surfaces-test-signing-key";
+
+fn actions_token() -> String {
+    sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "tfps-surfaces-actions",
+        chrono::Utc::now().timestamp() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_ACTIONS,
+    )
+}
 
 /// A fake `tfps_ctl` that answers each subcommand with its fixture and
 /// records every argv it was handed.
@@ -87,7 +100,24 @@ impl Fake {
 fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
     let fake = Fake::new();
     let path = fake.path_str();
-    let mut session = McpSession::start(PCAP, &["--tfps-ctl", &path]);
+    // Ban and unban change another system, so this run enables them for MCP.
+    let journal = fake.dir.path().join("journal").display().to_string();
+    let config = fake.dir.path().join("sipnab.toml");
+    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
+    let config = config.display().to_string();
+    let mut session = McpSession::start(
+        PCAP,
+        &[
+            "--tfps-ctl",
+            &path,
+            "--allow-action",
+            "tfps:mcp",
+            "--journal-dir",
+            &journal,
+            "--config",
+            &config,
+        ],
+    );
 
     let status = ok_payload(&session.call("tfps_status", serde_json::json!({})));
     assert_eq!(status["installed"], true, "{status}");
@@ -111,10 +141,11 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
         "tfps_ban",
         serde_json::json!({"ip": "198.51.100.20", "ttl_secs": 3600}),
     ));
-    assert_eq!(ban["action"]["applied"], true, "{ban}");
+    assert_eq!(ban["applied"], true, "{ban}");
 
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     let unban = ok_payload(&session.call("tfps_unban", serde_json::json!({"ip": "198.51.100.20"})));
-    assert_eq!(unban["action"]["ip"], "198.51.100.20", "{unban}");
+    assert_eq!(unban["applied"], true, "{unban}");
 
     let log = fake.argv_log();
     assert!(log.contains("--limit\n3\n"), "limit passed through: {log}");
@@ -127,7 +158,24 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
 fn a_bad_address_is_refused_over_the_wire_before_the_peer_is_asked() {
     let fake = Fake::new();
     let path = fake.path_str();
-    let mut session = McpSession::start(PCAP, &["--tfps-ctl", &path]);
+    // Ban and unban change another system, so this run enables them for MCP.
+    let journal = fake.dir.path().join("journal").display().to_string();
+    let config = fake.dir.path().join("sipnab.toml");
+    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
+    let config = config.display().to_string();
+    let mut session = McpSession::start(
+        PCAP,
+        &[
+            "--tfps-ctl",
+            &path,
+            "--allow-action",
+            "tfps:mcp",
+            "--journal-dir",
+            &journal,
+            "--config",
+            &config,
+        ],
+    );
     let reply = session.call("tfps_ban", serde_json::json!({"ip": "not an address"}));
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
     // An IPv6 address is an address TFPS cannot hold: its block map is IPv4,
@@ -149,7 +197,26 @@ fn a_bad_address_is_refused_over_the_wire_before_the_peer_is_asked() {
 fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
     let fake = Fake::new();
     let path = fake.path_str();
-    let srv = ApiServer::spawn(&["--api-key", KEY, "--tfps-ctl", &path]);
+    // Actions are journaled, and an address rests between actions; a second
+    // is enough here, where the shipped minute would stall the test.
+    let journal = fake.dir.path().join("journal").display().to_string();
+    let config = fake.dir.path().join("sipnab.toml");
+    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
+    let config = config.display().to_string();
+    let srv = ApiServer::spawn(&[
+        "--api-key",
+        KEY,
+        "--api-signing-key",
+        SIGNING_KEY,
+        "--tfps-ctl",
+        &path,
+        "--allow-action",
+        "tfps:rest",
+        "--journal-dir",
+        &journal,
+        "--config",
+        &config,
+    ]);
 
     let status = srv.get_bearer("/v1/tfps/status", KEY);
     assert_eq!(status.status, 200, "{}", status.body);
@@ -178,14 +245,19 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
     let ban = srv.post_json_bearer(
         "/v1/tfps/ban",
         r#"{"ip":"198.51.100.20","ttl_secs":600}"#,
-        KEY,
+        &actions_token(),
     );
     assert_eq!(ban.status, 200, "{}", ban.body);
-    assert_eq!(ban.json()["action"]["applied"], true);
+    assert_eq!(ban.json()["applied"], true);
 
-    let unban = srv.post_json_bearer("/v1/tfps/unban", r#"{"ip":"198.51.100.20"}"#, KEY);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let unban = srv.post_json_bearer(
+        "/v1/tfps/unban",
+        r#"{"ip":"198.51.100.20"}"#,
+        &actions_token(),
+    );
     assert_eq!(unban.status, 200, "{}", unban.body);
-    assert_eq!(unban.json()["action"]["source"], "operator");
+    assert_eq!(unban.json()["applied"], true, "{}", unban.body);
 
     let log = fake.argv_log();
     assert!(log.contains("--limit\n2\n"), "{log}");

@@ -3137,9 +3137,13 @@ fn mcp_tool_table_lists_every_registered_tool() {
     // feeding this run's HEP listener, who went silent and who it refuses.
     // Read-only, so the split moves 56-of-68 to 57-of-69 and the twelve
     // write-capable tools are unchanged.
+    // 69 -> 70 by `actions_revert` (src/mcp/tools/tfps.rs), which backs out a
+    // ban sipnab placed, or every one it holds. It changes another system, so
+    // the split stays 57 read-only, now of 70, and the write-capable tools
+    // become thirteen.
     assert_eq!(
         registered.len(),
-        69,
+        70,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4248,7 +4252,13 @@ fn no_documentation_table_repeats_a_row() {
     // guide needs with the OpenSIPS packages), docs/kamailio.md one (the
     // versions); their site mirrors carry the same three. The add-on guides'
     // table counts held.
-    const EXPECTED_TABLES: usize = 1012;
+    // 1012 -> 1020 by actions and the journal: config-reference.md gains the
+    // [actions], [action_limits] and [journal] key tables, and mcp-tools.md
+    // the actions_revert parameter table; four tables, each in docs/ and its
+    // generated site page.
+    // 1020 -> 1021 by the "Back out sipnab's actions" capability in
+    // docs/design/surface-capability-matrix.md, which has no site page.
+    const EXPECTED_TABLES: usize = 1021;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -98,6 +98,7 @@ fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
         started_at: std::time::Instant::now(),
         persistence_gate: Arc::new(PersistenceGate::new(false)),
         tfps: Default::default(),
+        actions: Default::default(),
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,

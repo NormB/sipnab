@@ -377,6 +377,9 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    // An `[actions]` entry naming nothing sipnab knows is refused here, before
+    // anything runs, rather than read as "nothing enabled".
+    cli.action_policy(config).map_err(PlanError::arg)?;
     let alert_sources = if cli.security_args.alert.is_empty() {
         config.security.alert.as_deref().unwrap_or(&[])
     } else {
@@ -2997,6 +3000,27 @@ fn show_frame(pointer: &str) -> i32 {
             tracing::error!("not a frame pointer: {t}");
             2
         }
+    }
+}
+
+/// Handle `--journal-show` and `--revert-actions`, returning the exit code,
+/// or `None` when neither was given. Feature-swapped so the caller contains
+/// no `cfg`.
+pub fn run_journal_command(cli: &Cli, config: &Config) -> Option<i32> {
+    #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
+    {
+        crate::app::journal_cli::run(cli, config)
+    }
+    #[cfg(not(all(unix, any(feature = "api", feature = "mcp"))))]
+    {
+        let _ = config;
+        (cli.security_args.journal_show || cli.security_args.revert_actions.is_some()).then(|| {
+            tracing::error!(
+                "--journal-show and --revert-actions need the 'api' or 'mcp' feature (not \
+                 compiled in): no action can have been taken"
+            );
+            2
+        })
     }
 }
 

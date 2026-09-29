@@ -138,6 +138,8 @@ impl Problem {
             StatusCode::UNAUTHORIZED => "unauthorized",
             StatusCode::FORBIDDEN => "forbidden",
             StatusCode::NOT_FOUND => "not-found",
+            StatusCode::CONFLICT => "conflict",
+            StatusCode::UNPROCESSABLE_ENTITY => "unprocessable",
             StatusCode::TOO_MANY_REQUESTS => "rate-limited",
             StatusCode::PAYLOAD_TOO_LARGE => "payload-too-large",
             StatusCode::BAD_GATEWAY => "bad-gateway",
@@ -283,6 +285,10 @@ pub struct ApiState {
     /// state built without one -- every test in this module -- still
     /// answers, with `installed: false` on a machine that has no TFPS.
     pub tfps: crate::security::tfps::TfpsLocator,
+    /// The actions this server may take on another system (`--allow-action`,
+    /// `[actions]`). Empty by default: `POST /v1/tfps/ban` and `/unban` answer
+    /// `403` naming the setting, and `tfps_ctl` never runs.
+    pub actions: crate::security::actions::Actions,
     /// Relay access for the `GET /v1/relay/...` routes (ST5), when this run
     /// opted in with `--api-allow-relay-query` on a live source. `default()`
     /// (both halves `None`) is a server with no relay access, which answers
@@ -999,6 +1005,10 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/tfps/labels", get(get_tfps_labels))
         .route("/v1/tfps/ban", axum::routing::post(post_tfps_ban))
         .route("/v1/tfps/unban", axum::routing::post(post_tfps_unban))
+        .route(
+            "/v1/actions/revert",
+            axum::routing::post(post_actions_revert),
+        )
         .route("/v1/streams", get(list_streams))
         .route("/v1/streams/{id}", get(get_stream))
         .route("/v1/report", get(get_capture_report))
@@ -1266,10 +1276,20 @@ fn enforce_bind_auth_policy(
 /// `Bearer <token>` credential is presented; `Err(401 UNAUTHORIZED)` for a
 /// missing, non-ASCII, non-Bearer, or unverifiable credential.
 fn check_auth(state: &ApiState, headers: &HeaderMap, required_scope: &str) -> Result<(), Problem> {
+    authenticate(state, headers, required_scope).map(|_| ())
+}
+
+/// [`check_auth`], returning the credential it accepted: `None` when this
+/// server checks no credentials at all.
+fn authenticate(
+    state: &ApiState,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> Result<Option<crate::auth::AcceptedToken>, Problem> {
     // No signing keys and no static secret configured ⇒ auth disabled
     // (loopback-allowed behavior unchanged from before this feature).
     if state.verifier.is_unconfigured() {
-        return Ok(());
+        return Ok(None);
     }
 
     let Some(auth_header) = headers.get("authorization") else {
@@ -1284,11 +1304,12 @@ fn check_auth(state: &ApiState, headers: &HeaderMap, required_scope: &str) -> Re
     // as `strip_prefix("Bearer ")` took it.
     if let Some((scheme, token)) = auth_str.split_once(' ')
         && scheme.eq_ignore_ascii_case("Bearer")
-        && state
-            .verifier
-            .verify(token, chrono::Utc::now().timestamp(), required_scope)
+        && let Some(accepted) =
+            state
+                .verifier
+                .verify_for(token, chrono::Utc::now().timestamp(), required_scope)
     {
-        return Ok(());
+        return Ok(Some(accepted));
     }
 
     Err(Problem::new(StatusCode::UNAUTHORIZED))
@@ -1341,6 +1362,86 @@ fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(),
     // added later and wired to this function therefore inherits "full tokens
     // only" rather than quietly accepting a scrape-only credential.
     guard_scoped(state, headers, client_ip, crate::auth::SCOPE_FULL)
+}
+
+/// The guard for a route that changes another system: TFPS ban and unban.
+///
+/// Two locks, in this order. The token must carry scope `actions` (`401`
+/// otherwise, like any credential scoped too narrowly), and the server must
+/// have enabled TFPS actions for REST (`403` otherwise, naming the setting).
+/// Only then is there a permit to act with.
+///
+/// Returns the caller as the journal names it: `token:<id>` for a token with
+/// an id, `token` for a credential without one, and `peer:<address>` on a
+/// server that checks no credentials. Never the credential itself.
+fn action_guard(
+    state: &ApiState,
+    headers: &HeaderMap,
+    client_ip: IpAddr,
+) -> Result<String, Problem> {
+    check_rate_limit(state, client_ip)?;
+    let accepted = authenticate(state, headers, crate::auth::SCOPE_ACTIONS)?;
+    state
+        .actions
+        .permit(
+            crate::security::actions::ActionTarget::Tfps,
+            crate::security::actions::ActionSurface::Rest,
+        )
+        .map_err(|refusal| Problem::detailed(StatusCode::FORBIDDEN, refusal.to_string()))?;
+    Ok(match accepted {
+        Some(token) => crate::security::actions::token_caller(token.id.as_deref()),
+        None => format!("peer:{client_ip}"),
+    })
+}
+
+/// Run one action through the service, off the async runtime: the service
+/// writes the journal with `fsync` and waits for `tfps_ctl`.
+async fn run_action<T, F>(state: &ApiState, f: F) -> Result<Json<T>, Problem>
+where
+    T: Send + 'static,
+    F: FnOnce(
+            &crate::security::actions::ActionService,
+            u64,
+            std::time::Instant,
+        ) -> Result<T, crate::security::actions::ActionError>
+        + Send
+        + 'static,
+{
+    let Some(service) = state.actions.service().cloned() else {
+        return Err(Problem::detailed(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "actions are enabled but their journal is not open, so none may run",
+        ));
+    };
+    let now_unix = u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0);
+    let done =
+        tokio::task::spawn_blocking(move || f(&service, now_unix, std::time::Instant::now()))
+            .await
+            .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?
+            .map_err(action_problem)?;
+    Ok(Json(done))
+}
+
+/// The status an action's refusal is answered with.
+///
+/// `403` the action is not enabled here; `422` the address or lifetime is
+/// not allowed; `429` a rate limit, with `Retry-After`; `409` sipnab did not
+/// place the ban it was asked to lift; `503` the journal cannot be used or
+/// earlier actions are unresolved; `502` TFPS could not be asked.
+fn action_problem(e: crate::security::actions::ActionError) -> Problem {
+    use crate::security::actions::ActionError as E;
+    let detail = e.to_string();
+    match e {
+        E::NotEnabled(_) => Problem::detailed(StatusCode::FORBIDDEN, detail),
+        E::Rule(_) => Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, detail),
+        E::Throttled(t) => Problem::detailed(StatusCode::TOO_MANY_REQUESTS, detail)
+            .retry_after(t.retry_after().as_secs().max(1)),
+        E::NotOwned => Problem::detailed(StatusCode::CONFLICT, detail),
+        E::InDoubt(_) | E::JournalUnusable(_) => {
+            Problem::detailed(StatusCode::SERVICE_UNAVAILABLE, detail)
+        }
+        E::Tfps(_) => Problem::detailed(StatusCode::BAD_GATEWAY, detail),
+    }
 }
 
 /// [`guard`], with the scope a caller demands stated explicitly.
@@ -3660,8 +3761,10 @@ async fn set_persistence(
 struct TfpsBanRequest {
     /// The source to condemn, an IPv4 address (TFPS's block map is IPv4).
     ip: String,
-    /// How long the ban lasts, in seconds; `0` is forever. Absent takes
-    /// TFPS's default of an hour. TFPS's `ban` takes no reason.
+    /// How long the ban lasts, in seconds: an hour when absent, 7 days at
+    /// most, and never `0`, TFPS's "forever", so a ban nobody lifts still
+    /// ends. `[action_limits]` changes the default and the maximum.
+    /// TFPS's `ban` takes no reason.
     ttl_secs: Option<u64>,
 }
 
@@ -3671,6 +3774,34 @@ struct TfpsBanRequest {
 struct TfpsUnbanRequest {
     /// The source to release.
     ip: String,
+}
+
+/// The body `POST /v1/actions/revert` accepts: one action id, or `all`.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ActionsRevertRequest {
+    /// The id of the action to back out, as a ban's answer or
+    /// `sipnab --journal-show` gives it.
+    id: Option<String>,
+    /// `true` to back out every ban sipnab placed that is still in force,
+    /// newest first.
+    all: Option<bool>,
+}
+
+/// What a revert request asks for, or `400`: exactly one of a non-empty `id`
+/// or `all: true`.
+fn revert_target(
+    req: ActionsRevertRequest,
+) -> Result<crate::security::actions::RevertTarget, Problem> {
+    use crate::security::actions::RevertTarget;
+    match (req.id, req.all) {
+        (Some(id), None) if !id.trim().is_empty() => Ok(RevertTarget::One(id)),
+        (None, Some(true)) => Ok(RevertTarget::All),
+        _ => Err(Problem::detailed(
+            StatusCode::BAD_REQUEST,
+            "name one action: {\"id\": \"a-...\"}, or {\"all\": true} for every ban sipnab holds",
+        )),
+    }
 }
 
 /// Query parameters for `GET /v1/tfps/labels`.
@@ -3880,16 +4011,19 @@ async fn get_tfps_labels(
     path = "/v1/tfps/ban",
     tag = "tfps",
     summary = "Ask TFPS to condemn a source",
-    description = "An operator action relayed through sipnab, not a decision sipnab makes: TFPS refuses its host's own addresses and anything in its `ignoreip`, and answers with what it did -- applied, or refused and why -- which is reported as given. The automated path from sipnab's own findings to TFPS is a separate channel, never this route.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    description = "**Off by default.** Banning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nAn operator action relayed through sipnab, not a decision sipnab makes. Every ban expires: after `ttl_secs`, or an hour when none is given, and never more than 7 days (`[action_limits]` changes both). The unspecified, broadcast, loopback and multicast addresses are never banned. Actions are rate limited: 10 a minute for the server, 5 for one caller, and one per address a minute.\n\nThe request is recorded in the actions journal before TFPS is asked and its outcome after, under the `id` the answer carries. TFPS refuses its host's own addresses and anything in its `ignoreip`; a refusal is `applied: false` with `refused` saying why, not an error.",
     request_body(content = TfpsBanRequest, description = "The source, and optionally how long. Unknown keys are refused, and so is a JSON array."),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`. A refusal is `applied: false` with `refused` saying why, not an error.", body = crate::security::tfps::TfpsActionAnswer),
-        (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 200, description = "What TFPS did, with the action's journal `id`.", body = crate::security::actions::ActionDone),
+        (status = 400, description = "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The address is one sipnab never bans, or the lifetime is `0` (forever) or over the maximum. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 429, description = "An action rate limit: the server's, the caller's, or the address's. `Retry-After` says when to try again. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "TFPS could not be asked: `tfps_ctl` is not installed or failed; `detail` says which, with its standard error.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are still unresolved because TFPS could not be asked.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
 async fn post_tfps_ban(
@@ -3898,12 +4032,21 @@ async fn post_tfps_ban(
     headers: HeaderMap,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    let caller = action_guard(&state, &headers, addr.ip())?;
     let req: TfpsBanRequest = object_body(body)?;
     let ip = tfps_ip(&req.ip)?;
     let ttl = req.ttl_secs;
-    let reply = ask_tfps(&state, move |l| l.ban(ip, ttl)).await?;
-    Ok(Json(crate::security::tfps::TfpsActionAnswer::from(reply)))
+    run_action(&state, move |service, now_unix, now| {
+        service.ban(
+            crate::security::actions::ActionSurface::Rest,
+            &caller,
+            ip,
+            ttl,
+            now_unix,
+            now,
+        )
+    })
+    .await
 }
 
 /// `POST /v1/tfps/unban` — relay an operator's decision to release a source.
@@ -3911,17 +4054,20 @@ async fn post_tfps_ban(
     post,
     path = "/v1/tfps/unban",
     tag = "tfps",
-    summary = "Ask TFPS to release a source",
-    description = "An operator action relayed through sipnab. TFPS answers with what it did, and the answer is reported as given.\n\nA machine without TFPS answers `200` with `installed: false`.",
+    summary = "Ask TFPS to release a source sipnab banned",
+    description = "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
     request_body(content = TfpsUnbanRequest, description = "The source to release. Unknown keys are refused, and so is a JSON array."),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "`installed: false` with `reason`, or `installed: true` with what TFPS did under `action`.", body = crate::security::tfps::TfpsActionAnswer),
-        (status = 400, description = "The body was not a JSON object with an `ip` that is an address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 200, description = "What TFPS did, with the action's journal `id`.", body = crate::security::actions::ActionDone),
+        (status = 400, description = "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 409, description = "sipnab did not place this ban, or it has already ended, so sipnab will not lift it. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 502, description = "`tfps_ctl` failed; `detail` carries its standard error verbatim.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 429, description = "An action rate limit: the server's, the caller's, or the address's. `Retry-After` says when to try again. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "TFPS could not be asked: `tfps_ctl` is not installed or failed; `detail` says which, with its standard error.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are still unresolved because TFPS could not be asked.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
 async fn post_tfps_unban(
@@ -3930,11 +4076,63 @@ async fn post_tfps_unban(
     headers: HeaderMap,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, Problem> {
-    guard(&state, &headers, addr.ip())?;
+    let caller = action_guard(&state, &headers, addr.ip())?;
     let req: TfpsUnbanRequest = object_body(body)?;
     let ip = tfps_ip(&req.ip)?;
-    let reply = ask_tfps(&state, move |l| l.unban(ip)).await?;
-    Ok(Json(crate::security::tfps::TfpsActionAnswer::from(reply)))
+    run_action(&state, move |service, now_unix, now| {
+        service.unban(
+            crate::security::actions::ActionSurface::Rest,
+            &caller,
+            ip,
+            now_unix,
+            now,
+        )
+    })
+    .await
+}
+
+/// `POST /v1/actions/revert` — back out what sipnab did: one action, or all.
+#[utoipa::path(
+    post,
+    path = "/v1/actions/revert",
+    tag = "tfps",
+    summary = "Back out a ban sipnab placed, or every one",
+    description = "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
+    request_body(content = ActionsRevertRequest, description = "Exactly one of `id` or `all: true`. Unknown keys are refused, and so is a JSON array."),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "What was backed out, what had already ended, what was left alone, and what TFPS refused.", body = crate::security::actions::RevertReport),
+        (status = 400, description = "The body did not name exactly one of a non-empty `id` or `all: true`, or carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 409, description = "`id` names no ban sipnab holds. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 429, description = "An action rate limit refused the first unban. `Retry-After` says when to try again. A limit reached part way through `all` is a `200` listing what was `left`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 502, description = "TFPS could not be asked what it holds; nothing was reverted.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP request limit, or no action may run: the actions journal cannot be used, or actions from before a restart are unresolved.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn post_actions_revert(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Result<impl IntoResponse, Problem> {
+    let caller = action_guard(&state, &headers, addr.ip())?;
+    let req: ActionsRevertRequest = object_body(body)?;
+    let target = revert_target(req)?;
+    run_action(&state, move |service, now_unix, now| {
+        service.revert(
+            crate::security::actions::Reverter::Surface {
+                surface: crate::security::actions::ActionSurface::Rest,
+                caller: &caller,
+            },
+            target,
+            now_unix,
+            now,
+        )
+    })
+    .await
 }
 
 /// `GET /v1/streams` — list RTP streams with optional filtering and pagination.
@@ -6791,6 +6989,7 @@ impl utoipa::Modify for BearerAuth {
         get_tfps_labels,
         post_tfps_ban,
         post_tfps_unban,
+        post_actions_revert,
         list_streams,
         get_stream,
         get_capture_report,
@@ -6850,6 +7049,7 @@ impl utoipa::Modify for BearerAuth {
         PersistenceRequest,
         TfpsBanRequest,
         TfpsUnbanRequest,
+        ActionsRevertRequest,
         crate::security::tfps::TfpsStatus,
         crate::security::tfps::TfpsBanned,
         crate::security::tfps::TfpsDropped,
@@ -6859,7 +7059,9 @@ impl utoipa::Modify for BearerAuth {
         crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsBanned>,
         crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsDropped>,
         crate::security::tfps::TfpsListAnswer<crate::security::tfps::TfpsLabel>,
-        crate::security::tfps::TfpsActionAnswer,
+        crate::security::actions::ActionDone,
+        crate::security::actions::RevertReport,
+        crate::security::actions::RevertFailure,
         schema::Stats,
         schema::StatsDialogs,
         schema::StatsStreams,
@@ -7075,6 +7277,8 @@ mod tests {
             (StatusCode::UNAUTHORIZED, "unauthorized"),
             (StatusCode::FORBIDDEN, "forbidden"),
             (StatusCode::NOT_FOUND, "not-found"),
+            (StatusCode::CONFLICT, "conflict"),
+            (StatusCode::UNPROCESSABLE_ENTITY, "unprocessable"),
             (StatusCode::TOO_MANY_REQUESTS, "rate-limited"),
             (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
@@ -8361,6 +8565,7 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
@@ -9208,6 +9413,7 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
@@ -9931,6 +10137,7 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
@@ -10792,6 +10999,7 @@ mod tests {
             // forgot to consult it pass.
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,
@@ -11966,49 +12174,138 @@ mod tests {
         dir
     }
 
-    /// The key every TFPS test authenticates with.
+    /// The static key the TFPS tests read with. Static keys are `full`, so
+    /// it never acts; ban and unban use [`tfps_action_token`].
     const TFPS_KEY: &str = "tfps-route-test-key";
+    /// The signing key the TFPS tests mint their `actions` token with.
+    /// The signing key the TFPS route tests mint action tokens with.
+    fn tfps_signing_key() -> &'static [u8] {
+        crate::test_material::key_bytes("tfps-route-signing")
+    }
+
+    /// A token with scope `actions`, the one credential that reaches ban and
+    /// unban once the server enables them.
+    fn tfps_action_token() -> String {
+        crate::auth::mint(
+            tfps_signing_key(),
+            "tfps-actions",
+            chrono::Utc::now().timestamp() + 3600,
+            crate::auth::AUDIENCE_API,
+            crate::auth::SCOPE_ACTIONS,
+        )
+    }
+
+    /// A verifier taking the static read key and tokens signed for actions.
+    fn tfps_verifier() -> Arc<crate::auth::TokenVerifier> {
+        Arc::new(crate::auth::TokenVerifier::new(
+            crate::auth::VerifierConfig {
+                signing_keys: vec![tfps_signing_key().to_vec()],
+                static_keys: vec![TFPS_KEY.to_string()],
+                audience: crate::auth::AUDIENCE_API.to_string(),
+                ..Default::default()
+            },
+        ))
+    }
+
+    /// TFPS actions enabled for REST, as `--allow-action tfps:rest` does.
+    fn tfps_rest_actions() -> crate::security::actions::ActionPolicy {
+        crate::security::actions::ActionPolicy::from_settings(&["tfps:rest".to_string()], &[])
+            .expect("a valid value")
+    }
     /// Every outcome `ban` can answer with, one per line.
     const BAN: &str = include_str!("../../tests/fixtures/tfps-ban-golden.jsonl");
 
+    /// TFPS actions enabled for REST, acted on through a service that asks
+    /// `locator` and journals into a fresh directory under `dir`.
+    fn tfps_rest_service(
+        dir: &tempfile::TempDir,
+        locator: &crate::security::tfps::TfpsLocator,
+    ) -> crate::security::actions::Actions {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let journal = dir.path().join(format!("journal-for-state-{n}"));
+        let (service, _) = crate::security::actions::ActionService::start(
+            tfps_rest_actions(),
+            crate::security::actions::ActionLimits::default(),
+            &journal,
+            Arc::new(crate::security::actions::TfpsCtl::new(locator.clone())),
+            1_756_900_000,
+            std::time::Instant::now(),
+        )
+        .expect("a journal in a fresh directory");
+        crate::security::actions::Actions::with_service(tfps_rest_actions(), Arc::new(service))
+    }
+
     /// State whose locator names the fake in `dir`.
     fn state_with_tfps(dir: &tempfile::TempDir) -> ApiState {
+        let tfps = crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None);
         ApiState {
             relay_query: Default::default(),
-            tfps: crate::security::tfps::TfpsLocator::new(Some(dir.path().join("tfps_ctl")), None),
+            actions: tfps_rest_service(dir, &tfps),
+            tfps,
+            verifier: tfps_verifier(),
             ..make_state_with_key(TFPS_KEY)
         }
     }
 
     /// State on a machine with no TFPS: the search path is an empty dir.
     fn state_without_tfps(dir: &tempfile::TempDir) -> ApiState {
+        let tfps = crate::security::tfps::TfpsLocator::new(None, None)
+            .with_search_path(dir.path().as_os_str());
         ApiState {
             relay_query: Default::default(),
-            tfps: crate::security::tfps::TfpsLocator::new(None, None)
-                .with_search_path(dir.path().as_os_str()),
+            actions: tfps_rest_service(dir, &tfps),
+            tfps,
+            verifier: tfps_verifier(),
             ..make_state_with_key(TFPS_KEY)
         }
     }
 
-    /// The ordinary case: no TFPS, and every route says so with `200`.
+    /// The ordinary case: no TFPS, and every read says so with `200`.
+    ///
+    /// An action is another matter: it was enabled and asked for, and could
+    /// not run, so a ban is `502` naming what is missing. An unban is refused
+    /// before TFPS is asked at all, because sipnab placed no ban to lift.
     #[tokio::test]
     async fn every_tfps_route_answers_installed_false_on_a_bare_machine() {
         let empty = tempfile::tempdir().expect("tempdir");
-        for (method, uri, body) in [
-            ("GET", "/v1/tfps/status", ""),
-            ("GET", "/v1/tfps/banned", ""),
-            ("GET", "/v1/tfps/dropped", ""),
-            ("GET", "/v1/tfps/labels", ""),
-            ("POST", "/v1/tfps/ban", r#"{"ip":"198.51.100.20"}"#),
-            ("POST", "/v1/tfps/unban", r#"{"ip":"198.51.100.20"}"#),
+        let resp = build_router(state_without_tfps(&empty))
+            .oneshot(test_post_with_key(
+                "/v1/tfps/ban",
+                r#"{"ip":"198.51.100.20"}"#,
+                &tfps_action_token(),
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let v = json_of(resp).await;
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains(crate::security::tfps::NOT_INSTALLED_REASON)),
+            "{v}"
+        );
+        let resp = build_router(state_without_tfps(&empty))
+            .oneshot(test_post_with_key(
+                "/v1/tfps/unban",
+                r#"{"ip":"198.51.100.20"}"#,
+                &tfps_action_token(),
+            ))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        for uri in [
+            "/v1/tfps/status",
+            "/v1/tfps/banned",
+            "/v1/tfps/dropped",
+            "/v1/tfps/labels",
         ] {
+            let method = "GET";
             let app = build_router(state_without_tfps(&empty));
-            let req = if method == "GET" {
-                test_get_with_key(uri, TFPS_KEY)
-            } else {
-                test_post_with_key(uri, body, TFPS_KEY)
-            };
-            let resp = app.oneshot(req).await.expect("oneshot");
+            let resp = app
+                .oneshot(test_get_with_key(uri, TFPS_KEY))
+                .await
+                .expect("oneshot");
             assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
             let v = json_of(resp).await;
             assert_eq!(
@@ -12068,14 +12365,17 @@ mod tests {
                 .oneshot(test_post_with_key(
                     "/v1/tfps/ban",
                     r#"{"ip":"198.51.100.20","ttl_secs":60}"#,
-                    TFPS_KEY,
+                    &tfps_action_token(),
                 ))
                 .await
                 .expect("oneshot"),
         )
         .await;
-        assert_eq!(v["installed"], true);
-        assert_eq!(v["action"]["applied"], true);
+        assert_eq!(v["applied"], true, "{v}");
+        assert!(
+            v["id"].as_str().is_some_and(|id| id.starts_with("a-")),
+            "{v}"
+        );
     }
 
     /// The labels route asks TFPS for no more than a page: the page and one
@@ -12156,14 +12456,14 @@ mod tests {
             .oneshot(test_post_with_key(
                 "/v1/tfps/ban",
                 r#"{"ip":"192.0.2.1"}"#,
-                TFPS_KEY,
+                &tfps_action_token(),
             ))
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
         let v = json_of(resp).await;
-        assert_eq!(v["action"]["applied"], false);
-        assert_eq!(v["action"]["refused"], "local");
+        assert_eq!(v["applied"], false);
+        assert_eq!(v["refused"], "local");
     }
 
     /// An address that is not one, or a body with a key the route does not
@@ -12184,7 +12484,7 @@ mod tests {
         ] {
             for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
                 let resp = build_router(state_with_tfps(&dir))
-                    .oneshot(test_post_with_key(route, body, TFPS_KEY))
+                    .oneshot(test_post_with_key(route, body, &tfps_action_token()))
                     .await
                     .expect("oneshot");
                 assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{route} {body}");
@@ -12311,7 +12611,7 @@ mod tests {
         let empty = tempfile::tempdir().expect("tempdir");
         for uri in ["/v1/tfps/ban", "/v1/tfps/unban"] {
             let resp = build_router(state_without_tfps(&empty))
-                .oneshot(test_post_with_key(uri, &over, TFPS_KEY))
+                .oneshot(test_post_with_key(uri, &over, &tfps_action_token()))
                 .await
                 .expect("oneshot");
             assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
@@ -12727,6 +13027,7 @@ mod archive_password_tests {
             started_at: std::time::Instant::now(),
             persistence_gate: Arc::new(crate::output::persistence::PersistenceGate::new(false)),
             tfps: Default::default(),
+            actions: Default::default(),
             alert_engine: None,
             armed_detections: Vec::new(),
             file_root: None,

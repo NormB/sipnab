@@ -157,6 +157,13 @@ fn main() {
         sipnab::capture::archive::release_run_and_exit(bootstrap::dump_config(&loaded));
     }
 
+    // 6a. --journal-show / --revert-actions: see or back out what sipnab did
+    //     to other systems, and exit. Before any capture: recovery must not
+    //     wait for, or depend on, a packet source.
+    if let Some(code) = bootstrap::run_journal_command(&cli, &loaded.config) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
+
     // 6b. --uprobe-list: report which TLS libraries this host is running and
     //     exit, without installing anything in the kernel. Answers the question
     //     that decides whether a uprobe capture is worth starting.

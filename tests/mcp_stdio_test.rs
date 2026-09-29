@@ -699,6 +699,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
         .collect();
     names.sort();
     let mut expected = vec![
+        "actions_revert",
         "aggregate_dialogs",
         "await_condition",
         "build_evidence_package",
@@ -780,7 +781,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 66 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    let want = 67 + if cfg!(feature = "vcon") { 2 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // find_problems with default kinds (['problems']) → JSON array, no error.

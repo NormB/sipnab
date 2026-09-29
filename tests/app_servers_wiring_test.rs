@@ -44,6 +44,7 @@ fn metrics_only() -> Selection {
         max_tracked_peers: Cli::DEFAULT_MAX_TRACKED_PEERS,
         metrics_max_conn: Cli::DEFAULT_METRICS_MAX_CONN,
         tfps: Default::default(),
+        actions: Default::default(),
         mcp_max_findings: Cli::DEFAULT_MCP_MAX_FINDINGS,
         api: false,
         mcp: false,
