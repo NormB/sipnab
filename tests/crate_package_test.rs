@@ -128,9 +128,12 @@ fn resolve(file: &str, rel: &str) -> String {
 }
 
 /// Every file the tracked sources pull in with `include_str!`/`include_bytes!`
-/// from outside `src/` -- the files a build of the unpacked crate needs and
-/// the `include` allowlist has to name one by one.
-fn embedded_files_outside_src() -> BTreeSet<String> {
+/// or a `#[path = "..."]` module from outside `src/` -- the files a build of
+/// the unpacked crate needs and the `include` allowlist has to name one by one.
+/// (`build.rs` shares `build_script/git_triggers.rs` with a test that way.)
+/// Only sources the crate ships are scanned: an excluded one, like
+/// `src/bin/gen_fixture.rs`, is never built from the crate.
+fn embedded_files_outside_src(shipped: &BTreeSet<String>) -> BTreeSet<String> {
     let listed = Command::new("git")
         .args(["ls-files", "-z", "--", ":(glob)src/**/*.rs", "build.rs"])
         .current_dir(repo())
@@ -139,11 +142,11 @@ fn embedded_files_outside_src() -> BTreeSet<String> {
     assert!(listed.status.success(), "git ls-files failed");
     let mut found = BTreeSet::new();
     for file in String::from_utf8_lossy(&listed.stdout).split('\0') {
-        if file.is_empty() {
+        if file.is_empty() || !shipped.contains(file) {
             continue;
         }
         let text = std::fs::read_to_string(repo().join(file)).unwrap_or_default();
-        for macro_name in ["include_str!(\"", "include_bytes!(\""] {
+        for macro_name in ["include_str!(\"", "include_bytes!(\"", "#[path = \""] {
             let mut rest = text.as_str();
             while let Some(at) = rest.find(macro_name) {
                 rest = &rest[at + macro_name.len()..];
@@ -174,15 +177,15 @@ fn both_crates_package_and_the_main_one_fits_the_upload_limit() {
 
 #[test]
 fn every_file_the_code_embeds_is_in_the_crate() {
-    let embedded = embedded_files_outside_src();
+    let main = crate_file(&package(), "sipnab", env!("CARGO_PKG_VERSION"));
+    let entries = crate_entries(&main);
+    let embedded = embedded_files_outside_src(&entries);
     assert!(
         embedded.len() >= 10,
         "found only {} embedded files outside src/; the scan has stopped \
          matching and this gate proves nothing",
         embedded.len()
     );
-    let main = crate_file(&package(), "sipnab", env!("CARGO_PKG_VERSION"));
-    let entries = crate_entries(&main);
     let missing: Vec<&String> = embedded.iter().filter(|f| !entries.contains(*f)).collect();
     assert!(
         missing.is_empty(),

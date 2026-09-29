@@ -2,8 +2,11 @@
 
 //! Build script: embeds git/version metadata for `sipnab --version`.
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
+
+#[path = "build_script/git_triggers.rs"]
+mod git_triggers;
 
 fn main() {
     // Re-run when HEAD moves so the embedded commit hash stays in sync with the
@@ -65,25 +68,10 @@ fn main() {
 
 /// Emit `cargo:rerun-if-changed` lines so a new commit (on any branch) forces
 /// the build script to re-run and re-capture the commit hash.
-///
-/// `.git/HEAD` catches branch switches; the resolved ref file catches commits
-/// on the current branch when refs are loose; `packed-refs` catches them when
-/// refs have been packed (e.g. after `git gc`). Falls back gracefully when the
-/// `.git` directory is absent (building from a published tarball).
 fn emit_git_rerun_triggers() {
-    let git_dir = Path::new(".git");
-    if !git_dir.exists() {
-        return;
-    }
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/packed-refs");
-
-    // Resolve the ref HEAD points at (e.g. "ref: refs/heads/main") and watch
-    // that loose ref file directly.
-    if let Ok(head) = std::fs::read_to_string(git_dir.join("HEAD"))
-        && let Some(ref_path) = head.strip_prefix("ref:").map(str::trim)
-    {
-        println!("cargo:rerun-if-changed=.git/{ref_path}");
+    let checkout = std::env::var_os("CARGO_MANIFEST_DIR").map_or_else(|| ".".into(), PathBuf::from);
+    for path in git_triggers::rerun_paths(&checkout) {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
 }
 

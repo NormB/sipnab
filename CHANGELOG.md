@@ -8,6 +8,21 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A build in a git worktree no longer rebuilds everything every time.** The
+  build script watched `.git/HEAD`, `.git/packed-refs` and the branch's ref
+  file so a new commit re-stamps `sipnab --version`. In a linked worktree
+  `.git` is a file that names the real git directory, so none of those paths
+  existed, and cargo treats a missing watched path as changed: every cargo
+  command re-ran the build script and rebuilt sipnab and all of its test
+  binaries. A second `cargo test --no-run` with nothing changed took 95 s; it
+  now takes 1 s. The script now follows `.git` to the worktree's own
+  directory and the shared one, and watches only files that exist, which
+  also fixes a clone that has never packed its refs.
+
 ## [0.5.196] - 2026-09-29
 
 ### Added

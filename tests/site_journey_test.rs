@@ -5466,8 +5466,9 @@ fn packaging_scripts_reference_existing_paths() {
         //
         // So every top-level directory must appear in one list or the other,
         // and a new one fails until someone decides which.
-        const ROOTS: [&str; 18] = [
+        const ROOTS: [&str; 19] = [
             "bpf/",
+            "build_script/",
             "clients/",
             ".clusterfuzzlite/",
             "examples/",
