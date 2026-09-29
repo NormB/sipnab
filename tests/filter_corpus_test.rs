@@ -137,11 +137,29 @@ fn ids(dialogs: &[serde_json::Value]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Captures worth asserting on: readable, under the size cap, and holding
-/// enough dialogs to tell selection from pass-through.
+/// Whether a capture can tell selection from pass-through: for at least one
+/// documented expression, the independent expectation holds for some of its
+/// dialogs and not others.
+///
+/// Decided from the unfiltered JSON through [`CASES`]' own predicates, never
+/// through the DSL under test, so a filter that ignores its expression cannot
+/// choose its own inputs. A capture where every expression selects all or none
+/// passes every assertion whether or not the filter runs: taking the first two
+/// captures in path order picked exactly two such files once synthetic
+/// benchmark captures (100 identical dialogs each) were added to a corpus
+/// directory that sorts first, and the run proved nothing (2026-09-29).
+fn discriminates(all: &[serde_json::Value]) -> bool {
+    CASES.iter().any(|case| {
+        let hits = all.iter().filter(|d| (case.want)(d)).count();
+        hits > 0 && hits < all.len()
+    })
+}
+
+/// Captures worth asserting on: readable, under the size cap, holding enough
+/// dialogs, and able to tell selection from pass-through ([`discriminates`]).
 fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)> {
     let mut out = Vec::new();
-    let (mut too_big, mut too_few, mut unreadable) = (0usize, 0usize, 0usize);
+    let (mut too_big, mut too_few, mut unreadable, mut uniform) = (0usize, 0usize, 0usize, 0usize);
     for path in walk(root) {
         if out.len() == MAX_CAPTURES {
             break;
@@ -159,6 +177,10 @@ fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)
             too_few += 1;
             continue;
         }
+        if !discriminates(&all) {
+            uniform += 1;
+            continue;
+        }
         let name = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -169,7 +191,8 @@ fn corpus_captures(root: &Path) -> Vec<(String, PathBuf, Vec<serde_json::Value>)
     }
     eprintln!(
         "corpus: {} captures used, {too_big} over {} MiB, {unreadable} not captures, \
-         {too_few} under {MIN_DIALOGS} dialogs",
+         {too_few} under {MIN_DIALOGS} dialogs, {uniform} where every expression selects \
+         all or none",
         out.len(),
         MAX_FILE_BYTES / (1024 * 1024),
     );
