@@ -196,17 +196,29 @@ pub fn debuglink(path: &Path) -> String {
 /// Resolve `address` against `file` with whichever symbolizer this host has,
 /// preferring `llvm-symbolizer`. `None` when neither is installed.
 pub fn symbolize(file: &Path, address: &str) -> Option<String> {
+    symbolize_all(file, &[address])
+}
+
+/// Resolve every one of `addresses` against `file` in ONE symbolizer run,
+/// answers in the order asked. `None` when neither symbolizer is installed.
+///
+/// One run, not one per address: each run loads the whole debug file, and
+/// for the unoptimized test binary (184 MB) that load is the cost -- one
+/// `addr2line` call took 6.3 s and a call with ten addresses 6.2 s, measured
+/// on 2026-09-29. Resolving a crash report's frames one call apiece made
+/// `crash_test` the slowest test binary in the suite, at 55.8 s.
+pub fn symbolize_all(file: &Path, addresses: &[&str]) -> Option<String> {
     let mut cmd = if have("llvm-symbolizer") {
         let mut c = Command::new("llvm-symbolizer");
-        c.arg("--obj").arg(file).arg(address);
+        c.arg("--obj").arg(file);
         c
     } else if have("addr2line") {
         let mut c = Command::new("addr2line");
-        c.args(["-f", "-C", "-i", "-e"]).arg(file).arg(address);
+        c.args(["-f", "-C", "-i", "-e"]).arg(file);
         c
     } else {
         return None;
     };
-    let o = cmd.output().expect("run the symbolizer");
+    let o = cmd.args(addresses).output().expect("run the symbolizer");
     Some(String::from_utf8_lossy(&o.stdout).into_owned())
 }

@@ -880,12 +880,20 @@ mod tests {
     /// A registry, a cached cursor or any per-client state would make the
     /// second call differ from the first. This is what "no state keyed by a
     /// client" looks like from outside.
+    ///
+    /// A zero deadline, so each call makes exactly one look. It was one second
+    /// at 200 ms, and `polls` was then the number of sleeps that fit in a
+    /// second of wall clock: six on an idle machine, five when the host was
+    /// loaded enough, so the two calls could differ with nothing surviving
+    /// either. It failed that way once under the parallel test runner. One
+    /// look still catches the defect this is for: a cursor carried into the
+    /// second call makes its look find nothing new, and `scans` reads 0.
     #[tokio::test]
     async fn a_second_identical_wait_is_indistinguishable_from_the_first() {
         let (server, _ds) = server_with(&["a@test"]);
         let call = || {
             server.await_condition(Parameters(AwaitConditionParams {
-                timeout_seconds: Some(1),
+                timeout_seconds: Some(0),
                 poll_interval_ms: Some(200),
                 ..params("call_id == \"never@test\"")
             }))

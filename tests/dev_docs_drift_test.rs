@@ -788,7 +788,10 @@ fn linked_code_targets_exist() {
     // row, the gate roster), scripts/check-cookbook.py once and
     // tests/cookbook_recipes_test.rs once. Attributed by measurement: with
     // testing.md swapped back to HEAD the extractor finds 465.
-    const EXPECTED_CODE_LINKS: usize = 470;
+    // 470 -> 471: build-ci-release.md's gate list links
+    // `scripts/parallel-tests.py`, which runs the hook's test binaries side
+    // by side. Attributed by measurement: with HEAD's page the count is 470.
+    const EXPECTED_CODE_LINKS: usize = 471;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -118,8 +118,39 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	# it; it fails identically on Linux, so this half is not a platform defect,
 	# it is a stale list -- the same class the hook's own WASM-export comment
 	# already records.
-	cp "$REPO_ROOT/scripts/check-unwrap.py" "$REPO_ROOT/scripts/check-wasm-exports.py" \
-		"$REPO_ROOT/scripts/check-privilege-drop.py" "$_d/scripts/"
+	#
+	# It went stale AGAIN with check-generated-inputs-staged.py: the hook died
+	# at "Generated files staged with their inputs" and four scenarios failed,
+	# unnoticed, because nothing ran this file (found 2026-09-29; CI runs it
+	# now). So the list is no longer kept by hand: it is every Python script
+	# the hook names, read from the hook itself, and the scripts/lib_*.py
+	# helpers they import (rfc-links.py needs lib_markdown.py).
+	for _py in $(grep -o 'scripts/[A-Za-z0-9_-]*\.py' "$HOOK" | sort -u); do
+		cp "$REPO_ROOT/$_py" "$_d/scripts/"
+	done
+	for _lib in $(cat "$_d"/scripts/*.py | sed -n 's/^from \(lib_[a-z_]*\) import.*/\1/p' | sort -u); do
+		cp "$REPO_ROOT/scripts/$_lib.py" "$_d/scripts/"
+	done
+
+	# A feature-gate surface, so "Features declare their modules' imports" is
+	# reachable. check-feature-deps.py refuses fewer than 10 feature-gated
+	# modules or 5 optional crates -- a walk that sees nothing must not pass --
+	# so the fixture has exactly that many, importing nothing.
+	{
+		echo '[dependencies]'
+		for _n in 1 2 3 4 5; do
+			echo "optcrate$_n = { version = \"1\", optional = true }"
+		done
+		echo '[features]'
+		for _n in 1 2 3 4 5; do
+			echo "feat$_n = [\"dep:optcrate$_n\"]"
+		done
+	} >> "$_d/Cargo.toml"
+	mkdir -p "$_d/src/gated"
+	for _n in 1 2 3 4 5 6 7 8 9 10; do
+		printf '#[cfg(feature = "feat%s")]\nmod m%s;\n' $(( (_n - 1) % 5 + 1 )) "$_n" >> "$_d/src/gated/mod.rs"
+		echo 'pub fn f() {}' > "$_d/src/gated/m$_n.rs"
+	done
 
 	# A privilege-drop surface, so gate 3b is reachable rather than exploding.
 	# check-privilege-drop.py wants all five controls, drop_supplementary_groups
@@ -182,14 +213,20 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	printf '\0asm' > "$_d/website/static/wasm/sipnab_bg.wasm"
 
 	# The cargo stub. Every invocation is logged; `test` emits the canned
-	# per-binary results the caller asked for.
+	# per-binary results the caller asked for, wherever it sits on the line:
+	# the suite runs as `cargo --config <runner> test ...` (via
+	# scripts/parallel-tests.py, which also asks `cargo metadata` for the
+	# target directory). The stub runs no runner, so every result comes from
+	# cargo itself -- the shape parallel-tests.py passes straight through.
 	cat > "$_d/bin/cargo" <<-EOF
 		#!/bin/sh
 		echo "\$*" >> "$_d/cargo-invocations"
-		case "\$1" in
-		  test) shift; cat "$_d/canned-test-output" ;;
-		  *) : ;;
-		esac
+		for _a in "\$@"; do
+		  case "\$_a" in
+		    test) cat "$_d/canned-test-output"; exit 0 ;;
+		    metadata) echo '{"target_directory": "$_d/target"}'; exit 0 ;;
+		  esac
+		done
 		exit 0
 	EOF
 	chmod +x "$_d/bin/cargo"
@@ -230,11 +267,23 @@ run_hook() { # run_hook <sandbox-dir>
 # ── Scenario 1: exactly one full-suite invocation, measured by running it ──
 D=$(sandbox 264 1600 974)
 run_hook "$D"
-RUNS=$(grep -c '^test ' "$D/cargo-invocations" || true)
+# The FULL suite: `cargo test -p sipnab-bpf-types` is a separate, deliberate
+# run of another package and is not the regression this counts.
+RUNS=$(grep -c 'test --features full' "$D/cargo-invocations" || true)
 if [ "$RUNS" -eq 1 ]; then
 	ok "hook invoked 'cargo test' exactly once (counted $RUNS actual invocations)"
 else
 	bad "hook must invoke 'cargo test' exactly once, it invoked it $RUNS times (a second run is the flaky-count regression)"
+fi
+
+# ── Scenario 1b: the suite's binaries run side by side ─────────────────────
+# `cargo test` runs its ~355 binaries one at a time: 314 s serial against 58 s
+# through scripts/parallel-tests.py (measured 2026-09-29). The hook must hand
+# cargo the recording runner that makes that possible.
+if grep -q 'record-test-binary.sh' "$D/cargo-invocations"; then
+	ok "hook runs the suite through the parallel runner"
+else
+	bad "hook ran the suite without scripts/parallel-tests.py: $(cat "$D/cargo-invocations")"
 fi
 
 # ── Scenario 2: the hook's own summing, exercised end to end ───────────────

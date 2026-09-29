@@ -233,11 +233,8 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
     );
     let debug = dir.path().join("sipnab-test.debug");
 
-    let resolved: String = frames
-        .iter()
-        .map(|f| dbgsym::symbolize(&debug, f).unwrap_or_default())
-        .collect::<Vec<_>>()
-        .join("");
+    let addresses: Vec<&str> = frames.iter().map(String::as_str).collect();
+    let resolved = dbgsym::symbolize_all(&debug, &addresses).unwrap_or_default();
     // The panic's own `Location:` line, minus the column: a frame must
     // resolve to exactly that line. This does NOT pin the call-site rule
     // (return address minus one): in this unoptimized test binary both

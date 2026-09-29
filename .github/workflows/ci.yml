@@ -661,8 +661,14 @@ jobs:
     # yanglint, extra rustup targets) stay absent: those gates report NOT
     # CHECKED, which is what the scenarios expect of a bare runner.
     # Observed locally: about 4 minutes.
+    #
+    # The pre-commit hook's suite runs here too, for the same reason: nothing
+    # ran it, and on 2026-09-29 it was 33 passed, 5 failed on main -- its
+    # sandbox copied a hand-kept list of the hook's Python gates, the list had
+    # gone stale, and the hook died before the gates four scenarios test.
+    # Observed locally: about 30 seconds.
     timeout-minutes: 30
-    name: Pre-push hook scenarios
+    name: Git hook scenarios
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -673,6 +679,8 @@ jobs:
           components: clippy, rustfmt
       - name: Run the pre-push hook against its scenarios
         run: sh scripts/test-pre-push.sh
+      - name: Run the pre-commit hook against its scenarios
+        run: sh scripts/test-pre-commit.sh
 
   bench-scripts:
     # Bounds how long this job can hold the main-branch concurrency

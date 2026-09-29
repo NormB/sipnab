@@ -262,10 +262,27 @@ set +e
 # The cap is wall-clock, not CPU-flatness, because a hook must stay simple; it
 # is set high enough that a cold full-feature build cannot trip it. Override
 # with SIPNAB_TEST_TIMEOUT when a machine is genuinely slower.
+#
+# The binaries run side by side, through scripts/parallel-tests.py: cargo
+# builds and hands each test binary to a recording runner, and the script
+# runs the recordings in a pool. `cargo test` ran its ~355 binaries one at a
+# time -- 314 s against 58 s, same 10412 passes (measured 2026-09-29, 14
+# cores). The output is cargo's, one block per binary, so everything below
+# reads it unchanged. SIPNAB_TEST_JOBS sets the pool size (1 = serial).
+#
+# The binaries are the pool's children, not this shell's, so the watchdog
+# below walks every descendant rather than direct children only.
 TEST_LIVE="$LOG_DIR/sipnab-pre-commit-tests.live"
 : >"$TEST_LIVE"
-cargo test --features full --color never >"$TEST_LIVE" 2>&1 &
+python3 scripts/parallel-tests.py ${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} \
+	-- --features full --color never >"$TEST_LIVE" 2>&1 &
 TEST_PID=$!
+descendants() { # every process below $1, depth first
+	for _c in $(pgrep -P "$1" 2>/dev/null); do
+		echo "$_c"
+		descendants "$_c"
+	done
+}
 TEST_DEADLINE=$(( $(date +%s) + ${SIPNAB_TEST_TIMEOUT:-1800} ))
 TEST_WEDGED=0
 while kill -0 "$TEST_PID" 2>/dev/null; do
@@ -324,7 +341,7 @@ while kill -0 "$TEST_PID" 2>/dev/null; do
 		# The dispatch is on `/proc` being real rather than on `uname`, so a
 		# host with neither falls to the final arm and SAYS it collected
 		# nothing instead of leaving an empty section to be misread.
-		for p in $(pgrep -P "$TEST_PID" 2>/dev/null); do
+		for p in $(descendants "$TEST_PID"); do
 			{
 				echo "===== pid $p ====="
 				if [ -d "/proc/$p" ]; then
@@ -367,8 +384,10 @@ while kill -0 "$TEST_PID" 2>/dev/null; do
 				fi
 			} >>"$STACKS"
 		done
-		pkill -9 -P "$TEST_PID" 2>/dev/null
-		kill -9 "$TEST_PID" 2>/dev/null
+		# The whole tree, listed BEFORE any kill: a killed parent's
+		# children are re-parented and would drop out of a later walk.
+		TEST_TREE=$(descendants "$TEST_PID")
+		kill -9 "$TEST_PID" $TEST_TREE 2>/dev/null
 		break
 	fi
 	sleep 5

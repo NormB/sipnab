@@ -22,6 +22,24 @@ entry that carries them.
   now takes 1 s. The script now follows `.git` to the worktree's own
   directory and the shared one, and watches only files that exist, which
   also fixes a clone that has never packed its refs.
+- **The pre-commit hook runs the test binaries side by side.** `cargo test`
+  runs the suite's ~355 test binaries one at a time, so the hook's test step
+  kept one core busy on a 14-core machine: 314 s. It now goes through
+  `scripts/parallel-tests.py`, which has cargo hand each binary to a
+  recording runner and then runs the recordings in a pool: 58 s, with the
+  same 358 result lines and 10412 passes. Every binary runs even after one
+  fails, so one run shows every failure. `SIPNAB_TEST_JOBS` sets the pool
+  size; `1` runs them one at a time. The hang watchdog now reaches the test
+  binaries under the pool.
+- **The pre-commit hook's own test harness passes again, and CI runs it.**
+  `scripts/test-pre-commit.sh` was 33 passed, 5 failed on `main`: its sandbox
+  copied a hand-kept list of the hook's Python gates, the list had gone stale,
+  and the hook died before reaching the gates four scenarios test. The list
+  now comes from the hook itself, and the `Git hook scenarios` CI job runs the
+  harness beside the pre-push one.
+- **`crash_test` resolves a crash report's frames in one symbolizer run.**
+  Each `addr2line` run loads the whole 184 MB debug binary, so one call per
+  frame made it the slowest test binary, at 55.8 s; it now takes about 9 s.
 
 ## [0.5.196] - 2026-09-29
 

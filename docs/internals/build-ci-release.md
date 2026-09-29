@@ -367,7 +367,9 @@ enumeration. -->
 
 `cargo fmt --all -- --check`; vale and codespell over the paths CI gives them;
 clippy (`--features full`, `-D warnings`); the
-full test suite; the `sipnab-bpf-types` crate's own tests and doctests
+full test suite, its binaries run side by side by
+[`scripts/parallel-tests.py`](../../scripts/parallel-tests.py) (`SIPNAB_TEST_JOBS`
+sets how many; `1` runs them one at a time); the `sipnab-bpf-types` crate's own tests and doctests
 (gate 2b), which the suite leaves out because it tests the sipnab package only; no `unwrap()`, `expect()` or abort macro (`panic!`,
 `unreachable!`, `todo!`, `unimplemented!`) in production code, as
 [`scripts/check-unwrap.py`](../../scripts/check-unwrap.py) reads it — a
@@ -751,7 +753,8 @@ the bypass, so a push that took it stays on the record.
 
 Both hooks have their own test scripts —
 [`test-pre-commit.sh`](../../scripts/test-pre-commit.sh) and
-[`test-pre-push.sh`](../../scripts/test-pre-push.sh).
+[`test-pre-push.sh`](../../scripts/test-pre-push.sh) — and CI runs both, in
+the `Git hook scenarios` job.
 
 [`install-from-source.sh`](../../scripts/install-from-source.sh) has nothing to do with
 the hooks: it is the developer-facing source install (`cargo install --path .

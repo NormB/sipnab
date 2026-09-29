@@ -5795,7 +5795,10 @@ fn packaging_scripts_reference_existing_paths() {
     // reads 131.
     // 132 -> 133: ci.yml's client smoke step installs
     // clients/python/requirements-examples.txt (EX4b).
-    const EXPECTED_REFERENCES: usize = 133;
+    // 133 -> 134: `scripts/test-pre-commit.sh` in the Git hook scenarios
+    // job's new run step. Attributed by measurement: with HEAD's ci.yml the
+    // scan reads 133.
+    const EXPECTED_REFERENCES: usize = 134;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
