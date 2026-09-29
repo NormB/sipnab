@@ -44,6 +44,15 @@ entry that carries them.
   through without it. Both hooks now check first that they are the tree's
   own, and otherwise exit naming the fix, `git config core.hooksPath
   .githooks`. `SIPNAB_HOOK_ANY_TREE=1` turns the check off, and says so.
+- **The two slowest test binaries overlap their waits.** In
+  `config_wiring_test`, three `[limits]` probes each prove an absence by
+  waiting out a whole observation window, about 10 s apiece, one after
+  another; they now run on their own threads while the other probes run,
+  and the test takes 10.2 s instead of 37.7 s. `doc_commands_run_test` ran
+  its 313 documented commands one at a time; they now run on a few threads,
+  6.2 s instead of 22.7 s. Each command also gets a home directory of its
+  own inside its sandbox directory: they inherited the real `HOME`, so a
+  local config could change what the gate saw.
 - **`crash_test` resolves a crash report's frames in one symbolizer run.**
   Each `addr2line` run loads the whole 184 MB debug binary, so one call per
   frame made it the slowest test binary, at 55.8 s; it now takes about 9 s.

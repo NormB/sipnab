@@ -917,6 +917,13 @@ struct LimitProbe {
     enabled: bool,
     /// Returns `(observed_without_the_key, observed_with_the_key)`.
     observe: fn() -> (String, String),
+    /// Whether the probe's cost is an idle wait: one of its runs proves an
+    /// ABSENCE (nothing dropped, nothing refused), which it can only see by
+    /// waiting out its whole observation window. Those run on their own
+    /// threads while the others run, so the waits overlap instead of adding
+    /// up. Measured 2026-09-29: three such probes took ~10 s each of this
+    /// test's 37.7 s.
+    waits_out_a_window: bool,
 }
 
 /// Every field name of [`sipnab::config::LimitsConfig`], read off the struct.
@@ -964,126 +971,151 @@ fn limit_probes() -> Vec<LimitProbe> {
             key: "dialog_limit",
             enabled: true,
             observe: probe_dialog_limit,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "mcp_max_rows",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_rows,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_streams",
             enabled: true,
             observe: probe_max_streams,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_reassembly",
             enabled: true,
             observe: probe_max_reassembly,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "hep_rate_limit",
             enabled: cfg!(all(unix, feature = "hep")),
             observe: probe_hep_rate_limit,
+            waits_out_a_window: true,
         },
         LimitProbe {
             key: "max_header_line",
             enabled: true,
             observe: probe_max_header_line,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_headers_per_message",
             enabled: true,
             observe: probe_max_headers_per_message,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_messages_per_dialog",
             enabled: true,
             observe: probe_max_messages_per_dialog,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "idle_compact_after_secs",
             enabled: true,
             observe: probe_idle_compact_after_secs,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "keep_messages_per_idle_dialog",
             enabled: true,
             observe: probe_keep_messages_per_idle_dialog,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_audio_frames",
             enabled: true,
             observe: probe_max_audio_frames,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "lint_max_per_rule",
             enabled: true,
             observe: probe_lint_max_per_rule,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "exec_queue_depth",
             enabled: true,
             observe: probe_exec_queue_depth,
+            waits_out_a_window: true,
         },
         LimitProbe {
             key: "mcp_max_body_bytes",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_body_bytes,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "mcp_max_wait_seconds",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_wait_seconds,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_lost_sequences",
             enabled: true,
             observe: probe_max_lost_sequences,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "quality_interval_secs",
             enabled: true,
             observe: probe_quality_interval_secs,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_groups",
             enabled: true,
             observe: probe_max_groups,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_grouped_messages",
             enabled: true,
             observe: probe_max_grouped_messages,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_metadata_file_bytes",
             enabled: true,
             observe: probe_max_metadata_file_bytes,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_gunzip_bytes",
             enabled: true,
             observe: probe_max_gunzip_bytes,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_tcp_buffer",
             enabled: true,
             observe: probe_max_tcp_buffer,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "api_max_rows",
             enabled: cfg!(feature = "api"),
             observe: probe_api_max_rows,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "api_rate_limit_per_peer",
             enabled: cfg!(feature = "api"),
             observe: probe_api_rate_limit_per_peer,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "mcp_max_findings",
             enabled: cfg!(feature = "mcp"),
             observe: probe_mcp_max_findings,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "reassembly_ttl_secs",
@@ -1091,11 +1123,13 @@ fn limit_probes() -> Vec<LimitProbe> {
             // to walk the resolver half, and `crate::cli` is native-only.
             enabled: cfg!(feature = "native"),
             observe: probe_reassembly_ttl_secs,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "metrics_max_conn",
             enabled: cfg!(feature = "metrics"),
             observe: probe_metrics_max_conn,
+            waits_out_a_window: false,
         },
         LimitProbe {
             key: "max_tracked_peers",
@@ -1107,6 +1141,7 @@ fn limit_probes() -> Vec<LimitProbe> {
             // is pinned in `cli.rs` everywhere.
             enabled: cfg!(all(target_os = "linux", feature = "hep")),
             observe: probe_max_tracked_peers,
+            waits_out_a_window: true,
         },
     ]
 }
@@ -2702,11 +2737,38 @@ fn every_documented_limits_key_changes_observable_behavior() {
 
     // 4. Each probe moves its observation. A key that parses, validates and
     //    documents cleanly while changing nothing fails here.
-    for probe in &probes {
-        if !probe.enabled {
-            continue;
+    //
+    //    The probes that only wait out a window run on scoped threads while
+    //    the rest run here in order; each still makes exactly the
+    //    observations it made alone. A panic inside one is re-raised here,
+    //    with its own message, rather than lost with its thread.
+    let enabled: Vec<&LimitProbe> = probes.iter().filter(|p| p.enabled).collect();
+    let observed: Vec<(&LimitProbe, (String, String))> = std::thread::scope(|scope| {
+        let waiting: Vec<_> = enabled
+            .iter()
+            .filter(|p| p.waits_out_a_window)
+            .map(|p| (*p, scope.spawn(p.observe)))
+            .collect();
+        let mut done: Vec<_> = enabled
+            .iter()
+            .filter(|p| !p.waits_out_a_window)
+            .map(|p| (*p, (p.observe)()))
+            .collect();
+        for (probe, handle) in waiting {
+            let result = handle
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+            done.push((probe, result));
         }
-        let (without, with) = (probe.observe)();
+        done
+    });
+    assert_eq!(
+        observed.len(),
+        enabled.len(),
+        "every enabled probe must report an observation; a lost one would \
+         leave its key unchecked"
+    );
+    for (probe, (without, with)) in observed {
         assert_ne!(
             without, with,
             "[limits] {} did not change what sipnab reported: {without:?} \

@@ -321,6 +321,54 @@ struct Prepared {
     cwd: PathBuf,
 }
 
+/// The process a prepared command runs as.
+fn command(p: &Prepared) -> Command {
+    let mut c = Command::new(&p.argv[0]);
+    c.args(&p.argv[1..]).current_dir(&p.cwd);
+    for (k, v) in &p.env {
+        c.env(k, v);
+    }
+    c
+}
+
+/// Run every command to completion on a few threads, and return each one's
+/// usage error (or `None`) in the order given.
+fn run_side_by_side(commands: &[(Invocation, Prepared)]) -> Vec<Option<String>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
+    let next = AtomicUsize::new(0);
+    let mut verdicts = vec![None; commands.len()];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut mine = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some((_, p)) = commands.get(i) else {
+                            break mine;
+                        };
+                        let out = command(p)
+                            .output()
+                            .expect("the binary under test is runnable");
+                        mine.push((i, usage_error(&String::from_utf8_lossy(&out.stderr))));
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            let done = handle
+                .join()
+                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+            for (i, verdict) in done {
+                verdicts[i] = verdict;
+            }
+        }
+    });
+    verdicts
+}
+
 /// Build the argv actually run, with every substitution this test declares.
 fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
     // `sudo` is the shell's word, not sipnab's argument, and this suite must
@@ -348,6 +396,18 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Option<Prepared> {
 
     let cwd = sandbox.join(format!("cmd-{n}"));
     std::fs::create_dir_all(&cwd).expect("a per-command directory in the sandbox");
+    // A home of its own, FIRST, so a variable the example sets still wins.
+    // Inherited, the real one let a local config change what this gate saw,
+    // and gave commands running side by side a shared file to race on.
+    let home = [
+        ("HOME", String::new()),
+        ("XDG_CONFIG_HOME", ".config".to_owned()),
+        ("XDG_DATA_HOME", ".local/share".to_owned()),
+        ("XDG_STATE_HOME", ".local/state".to_owned()),
+        ("XDG_CACHE_HOME", ".cache".to_owned()),
+    ]
+    .map(|(key, sub)| (key.to_owned(), cwd.join(sub).display().to_string()));
+    env.splice(0..0, home);
     let paths = path_flags();
     let fixture = repo().join(FIXTURE).display().to_string();
     for i in 1..argv.len() {
@@ -491,6 +551,7 @@ fn every_documented_command_runs_or_says_why_not() {
     // Servers are spawned together and judged after ONE wait, so 24 of them
     // cost one bound rather than 24.
     let mut pending: Vec<(Invocation, std::process::Child)> = Vec::new();
+    let mut to_run: Vec<(Invocation, Prepared)> = Vec::new();
     let mut ran = 0_usize;
 
     for (n, inv) in all.iter().enumerate() {
@@ -499,17 +560,13 @@ fn every_documented_command_runs_or_says_why_not() {
         if !plan.is_run() {
             continue;
         }
-        let Some(Prepared { argv, env, cwd }) = prepare(&inv.text, &sandbox, n) else {
+        let Some(prepared) = prepare(&inv.text, &sandbox, n) else {
             unsplittable.push(inv.clone());
             continue;
         };
-        let mut c = Command::new(&argv[0]);
-        c.args(&argv[1..]).current_dir(&cwd);
-        for (k, v) in env {
-            c.env(k, v);
-        }
         ran += 1;
         if plan == Plan::Bounded {
+            let mut c = command(&prepared);
             c.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
@@ -519,8 +576,16 @@ fn every_documented_command_runs_or_says_why_not() {
             }
             continue;
         }
-        let out = c.output().expect("the binary under test is runnable");
-        if let Some(err) = usage_error(&String::from_utf8_lossy(&out.stderr)) {
+        to_run.push((inv.clone(), prepared));
+    }
+
+    // The rest run side by side. Each has its own directory and its own home
+    // (see `prepare`), so nothing they write is shared. One at a time, 313 of
+    // them cost ~19 s, nearly all of it starting the unoptimized binary
+    // (measured 2026-09-29); the verdicts are kept in documentation order.
+    let verdicts = run_side_by_side(&to_run);
+    for ((inv, _), err) in to_run.iter().zip(verdicts) {
+        if let Some(err) = err {
             failures.push(format!(
                 "{}:{}\n    {}\n    -> {}",
                 inv.page, inv.line, inv.text, err
@@ -557,7 +622,7 @@ fn every_documented_command_runs_or_says_why_not() {
 
     // Reported, not merely asserted. A reader of a green run should be able to
     // see how much of the documentation it actually executed, because the
-    // difference between "343 ran" and "3 ran, 349 skipped" is the difference
+    // difference between "352 ran" and "3 ran, 380 skipped" is the difference
     // between a gate and a decoration.
     println!(
         "documented sipnab invocations: {} total, {ran} executed, {} not run — {:?}",
@@ -1204,4 +1269,47 @@ fn privilege_escalation_is_never_run_but_printing_a_filter_is() {
         Plan::Reads,
         "--wireshark prints a display filter without opening a GUI"
     );
+}
+
+/// Every documented command runs with a home of its own, inside its sandbox
+/// directory.
+///
+/// They inherited the developer's real `HOME`, so a documented command read
+/// the real `~/.config` -- a local config file could change what the gate
+/// saw -- and anything one wrote there landed in the real home. And once
+/// the commands run side by side, a shared home is a shared file to race on.
+/// A variable the documentation itself sets in front of a command still
+/// wins: it is part of what the example says.
+#[test]
+fn every_command_gets_a_home_of_its_own_inside_the_sandbox() {
+    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-home-{}", std::process::id()));
+    std::fs::create_dir_all(&sandbox).expect("a sandbox directory");
+    let p = prepare("sipnab --version", &sandbox, 7).expect("splits into words");
+    let last = |env: &[(String, String)], key: &str| {
+        env.iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    for key in [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+    ] {
+        let value = last(&p.env, key).unwrap_or_else(|| panic!("{key} is not set: {:?}", p.env));
+        assert!(
+            Path::new(&value).starts_with(&p.cwd),
+            "{key}={value} is outside the command's own directory {}",
+            p.cwd.display()
+        );
+    }
+    let documented = prepare("HOME=/documented sipnab --version", &sandbox, 8).expect("splits");
+    assert_eq!(
+        last(&documented.env, "HOME").as_deref(),
+        Some("/documented"),
+        "a HOME the example itself sets must win"
+    );
+    let _ = std::fs::remove_dir_all(&sandbox);
 }
