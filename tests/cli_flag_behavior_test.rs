@@ -1038,9 +1038,17 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
 }
 
 /// The caller and callee addresses of [`live_hep_call`].
-#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[cfg(all(
+    feature = "hep",
+    any(feature = "vcon", feature = "tls"),
+    target_os = "linux"
+))]
 const LIVE_CALLER: [u8; 4] = [10, 1, 0, 1];
-#[cfg(all(feature = "hep", feature = "vcon", target_os = "linux"))]
+#[cfg(all(
+    feature = "hep",
+    any(feature = "vcon", feature = "tls"),
+    target_os = "linux"
+))]
 const LIVE_CALLEE: [u8; 4] = [10, 2, 0, 1];
 
 /// One complete call, INVITE/100/180/200/ACK/BYE/200, as (SIP text, source,

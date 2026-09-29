@@ -48,10 +48,37 @@ fn exported_secrets_require_an_explicit_mode() {
     }
 }
 
+/// Without the `tls` feature there is no decryption to write out, so the mode
+/// is refused before anything is created, and the refusal names the feature.
+#[cfg(not(feature = "tls"))]
+#[test]
+fn plaintext_export_without_tls_is_refused_and_names_the_feature() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("plaintext.pcapng");
+    let (_, stderr, code) = run_support::run(
+        &[
+            "--no-config",
+            "-N",
+            "-I",
+            FIXTURE,
+            "--pcapng",
+            "-O",
+            output.to_str().unwrap(),
+            "--pcap-export-mode",
+            "decrypted",
+        ],
+        Some("warn"),
+    );
+    assert_eq!(code, Some(2), "{stderr}");
+    assert!(stderr.contains("'tls' feature"), "{stderr}");
+    assert!(!output.exists(), "refused before creating the output");
+}
+
 /// RVW1's guard, now that `decrypted` works (PCAPX-DEC, 2026-09-29): the mode
 /// used to embed TLS keys while the docs promised plaintext, then refused to
 /// run. It runs now, and what RVW1 was about still holds: the file carries no
 /// Decryption Secrets Block, and a library caller's writer never embeds one.
+#[cfg(feature = "tls")]
 #[test]
 fn plaintext_export_runs_and_embeds_no_keys() {
     let dir = tempfile::tempdir().unwrap();
