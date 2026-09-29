@@ -20,6 +20,13 @@ entry that carries them.
   on hosted runners. `python3 scripts/check-feature-matrix.py` still builds the
   whole matrix by hand before a push, and the hook keeps its reduced-combination
   check.
+- **The pre-push corpus gate builds without LTO.** It built under the
+  `profiling` profile, which inherits release's full LTO and single codegen
+  unit, so the 21 corpus test binaries took 827 s to rebuild after any
+  library change. A new `[profile.corpus]` keeps the optimization and the
+  unwinding the gate needs to name a failing test, and drops LTO: 83 s to
+  rebuild, and the run takes 174 s instead of 161 s. About twelve minutes
+  off every push that changes the library.
 
 ### Fixed
 

@@ -714,7 +714,7 @@ fi
 CORPUS_DIR="$TMP/fixture-corpus"
 mkdir -p "$CORPUS_DIR"
 
-# The fixture needs [profile.profiling]: the gate runs `--profile profiling`,
+# The fixture needs [profile.corpus]: the gate runs `--profile corpus`,
 # because the release profile's panic = "abort" kills a failing test process
 # before libtest prints the `failures:` list the gate reads back.
 cat >"$CRATE/Cargo.toml" <<'EOF'
@@ -730,8 +730,9 @@ tls = []
 api = []
 wasm = []
 
-[profile.profiling]
+[profile.corpus]
 inherits = "release"
+lto = false
 panic = "unwind"
 EOF
 

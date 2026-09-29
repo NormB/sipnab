@@ -31,7 +31,7 @@
 //! optimized profile:
 //!
 //! ```text
-//! SIPNAB_CORPUS=/path/to/pcaps cargo test --all-features --profile profiling \
+//! SIPNAB_CORPUS=/path/to/pcaps cargo test --all-features --profile corpus \
 //!     --test scanner_signature_corpus_test -- --nocapture
 //! ```
 #![cfg(feature = "native")]

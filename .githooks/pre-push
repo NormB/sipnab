@@ -757,14 +757,15 @@ done
 # per start, plus contention on the shared package-cache lock when any other
 # cargo is running. The loop reads better and costs five times the wall clock.
 #
-# --profile profiling, not dev: 70 s against 460 s for the same nine binaries.
+# An optimized profile, not dev: 70 s against 460 s for the same nine binaries.
 # The corpus is 8.8 GB of packets and the parsers are the whole workload, so an
 # unoptimized build is where the eight-minute figure came from. Not --release
 # either: [profile.release] sets panic = "abort", and an aborting test process
 # dies before libtest prints its `failures:` list or its `test result:` line --
 # the gate would block the push and be unable to name what broke, which is the
-# one thing it has to do. `profiling` inherits release (lto, codegen-units = 1)
-# and restores panic = "unwind".
+# one thing it has to do. [profile.corpus] inherits release and restores
+# panic = "unwind" (the two figures above were measured under `profiling`,
+# which does the same with full LTO; see below for why LTO went).
 #
 # So the whole corpus costs about ninety seconds, and at ninety seconds a subset
 # buys nothing worth its cost. The eleven do not overlap: diagnosis claims and
@@ -783,20 +784,24 @@ done
 # tree instead of from this comment -- eleven is what it measured, not what it
 # is fixed at.
 #
-# The BUILD is the real cost, not the run, and it is the one number worth
-# knowing before this gate surprises anyone:
+# The BUILD was the real cost, not the run. This gate used `profiling`, which
+# inherits release's lto = true and codegen-units = 1, so every corpus binary
+# relinked with full LTO whenever the library changed. It now builds under
+# [profile.corpus]: optimized and unwinding, without LTO. Measured 2026-09-29,
+# 14 cores, 21 corpus binaries:
 #
-#   corpus run, everything already built ............................  87 s
-#   profiling rebuild after a lib change, then the run .............. 413 s
+#                                         profiling    corpus
+#   rebuild after a library change ......   827 s       83 s
+#   run, everything already built .......   161 s      174 s
 #
-# lto = true and codegen-units = 1 mean every one of those binaries relinks
-# with full LTO. Two things make it the right trade anyway. target/profiling
-# persists, so a second push that touches no source pays 87 s, not 413. And the
-# alternative is worse in the common case, not better: the dev profile costs
-# 460 s of RUN on EVERY push and never amortizes anything.
+# LTO bought 13 s of run and cost 12 minutes on every push that touched the
+# library. tests/pre_push_build_profile_test.rs holds the gate to a profile that
+# unwinds and skips full LTO. target/corpus persists, so a push that touches
+# no source pays only the run. The dev profile is no alternative: 460 s of RUN
+# (measured with nine binaries) on EVERY push.
 #
 # To take the wait off the push itself, keep the profile warm while working:
-#   cargo test --all-features --profile profiling --no-run
+#   cargo test --all-features --profile corpus --no-run
 #
 # Emergency bypass, deliberately its OWN variable. SKIP_FMT_HOOK=1 switches off
 # every gate in this hook, which is far too much to reach for when the only
@@ -900,7 +905,7 @@ run)
 	# Positional parameters, not a string of arguments: this hook reads its
 	# stdin above and never reads "$@", and `set --` keeps shellcheck's
 	# word-splitting warning honest instead of silenced.
-	set -- --all-features --profile profiling --color never
+	set -- --all-features --profile corpus --color never
 	corpus_count=0
 	for corpus_test in $CORPUS_TESTS; do
 		set -- "$@" --test "$corpus_test"
@@ -972,10 +977,10 @@ run)
 			CORPUS_NAME=$(printf '%s\n' "$CORPUS_FIRST" | sed -n 's|^.* :: ||p')
 			printf '\n'
 			if [ -n "$CORPUS_BIN" ]; then
-				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile profiling --test %s %s -- --exact --nocapture\n' \
+				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile corpus --test %s %s -- --exact --nocapture\n' \
 					"$SIPNAB_CORPUS" "$CORPUS_BIN" "$CORPUS_NAME"
 			else
-				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile profiling %s -- --exact --nocapture\n' \
+				printf '  Reproduce: SIPNAB_CORPUS=%s cargo test --all-features --profile corpus %s -- --exact --nocapture\n' \
 					"$SIPNAB_CORPUS" "$CORPUS_NAME"
 			fi
 		else

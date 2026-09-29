@@ -416,6 +416,20 @@ strip = false
 debug = true
 panic = "unwind"
 
+# The pre-push corpus gate's build. Optimized, because 8.8 GB of packets makes
+# the parsers the whole workload; unwinding, so a failing test still prints its
+# name; and WITHOUT release's full LTO and single codegen unit, which here only
+# cost link time. Measured 2026-09-29 on 14 cores, 21 corpus binaries: rebuild
+# after a library change 827 s (profiling) -> 83 s; run 161 s -> 174 s.
+# tests/pre_push_build_profile_test.rs holds the gate to both properties.
+[profile.corpus]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
+strip = false
+panic = "unwind"
+
 [[bin]]
 name = "sipnab"
 path = "src/main.rs"

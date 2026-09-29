@@ -659,9 +659,9 @@ to validate against. The moment before a push is the only enforcement point that
 remains, which is why this one gate lives in a hook and has no CI counterpart
 anywhere in the thirteen workflows above.
 
-**What runs.** One `cargo test` invocation, all features, under the `profiling`
+**What runs.** One `cargo test` invocation, all features, under the `corpus`
 profile, covering every top-level `tests/*.rs` that names `SIPNAB_CORPUS` —
-seventeen targets today, and the ones with `corpus` in the name are not all of
+twenty-one targets today, and the ones with `corpus` in the name are not all of
 them: `input_set_accounting_test`, `rtp_quality_provenance_test` and
 `vacuous_success_test` read the corpus
 too.
@@ -717,8 +717,9 @@ removal a failure written weeks ago outlives every green push after it, and a
 reader who finds it has no way to date it — which happened, twice, with a
 `... FAILED` line that no run of the real corpus had ever produced.
 
-**Why the `profiling` profile.** Measured on a 14-core machine against an 8.8 GB
-corpus of 137 files with a warm page cache:
+**Why the `corpus` profile.** Measured on a 14-core machine against an 8.8 GB
+corpus of 137 files with a warm page cache, first with the targets of the day
+under the `profiling` profile:
 
 - every corpus binary, one `cargo test` invocation, `profiling` — **87 s**
 - the same binaries, one `cargo test` invocation *each*, `profiling` — **379 s**
@@ -734,15 +735,15 @@ An optimized profile rather than dev: 8.8 GB of
 packets makes the parsers the entire workload, and the dev profile pays 460 s of
 run time on *every* push without ever amortizing anything.
 
-And `profiling`
-rather than `release`, because `[profile.release]` sets `panic = "abort"` — an
+And an unwinding
+profile rather than `release`, because `[profile.release]` sets `panic = "abort"` — an
 aborting test process dies before the test harness prints its `failures:` list,
-so the gate would block a push and then fail to name what broke. `profiling`
-inherits release and restores `panic = "unwind"`.
+so the gate would block a push and then fail to name what broke.
+`[profile.corpus]` inherits release and restores `panic = "unwind"`.
 
 That also settles the question of a subset.
 
-At 87 s for everything, dropping a
+At about three minutes for everything, dropping a
 binary saves seconds and gives up a whole class of real-capture regression:
 diagnosis claims and message retention, ICMP evidence for signaling and for
 media separately, conformance-rule hit rates, `nat_mismatch` and `no_media`
@@ -754,12 +755,20 @@ accounting, and RTP-quality provenance.
 Losing any one of those is how the
 failure above survived for weeks.
 
-The build, not the run, is what makes this gate feel slow. `lto = true` and
-`codegen-units = 1` relink every corpus binary with full LTO whenever the
-library changes. `target/profiling` persists between pushes, so a second push
-that touches no source pays 87 s rather than 413. Building those binaries under
-the `profiling` profile while working moves the wait off the push entirely. The
-gate's own comment in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) carries the exact build-only command.
+The build, not the run, made this gate slow. Under `profiling`, release's
+`lto = true` and `codegen-units = 1` relinked every corpus binary with full LTO
+whenever the library changed. `[profile.corpus]` keeps the optimization and
+drops both. Measured on 2026-09-29 with the 21 targets:
+
+- rebuild after a library change — `profiling` **827 s**, `corpus` **83 s**
+- run, everything already built — `profiling` **161 s**, `corpus` **174 s**
+
+LTO bought 13 s of run and cost 12 minutes on every push that touched the
+library. [`tests/pre_push_build_profile_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/pre_push_build_profile_test.rs)
+holds the gate to a profile that unwinds and skips full LTO. `target/corpus`
+persists between pushes, so a push that touches no source pays only the run,
+and building under the `corpus` profile while working moves even the 83 s off
+the push. The gate's own comment in [`.githooks/pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) carries the exact build-only command.
 
 **How to bypass.** `SKIP_CORPUS_HOOK=1 git push` drops this gate and leaves the
 other five standing.

@@ -791,7 +791,11 @@ fn linked_code_targets_exist() {
     // 470 -> 471: build-ci-release.md's gate list links
     // `scripts/parallel-tests.py`, which runs the hook's test binaries side
     // by side. Attributed by measurement: with HEAD's page the count is 470.
-    const EXPECTED_CODE_LINKS: usize = 471;
+    // 471 -> 472: build-ci-release.md's corpus-gate section links
+    // `tests/pre_push_build_profile_test.rs`, which holds the gate's build
+    // profile to unwinding without full LTO. Attributed by measurement: with
+    // HEAD's page the count is 471.
+    const EXPECTED_CODE_LINKS: usize = 472;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
