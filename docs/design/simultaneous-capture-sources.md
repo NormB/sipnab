@@ -318,7 +318,7 @@ operator discount a suspicious attribution instead of trusting it.
 
 **Provenance: build on it, and it needs one small extension.**
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
-([`src/capture/packet.rs:491`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L491)) resolves a fact to the bytes behind it, and
+([`src/capture/packet.rs:541`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L541)) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)), `SipDialog`
 ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:388`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L388)) carries the same field at line 323
 carry it downstream.

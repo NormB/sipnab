@@ -369,6 +369,20 @@ impl SourceInterner {
     pub(crate) fn cap(&self) -> usize {
         self.cap
     }
+
+    /// The warning to log for the `intern` that answered `got`: one, on the
+    /// table's FIRST refusal. Every later refusal is only counted, so a flood
+    /// of new sources does not become a flood of log lines.
+    pub(crate) fn refusal_warning(&self, got: Option<&'static str>) -> Option<String> {
+        (got.is_none() && self.refused == 1).then(|| {
+            format!(
+                "max_capture_sources ({}) reached: packets from new capture \
+                 sources now carry no frame pointer (counted in \
+                 sipnab_capture_sources_refused_total)",
+                self.cap
+            )
+        })
+    }
 }
 
 /// The capture-source table's counts, for `/metrics`, `runtime_stats` and
@@ -433,13 +447,8 @@ pub fn intern_source(source: &Arc<str>) -> Option<&'static str> {
         let interned = {
             let mut table = source_table().lock();
             let got = table.intern(source);
-            if got.is_none() && table.refused() == 1 {
-                tracing::warn!(
-                    "max_capture_sources ({}) reached: packets from new capture \
-                     sources now carry no frame pointer (counted in \
-                     sipnab_capture_sources_refused_total)",
-                    table.cap()
-                );
+            if let Some(warning) = table.refusal_warning(got) {
+                tracing::warn!("{warning}");
             }
             got
         }?;
@@ -1019,6 +1028,40 @@ mod tests {
         assert!(
             std::ptr::eq(t.intern("a").expect("still held"), a),
             "names already held still answer"
+        );
+    }
+
+    /// The process table is shared by every test in this binary, so the
+    /// warning `intern_source` logs is decided here, on a private table: once,
+    /// on the first refusal, naming the cap and the counter that keeps
+    /// counting after it.
+    #[test]
+    fn only_the_first_refusal_carries_a_warning_naming_the_cap_and_the_metric() {
+        let mut t = SourceInterner::new(1);
+        let got = t.intern("a");
+        assert_eq!(
+            t.refusal_warning(got),
+            None,
+            "an admitted name warns nothing"
+        );
+        let got = t.intern("b");
+        let w = t.refusal_warning(got).expect("the first refusal warns");
+        assert!(
+            w.contains("max_capture_sources (1)")
+                && w.contains("sipnab_capture_sources_refused_total"),
+            "{w}"
+        );
+        let got = t.intern("a");
+        assert_eq!(
+            t.refusal_warning(got),
+            None,
+            "a held name right after the first refusal warns nothing"
+        );
+        let got = t.intern("c");
+        assert_eq!(
+            t.refusal_warning(got),
+            None,
+            "later refusals are only counted"
         );
     }
 
