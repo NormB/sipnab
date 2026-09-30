@@ -1191,7 +1191,14 @@ fn root_community_file_links_resolve() {
     // at a caveat to drop once `license/cla` was required (it now is).
     // 52 -> 53: SECURITY.md's secrets section links MAINTAINERS.md. Measured:
     // with HEAD's SECURITY.md the count is 52.
-    const EXPECTED_COMMUNITY_LINKS: usize = 53;
+    // 53 -> 72: all nineteen in README.md (29 -> 48 by this extractor,
+    // measured against HEAD's README; the other five files are unchanged).
+    // The refreshed README ends each first-run task with the page that goes
+    // further (triage and TUI tutorials, live-capture privileges, tuning,
+    // the OpenSIPS/Kamailio/Homer HEP guides, REST, Prometheus, MCP and MCP
+    // deployment), adds a security section (auth, API TLS, threat model), and
+    // links the CLA and Dependencies sections of CONTRIBUTING.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 72;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

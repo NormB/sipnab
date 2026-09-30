@@ -729,7 +729,6 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "target",
         &[
-            "README.md",
             "docs/install.md",
             "website/content/docs/install.md",
             "website/content/docs/build.md",
@@ -4279,7 +4278,11 @@ fn no_documentation_table_repeats_a_row() {
     // their website copies.
     // 1036 -> 1037: SECURITY.md's secrets table. Measured: with HEAD's
     // SECURITY.md the count is 1036.
-    const EXPECTED_TABLES: usize = 1037;
+    // 1037 -> 1038: README.md, attributed against HEAD (2 tables -> 3). The
+    // runtime-library table went (its two rows became a paragraph), and two
+    // came: "Other ways in" under Install, and "Where to read next". The
+    // README has no site mirror, so each costs one.
+    const EXPECTED_TABLES: usize = 1038;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

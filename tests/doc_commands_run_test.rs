@@ -115,7 +115,7 @@ struct Invocation {
     text: String,
 }
 
-/// Every `sipnab …` line inside a shell block in `docs/*.md`.
+/// Every `sipnab …` line inside a shell block in `docs/*.md` and `README.md`.
 ///
 /// Backslash continuations are joined first, so a command split over five lines
 /// is one invocation rather than five fragments that parse as nothing.
@@ -136,6 +136,8 @@ fn documented_invocations() -> Vec<Invocation> {
         "only {} page(s) under docs/ — the walk is not reading the tree",
         pages.len()
     );
+    // The front page too: see `the_readme_commands_are_walked_and_all_run`.
+    pages.push(repo().join("README.md"));
     for page in pages {
         let name = page
             .file_name()
@@ -689,6 +691,53 @@ fn nothing_is_left_unrun_without_a_reason() {
         "{unrun} of {} documented invocations are not run — more than one in \
          ten. The classifier has widened.",
         all.len()
+    );
+}
+
+/// The README's commands are in the walk, and every one of them is run.
+///
+/// The README is the first page most readers see, on GitHub and as the
+/// crates.io page, and its first-run commands are the ones copied most. The
+/// walk read `docs/*.md` only, so a README command that named only real flags
+/// in a combination sipnab refuses — or a bad VALUE, or a short flag, none of
+/// which `docs_drift_test` can see — reached every reader with this suite
+/// green.
+///
+/// No README command may be a shell program: a `$VAR` or `$(…)` in front of
+/// sipnab's arguments takes it out of the run, which is how the old README's
+/// `--call-report "$CALL_ID"` went unexecuted. The one bucket allowed besides
+/// the run ones is `SideEffects`, for `sudo sipnab --setup-caps`, which the
+/// first-run section has to show and this suite must never execute.
+#[test]
+fn the_readme_commands_are_walked_and_all_run() {
+    let readme: Vec<Invocation> = documented_invocations()
+        .into_iter()
+        .filter(|i| i.page == "README.md")
+        .collect();
+    assert!(
+        readme.len() >= 8,
+        "only {} sipnab invocation(s) found in README.md — the walk does not \
+         read it, or the README lost the commands a first-time reader runs",
+        readme.len()
+    );
+    let mut ran = 0_usize;
+    for inv in &readme {
+        let plan = classify(&inv.text);
+        assert!(
+            plan.is_run() || plan == Plan::SideEffects,
+            "README.md:{} is not run by this gate ({}): {}",
+            inv.line,
+            plan.why(),
+            inv.text
+        );
+        ran += usize::from(plan.is_run());
+    }
+    assert!(
+        ran + 1 >= readme.len(),
+        "{} of the README's {} sipnab commands are not run; only \
+         `--setup-caps` may be skipped",
+        readme.len() - ran,
+        readme.len()
     );
 }
 
