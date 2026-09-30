@@ -79,6 +79,17 @@ entry that carries them.
 
 ### Fixed
 
+- **An output file sipnab cannot create now says why.** `-O`, a `--split`
+  file created mid-run, and a TUI pcap or WAV save reported only
+  `Failed to create output file '<path>'`, dropping the operating system's
+  reason (`Permission denied`, `No such file or directory`). The whole cause
+  now follows the path. When the reason is `Permission denied` and sipnab had
+  dropped privileges, the line also names the user it runs as and the three
+  ways out: make the directory writable by that user, pass `--user`, or pass
+  `--no-priv-drop`. Run as root, sipnab creates output files after the drop,
+  as `nobody` by default, so a `root:root` `0755` directory refused them with
+  nothing saying so.
+  [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
 - **A HEP listener or uprobe capture no longer grows memory with every
   packet.** Each packet's source label (`capture_id@address`, `uprobe:comm/pid`)
   was built fresh and stored again, so the table of source names grew with the

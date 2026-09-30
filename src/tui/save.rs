@@ -149,7 +149,12 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         Some(provenance),
     ) {
         Ok(w) => w,
-        Err(e) => return format!("Save failed: {e}"),
+        Err(e) => {
+            return format!(
+                "Save failed: {}",
+                crate::capture::writer::describe_output_error(&e, crate::privilege::dropped_to())
+            );
+        }
     };
 
     // Embed name resolution (NRB) before the packets, when name resolution is
@@ -159,7 +164,7 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         let include_dns = app.name_mode() == crate::names::NameMode::Dns;
         let entries = app.resolver().nrb_entries(include_dns);
         if let Err(e) = writer.write_name_resolution_block(&entries) {
-            return format!("Save failed writing name resolution: {e}");
+            return format!("Save failed writing name resolution: {e:#}");
         }
     }
 
@@ -168,7 +173,7 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
     for (msg, comment) in messages.iter().zip(&comments) {
         let pkt = crate::output::synthetic::build_synthetic_packet(msg);
         if let Err(e) = writer.write_annotated(&pkt, comment.as_slice()) {
-            return format!("Write error after {count} packets: {e}");
+            return format!("Write error after {count} packets: {e:#}");
         }
         count += 1;
     }
@@ -816,7 +821,10 @@ pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
 
     match crate::rtp::audio_export::export_dialog_to_wav(&streams, &path) {
         Ok(msg) => msg,
-        Err(e) => format!("WAV export failed: {e}"),
+        Err(e) => format!(
+            "WAV export failed: {}",
+            crate::capture::writer::describe_output_error(&e, crate::privilege::dropped_to())
+        ),
     }
 }
 
@@ -1838,6 +1846,37 @@ mod tests {
     /// A path whose parent directory does not exist forces std::fs::write
     /// (and the pcap writer) to fail.
     const BAD_PATH: &str = "/nonexistent_dir_xyz/sub/out";
+
+    /// A pcap save the writer cannot create names the OS error, not only the
+    /// writer's "Failed to create output file" context. The TUI saves after
+    /// the privilege drop, so this is the report an operator saving into a
+    /// root-only directory reads.
+    #[test]
+    fn pcap_save_failure_names_the_os_error() {
+        let app = app_with_dialogs();
+        for pcapng in [false, true] {
+            let msg = save_to_pcap_path(&app, BAD_PATH, pcapng);
+            assert!(msg.starts_with("Save failed"), "got: {msg}");
+            assert!(msg.contains(BAD_PATH), "got: {msg}");
+            assert!(msg.contains("No such file or directory"), "got: {msg}");
+        }
+    }
+
+    /// The WAV export wraps its write the same way, and dropped the cause the
+    /// same way.
+    #[test]
+    fn wav_save_failure_names_the_os_error() {
+        let mut app = app_with_dialogs();
+        add_rtp_stream(&app);
+        app.stream_store
+            .write()
+            .link_to_dialog(addr_b(), 30000, "call-2@test");
+        app.call_list
+            .set_sort(crate::tui::call_list::SortColumn::Index);
+        let msg = save_to_wav_path(&app, BAD_PATH);
+        assert!(msg.starts_with("WAV export failed"), "got: {msg}");
+        assert!(msg.contains("No such file or directory"), "got: {msg}");
+    }
 
     /// txt save into a missing directory surfaces "Save failed".
     #[test]

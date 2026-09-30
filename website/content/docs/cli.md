@@ -199,6 +199,20 @@ new ones, and it deletes only the files this run wrote.
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
 ```
 
+**The drop user creates the output files.** Run as root, sipnab opens the
+capture device, then drops privileges to `nobody` (or the `--user` you name)
+before it creates the `-O` file, and it creates every `--split` file later
+still. A directory only root may write, such as one made with a plain
+`sudo mkdir`, therefore refuses the file:
+
+```text
+Failed to create output file '/var/captures/sip.pcapng': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
+```
+
+Give the directory to the drop user with `sudo install -d -o nobody
+/var/captures`, pass `--user` naming an account that can already write it, or
+keep root for the whole run with `--no-priv-drop`.
+
 > **`--split-keep` deletes capture files.** sipnab deletes nothing unless you
 > pass the flag, and nothing at `--split-keep 0`, because a capture is very
 > often the only copy of the evidence.
@@ -239,7 +253,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories) |
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
-| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
+| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](@/docs/tuning-capture.md) |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |

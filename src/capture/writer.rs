@@ -1183,6 +1183,38 @@ fn describe_link_type(link_type: i32) -> String {
     }
 }
 
+/// The operator-facing report for an output file that could not be created or
+/// written: the whole cause chain, plus — when the root cause is a permission
+/// refusal and this process had dropped privileges — which user it runs as
+/// and the three ways out.
+///
+/// The chain matters because the writer's errors are layered: `{e}` on an
+/// `anyhow::Error` prints only the outermost context (`Failed to create output
+/// file '<path>'`), which names the file and drops the `io::Error` that says
+/// why. The path comes from that context, so the report names the file the
+/// writer actually tried, including a split file the caller never saw.
+///
+/// # Arguments
+///
+/// * `err` — the writer's error, with its context chain intact.
+/// * `dropped_to` — the user privileges were dropped to, when a drop
+///   happened ([`crate::privilege::dropped_to`] at the call sites).
+pub fn describe_output_error(err: &anyhow::Error, dropped_to: Option<&str>) -> String {
+    let refused = err.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::PermissionDenied)
+    });
+    match dropped_to {
+        Some(user) if refused => format!(
+            "{err:#}. sipnab dropped privileges to user '{user}' before opening output; \
+             make the directory writable by that user (e.g. install -d -o {user} <dir>), \
+             pass --user <name> for a user that can write there, or --no-priv-drop."
+        ),
+        _ => format!("{err:#}"),
+    }
+}
+
 /// Generate a rotated filename from a base path and sequence number.
 ///
 /// `output.pcap` with sequence 1 becomes `output_00001.pcap`.
@@ -1421,6 +1453,94 @@ mod tests {
                  (ns ticks require if_tsresol=9 in the IDB)"
             );
         }
+    }
+
+    /// The writer's own context over a raw OS error, the shape
+    /// `std::fs::File::create` failing inside the writer produces.
+    fn create_error(path: &str, errno: i32) -> anyhow::Error {
+        anyhow::Error::from(std::io::Error::from_raw_os_error(errno))
+            .context(format!("Failed to create output file '{path}'"))
+    }
+
+    /// rtp03: root dropped to `nobody`, which may not write the directory. The
+    /// report names the file, the OS error, the user, and all three remedies.
+    #[test]
+    fn a_permission_refusal_after_a_drop_names_the_user_and_the_remedies() {
+        let e = create_error("/var/tmp/e2e/rtp03.pcap", libc::EACCES);
+        let m = describe_output_error(&e, Some("nobody"));
+        assert!(
+            m.starts_with("Failed to create output file '/var/tmp/e2e/rtp03.pcap': "),
+            "{m}"
+        );
+        assert!(m.contains("Permission denied (os error 13)"), "{m}");
+        assert!(m.contains("dropped privileges to user 'nobody'"), "{m}");
+        assert!(m.contains("install -d -o nobody"), "{m}");
+        assert!(m.contains("--user <name>"), "{m}");
+        assert!(m.contains("--no-priv-drop"), "{m}");
+        // The whole report, pinned: this is the line the operator reads.
+        assert_eq!(
+            m,
+            "Failed to create output file '/var/tmp/e2e/rtp03.pcap': Permission denied \
+             (os error 13). sipnab dropped privileges to user 'nobody' before opening \
+             output; make the directory writable by that user (e.g. install -d -o nobody \
+             <dir>), pass --user <name> for a user that can write there, or --no-priv-drop."
+        );
+    }
+
+    /// The user named is the one passed, not a hard-coded default.
+    #[test]
+    fn the_hint_names_the_user_actually_dropped_to() {
+        let e = create_error("/srv/cap/a.pcap", libc::EACCES);
+        let m = describe_output_error(&e, Some("sipcap"));
+        assert!(m.contains("user 'sipcap'"), "{m}");
+        assert!(m.contains("install -d -o sipcap"), "{m}");
+        assert!(!m.contains("nobody"), "{m}");
+    }
+
+    /// A missing directory is not a privilege problem, even after a drop:
+    /// the OS error, and no hint that would send the operator the wrong way.
+    #[test]
+    fn a_missing_directory_gets_no_privilege_hint() {
+        let e = create_error("/nope/out.pcap", libc::ENOENT);
+        let m = describe_output_error(&e, Some("nobody"));
+        assert!(m.contains("'/nope/out.pcap'"), "{m}");
+        assert!(m.contains("No such file or directory"), "{m}");
+        assert!(!m.contains("dropped privileges"), "{m}");
+    }
+
+    /// A refusal with no drop (sipnab run unprivileged, or `--no-priv-drop`)
+    /// is the operator's own account: the OS error, no user hint.
+    #[test]
+    fn a_permission_refusal_without_a_drop_gets_no_user_hint() {
+        let e = create_error("/root/out.pcap", libc::EACCES);
+        let m = describe_output_error(&e, None);
+        assert!(m.contains("Permission denied (os error 13)"), "{m}");
+        assert!(!m.contains("dropped privileges"), "{m}");
+        assert!(!m.contains("--no-priv-drop"), "{m}");
+    }
+
+    /// The refusal is found anywhere in the chain, not only at its root
+    /// position: a further context layered on top must not hide it.
+    #[test]
+    fn a_refusal_under_another_context_still_gets_the_hint() {
+        let e = create_error("/srv/cap/a.pcap", libc::EACCES).context("rotating output");
+        let m = describe_output_error(&e, Some("nobody"));
+        assert!(m.contains("Permission denied (os error 13)"), "{m}");
+        assert!(m.contains("dropped privileges to user 'nobody'"), "{m}");
+    }
+
+    /// The real writer, not a synthesized chain: creating a file in a missing
+    /// directory yields a report naming the path and the OS error.
+    #[test]
+    fn the_real_writer_error_reports_its_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("absent").join("x.pcap");
+        let Err(e) = PcapWriter::new(&path, 1, None, None) else {
+            panic!("creating in a missing directory must fail");
+        };
+        let m = describe_output_error(&e, None);
+        assert!(m.contains(&path.display().to_string()), "{m}");
+        assert!(m.contains("No such file or directory"), "{m}");
     }
 
     /// `output.pcap` + sequence N yields `output_0000N.pcap`.
