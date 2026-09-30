@@ -2106,6 +2106,57 @@ mod tests {
     }
 
     /// A UDP listener on 127.0.0.1 — the only thing any test here sends to.
+    /// Run a blocking socket call again when a signal interrupts it.
+    ///
+    /// Any handled signal delivered to the test process -- another test's, or
+    /// the harness's -- makes a blocking `recv_from` return `EINTR`. Production
+    /// reads retry it (see `read_frame`); a test that did not failed as
+    /// "the datagram arrives: Interrupted system call" under the full suite
+    /// and passed alone. Bounded, so a storm of signals fails rather than hangs.
+    fn retrying<T>(mut op: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+        let mut result = op();
+        for _ in 0..100 {
+            match &result {
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => result = op(),
+                _ => break,
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn a_socket_call_interrupted_by_a_signal_is_retried() {
+        let mut calls = 0;
+        let got = retrying(|| {
+            calls += 1;
+            if calls == 1 {
+                Err(std::io::ErrorKind::Interrupted.into())
+            } else {
+                Ok(7)
+            }
+        });
+        assert_eq!(got.expect("retried"), 7);
+        assert_eq!(calls, 2);
+
+        let other = retrying::<()>(|| Err(std::io::ErrorKind::WouldBlock.into()));
+        assert_eq!(
+            other.expect_err("returned").kind(),
+            std::io::ErrorKind::WouldBlock,
+            "any other error is returned as it is"
+        );
+
+        let mut storm = 0;
+        let gave_up = retrying::<()>(|| {
+            storm += 1;
+            Err(std::io::ErrorKind::Interrupted.into())
+        });
+        assert_eq!(
+            gave_up.expect_err("bounded").kind(),
+            std::io::ErrorKind::Interrupted
+        );
+        assert!(storm > 1 && storm <= 1000, "bounded retries: {storm}");
+    }
+
     fn loopback_listener() -> (std::net::UdpSocket, u16) {
         let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
         listener
@@ -2203,7 +2254,7 @@ mod tests {
             .expect("send should succeed");
 
         let mut buf = [0u8; 2048];
-        let (n, _) = listener.recv_from(&mut buf).expect("the datagram arrives");
+        let (n, _) = retrying(|| listener.recv_from(&mut buf)).expect("the datagram arrives");
         assert_eq!(&buf[..n], &sample_response()[..]);
         let resp = within(std::time::Duration::from_secs(5), || {
             handle.try_recv_response()
@@ -2500,8 +2551,7 @@ mod tests {
         );
 
         let mut buf = [0u8; 2048];
-        let (n, _from) = listener
-            .recv_from(&mut buf)
+        let (n, _from) = retrying(|| listener.recv_from(&mut buf))
             .expect("listener must receive the kill packet");
         assert_eq!(
             &buf[..n],
@@ -2522,8 +2572,7 @@ mod tests {
         let _ = worker.process_send(localhost_v4(), port, localhost_v4(), 5060, &payload);
 
         let mut buf = [0u8; 2048];
-        let (n, _from) = listener
-            .recv_from(&mut buf)
+        let (n, _from) = retrying(|| listener.recv_from(&mut buf))
             .expect("listener must receive the kill packet");
         assert_eq!(
             &buf[..n],
@@ -2644,8 +2693,7 @@ mod tests {
         );
 
         let mut buf = [0u8; 2048];
-        let (n, from) = listener
-            .recv_from(&mut buf)
+        let (n, from) = retrying(|| listener.recv_from(&mut buf))
             .expect("listener must receive the spoofed packet");
         assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
         assert_eq!(
@@ -2700,7 +2748,7 @@ mod tests {
         );
 
         let mut buf = [0u8; 2048];
-        let (n, from) = match listener.recv_from(&mut buf) {
+        let (n, from) = match retrying(|| listener.recv_from(&mut buf)) {
             Ok(v) => v,
             Err(e) => {
                 // Some environments block raw v6 loopback injection; treat as a
