@@ -100,6 +100,18 @@ same day, which is now the cited evidence.
 Of the SUGGESTED items, continuous integration, standard invocation and
 documented test requirements are all met.
 
+### Gold: `test_branch_coverage80`
+
+**Unmet.** Gold requires automated tests covering at least 80% of branches
+when a FLOSS tool can measure it. `cargo llvm-cov --branch` can, on nightly.
+The `coverage-branch` job in
+[`quality.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/quality.yml)
+measures it weekly and on demand and uploads it to Codecov under the `branch`
+flag. The first measurement, a local aarch64 run on 2026-09-30 over the same
+scope as the line-coverage job, was 77.46% (13221 of 17069 branches), so the
+job enforces no floor yet. Raising branch coverage past 80% is what moves this
+to Met; the floor goes in when it does.
+
 ## Security
 
 | Criterion | Answer | Evidence |

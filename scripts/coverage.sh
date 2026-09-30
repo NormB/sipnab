@@ -9,7 +9,7 @@
 # bypassed. Run this when you have changed something you expect to move the
 # number, or before a release.
 #
-# The floor and the skips are READ FROM .github/workflows/quality.yml rather
+# The floor and the scope are READ FROM .github/workflows/quality.yml rather
 # than repeated here. Two copies of a threshold is how a gate and its local
 # rehearsal come to disagree, and the rehearsal is the one that gets trusted.
 #
@@ -35,13 +35,22 @@ if [ -z "$FLOOR" ]; then
     exit 1
 fi
 
-# The two skips are not preferences. `cli_goldens` spawns the instrumented
-# binary as 13 parallel subprocesses that collide on the llvm-cov merge-pool
-# .profraw; `wasm_plugin_` shells out to a wasm32 build, and wasm32 ships no
-# profiler_builtins, so the nested build fails E0463. Both run in full under
-# the CI workflow's plain `cargo test`; only their coverage contribution is
-# dropped, which is why this total is short of the whole suite by design.
-SKIPS=(--skip cli_goldens --skip wasm_plugin_)
+# The scope -- which tests are skipped and which files are ignored -- is the
+# workflow-level COVERAGE_TEST_SKIPS / COVERAGE_IGNORE_REGEX in the workflow,
+# which also says why each entry exists. Read, not repeated: the line job, the
+# weekly branch job and this rehearsal must measure one population.
+scope_var() {
+    local value
+    value=$(sed -nE "s/^  $1: (.*)$/\1/p" "$WORKFLOW" | head -1)
+    if [ -z "$value" ]; then
+        echo "::error:: no workflow-level $1 in $WORKFLOW -- refusing to" >&2
+        echo "  measure a scope this script invented rather than read." >&2
+        exit 1
+    fi
+    printf '%s\n' "$value"
+}
+read -r -a SKIPS <<<"$(scope_var COVERAGE_TEST_SKIPS)"
+IGNORE=$(scope_var COVERAGE_IGNORE_REGEX)
 
 if [ "${1:-}" != "--report" ]; then
     echo "==> collecting coverage (this takes a while; see the note above)"
@@ -49,10 +58,10 @@ if [ "${1:-}" != "--report" ]; then
 fi
 
 echo "==> summary"
-cargo llvm-cov report --summary-only --ignore-filename-regex 'gen_fixture\.rs'
+cargo llvm-cov report --summary-only --ignore-filename-regex "$IGNORE"
 
 echo "==> enforcing the floor CI enforces (${FLOOR}% lines)"
 cargo llvm-cov report --fail-under-lines "$FLOOR" \
-    --ignore-filename-regex 'gen_fixture\.rs'
+    --ignore-filename-regex "$IGNORE"
 
 echo "coverage floor of ${FLOOR}% met"

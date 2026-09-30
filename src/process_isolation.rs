@@ -2108,7 +2108,6 @@ mod tests {
         }
     }
 
-    /// A UDP listener on 127.0.0.1 — the only thing any test here sends to.
     /// Run a blocking socket call again when a signal interrupts it.
     ///
     /// Any handled signal delivered to the test process -- another test's, or
@@ -2160,6 +2159,7 @@ mod tests {
         assert!(storm > 1 && storm <= 1000, "bounded retries: {storm}");
     }
 
+    /// A UDP listener on 127.0.0.1 — the only thing any test here sends to.
     fn loopback_listener() -> (std::net::UdpSocket, u16) {
         let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
         listener

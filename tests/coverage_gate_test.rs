@@ -104,19 +104,175 @@ fn the_workflow_still_enforces_a_coverage_floor() {
 /// llvm-cov merge-pool `.profraw`, and `wasm_plugin_` shells out to a wasm32
 /// build that ships no `profiler_builtins`. A rehearsal that skipped a
 /// different set would measure a different population and compare it to CI's
-/// floor as though they were the same number.
+/// floor as though they were the same number. So the script READS the scope
+/// the workflow states rather than keeping a copy that agrees today.
 #[test]
 fn the_rehearsal_skips_what_the_coverage_job_skips() {
     for skip in ["cli_goldens", "wasm_plugin_"] {
         assert!(
             workflow().contains(&format!("--skip {skip}")),
-            "the coverage job no longer skips {skip}; the script still does, \
-             so the two now measure different populations"
+            "the coverage scope no longer skips {skip}; if that is deliberate, \
+             the reason it was skipped has to have gone too"
         );
+    }
+    let script = script();
+    for var in ["COVERAGE_TEST_SKIPS", "COVERAGE_IGNORE_REGEX"] {
         assert!(
-            script().contains(skip),
-            "scripts/coverage.sh does not skip {skip}, which the coverage job \
-             skips for a reason that applies equally here"
+            script.contains(var),
+            "scripts/coverage.sh does not read {var} from the workflow, so it \
+             measures a scope of its own"
+        );
+    }
+    for literal in ["--skip cli_goldens", "--skip wasm_plugin_", "gen_fixture"] {
+        assert!(
+            !script.contains(literal),
+            "scripts/coverage.sh carries its own copy of `{literal}`; it must \
+             read the scope from quality.yml, or the two drift apart"
+        );
+    }
+}
+
+/// The body of one top-level job in quality.yml, up to the next job.
+fn job(name: &str) -> String {
+    let wf = workflow();
+    let header = format!("\n  {name}:\n");
+    let start = wf
+        .find(&header)
+        .unwrap_or_else(|| panic!("quality.yml has no `{name}` job"));
+    let body = &wf[start + header.len()..];
+    // The next line at exactly two spaces of indent that is not a comment
+    // opens the next job.
+    let end = body
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .find(|&i| {
+            let rest = &body[i..];
+            rest.starts_with("  ")
+                && !rest.starts_with("   ")
+                && !rest[2..].starts_with('#')
+                && !rest[2..].starts_with('\n')
+        })
+        .unwrap_or(body.len());
+    body[..end].to_string()
+}
+
+/// The coverage scope is stated once, and every llvm-cov call uses it.
+///
+/// The line job and the weekly branch job are two measurements of one suite.
+/// Before this, the ignore regex was written out on four separate lines of the
+/// line job and again in the script: five copies agreeing by coincidence. A
+/// branch job that grew a sixth copy would be one edit away from describing a
+/// different population from the line number it sits beside.
+///
+/// Mutation-checked by writing the regex back inline on one report line: the
+/// count of the literal goes to two and this fails.
+#[test]
+fn the_coverage_scope_is_stated_once_and_every_llvm_cov_call_uses_it() {
+    let wf = workflow();
+    for literal in [
+        "--skip cli_goldens",
+        "--skip wasm_plugin_",
+        "gen_fixture\\.rs",
+    ] {
+        assert_eq!(
+            wf.matches(literal).count(),
+            1,
+            "`{literal}` must appear exactly once in quality.yml -- in the \
+             workflow-level env that states the coverage scope"
+        );
+    }
+    let mut collections = 0;
+    let mut reports = 0;
+    for line in wf.lines().map(str::trim) {
+        if line.starts_with('#') || !line.contains("cargo") || !line.contains("llvm-cov") {
+            continue;
+        }
+        if line.contains("llvm-cov report") {
+            reports += 1;
+            assert!(
+                line.contains("--ignore-filename-regex \"$COVERAGE_IGNORE_REGEX\""),
+                "an llvm-cov report ignores something other than the stated \
+                 scope:\n  {line}"
+            );
+        } else if line.contains("--no-report") {
+            collections += 1;
+            assert!(
+                line.contains("-- $COVERAGE_TEST_SKIPS"),
+                "an llvm-cov collection skips something other than the stated \
+                 scope:\n  {line}"
+            );
+        }
+    }
+    assert!(
+        collections >= 2 && reports >= 4,
+        "found {collections} collections and {reports} reports; the line and \
+         branch jobs between them make at least 2 and 4, so this scan is \
+         reading the wrong thing"
+    );
+}
+
+/// Branch coverage is measured, on a schedule, and reported under its own flag.
+///
+/// OpenSSF Gold `test_branch_coverage80` asks for branch coverage. The line
+/// job cannot give it: `--branch` needs `-Z coverage-options=branch`, which is
+/// nightly-only, and the line gate must stay on the pinned stable toolchain
+/// the release builds with. So the branch job is weekly and on demand, on the
+/// same nightly pin fuzz.yml and sanitizers.yml use as a TOOL, and it uploads
+/// under a Codecov flag of its own so it does not overwrite the line report.
+#[test]
+fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() {
+    let wf = workflow();
+    let on = wf
+        .split("\non:\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("quality.yml has an `on:` block");
+    assert!(
+        on.contains("schedule:") && on.contains("workflow_dispatch:"),
+        "quality.yml must trigger on a schedule and by hand for the branch job:\n{on}"
+    );
+
+    let branch = job("coverage-branch");
+    assert!(
+        branch.contains("github.event_name == 'schedule'")
+            && branch.contains("github.event_name == 'workflow_dispatch'"),
+        "the branch job must run only on the schedule or by hand; a nightly \
+         instrumented run on every push is not what this job is for"
+    );
+    assert!(
+        branch.contains("--branch"),
+        "the branch job collects without --branch, so it measures no branches"
+    );
+    assert!(
+        branch.contains("scripts/branch-coverage.py"),
+        "the branch job must hand its summary to scripts/branch-coverage.py, \
+         which refuses a report holding no branches"
+    );
+    assert!(
+        branch.contains("flags: branch"),
+        "the branch upload needs its own Codecov flag, or it overwrites the \
+         line report"
+    );
+
+    let fuzz = read(".github/workflows/fuzz.yml");
+    let pin = fuzz
+        .lines()
+        .map(str::trim)
+        .find(|l| l.contains("dtolnay/rust-toolchain@") && l.ends_with("# nightly"))
+        .expect("fuzz.yml pins a nightly toolchain");
+    assert!(
+        branch.contains(pin),
+        "the branch job must use the nightly pin fuzz.yml uses (`{pin}`), \
+         not a second nightly of its own"
+    );
+
+    // Every OTHER job skips the weekly schedule: it exists for the branch job,
+    // and a scheduled rerun of the docs, bench and line jobs buys nothing.
+    let others = ["bench", "coverage", "clippy-sarif", "docs", "accessibility"];
+    for name in others {
+        assert!(
+            job(name).contains("if: github.event_name != 'schedule'"),
+            "the `{name}` job runs on the weekly schedule too; it should not"
         );
     }
 }

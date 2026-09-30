@@ -798,7 +798,10 @@ fn linked_code_targets_exist() {
     // 472 -> 473: build-ci-release.md's branch-protection section links
     // `tests/branch_protection_drift_test.rs`, which holds `enforce_admins` to
     // the page. Attributed by measurement: with HEAD's page the count is 472.
-    const EXPECTED_CODE_LINKS: usize = 473;
+    // 473 -> 474: build-ci-release.md's new "Branch coverage" section links
+    // `scripts/branch-coverage.py`, which reads the weekly job's JSON summary.
+    // Attributed by measurement: with HEAD's page the count is 473.
+    const EXPECTED_CODE_LINKS: usize = 474;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
