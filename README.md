@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/NormB/sipnab/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/sipnab/actions/workflows/ci.yml)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/13931/baseline)](https://www.bestpractices.dev/projects/13931)
 [![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
 
 **Read a SIP call and see why it failed.** One binary reads live traffic, a

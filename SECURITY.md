@@ -24,6 +24,10 @@ Use the subject line: `[SECURITY] <brief description>`
 
 ## Scope
 
+This list says what to report. It is not a threat model: the assets, trust
+boundaries, mitigations and known gaps are in the security assessment,
+[docs/threat-model.md](docs/threat-model.md).
+
 The following are in scope for security reports:
 
 - **Parser crashes** -- malformed SIP/SDP/RTP input causing panics or undefined behavior

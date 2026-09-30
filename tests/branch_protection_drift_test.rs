@@ -28,6 +28,7 @@ use std::process::Command;
 const DECLARED_ENFORCE_ADMINS: bool = true;
 const DECLARED_REQUIRES_PULL_REQUEST: bool = true;
 const DECLARED_STATUS_CHECK: &str = "CI success";
+const DECLARED_CLA_CHECK: &str = "license/cla";
 
 fn repo() -> &'static Path {
     static ONCE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -184,5 +185,37 @@ fn the_documentation_states_the_same_enforce_admins_value() {
          `enforce_admins` is {}, the constant says {DECLARED_ENFORCE_ADMINS}. \
          These are the two halves of one declaration and must move together.",
         if says_on { "ON" } else { "OFF" }
+    );
+}
+
+/// 5. `license/cla` is a required check, and the docs say so.
+///
+/// OpenSSF Baseline LE-01.01 asks that every contributor assert they may
+/// contribute. CLA Assistant posts `license/cla`; until 2026-09-29 nothing
+/// required it and five Dependabot pull requests merged with it pending. Bots
+/// are allowlisted in CLA Assistant and the check is required on `main`.
+#[test]
+fn the_cla_check_is_required_and_documented_as_required() {
+    for rel in ["MAINTAINERS.md", "CONTRIBUTING.md"] {
+        let doc = read(rel);
+        assert!(
+            !doc.contains("Nothing enforces `license/cla` yet")
+                && !doc.contains("does not block a merge on `license/cla`"),
+            "{rel} still says nothing enforces `license/cla`, but it is a \
+             required status check on main since 2026-09-29"
+        );
+    }
+    let Some(p) = live_protection() else {
+        eprintln!(
+            "branch-protection-drift: cannot read protection — {}",
+            why_gh_cannot_answer()
+        );
+        return;
+    };
+    let contexts = p["required_status_checks"]["contexts"].to_string();
+    assert!(
+        contexts.contains(&format!("\"{DECLARED_CLA_CHECK}\"")),
+        "main does not require `{DECLARED_CLA_CHECK}` (it requires {contexts}), \
+         but MAINTAINERS.md and CONTRIBUTING.md describe it as required"
     );
 }
