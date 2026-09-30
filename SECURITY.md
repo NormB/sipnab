@@ -46,6 +46,17 @@ The following are in scope for security reports:
 
 Only the latest release is supported with security fixes. There are no LTS branches.
 
+## Legacy Cryptography in Captured Traffic
+
+sipnab parses and decrypts traffic that other systems produced, so it must read
+whatever algorithms those systems used: MD5 in SIP digest authentication
+(RFC 3261), TLS 1.2 CBC suites and RSA key exchange (`--tls-key`), and
+HMAC-SHA1 in SRTP `AES_CM_128_HMAC_SHA1_*` suites. sipnab never selects these
+for its own protection; its own endpoints use rustls (TLS 1.2/1.3, ECDHE,
+AEAD only). Captures that rely on these algorithms are weaker than modern
+alternatives, and seeing them in a capture is itself a finding worth
+reporting to the system operator.
+
 ## Credit
 
 Reporters who follow responsible disclosure will be credited in the release notes unless they request otherwise.
