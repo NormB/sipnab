@@ -44,6 +44,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "action_limits",
             "journal",
             "mcp",
+            "api",
         ]
         .as_slice(),
     );
@@ -224,6 +225,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         .as_slice(),
     );
     m.insert("mcp", ["tools", "output_schemas", "bundles"].as_slice());
+    m.insert("api", ["allowed_hosts"].as_slice());
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
     m.insert(
         "names",
@@ -395,6 +397,20 @@ pub struct Config {
     /// The MCP server's tool surface -- see [`McpConfig`].
     #[serde(default)]
     pub mcp: McpConfig,
+    /// The REST API's `Host` allowlist -- see [`ApiConfig`].
+    #[serde(default)]
+    pub api: ApiConfig,
+}
+
+/// `[api]`: settings for the REST API that belong in a file rather than on
+/// every command line.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct ApiConfig {
+    /// `Host` header values the REST API accepts beyond `localhost`,
+    /// `127.0.0.1`, `::1` and the bound address, against DNS rebinding.
+    /// `"*"` disables the check. `--api-allowed-host` replaces the list.
+    pub allowed_hosts: Option<Vec<String>>,
 }
 
 /// `[mcp]`: which tools the MCP server registers, and whether it advertises
@@ -3227,6 +3243,22 @@ column_selector = "F10"
         assert!(
             err.to_string().contains("mcp_max_rows"),
             "error must name the key"
+        );
+    }
+
+    /// `[api] allowed_hosts` parses as a list and is a known key, so a file
+    /// setting it is not warned at.
+    #[test]
+    fn the_api_section_parses_and_its_key_is_known() {
+        let text = "[api]\nallowed_hosts = [\"proxy.example\", \"*\"]\n";
+        assert_eq!(
+            Config::unknown_keys(text).expect("parses"),
+            Vec::<String>::new()
+        );
+        let c: Config = toml::from_str(text).expect("deserializes");
+        assert_eq!(
+            c.api.allowed_hosts,
+            Some(vec!["proxy.example".to_string(), "*".to_string()])
         );
     }
 

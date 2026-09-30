@@ -1178,7 +1178,7 @@ All five still appear in `tools/list` when you omit those flags, because sipnab 
 
 - Stdout is the JSON-RPC wire in stdio mode. Use `--quiet` and don't combine with `--json`/`--report`/etc. — sipnab refuses to start.
 - Non-loopback bind without a token: refused at startup. Loopback bind needs no token.
-- Pass `--mcp-allowed-host` when the client connects via the actual hostname (rmcp's default Host allowlist is just `localhost`/`127.0.0.1`/`::1`).
+- Pass `--mcp-allowed-host` when the client connects via the actual hostname (the default Host allowlist is `localhost`, `127.0.0.1`, `::1` and the bound address).
 
 ---
 

@@ -4554,7 +4554,12 @@ fn no_documentation_table_repeats_a_row() {
     // Combined PR (upgrade docs + assurance case + code review/2FA): 1038 on
     // main -> 1044 measured, the six tables the three commits' comments above
     // attribute (2 + 3 + 1).
-    const EXPECTED_TABLES: usize = 1044;
+    // 1038 -> 1040: the [api] config table (allowed_hosts) in
+    // docs/config-reference.md and its website copy; attributed per file
+    // against HEAD, 20 -> 21 tables in each.
+    // 1044 -> 1046 with the API Host allowlist: the [api] config table and
+    // its site copy.
+    const EXPECTED_TABLES: usize = 1046;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

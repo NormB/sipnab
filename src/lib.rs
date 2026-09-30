@@ -385,6 +385,10 @@ pub mod provenance;
 pub mod journal;
 #[cfg(any(feature = "hep", feature = "mcp", feature = "api"))]
 pub mod rate_limit;
+// The Host-header allowlist against DNS rebinding, for the two HTTP servers:
+// the REST API and the MCP HTTP transport (which needs `api` to exist).
+#[cfg(feature = "api")]
+pub mod host_allowlist;
 // Server-side TLS files (PEM chain, private key, rustls config) for the two
 // listeners that terminate TLS themselves: HEP and the REST API.
 #[cfg(any(feature = "hep", feature = "api"))]

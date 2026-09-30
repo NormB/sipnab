@@ -540,6 +540,23 @@ tools = ["core", "voice"]
 voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 ```
 
+### [api]
+
+Which `Host` names the REST API answers, beyond `localhost`, `127.0.0.1`,
+`::1` and the address `--api` binds (any IP address on a `0.0.0.0` or `::`
+bind). The check stops a web page from reaching the API through your browser
+by pointing its own name at `127.0.0.1` (DNS rebinding). See
+[Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
+
+```toml
+[api]
+allowed_hosts = ["sipnab.example.com"]
+```
+
 ### [privilege]
 
 Privilege separation settings (Linux only).

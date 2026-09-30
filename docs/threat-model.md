@@ -122,6 +122,7 @@ metrics endpoint (`--metrics`) serves Prometheus counters.
 | Threat | Mitigation | Where |
 |---|---|---|
 | The API listens on a public address with no credentials. | A non-loopback bind with no API key or signing key refuses to start. The metrics server applies the same rule to its Basic-auth credential. | [`src/output/api.rs::enforce_bind_auth_policy`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/output/prometheus_server.rs::start_metrics_server`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) |
+| A web page uses DNS rebinding to reach a loopback API with no key through a browser: it points its own name at `127.0.0.1`, then reads `/v1/dialogs` or sends `POST /v1/persistence` as a same-origin request (CWE-352). | Before any route, the rate limiter or authentication runs, the `Host` header must name `localhost`, `127.0.0.1`, `::1`, the bound address (any IP address on a wildcard bind) or an `--api-allowed-host` / `[api] allowed_hosts` entry. Anything else gets `403`, and a request with no `Host` gets `400`. `*` turns the check off. The MCP transport applies the same rule. | [`src/host_allowlist.rs::HostAllowlist`](https://github.com/NormB/sipnab/blob/main/src/host_allowlist.rs), [`src/output/api.rs::with_host_allowlist`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 | An attacker forges or reuses a token. | Tokens carry an HMAC-SHA256 signature, an expiry, an audience (`api` or `mcp`) and an id that a revocation list can name. Verification compares signatures in constant time. A value that starts like a signed token and fails any check gets a refusal, never a second chance as a static key. [Authentication](auth.md) describes minting and rotation. | [`src/auth.rs::verify_signed`](https://github.com/NormB/sipnab/blob/main/src/auth.rs), [`src/auth.rs::verify_static`](https://github.com/NormB/sipnab/blob/main/src/auth.rs) |
 | A token for one surface opens the other. | The audience check is unconditional, so an API token fails on MCP and the reverse. | [`src/auth.rs::verify_signed`](https://github.com/NormB/sipnab/blob/main/src/auth.rs) |
 | An attacker guesses tokens at high speed. | The per-client rate limit runs *before* authentication, so a wrong guess costs the same budget as a right one. | [`src/output/api.rs::guard_scoped`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
@@ -142,7 +143,7 @@ running it safely.
 | Threat | Mitigation | Where |
 |---|---|---|
 | The HTTP transport listens on a public address with no credentials. | A non-loopback bind without a token or signing key refuses to start. | [`src/mcp/transport.rs::serve_http`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs) |
-| A web page uses DNS rebinding to reach a loopback MCP server through a browser. | Requests must carry a `Host` header on the allowlist (`localhost`, `127.0.0.1` and `::1`, plus `--mcp-allowed-host` entries). | [`src/mcp/transport.rs::serve_http`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs) |
+| A web page uses DNS rebinding to reach a loopback MCP server through a browser. | Requests must carry a `Host` header on the allowlist (`localhost`, `127.0.0.1`, `::1` and the bound address, plus `--mcp-allowed-host` entries), checked before the bearer guard by the same rule the REST API uses. | [`src/host_allowlist.rs::HostAllowlist`](https://github.com/NormB/sipnab/blob/main/src/host_allowlist.rs), [`src/mcp/transport.rs::host_layer`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs) |
 | An agent replaces the capture, installs TLS probes, stops the server or writes findings. | Each of these tools refuses unless the operator started sipnab with its own opt-in flag: `--mcp-allow-open-capture`, `--mcp-allow-tls-capture`, `--mcp-allow-shutdown` and `--mcp-allow-save-findings`. | [`src/mcp/server.rs::open_capture`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) and the `allow_*` fields beside it |
 | An agent writes or reads outside a chosen directory. | File tools accept a bare file name only, resolve symlinks, and refuse any result outside `--mcp-file-root`. With no root set, the file tools refuse. | [`src/mcp/server.rs::resolve_in_root`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) |
 | One agent monopolizes the server. | A per-caller cap on tool calls per second (`--mcp-rate-limit-per-peer`, default 100) and a 2 MiB request body cap. | [`src/mcp/server.rs::with_rate_limit_per_peer`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), [`src/mcp/transport.rs::serve_http`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs) |
@@ -286,6 +287,15 @@ protection against one of these has to supply it outside sipnab.
 12. **Plugins are not signed.** sipnab loads any module the operator names,
     and a plugin can emit misleading findings even though it cannot touch the
     host.
+13. **The metrics endpoint does not check `Host`.** The REST API and HTTP MCP
+    refuse a `Host` that is not on their allowlist, which stops DNS
+    rebinding. The standalone `--metrics` server does not
+    ([`src/output/prometheus_server.rs::start_metrics_server`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)),
+    so a web page can read the counters of a loopback metrics endpoint with no credentials
+    through a browser. It serves read-only counters and no capture content,
+    and a non-loopback bind already needs Basic auth. `--api-allowed-host '*'`
+    and `--mcp-allowed-host '*'` put the REST API and MCP back in the same
+    position.
 
 ## Keeping this page true
 

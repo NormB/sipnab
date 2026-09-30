@@ -34,6 +34,7 @@
 //! Requests are rate-limited to 100 per second per source IP. Excess
 //! requests return 503 Service Unavailable.
 
+use crate::host_allowlist::HostAllowlist;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1072,6 +1073,10 @@ pub struct ApiServerConfig {
     pub tls_cert: Option<String>,
     /// `--api-tls-key`: the PEM private key for `tls_cert`.
     pub tls_key: Option<String>,
+    /// `--api-allowed-host` / `[api] allowed_hosts`: `Host` values served
+    /// beyond the loopback names and the bound address. `*` disables the
+    /// check. See [`crate::host_allowlist`].
+    pub allowed_hosts: Vec<String>,
 }
 
 /// How long a connecting client has to finish its TLS handshake.
@@ -1267,6 +1272,18 @@ pub async fn serve_on(
     server_config: ApiServerConfig,
 ) -> Result<(), crate::Error> {
     let max_inflight = server_config.max_conn;
+    let bound = listener.local_addr().map_err(|e| {
+        crate::Error::Server(format!("failed to read the API listener address: {e}"))
+    })?;
+    let hosts = HostAllowlist::new(bound, &server_config.allowed_hosts);
+    if hosts.is_disabled() {
+        tracing::warn!(
+            "REST API Host-header check disabled via --api-allowed-host '*' — \
+             a web page can reach this API through DNS rebinding"
+        );
+    } else {
+        tracing::info!("REST API allowed Host headers: {:?}", hosts.describe());
+    }
     let router = build_router(state);
 
     // Wrap with an in-flight-request limiter if the cap is enabled. The
@@ -1295,7 +1312,54 @@ pub async fn serve_on(
         router
     };
 
+    // Outermost, so a request from a rebound name is refused before the rate
+    // limiter, the in-flight cap or any handler sees it.
+    let router = with_host_allowlist(router, hosts);
+
     serve_router(listener, router).await
+}
+
+/// `router` behind the `Host` allowlist: a request whose `Host` is not on
+/// `hosts` gets a problem response (`403`, or `400` for a missing or
+/// malformed `Host`) and never reaches a route.
+///
+/// # Arguments
+///
+/// * `router` — the API router, already carrying its state.
+/// * `hosts` — the allowlist built from the bound address and
+///   `--api-allowed-host`.
+pub fn with_host_allowlist(router: Router, hosts: HostAllowlist) -> Router {
+    let hosts = Arc::new(hosts);
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            let hosts = Arc::clone(&hosts);
+            async move {
+                let verdict = hosts.check(
+                    req.headers()
+                        .get(axum::http::header::HOST)
+                        .map(axum::http::HeaderValue::as_bytes),
+                    req.uri()
+                        .authority()
+                        .map(axum::http::uri::Authority::as_str),
+                );
+                match verdict {
+                    Ok(()) => next.run(req).await,
+                    Err(rejection) => {
+                        tracing::warn!(
+                            "REST API refused a request by its Host header \
+                             (possible DNS rebinding): {rejection:?}"
+                        );
+                        Problem::detailed(
+                            StatusCode::from_u16(rejection.status())
+                                .unwrap_or(StatusCode::FORBIDDEN),
+                            rejection.message("--api-allowed-host"),
+                        )
+                        .into_response()
+                    }
+                }
+            }
+        },
+    ))
 }
 
 /// Serve `router` on `listener`, over TLS when the listener carries a TLS
@@ -9854,6 +9918,7 @@ mod tests {
             max_conn: 0,
             tls_cert: cert.map(|p| p.to_string_lossy().into_owned()),
             tls_key: key.map(|p| p.to_string_lossy().into_owned()),
+            allowed_hosts: Vec::new(),
         }
     }
 

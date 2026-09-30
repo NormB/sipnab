@@ -44,6 +44,10 @@ pub struct Selection {
     /// Whether `tools/list` carries output schemas (`--mcp-output-schemas` /
     /// `[mcp] output_schemas`, default off).
     pub mcp_output_schemas: bool,
+    /// The REST API's `Host` allowlist additions (`--api-allowed-host` /
+    /// `[api] allowed_hosts`). Resolved by the caller with
+    /// `cli.api_allowed_hosts(config)`, for the reason `mcp_row_cap` is.
+    pub api_allowed_hosts: Vec<String>,
     /// Ceiling on body/snippet bytes in one MCP response.
     ///
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
@@ -603,6 +607,7 @@ pub fn start_servers(
             max_conn: cli.listener_args.api_max_conn,
             tls_cert: cli.listener_args.api_tls_cert.clone(),
             tls_key: cli.listener_args.api_tls_key.clone(),
+            allowed_hosts: selection.api_allowed_hosts.clone(),
         };
         // Vet the config and bind NOW, on the caller's thread: a bind failure
         // (port already in use) logged from the detached servers thread is
@@ -968,6 +973,7 @@ mod tests {
             evidence_ring: None,
             mcp_tools: crate::mcp_profile::ToolSelection::Full,
             mcp_output_schemas: false,
+            api_allowed_hosts: Vec::new(),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
             mcp_wait_seconds: 1,

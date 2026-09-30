@@ -57,9 +57,10 @@ For the tools themselves — and for the error codes and response bounds — see
   The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
   sipnab cannot see the scheme a client used, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
   discard a document whose `resource` does not match the URL it requested.
-- **Host header allowlist.** rmcp's DNS-rebind protection runs by
-  default (`localhost`/`127.0.0.1`/`::1`). Extend it with
-  `--mcp-allowed-host` for non-loopback clients.
+- **Host header allowlist.** DNS-rebind protection runs by default:
+  `localhost`, `127.0.0.1`, `::1` and the bound address (any IP address on a
+  wildcard bind), the same rule the REST API applies. Extend it with
+  `--mcp-allowed-host` for clients that connect by name.
 - **Bounded work per caller, in two dimensions.** `--mcp-max-concurrent`
   (default 100) caps the tool calls running *at once*.
   `--mcp-rate-limit-per-peer` (default 100) caps how many one peer may start

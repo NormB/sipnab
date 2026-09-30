@@ -84,6 +84,7 @@ mod http {
     use std::sync::Arc;
 
     use axum::Router;
+    use axum::extract::Request;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
     use axum::middleware::{self, Next};
     use axum::response::{IntoResponse, Response};
@@ -94,6 +95,7 @@ mod http {
 
     use super::SipnabMcp;
     use crate::auth::{TokenVerifier, VerifierConfig};
+    use crate::host_allowlist::HostAllowlist;
 
     /// The well-known URI path suffix [RFC 9728 section 3](https://www.rfc-editor.org/rfc/rfc9728#section-3) registers for OAuth 2.0
     /// protected-resource metadata, with its leading `/.well-known/`.
@@ -434,6 +436,34 @@ mod http {
         next.run(request).await
     }
 
+    /// Refuse a request whose `Host` is not on `hosts`, in the plain-text
+    /// shape rmcp's own check answered with (`403`, or `400` for a missing or
+    /// malformed `Host`), naming `--mcp-allowed-host`.
+    async fn host_layer(hosts: &HostAllowlist, req: Request, next: Next) -> Response {
+        let verdict = hosts.check(
+            req.headers()
+                .get(axum::http::header::HOST)
+                .map(HeaderValue::as_bytes),
+            req.uri()
+                .authority()
+                .map(axum::http::uri::Authority::as_str),
+        );
+        match verdict {
+            Ok(()) => next.run(req).await,
+            Err(rejection) => {
+                tracing::warn!(
+                    "MCP HTTP refused a request by its Host header \
+                     (possible DNS rebinding): {rejection:?}"
+                );
+                (
+                    StatusCode::from_u16(rejection.status()).unwrap_or(StatusCode::FORBIDDEN),
+                    rejection.message("--mcp-allowed-host"),
+                )
+                    .into_response()
+            }
+        }
+    }
+
     /// Run an MCP server over Streamable HTTP. Binds the listener inside the
     /// caller's tokio runtime, mounts `/mcp` plus `/health`, applies the
     /// bearer-token guard middleware, and serves until SIGINT/SIGTERM trips
@@ -445,8 +475,9 @@ mod http {
     /// * `bind` — socket address to listen on (default `127.0.0.1:8731`).
     /// * `auth_config` — signing keys / static secrets for the bearer guard;
     ///   unconfigured auth is only accepted on a loopback bind.
-    /// * `extra_allowed_hosts` — `--mcp-allowed-host` additions to rmcp's
-    ///   default Host-header allowlist; a literal `*` disables the check.
+    /// * `extra_allowed_hosts` — `--mcp-allowed-host` additions to the
+    ///   Host-header allowlist ([`crate::host_allowlist`]: loopback names and
+    ///   the bound address by default); a literal `*` disables the check.
     /// * `resource` — the validated `--mcp-resource-url`, when one was given.
     ///   `Some` mounts the RFC 9728 metadata document and adds
     ///   `resource_metadata` to every challenge; `None` leaves both off.
@@ -491,25 +522,22 @@ mod http {
             resource: resource.map(Arc::new),
         };
 
-        // Apply --mcp-allowed-host overrides on top of rmcp's defaults
-        // (`localhost`, `127.0.0.1`, `::1`). A single literal `*` entry
-        // disables host checking entirely.
-        let mut http_config = StreamableHttpServerConfig::default();
-        if extra_allowed_hosts.iter().any(|h| h == "*") {
+        // The Host allowlist is sipnab's own (crate::host_allowlist), shared
+        // with the REST API so the two servers answer DNS rebinding with one
+        // rule. rmcp's copy is switched off -- an empty list is rmcp's "allow
+        // all" -- because it does not know the bound address, and a request
+        // it would refuse is refused by the layer below before it gets here.
+        let hosts = Arc::new(HostAllowlist::new(bind, &extra_allowed_hosts));
+        if hosts.is_disabled() {
             tracing::warn!(
                 "MCP HTTP host-header check disabled via --mcp-allowed-host '*' \
                  — pair this with a network-level source-IP allowlist."
             );
-            http_config.allowed_hosts.clear();
         } else {
-            for host in extra_allowed_hosts {
-                http_config.allowed_hosts.push(host);
-            }
+            tracing::info!("MCP HTTP allowed Host headers: {:?}", hosts.describe());
         }
-        tracing::info!(
-            "MCP HTTP allowed Host headers: {:?}",
-            http_config.allowed_hosts
-        );
+        let mut http_config = StreamableHttpServerConfig::default();
+        http_config.allowed_hosts.clear();
 
         let mcp_service: StreamableHttpService<SipnabMcp, LocalSessionManager> =
             StreamableHttpService::new(
@@ -567,6 +595,13 @@ mod http {
         }
 
         let mcp_router = mcp_router
+            // Outermost: a request from a rebound name is refused before the
+            // bearer guard, so it learns nothing about the credential it
+            // lacks, and before any route, the metadata document included.
+            .layer(middleware::from_fn(move |req: Request, next: Next| {
+                let hosts = Arc::clone(&hosts);
+                async move { host_layer(&hosts, req, next).await }
+            }))
             // Cap the JSON-RPC request body so an oversized POST can't exhaust
             // memory. No blanket request timeout here: the streamable-HTTP
             // transport keeps long-lived connections for server-sent events.

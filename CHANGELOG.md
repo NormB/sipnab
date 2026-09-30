@@ -25,6 +25,24 @@ entry that carries them.
 
 ### Security
 
+- **The REST API refuses a web page that rebinds its name to your server
+  (DNS rebinding, CWE-352).** A keyless API on loopback served any request
+  that reached it. A page at `http://evil.example:8080/` could point
+  `evil.example` at `127.0.0.1` and then, as a same-origin request from the
+  victim's browser, read `/v1/dialogs` or flip `POST /v1/persistence`. The API
+  now checks the `Host` header before anything else runs. It accepts
+  `localhost`, `127.0.0.1`, `::1` and the bound address on any port, any IP
+  address on a `0.0.0.0` or `::` bind, and names added with the new
+  `--api-allowed-host` flag or `[api] allowed_hosts` key. Anything else gets
+  `403` naming the host and the flag, and a request with no `Host` gets `400`.
+  `*` turns the check off. **Breaking for a deployment reached by a DNS
+  name:** add that name with `--api-allowed-host`, or have the reverse proxy
+  send `Host: 127.0.0.1`.
+- The MCP HTTP transport now uses the same `Host` rule, shared in one module,
+  in place of rmcp's built-in check. It also accepts the bound address (any IP
+  address on a wildcard bind), and it refuses a bad `Host` before the bearer
+  check, so a rebound page learns nothing about the credential it lacks. The
+  `403` body now names the host and `--mcp-allowed-host`.
 - **Two-factor authentication is now mandatory** for anyone with write access to
   the repository or access to the project's credentials, using an authenticator
   app or a security key. SMS is not accepted
