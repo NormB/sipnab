@@ -165,6 +165,9 @@ Read these when you want to know *why*, not *how*.
 - [Threat model](threat-model.md): the security assessment, covering what an
   attacker wants, where they can reach sipnab, what stops them, and the known
   gaps.
+- [Assurance case](assurance-case.md): the argument that sipnab applies
+  secure design principles and that each of the CWE Top 25 weaknesses is
+  countered, with the ones that are only partly countered named.
 - [Benchmarks](benchmarks.md): measured throughput and memory, where the
   numbers came from, and how to reproduce them.
 

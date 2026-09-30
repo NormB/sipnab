@@ -144,6 +144,15 @@ attacker-controlled bytes, which is the reason the coverage is this wide.
 languages. Safe Rust makes this N/A in the badge's terms, though the fuzz
 targets cover the same ground.
 
+## Silver level
+
+Answers prepared for Silver criteria as each is met. A row here cites its
+evidence the same way the passing rows above do.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| `assurance_case` | Met | [`docs/assurance-case.md`](https://github.com/NormB/sipnab/blob/main/docs/assurance-case.md) argues that each Saltzer and Schroeder principle (plus limited attack surface and allowlist input validation) was applied, and gives every entry of the 2025 CWE Top 25 a verdict with the code behind it. The threat model and trust boundaries it rests on are in [`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md). Rows marked "partially" name the gap |
+
 ## Done
 
 Registered and submitted at project

@@ -1101,6 +1101,9 @@ fn wiki_intra_docs_links_resolve() {
     // and four links from it to the sections each route repeats: the tarball
     // download, the package-manager section twice, and live capture without
     // root.
+    // 1187 -> 1210: docs/assurance-case.md adds 21 (nine same-page anchors,
+    // twelve into the threat model, fault model and auth pages), and
+    // docs/threat-model.md and docs/README.md each gain one link to it.
     const EXPECTED_WIKI_LINKS: usize = 1194;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
@@ -2303,7 +2306,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // 65 -> 69: docs/opensips.md, docs/opensips-sipnab.md, docs/kamailio.md
     // and docs/kamailio-sipnab.md.
     // 69 -> 70: docs/threat-model.md.
-    const EXPECTED_DOCS_PAGES: usize = 70;
+    // 70 -> 71: docs/assurance-case.md.
+    const EXPECTED_DOCS_PAGES: usize = 71;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

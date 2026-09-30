@@ -4067,7 +4067,8 @@ fn no_documentation_table_repeats_a_row() {
     // kamailio, kamailio-sipnab) under docs/ and their four generated site
     // pages.
     // 257 -> 258: docs/threat-model.md (wiki only, no site page).
-    const EXPECTED_MARKDOWN_FILES: usize = 258;
+    // 258 -> 259: docs/assurance-case.md (wiki only, no site page).
+    const EXPECTED_MARKDOWN_FILES: usize = 259;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4544,6 +4545,8 @@ fn no_documentation_table_repeats_a_row() {
     // HEAD's CONTRIBUTING.md the count is 1039 ("Updating vendored files"),
     // and with HEAD's THIRD-PARTY-NOTICES.md it is 1039 (its "Vendored files"
     // section). Neither page has a site mirror, so each costs one.
+    // 1038 -> 1041: docs/assurance-case.md (the principles table and the CWE
+    // Top 25 table) and the Silver table in docs/design/openssf-badge-answers.md.
     const EXPECTED_TABLES: usize = 1040;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

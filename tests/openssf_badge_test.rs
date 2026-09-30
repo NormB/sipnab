@@ -339,6 +339,70 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() {
     );
 }
 
+/// Check every repository path a document cites.
+///
+/// Two citation forms are recognized: a backtick span that starts with a
+/// tracked top-level directory or names a root file (optionally followed by
+/// `::name`, which must be a fn/const/struct/enum defined in that file), and a
+/// Markdown link, relative (resolved from `docs/`) or absolute into this
+/// repository's main branch. Returns how many citations were seen and one line
+/// per citation that names nothing.
+fn cited_path_problems(doc: &str) -> (usize, Vec<String>) {
+    const ROOTS: [&str; 9] = [
+        "src/", "docs/", "tests/", "crates/", "fuzz/", "scripts/", ".github/", "bpf/", "website/",
+    ];
+    let mut cited = 0usize;
+    let mut problems = Vec::new();
+    for span in doc.split('`').skip(1).step_by(2) {
+        let (path, item) = match span.split_once("::") {
+            Some((p, i)) => (p, Some(i)),
+            None => (span, None),
+        };
+        let looks_like_path = !path.contains(' ')
+            && (ROOTS.iter().any(|r| path.starts_with(r))
+                || matches!(path, "SECURITY.md" | "Cargo.toml" | "deny.toml"));
+        if !looks_like_path {
+            continue;
+        }
+        cited += 1;
+        let p = repo().join(path);
+        if !p.exists() {
+            problems.push(format!("`{span}`: {path} does not exist"));
+            continue;
+        }
+        if let Some(item) = item {
+            let body = std::fs::read_to_string(&p).unwrap_or_default();
+            let defined = ["fn", "const", "struct", "enum"]
+                .iter()
+                .any(|kw| body.contains(&format!("{kw} {item}")));
+            if !defined {
+                problems.push(format!(
+                    "`{span}`: {path} defines no fn/const/struct/enum named {item}"
+                ));
+            }
+        }
+    }
+    // Links: a relative one resolves from docs/, and an absolute one into this
+    // repository's main branch names a path that must exist here.
+    const BLOB: &str = "https://github.com/NormB/sipnab/blob/main/";
+    for chunk in doc.split("](").skip(1) {
+        let target = chunk.split(')').next().unwrap_or("");
+        let target = target.split('#').next().unwrap_or("");
+        let resolved = if let Some(path) = target.strip_prefix(BLOB) {
+            repo().join(path)
+        } else if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
+            continue;
+        } else {
+            repo().join("docs").join(target)
+        };
+        cited += 1;
+        if !resolved.exists() {
+            problems.push(format!("link ({target}) names nothing in this repository"));
+        }
+    }
+    (cited, problems)
+}
+
 /// `know_secure_design` and OpenSSF Baseline SA-03.01 (security assessment).
 ///
 /// The sheet once answered `know_secure_design` by pointing at "an explicitly
@@ -392,61 +456,7 @@ fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
         );
     }
 
-    // Every cited repository path must exist. Two citation forms are
-    // recognized: a backtick span that starts with a tracked top-level
-    // directory or names a root file, and a relative Markdown link.
-    const ROOTS: [&str; 9] = [
-        "src/", "docs/", "tests/", "crates/", "fuzz/", "scripts/", ".github/", "bpf/", "website/",
-    ];
-    let mut cited = 0usize;
-    let mut problems = Vec::new();
-    for span in doc.split('`').skip(1).step_by(2) {
-        let (path, item) = match span.split_once("::") {
-            Some((p, i)) => (p, Some(i)),
-            None => (span, None),
-        };
-        let looks_like_path = !path.contains(' ')
-            && (ROOTS.iter().any(|r| path.starts_with(r))
-                || matches!(path, "SECURITY.md" | "Cargo.toml" | "deny.toml"));
-        if !looks_like_path {
-            continue;
-        }
-        cited += 1;
-        let p = repo().join(path);
-        if !p.exists() {
-            problems.push(format!("`{span}`: {path} does not exist"));
-            continue;
-        }
-        if let Some(item) = item {
-            let body = std::fs::read_to_string(&p).unwrap_or_default();
-            let defined = ["fn", "const", "struct", "enum"]
-                .iter()
-                .any(|kw| body.contains(&format!("{kw} {item}")));
-            if !defined {
-                problems.push(format!(
-                    "`{span}`: {path} defines no fn/const/struct/enum named {item}"
-                ));
-            }
-        }
-    }
-    // Links: a relative one resolves from docs/, and an absolute one into this
-    // repository's main branch names a path that must exist here.
-    const BLOB: &str = "https://github.com/NormB/sipnab/blob/main/";
-    for chunk in doc.split("](").skip(1) {
-        let target = chunk.split(')').next().unwrap_or("");
-        let target = target.split('#').next().unwrap_or("");
-        let resolved = if let Some(path) = target.strip_prefix(BLOB) {
-            repo().join(path)
-        } else if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
-            continue;
-        } else {
-            repo().join("docs").join(target)
-        };
-        cited += 1;
-        if !resolved.exists() {
-            problems.push(format!("link ({target}) names nothing in this repository"));
-        }
-    }
+    let (cited, problems) = cited_path_problems(&doc);
     assert!(
         problems.is_empty(),
         "{DOC} cites paths or items that do not exist:\n  {}",
@@ -477,4 +487,146 @@ fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
         read("SECURITY.md").contains(DOC),
         "SECURITY.md must point a reader at {DOC}"
     );
+}
+
+/// The 2025 CWE Top 25 Most Dangerous Software Weaknesses, as MITRE published
+/// it on 2025-12-15 (<https://cwe.mitre.org/top25/archive/2025/2025_cwe_top25.html>),
+/// in rank order. Pinned here, not fetched: the assurance case argues against
+/// one named list, and a new edition is a deliberate update to both.
+const CWE_TOP_25_2025: [u32; 25] = [
+    79, 89, 352, 862, 787, 22, 416, 125, 78, 94, 120, 434, 476, 121, 502, 122, 863, 20, 284, 200,
+    306, 918, 77, 639, 770,
+];
+
+/// The words an assurance-case row may open its verdict cell with.
+const VERDICTS: [&str; 4] = [
+    "Countered",
+    "Partially countered",
+    "Not countered",
+    "Not applicable",
+];
+
+/// Silver `assurance_case`.
+///
+/// The criterion asks for four things: a threat model, trust boundaries, an
+/// argument that secure design principles were applied, and an argument that
+/// common implementation weaknesses were countered. `docs/threat-model.md`
+/// holds the first two; `docs/assurance-case.md` holds the other two and this
+/// test holds it to them:
+///
+/// 1. Every Saltzer and Schroeder principle, plus the two the badge adds, has
+///    a table row of its own, so a principle cannot drop out unnoticed.
+/// 2. Every entry of the pinned CWE Top 25 has exactly one row, and every row
+///    carries a verdict from [`VERDICTS`], so "not countered" is a word the
+///    page can say and a blank is not.
+/// 3. Every path it cites exists, as for the threat model.
+/// 4. The threat model and the badge sheet point at it.
+#[test]
+fn the_assurance_case_argues_every_principle_and_every_top_25_weakness() {
+    const DOC: &str = "docs/assurance-case.md";
+    assert!(
+        repo().join(DOC).is_file(),
+        "{DOC} is the Silver `assurance_case` evidence; it does not exist"
+    );
+    let doc = read(DOC);
+    let rows: Vec<Vec<String>> = doc
+        .lines()
+        .filter(|l| l.starts_with("| ") && !l.starts_with("|---"))
+        .map(|l| {
+            l.trim_matches('|')
+                .split(" | ")
+                .map(|c| c.trim().to_string())
+                .collect()
+        })
+        .collect();
+
+    let principles = [
+        "Economy of mechanism",
+        "Fail-safe defaults",
+        "Complete mediation",
+        "Open design",
+        "Separation of privilege",
+        "Least privilege",
+        "Least common mechanism",
+        "Psychological acceptability",
+        "Limited attack surface",
+        "Input validation with allowlists",
+    ];
+    for p in principles {
+        let found: Vec<&Vec<String>> = rows
+            .iter()
+            .filter(|r| r.first().is_some_and(|c| c.trim_matches('*') == p))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{DOC} must argue the design principle {p:?} in exactly one table \
+             row whose first cell names it"
+        );
+        let verdict = found[0].last().map(String::as_str).unwrap_or("");
+        assert!(
+            ["Applied", "Partially applied"]
+                .iter()
+                .any(|v| verdict.starts_with(v)),
+            "the {p:?} row must end with a verdict (Applied / Partially \
+             applied), found {verdict:?}"
+        );
+    }
+
+    let cwe_rows: Vec<&Vec<String>> = rows
+        .iter()
+        .filter(|r| r.get(1).is_some_and(|c| c.starts_with("[CWE-")))
+        .collect();
+    for id in CWE_TOP_25_2025 {
+        let label = format!("[CWE-{id}]");
+        let found: Vec<&&Vec<String>> = cwe_rows
+            .iter()
+            .filter(|r| r[1].starts_with(&label))
+            .collect();
+        assert_eq!(
+            found.len(),
+            1,
+            "{DOC} must answer CWE-{id} of the 2025 Top 25 in exactly one table \
+             row (second cell starting {label})"
+        );
+        let verdict = found[0].get(3).map(String::as_str).unwrap_or("");
+        assert!(
+            VERDICTS.iter().any(|v| verdict.starts_with(v)),
+            "the CWE-{id} row's verdict cell must open with one of {VERDICTS:?}, \
+             found {verdict:?}"
+        );
+    }
+    assert_eq!(
+        cwe_rows.len(),
+        CWE_TOP_25_2025.len(),
+        "{DOC} has CWE rows beyond the pinned 2025 Top 25; add the list edition \
+         to the test before arguing against it"
+    );
+    assert!(
+        doc.contains("2025 CWE Top 25"),
+        "{DOC} must name the edition of the list it argues against"
+    );
+
+    let (cited, problems) = cited_path_problems(&doc);
+    assert!(
+        problems.is_empty(),
+        "{DOC} cites paths or items that do not exist:\n  {}",
+        problems.join("\n  ")
+    );
+    assert!(
+        cited >= 40,
+        "{DOC} cites only {cited} repository paths; every argument must cite \
+         the code behind it"
+    );
+
+    assert!(
+        read("docs/threat-model.md").contains("](assurance-case.md"),
+        "docs/threat-model.md must link the assurance case"
+    );
+    let row = sheet()
+        .lines()
+        .find(|l| l.starts_with("| `assurance_case`"))
+        .expect("the sheet has an `assurance_case` row")
+        .to_string();
+    assert!(row.contains(DOC), "`assurance_case` must cite {DOC}: {row}");
 }
