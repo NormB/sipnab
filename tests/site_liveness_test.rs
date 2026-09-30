@@ -1238,36 +1238,32 @@ fn the_watcher_warns_when_the_advertisement_check_is_refused() {
 
 // ── Asking whether the site serves, without mistaking one timeout for an outage ──
 
-/// Run `classify-origin-cert.sh --probe` against a stub `curl` that answers
-/// each call with the next of `responses` (`(status it prints, exit code)`),
-/// repeating the last. Returns `(exit code, stdout, number of curl calls)`.
-///
-/// The stub stands in for the network on purpose: the defect this pins
-/// (2026-09-22, the v0.5.185 tag's run) was one runner timing out once, which
-/// no test can make the real network do on demand.
+/// A directory holding the stub `curl` and the answers it gives: each call
+/// answers with the next of `responses` (`(status it prints, exit code)`),
+/// repeating the last, and appends a line to `calls`.
 #[cfg(unix)]
-fn probe(responses: &[(&str, i32)]) -> (i32, String, usize) {
-    use std::os::unix::fs::PermissionsExt as _;
+fn probe_dir(responses: &[(&str, i32)]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("tempdir");
     let lines: String = responses
         .iter()
         .map(|(status, exit)| format!("{status} {exit}\n"))
         .collect();
     std::fs::write(dir.path().join("responses"), lines).expect("write responses");
-    let stub = dir.path().join("curl");
-    std::fs::write(
-        &stub,
-        "#!/bin/sh\n\
-         echo x >> \"$STUB_DIR/calls\"\n\
-         n=$(wc -l < \"$STUB_DIR/calls\")\n\
-         line=$(sed -n \"${n}p\" \"$STUB_DIR/responses\")\n\
-         [ -n \"$line\" ] || line=$(tail -n 1 \"$STUB_DIR/responses\")\n\
-         set -- $line\n\
-         printf '%s' \"$1\"\n\
-         exit \"$2\"\n",
-    )
-    .expect("write the stub");
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    // Linked, not written: see `the_probe_stub_is_never_written_by_the_test_process`.
+    std::os::unix::fs::symlink(repo().join(PROBE_CURL_STUB), dir.path().join("curl"))
+        .expect("link the stub");
+    dir
+}
+
+/// Run `classify-origin-cert.sh --probe` against the stub `curl` of
+/// [`probe_dir`]. Returns `(exit code, stdout, number of curl calls)`.
+///
+/// The stub stands in for the network on purpose: the defect this pins
+/// (2026-09-22, the v0.5.185 tag's run) was one runner timing out once, which
+/// no test can make the real network do on demand.
+#[cfg(unix)]
+fn probe(responses: &[(&str, i32)]) -> (i32, String, usize) {
+    let dir = probe_dir(responses);
     let path = format!(
         "{}:{}",
         dir.path().display(),
@@ -1290,6 +1286,38 @@ fn probe(responses: &[(&str, i32)]) -> (i32, String, usize) {
         String::from_utf8_lossy(&out.stdout).into_owned(),
         calls,
     )
+}
+
+/// The committed stub `curl` the probe tests put first on `PATH`.
+const PROBE_CURL_STUB: &str = "tests/fixtures/probe-curl-stub";
+
+/// The stub `curl` is linked in from the tree, never written by this process.
+///
+/// A file this process has open for writing cannot be executed by anyone
+/// (`ETXTBSY`), and it stays that way while a child forked by another test
+/// thread in that window still holds the inherited descriptor, which on a
+/// loaded host can be a while. `dash` does not stop at a busy `curl`: it
+/// carries on down `PATH` and runs the SYSTEM curl. The probe then asks the
+/// real network, the stub counts zero calls, and a test such as
+/// [`an_edge_refusal_is_an_answer_and_is_not_retried`] fails only when the
+/// suite runs loaded and passes alone. A committed file is never open for
+/// writing here, so there is no window to lose.
+#[cfg(unix)]
+#[test]
+fn the_probe_stub_is_never_written_by_the_test_process() {
+    let dir = probe_dir(&[("200", 0)]);
+    let stub = dir.path().join("curl");
+    let meta = std::fs::symlink_metadata(&stub).expect("the stub is there");
+    assert!(
+        meta.file_type().is_symlink(),
+        "the stub curl was written by the test process, so a sibling test's \
+         spawn can hold it busy and the probe runs the system curl instead"
+    );
+    assert_eq!(
+        std::fs::read_link(&stub).expect("a link"),
+        repo().join(PROBE_CURL_STUB),
+        "the stub must be the committed one"
+    );
 }
 
 /// One timeout is asked again, not reported as the site being down.
