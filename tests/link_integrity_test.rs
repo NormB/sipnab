@@ -1120,7 +1120,8 @@ fn wiki_intra_docs_links_resolve() {
     // build-ci-release.md 1195.
     // 1222 -> 1227 with reproducible builds: the five new relative links in
     // build-ci-release.md and install.md (measured: +5, as on the older base).
-    const EXPECTED_WIKI_LINKS: usize = 1226;
+    // 1226 -> 1231 with reproducible builds (+5, as measured on each base).
+    const EXPECTED_WIKI_LINKS: usize = 1231;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

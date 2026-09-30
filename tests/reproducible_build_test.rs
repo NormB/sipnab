@@ -414,3 +414,32 @@ fn the_check_workflow_is_bounded_read_only_and_triggered_by_build_inputs() {
         );
     }
 }
+
+/// Inside a container job the checkout belongs to the runner's user, not the
+/// container's root, so git refuses the repository ("dubious ownership") and
+/// `reproducible-build.sh` finds no commit time for `SOURCE_DATE_EPOCH`. Every
+/// Linux gnu release build failed exactly that way in a build-only Release run
+/// (36789365791) before this step existed; the musl and macOS builds, which run
+/// on the host, passed. The step must mark the workspace safe, in the build
+/// job, before either build step runs.
+#[test]
+fn container_builds_mark_the_checkout_safe_before_building() {
+    let wf = read(".github/workflows/release.yml");
+    let job = &wf[wf.find("\n  build:").expect("release.yml has a build job")..];
+    let job = &job[..job.find("\n  release:").unwrap_or(job.len())];
+    let safe = job
+        .find("safe.directory")
+        .expect("the build job marks the checkout as a git safe.directory");
+    for step in ["- name: Build (cross)", "- name: Build (native)"] {
+        let at = job.find(step).unwrap_or_else(|| panic!("no `{step}` step"));
+        assert!(
+            safe < at,
+            "safe.directory must be set before `{step}`, or the container \
+             build cannot read the commit time"
+        );
+    }
+    assert!(
+        job.contains("\"$GITHUB_WORKSPACE\"") || job.contains("${{ github.workspace }}"),
+        "mark the actual workspace safe, not `*`"
+    );
+}

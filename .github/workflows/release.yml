@@ -137,6 +137,14 @@ jobs:
       # llvm-tools carries llvm-objcopy, which the symbol split below needs: it
       # reads every architecture, where the host's GNU objcopy cannot open the
       # aarch64 binaries this x86_64 runner cross-compiles.
+      # In a container the checkout belongs to the runner's user, not root, so
+      # git refuses it ("dubious ownership"). reproducible-build.sh reads the
+      # commit time for SOURCE_DATE_EPOCH, and build.rs reads the commit for
+      # `sipnab --version`; both need git to trust the workspace.
+      - name: Trust the checkout inside the build container
+        if: matrix.container
+        shell: bash
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Install Rust
         uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
         with:

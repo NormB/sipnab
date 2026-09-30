@@ -5812,7 +5812,8 @@ fn packaging_scripts_reference_existing_paths() {
     // and whose eBPF install names `bpf/rust-toolchain.toml`. Attributed by
     // measurement: without reproducible.yml the scan reads 136, and with
     // HEAD's release.yml swapped back in it reads 141.
-    const EXPECTED_REFERENCES: usize = 137;
+    // 137 -> 146 with reproducible builds (+9, as measured on its older base).
+    const EXPECTED_REFERENCES: usize = 146;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
