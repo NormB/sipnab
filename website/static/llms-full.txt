@@ -8624,6 +8624,7 @@ minute.
 | Prove a download is genuine before trusting it | [Verify a download is genuine](#verify-a-download-is-genuine) |
 | Run it in a container | [Run it in Docker](#run-it-in-docker) |
 | Drive it from an AI agent | [Turn on the MCP server](#turn-on-the-mcp-server) |
+| Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |
 | Take it off this machine | [Uninstall it](#uninstall-it) |
 
 ## Install in one command
@@ -9081,7 +9082,7 @@ sudo rpm -i sipnab-0.5.197-1.aarch64-noaudio.rpm
 ### Homebrew (macOS)
 
 ```bash
-brew install sipnab
+brew install NormB/tap/sipnab
 ```
 
 ## Build it from source
@@ -9497,6 +9498,151 @@ Two things surprise people here. The `Code` column reads INVITE transactions
 only, so a `REGISTER` row shows `-` whatever the registrar answered. And
 `Duration` is the span from the dialog's first message to its last, not talk
 time.
+
+## Upgrade sipnab
+
+Upgrade the same way you installed. Each route below replaces the binary with
+the newer release and keeps your configuration.
+
+**Before you upgrade, read the changelog.** sipnab is pre-1.0 and makes no
+Semantic Versioning promise: any release may change a flag, a config key or an
+output format. [CHANGELOG.md](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md)
+calls out each breaking change in the entry that carries it, marked
+**Breaking:** (entries up to 0.5.100 spell it `BREAKING:`). Search the entries
+between your version and the new one for that word.
+
+**Only the latest release gets fixes**, security fixes included, and there
+are no long-term support branches (see
+[SECURITY.md](https://github.com/NormB/sipnab/blob/main/SECURITY.md#supported-versions)).
+Upgrading is how you get a fix.
+
+Check the version you run now, and again after the upgrade:
+
+```bash
+sipnab --version
+```
+
+### With the one-line installer
+
+Run the installer again. It fetches the latest release and overwrites the
+binary in place:
+
+```bash
+curl -fsSL https://sipnab.com/install.sh | sh
+```
+
+If you installed with `SIPNAB_INSTALL_DIR`, set it again, or the new binary
+lands in `/usr/local/bin` beside the old one:
+
+```bash
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+### From a release tarball
+
+Repeat the download steps in
+[Download a release binary yourself](#download-a-release-binary-yourself) with
+`VERSION` set to the new release. The last step,
+`sudo install -m 755`, replaces the old binary.
+
+### With a .deb package
+
+Download the new `.deb` as in
+[Install with your package manager](#install-with-your-package-manager) and
+install it over the old one.
+apt treats a newer version of an installed package as an upgrade:
+
+```bash
+sudo apt install "./sipnab_${VERSION}_amd64.deb"
+```
+
+`sudo dpkg -i` with the same file also upgrades, but does not fetch a missing
+dependency, which `apt` does.
+
+### With an .rpm package
+
+Use `rpm -U`, not `rpm -i`. `rpm -i` refuses a package that is already
+installed, while `-U` replaces the installed version:
+
+```bash
+sudo rpm -U "sipnab-${VERSION}-1.x86_64.rpm"
+```
+
+`dnf` does the same, and fetches a missing dependency too:
+
+```bash
+sudo dnf upgrade "./sipnab-${VERSION}-1.x86_64.rpm"
+```
+
+On aarch64, or for the `-noaudio` package, use that file's name, as listed in
+[Install with your package manager](#install-with-your-package-manager).
+
+### With Homebrew
+
+```bash
+brew upgrade NormB/tap/sipnab
+```
+
+### With cargo
+
+Install the new version over the old one. `--force` replaces the installed
+binary, and `--locked` builds with the exact dependency versions the release's
+own tests ran against:
+
+```bash
+cargo install sipnab --features full --locked --force
+```
+
+### From a source checkout
+
+Fetch the latest code, then run the install script again, from the checkout:
+
+```bash
+git pull
+```
+
+```bash
+./scripts/install-from-source.sh --features full
+```
+
+### In Docker
+
+Pull the new image. The next `docker run` uses it:
+
+```bash
+docker pull ghcr.io/normb/sipnab:latest
+```
+
+### What an upgrade keeps, and what to redo
+
+**Your configuration survives every route.** No package ships a configuration
+file: the `.deb` creates an empty `/etc/sipnab` directory and the `.rpm`
+creates nothing there. An upgrade replaces only the files the package ships,
+so `/etc/sipnab/sipnab.toml` and `~/.config/sipnab/` stay as you left them.
+The installer, the tarball, Homebrew and cargo never touch either location.
+
+**Capabilities do not survive a replaced binary.** If you granted live capture
+without root, grant it again after the upgrade, because replacing the file
+clears its capabilities (see
+[Capture live traffic without root](#capture-live-traffic-without-root)):
+
+```bash
+sudo sipnab --setup-caps
+```
+
+The `.deb` and `.rpm` service unit needs no such step: it grants the
+capabilities itself each time it starts.
+
+**A running service keeps the old binary until it restarts.** Neither package
+restarts it for you. If you enabled the systemd unit, restart it after the
+upgrade:
+
+```bash
+sudo systemctl restart sipnab
+```
+
+The package upgrade replaces the unit file too. Put your changes to the unit
+in a drop-in (`sudo systemctl edit sipnab`), which the upgrade leaves alone.
 
 ## Uninstall it
 

@@ -13,7 +13,8 @@ cannot drift from what actually ships. It lists the Rust crates reached from
 of every feature set the release workflow compiles, of which the musl and
 `noaudio` builds are subsets — plus the non-cargo libraries the artifacts
 either link from the host or compile in. Dev-dependencies are excluded: test
-harnesses are not part of any distributed artifact.
+harnesses are not part of any distributed artifact. The files the repository
+vendors from other projects are listed too, each with its version.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full license texts are published at <https://spdx.org/licenses/> under those
@@ -38,6 +39,16 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 |---|---|---|
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
+
+## Vendored files
+
+Files copied into the repository unmodified from another project's release. None of them is compiled into sipnab: the two scripts are served by the sipnab.com website, and the schema is a test fixture. The SHA-256 identifies the exact file, so an update that forgets to change its row fails the test suite. CONTRIBUTING.md, under "Updating vendored files", says how to update each one.
+
+| File | Component | Version | Upstream | License | SHA-256 |
+|---|---|---|---|---|---|
+| `website/static/js/mermaid.min.js` | Mermaid: `dist/mermaid.min.js` of the `mermaid` npm package, unmodified. Renders the diagrams on sipnab.com. | 11.16.0 | <https://github.com/mermaid-js/mermaid> | MIT | `74d7c46dabca328c2294733910a8aa1ed0c37451776e8d5295da38a2b758fb9b` |
+| `website/static/js/scalar.min.js` | Scalar API Reference: `dist/browser/standalone.js` of the `@scalar/api-reference` npm package, unmodified. Renders the REST API reference on sipnab.com. | 1.67.0 | <https://github.com/scalar/scalar> | MIT | `d150e6d9ec333062cb15870704bb9eb6ec6fa99ce3fe5b164a53bc0470e838ee` |
+| `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 265e0449004acda56612120b3d6635ffe7822cf1 (2026-06-30) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `c0501eb64fea587db2af43afc80a76d6b094c77694f5f41a92164d04fb926c5d` |
 
 ## Rust crates (412)
 

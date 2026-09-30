@@ -5,7 +5,7 @@
 | Norm Brandinger | [@NormB](https://github.com/NormB) | Everything |
 
 One maintainer, owning the whole tree. `.github/CODEOWNERS` says the same thing
-in the form GitHub enforces: `*  @NormB`, so every pull request requests that
+in the form GitHub reads: `*  @NormB`, so every pull request requests that
 review automatically.
 
 ## What that means for you

@@ -15,6 +15,8 @@ Scope, stated plainly because it bounds what the file is evidence of:
     `.github/workflows/release.yml` compiles, so this covers every published
     binary rather than the largest one. Dev-dependencies are excluded — test
     harnesses are not linked into anything that ships.
+  * Files vendored from other projects (VENDORED below) are listed by hand
+    with their version and SHA-256, since no package manager tracks them.
   * Non-cargo libraries are listed by hand below, since they are resolved by the
     platform or by the cross image, not by cargo, and never appear in its
     metadata. Some are linked from the host at runtime; some are compiled into
@@ -82,6 +84,51 @@ SYSTEM_LIBS = [
     ),
 ]
 
+# Files copied into the repository from someone else's release, which no
+# package manager tracks and no dependency bot updates. Maintained here by hand
+# and gated by `every_vendored_file_is_recorded_with_its_version`: each row's
+# SHA-256 must be the file on disk, and a script's version must be the one the
+# bundle embeds, so replacing a file without updating its row fails the suite.
+# CONTRIBUTING.md ("Updating vendored files") says how to update each one.
+#
+# The SHA-256 is recorded by hand on purpose. Computing it here would make the
+# regenerated file agree with whatever is on disk, version column included, and
+# the gate would then compare the file with itself.
+#
+# (repo path, component, version, upstream, license, sha256)
+VENDORED = [
+    (
+        "website/static/js/mermaid.min.js",
+        "Mermaid: `dist/mermaid.min.js` of the `mermaid` npm package, unmodified. "
+        "Renders the diagrams on sipnab.com.",
+        "11.16.0",
+        "<https://github.com/mermaid-js/mermaid>",
+        "MIT",
+        "74d7c46dabca328c2294733910a8aa1ed0c37451776e8d5295da38a2b758fb9b",
+    ),
+    (
+        "website/static/js/scalar.min.js",
+        "Scalar API Reference: `dist/browser/standalone.js` of the "
+        "`@scalar/api-reference` npm package, unmodified. Renders the REST API "
+        "reference on sipnab.com.",
+        "1.67.0",
+        "<https://github.com/scalar/scalar>",
+        "MIT",
+        "d150e6d9ec333062cb15870704bb9eb6ec6fa99ce3fe5b164a53bc0470e838ee",
+    ),
+    (
+        "tests/schemas/publisher/vcon_json_schema.json",
+        "vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working "
+        "group's draft-ietf-vcon-vcon-core repository, unmodified. Test "
+        "fixture only; it is in no release artifact.",
+        "commit 265e0449004acda56612120b3d6635ffe7822cf1 (2026-06-30)",
+        "<https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core>",
+        "IETF Trust Legal Provisions; code components under the Simplified BSD "
+        "License, as the repository's CONTRIBUTING.md states",
+        "c0501eb64fea587db2af43afc80a76d6b094c77694f5f41a92164d04fb926c5d",
+    ),
+]
+
 # Crates offering a copyleft option alongside permissive ones. sipnab elects a
 # permissive license in each case; recording the election is the point.
 ELECTIONS = {
@@ -104,7 +151,8 @@ cannot drift from what actually ships. It lists the Rust crates reached from
 of every feature set the release workflow compiles, of which the musl and
 `noaudio` builds are subsets — plus the non-cargo libraries the artifacts
 either link from the host or compile in. Dev-dependencies are excluded: test
-harnesses are not part of any distributed artifact.
+harnesses are not part of any distributed artifact. The files the repository
+vendors from other projects are listed too, each with its version.
 
 Each entry gives the SPDX expression the crate declares in its own manifest.
 Full license texts are published at <https://spdx.org/licenses/> under those
@@ -230,6 +278,21 @@ def render(rows: list[tuple[str, str, str]]) -> str:
                     "re-check the election in ELECTIONS before regenerating"
                 )
             out.append(f"| {name} | {offered} | **{choice}** |")
+
+    out += ["", "## Vendored files", ""]
+    out.append(
+        "Files copied into the repository unmodified from another project's "
+        "release. None of them is compiled into sipnab: the two scripts are "
+        "served by the sipnab.com website, and the schema is a test fixture. "
+        "The SHA-256 identifies the exact file, so an update that forgets to "
+        "change its row fails the test suite. CONTRIBUTING.md, under "
+        "\"Updating vendored files\", says how to update each one."
+    )
+    out.append("")
+    out.append("| File | Component | Version | Upstream | License | SHA-256 |")
+    out.append("|---|---|---|---|---|---|")
+    for path, component, version, upstream, license, sha in VENDORED:
+        out.append(f"| `{path}` | {component} | {version} | {upstream} | {license} | `{sha}` |")
 
     out += ["", f"## Rust crates ({len(rows)})", ""]
     out.append("| Crate | Version | License |")

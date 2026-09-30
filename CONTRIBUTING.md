@@ -421,6 +421,44 @@ cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
 cargo deny check
 ```
 
+### Updating vendored files
+
+A few files come from other projects' releases, copied into the repository
+rather than fetched by a package manager. Dependabot and `cargo audit` do not
+see them, so nothing tells you when a new version comes out. Each one has a row in
+the "Vendored files" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) naming its version, where
+it came from, its license and its SHA-256.
+
+| File | What it is | Where a new version comes from |
+|---|---|---|
+| [`website/static/js/mermaid.min.js`](website/static/js/mermaid.min.js) | Mermaid, which draws the site's diagrams | `dist/mermaid.min.js` in the `mermaid` package on the `npm` registry |
+| [`website/static/js/scalar.min.js`](website/static/js/scalar.min.js) | Scalar, which renders the REST API reference | `dist/browser/standalone.js` in the `@scalar/api-reference` package on the `npm` registry |
+| [`tests/schemas/publisher/vcon_json_schema.json`](tests/schemas/publisher/vcon_json_schema.json) | The vCon working group's JSON schema, a test fixture | `vcon_json_schema.json` at a commit of [draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core) |
+
+To update one:
+
+1. Download the new release and copy the file over the old one unchanged. For
+   a package on the `npm` registry, `npm pack <package>@<version>` downloads the release
+   tarball without installing anything.
+2. In `VENDORED` in
+   [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+   change the file's version and SHA-256. `sha256sum <file>` prints the new
+   hash.
+3. Regenerate the notices with
+   `python3 scripts/build-third-party-notices.py` and commit both files.
+4. For the vCon schema, also change `VCON_PUBLISHER_COMMIT` and
+   `VCON_PUBLISHER_SHA256` in
+   [`tests/json_schema_test.rs`](tests/json_schema_test.rs). A test there then
+   checks that sipnab's own `tests/schemas/vcon.schema.json` still differs from
+   the new file only where it documents a deviation.
+
+`every_vendored_file_is_recorded_with_its_version` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file's
+hash is not the one recorded, or a script's recorded version is not the one
+the script itself contains. A new minified script under `website/static/js/`
+also fails it until it has a row.
+
 ## Commit Messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:

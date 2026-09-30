@@ -1096,6 +1096,11 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD's docs/mcp-tools.md (1187 with it): rtp_stats's relay paragraph
     // links reconcile_orphans, media_diagnostics, explain_attribution and
     // export_audio, and each of those three links back to rtp_stats.
+    // 1187 -> 1192: docs/install.md's Upgrade section, measured against HEAD
+    // (with HEAD's install.md the count is 1187). The goal-table row to it,
+    // and four links from it to the sections each route repeats: the tarball
+    // download, the package-manager section twice, and live capture without
+    // root.
     const EXPECTED_WIKI_LINKS: usize = 1194;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
@@ -1205,7 +1210,10 @@ fn root_community_file_links_resolve() {
     // the OpenSIPS/Kamailio/Homer HEP guides, REST, Prometheus, MCP and MCP
     // deployment), adds a security section (auth, API TLS, threat model), and
     // links the CLA and Dependencies sections of CONTRIBUTING.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 72;
+    // 72 -> 73: CONTRIBUTING.md's "Updating vendored files" links
+    // THIRD-PARTY-NOTICES.md, where each vendored file's version is recorded.
+    // Measured against HEAD: with HEAD's CONTRIBUTING.md the count is 72.
+    const EXPECTED_COMMUNITY_LINKS: usize = 73;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
