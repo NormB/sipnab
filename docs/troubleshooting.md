@@ -26,6 +26,7 @@ the cause from there.
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
+| `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
@@ -1138,6 +1139,48 @@ an inline budget. A recording over it draws an out-loud refusal rather than a
 silent truncation, and the caveat names the size it turned down.
 
 ---
+
+## An output file sipnab cannot create
+
+**Problem:** a root run with `-O` stops at once, or a long run stops when
+`--split` rotates, with a line such as:
+
+```text
+Failed to create output file '/var/tmp/e2e/rtp03.pcap': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
+```
+
+**Why:** run as root, sipnab opens the capture device and then drops
+privileges, to `nobody` unless `--user` or `[privilege] user` names another
+account. It creates the `-O` file after the drop, and each `--split` file
+later still, so the drop user creates the file, not root. A
+directory made with a plain `sudo mkdir` is `root:root` mode `0755`, which
+`nobody` may read but not write.
+
+**Command:** pick one. Give the directory to the drop user:
+
+```bash
+sudo install -d -o nobody /var/tmp/e2e
+```
+
+Or run as an account that can already write there (`sipcap` is an example
+name):
+
+```bash
+sudo sipnab -N -d any -O /var/tmp/e2e/rtp03.pcap --user sipcap udp
+```
+
+Or keep root for the whole run:
+
+```bash
+sudo sipnab -N -d any -O /var/tmp/e2e/rtp03.pcap --no-priv-drop udp
+```
+
+**What to look for:** the text after the file name is the operating system's
+reason. `Permission denied` is the privilege drop above. `No such file or
+directory` means the directory does not exist: sipnab does not create it, so
+make it first. The privilege sentence appears only when sipnab did drop
+privileges, so a run without it that still says `Permission denied` means
+your own account may not write there.
 
 ## Send us a crash report
 

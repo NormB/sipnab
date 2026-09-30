@@ -10382,6 +10382,7 @@ the cause from there.
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
+| `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
@@ -11494,6 +11495,48 @@ an inline budget. A recording over it draws an out-loud refusal rather than a
 silent truncation, and the caveat names the size it turned down.
 
 ---
+
+## An output file sipnab cannot create
+
+**Problem:** a root run with `-O` stops at once, or a long run stops when
+`--split` rotates, with a line such as:
+
+```text
+Failed to create output file '/var/tmp/e2e/rtp03.pcap': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
+```
+
+**Why:** run as root, sipnab opens the capture device and then drops
+privileges, to `nobody` unless `--user` or `[privilege] user` names another
+account. It creates the `-O` file after the drop, and each `--split` file
+later still, so the drop user creates the file, not root. A
+directory made with a plain `sudo mkdir` is `root:root` mode `0755`, which
+`nobody` may read but not write.
+
+**Command:** pick one. Give the directory to the drop user:
+
+```bash
+sudo install -d -o nobody /var/tmp/e2e
+```
+
+Or run as an account that can already write there (`sipcap` is an example
+name):
+
+```bash
+sudo sipnab -N -d any -O /var/tmp/e2e/rtp03.pcap --user sipcap udp
+```
+
+Or keep root for the whole run:
+
+```bash
+sudo sipnab -N -d any -O /var/tmp/e2e/rtp03.pcap --no-priv-drop udp
+```
+
+**What to look for:** the text after the file name is the operating system's
+reason. `Permission denied` is the privilege drop above. `No such file or
+directory` means the directory does not exist: sipnab does not create it, so
+make it first. The privilege sentence appears only when sipnab did drop
+privileges, so a run without it that still says `Permission denied` means
+your own account may not write there.
 
 ## Send us a crash report
 
@@ -13071,6 +13114,20 @@ new ones, and it deletes only the files this run wrote.
 sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50 --split-keep 4
 ```
 
+**The drop user creates the output files.** Run as root, sipnab opens the
+capture device, then drops privileges to `nobody` (or the `--user` you name)
+before it creates the `-O` file, and it creates every `--split` file later
+still. A directory only root may write, such as one made with a plain
+`sudo mkdir`, therefore refuses the file:
+
+```text
+Failed to create output file '/var/captures/sip.pcapng': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
+```
+
+Give the directory to the drop user with `sudo install -d -o nobody
+/var/captures`, pass `--user` naming an account that can already write it, or
+keep root for the whole run with `--no-priv-drop`.
+
 > **`--split-keep` deletes capture files.** sipnab deletes nothing unless you
 > pass the flag, and nothing at `--split-keep 0`, because a capture is very
 > often the only copy of the evidence.
@@ -13111,7 +13168,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `-I`, `--input` | `<FILE\|DIR\|GLOB>` | -- | Read packets from a capture file, a directory of them, an archive of them, or a glob, instead of live capture. **Repeatable.** sipnab reads the files in capture order, never in filename order — see the note below. A `.tar`, `.tgz` or `.tar.gz` reads like a directory: see [Archives read like directories](#archives-read-like-directories) |
 | `--recursive` | -- | off | Descend into subdirectories when `-I` names a directory |
 | `--input-name` | `<GLOB>` | -- | Read only files whose *name* matches this pattern when `-I` names a directory or an archive. Applies at every depth under `--recursive`, and to an archive's members at every depth |
-| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
+| `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file. Run as root, sipnab creates this file, and every `--split` file, after it drops privileges, so the drop user (`nobody` unless `--user` names another) must be able to write the directory. See [the note above](#bound-split-and-multi-interface-captures) |
 | `-B`, `--buffer` | `<MIB>` | `64` | Kernel capture buffer size in MiB (per device). See [Tuning capture](tuning-capture.md) |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |

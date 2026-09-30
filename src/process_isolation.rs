@@ -1464,7 +1464,10 @@ pub(crate) fn worker_args(
     worker_process::WorkerArgs {
         rate_limit: spawn.rate_limit.unwrap_or(DEFAULT_RATE_LIMIT),
         send_fds,
-        run_as: spawn.run_as.clone().unwrap_or_else(|| "nobody".to_string()),
+        run_as: spawn
+            .run_as
+            .clone()
+            .unwrap_or_else(|| crate::privilege::DEFAULT_DROP_USER.to_string()),
         log_level: spawn.log_level.clone(),
     }
 }

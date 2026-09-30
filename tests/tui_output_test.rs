@@ -283,7 +283,10 @@ fn an_output_that_cannot_be_opened_stops_the_thread_with_an_error() {
     let cli = Cli::parse_from(["sipnab", "--pcapng", "-O", out.to_str().expect("utf-8")]);
     let r = run_with(&cli, &out, &sdes_call_frames(), false, false, dir);
     let e = r.error.expect("an error");
-    assert!(e.contains("Failed to open output file"), "{e}");
+    assert!(e.contains("Failed to create output file"), "{e}");
+    // The cause, not only the context: `{e}` on an anyhow error printed the
+    // outermost layer alone and dropped the OS error an operator acts on.
+    assert!(e.contains("No such file or directory"), "{e}");
 }
 
 /// The thread writes what has waited long enough after every packet, not

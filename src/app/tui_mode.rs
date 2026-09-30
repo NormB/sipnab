@@ -1067,11 +1067,17 @@ impl TuiOutput {
                     if let Some(ref keylog_path) = self.keylog
                         && let Err(e) = w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                     {
-                        tracing::warn!("Failed to write DSB: {e}");
+                        tracing::warn!("Failed to write DSB: {e:#}");
                     }
                     self.writer = Some(w);
                 }
-                Err(e) => anyhow::bail!("Failed to open output file: {e}"),
+                Err(e) => anyhow::bail!(
+                    "{}",
+                    crate::capture::writer::describe_output_error(
+                        &e,
+                        crate::privilege::dropped_to()
+                    )
+                ),
             }
         }
         #[cfg(feature = "tls")]
@@ -1084,7 +1090,10 @@ impl TuiOutput {
         if let Some(ref mut w) = self.writer
             && let Err(e) = w.write(packet)
         {
-            anyhow::bail!("Failed to write packet: {e}");
+            anyhow::bail!(
+                "Failed to write packet: {}",
+                crate::capture::writer::describe_output_error(&e, crate::privilege::dropped_to())
+            );
         }
         Ok(())
     }
@@ -1095,7 +1104,13 @@ impl TuiOutput {
         if let (Some(x), Some(w)) = (self.export.as_mut(), self.writer.as_mut()) {
             for frame in x.ready() {
                 if let Err(e) = crate::capture::decrypted_export::write_frame(w, &frame) {
-                    anyhow::bail!("Failed to write packet: {e}");
+                    anyhow::bail!(
+                        "Failed to write packet: {}",
+                        crate::capture::writer::describe_output_error(
+                            &e,
+                            crate::privilege::dropped_to()
+                        )
+                    );
                 }
             }
         }
@@ -1113,7 +1128,13 @@ impl TuiOutput {
             } else if let Some(ref mut w) = self.writer {
                 for frame in x.finish() {
                     if let Err(e) = crate::capture::decrypted_export::write_frame(w, &frame) {
-                        tracing::error!("Failed to write packet: {e}");
+                        tracing::error!(
+                            "Failed to write packet: {}",
+                            crate::capture::writer::describe_output_error(
+                                &e,
+                                crate::privilege::dropped_to()
+                            )
+                        );
                         break;
                     }
                 }
@@ -1130,7 +1151,7 @@ impl TuiOutput {
         if let Some(ref mut w) = self.writer
             && let Err(e) = w.finish()
         {
-            tracing::error!("Output file may be incomplete: {e}");
+            tracing::error!("Output file may be incomplete: {e:#}");
         }
         summary
     }
