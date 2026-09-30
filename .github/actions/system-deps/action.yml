@@ -63,6 +63,15 @@ runs:
         # [A-Za-z0-9.-], whatever the input was.
         echo "slug=$(printf '%s' "$PACKAGES" | tr ' ' '-' | tr -cd 'a-zA-Z0-9.-')" \
           >> "$GITHUB_OUTPUT"
+        # The cached .debs are a closure computed against what the image
+        # already has: apt downloads only what is missing. A new image with a
+        # different version of an already-installed dependency makes that
+        # closure uninstallable (CI on b79b261c: libpcap0.8-dev wanted a
+        # libpcap0.8t64 the arm64 image had moved past, and ImageOS, empty on
+        # that runner, kept the key the same). Hashing the installed set puts
+        # the image's packages into the key.
+        echo "base=$(dpkg-query -W -f='${Package}=${Version}\n' | sort | sha256sum | cut -c1-16)" \
+          >> "$GITHUB_OUTPUT"
 
     - name: Restore the .deb cache
       if: steps.probe.outputs.need != ''
@@ -77,7 +86,9 @@ runs:
         # ImageOS pins the runner image generation: a .deb built for a newer
         # Ubuntu must not be installed onto an older image just because the
         # package names matched.
-        key: sipnab-apt-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ steps.probe.outputs.slug }}
+        # `base` pins the image's installed packages, which ImageOS does not
+        # (and on the arm64 runner ImageOS is empty).
+        key: sipnab-apt-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ steps.probe.outputs.base }}-${{ steps.probe.outputs.slug }}
 
     - name: Install
       if: steps.probe.outputs.need != ''

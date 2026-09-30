@@ -145,3 +145,43 @@ def test_the_restore_step_caches_the_directory_install_fills(tmp_path):
         f"the cache step saves {path} but the Install step put the .debs elsewhere "
         f"(found {debs} there)"
     )
+
+
+def _probe(root: pathlib.Path, installed_on_image: str) -> dict[str, str]:
+    """Run the probe step on an image whose dpkg-query lists `installed_on_image`."""
+    bin_dir = root / f"probe-bin-{abs(hash(installed_on_image))}"
+    bin_dir.mkdir()
+    for name, body in {
+        "dpkg": "exit 1\n",
+        "dpkg-query": 'printf "%s" "$IMAGE_PACKAGES"\n',
+    }.items():
+        path = bin_dir / name
+        path.write_text("#!/usr/bin/env bash\n" + body)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    out = root / f"out-{abs(hash(installed_on_image))}"
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "PACKAGES": "libpcap-dev",
+        "IMAGE_PACKAGES": installed_on_image,
+        "GITHUB_OUTPUT": str(out),
+    }
+    script = _run_block(_step("Decide what is missing"))
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, text=True)
+    return dict(line.split("=", 1) for line in out.read_text().splitlines())
+
+
+def test_a_new_runner_image_misses_the_old_images_cache(tmp_path):
+    """The cached .debs are a dependency closure computed against the packages
+    the image ALREADY had: apt downloads only what is missing. On 2026-09-30
+    the arm64 image moved libpcap0.8t64 to a version the cached libpcap0.8-dev
+    did not accept, the key (`sipnab-apt-Linux-ARM64--libpcap-dev`: ImageOS is
+    empty on that runner) still hit, and dpkg left both dev packages
+    unconfigured (CI on b79b261c). The key must change when the image's
+    installed set does."""
+    root = _setup(tmp_path)
+    old = _probe(root, "libpcap0.8t64=1.10.4-4.1ubuntu3.1\n")
+    new = _probe(root, "libpcap0.8t64=1.10.4-4.1ubuntu3.2\n")
+    assert old.get("base") and new.get("base"), f"the probe emits no `base` output: {old}"
+    assert old["base"] != new["base"], "two images with different packages share one cache key"
+    key = re.search(r"(?m)^\s+key: (.+?)\s*$", _step("Restore the .deb cache")).group(1)
+    assert "steps.probe.outputs.base" in key, f"the cache key ignores the image's packages: {key}"
