@@ -937,30 +937,21 @@ are different jobs. [`scripts/check-cert-expiry.sh`](https://github.com/NormB/si
 [`.github/workflows/cert-expiry.yml`](https://github.com/NormB/sipnab/blob/main/.github/workflows/cert-expiry.yml) runs both daily so neither waits for
 somebody to notice a release.
 
-**`main` declares a pull-request rule and a required check, and an owner push
-bypasses both.** Branch protection on `refs/heads/main` asks for a pull request
-and a green `CI success`, and `enforce_admins` is OFF. Measured against the API
-on 2026-08-26: `required_pull_request_reviews` present, `required_status_checks
-.contexts` `["CI success"]`, `enforce_admins.enabled` **false**. A direct push
-by the owner therefore reports
+**`main` requires a pull request and a green `CI success`, and the owner
+cannot bypass either.** Branch protection on `refs/heads/main` asks for a pull
+request and the `CI success` check, and `enforce_admins` is ON. Measured against
+the API on 2026-09-29: `required_pull_request_reviews` present,
+`required_status_checks.contexts` `["CI success"]`, `enforce_admins.enabled`
+**true**. GitHub refuses a direct push to `main`, the owner's included, so every
+change, the release version bumps included, lands through a pull request whose
+`CI success` run is green.
 
-```text
-remote: - Changes must be made through a pull request.
-remote: - Required status check "CI success" is expected.
-```
-
-and lands anyway. The rules describe an intended workflow rather than an
-enforced one.
-
-This page previously recorded `enforce_admins` as turned on from 2026-08-23,
-and that is no longer what the API returns.
-
-While it is off, the state is the
-one the backlog named in GATE2 and is worth restating rather than rediscovering:
-a status check gates a commit BEFORE it lands, and a direct push creates the
-commit and its status together, so the check cannot run in time and bypass is
-the only outcome available. A rule that every push bypasses reads as protection
-to anyone auditing the settings while providing exactly none.
+This reverses the earlier decision, recorded in the backlog under GATE2, to
+leave `enforce_admins` off. Admin enforcement was on from 2026-08-23, off by
+2026-08-26, and back on from 2026-09-29, for the OpenSSF Baseline control
+that asks a project to stop direct pushes to its primary branch.
+[`tests/branch_protection_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/branch_protection_drift_test.rs)
+fails if the setting and this page disagree again.
 
 `required_linear_history` is off, and that one is correct: `main` carries 176
 merge commits and merging feature branches is how this repository works, so the

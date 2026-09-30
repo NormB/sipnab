@@ -50,7 +50,7 @@ Only the latest release is supported with security fixes. There are no LTS branc
 
 sipnab parses and decrypts traffic that other systems produced, so it must read
 whatever algorithms those systems used: MD5 in SIP digest authentication
-(RFC 3261), TLS 1.2 CBC suites and RSA key exchange (`--tls-key`), and
+([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261)), TLS 1.2 CBC suites and RSA key exchange (`--tls-key`), and
 HMAC-SHA1 in SRTP `AES_CM_128_HMAC_SHA1_*` suites. sipnab never selects these
 for its own protection; its own endpoints use rustls (TLS 1.2/1.3, ECDHE,
 AEAD only). Captures that rely on these algorithms are weaker than modern

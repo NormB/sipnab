@@ -2,7 +2,8 @@
 //!
 //! GATE2 was closed by hand on 2026-08-23 by turning `enforce_admins` on, and
 //! was reopened on 2026-08-26 when the API reported it off again. Nothing
-//! noticed in between. A setting fixed by hand, with no gate holding it, is a
+//! noticed in between. It was turned on again on 2026-09-29, for the OpenSSF
+//! Baseline control that asks for direct pushes to `main` to be prevented. A setting fixed by hand, with no gate holding it, is a
 //! setting that reverts silently — and the cost is specific: the settings page
 //! and `docs/internals/build-ci-release.md` go on describing a guarantee that
 //! stopped existing, so a reader who checks the documentation is misled by it
@@ -24,7 +25,7 @@ use std::process::Command;
 /// Changing protection means changing this constant and the prose in
 /// `docs/internals/build-ci-release.md` together. The failure messages below
 /// name both, because a gate whose fixer is ambiguous gets worked around.
-const DECLARED_ENFORCE_ADMINS: bool = false;
+const DECLARED_ENFORCE_ADMINS: bool = true;
 const DECLARED_REQUIRES_PULL_REQUEST: bool = true;
 const DECLARED_STATUS_CHECK: &str = "CI success";
 
