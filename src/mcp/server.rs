@@ -1364,7 +1364,7 @@ pub struct SiprecMetadataParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct MediaDiagnosticsParams {
-    /// Call-ID identifying the dialog whose media to report on.
+    /// Call-ID whose media to report on: a dialog's or a relay's.
     pub call_id: String,
 }
 
@@ -1442,8 +1442,8 @@ pub struct RenderLadderParams {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct RtpStatsParams {
-    /// Call-ID identifying the dialog. Omit to sweep every stream in the
-    /// capture, including the orphans no Call-ID can name.
+    /// Call-ID of a dialog or of a relay's streams. Omit to sweep every stream
+    /// in the capture, including the orphans no Call-ID can name.
     pub call_id: Option<String>,
     /// Capture-wide sweep only: keep streams whose MOS is at or above this.
     /// Applies to grounded streams only — see `max_mos`.
@@ -5302,7 +5302,11 @@ impl SipnabMcp {
     /// # Returns
     ///
     /// With `call_id`, a JSON object carrying the `call_id`, a `streams` array
-    /// (empty when the dialog has no media), and the media `diagnosis`.
+    /// (empty when the dialog has no media), the media `diagnosis`, and
+    /// `dialog_seen`. On a media-relay host, which sees RTP and never the SIP,
+    /// the dialog is absent while the streams carry the Call-ID the relay
+    /// named: the answer comes from the streams, `dialog_seen` is false, and
+    /// `dialog_absent` says why.
     ///
     /// Without `call_id`, a `StreamPage` sweeping every stream in the store —
     /// including the orphans no Call-ID can name — with `total_matched`,
@@ -5310,14 +5314,14 @@ impl SipnabMcp {
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` is not found, when a MOS bound
-    /// accompanies a `call_id`, or when `cursor`'s timestamp half is not
+    /// `invalid_params` (-32602) when neither a dialog nor any stream carries
+    /// `call_id`, when a MOS bound accompanies a `call_id`, or when `cursor`'s timestamp half is not
     /// RFC 3339.
     #[tool(
         name = "rtp_stats",
         description = "Returns per-stream RTP quality (codec, MOS, mos_grounded, \
                        jitter, loss%, packet count, SSRC). With call_id: every \
-                       stream of that dialog plus its media diagnosis. Without \
+                       stream of that call plus its media diagnosis. Without \
                        call_id: a paged sweep of every stream in the capture, \
                        optionally bounded by min_mos / max_mos, which apply only \
                        to codecs with a published ITU-T G.113 impairment value.",
@@ -5343,30 +5347,47 @@ impl SipnabMcp {
 
         let payload: serde_json::Value = {
             let ds = self.dialog_store.read();
-            let dialog = ds.get(call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(format!("call_id '{call_id}' not found"), None)
-            })?;
             let ss = self.stream_store.read();
+            // The dialog is looked up, not required. A media-relay host sees
+            // RTP and never the SIP, so its streams carry the Call-ID the relay
+            // named while its dialog store is empty; demanding the dialog first
+            // made every call on such a host "not found".
+            let dialog = ds.get(call_id);
             let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(call_id).collect();
+            if dialog.is_none() && dialog_streams.is_empty() {
+                return Err(rmcp::ErrorData::invalid_params(
+                    crate::rtp::stream_store::call_not_carried(call_id),
+                    None,
+                ));
+            }
             let stream_jsons: Vec<serde_json::Value> =
                 dialog_streams.iter().map(|s| stream_json(s, &ss)).collect();
-            let ctx = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
+            let capture = CaptureMedia::of_store(&ss);
+            let ctx = dialog.map_or_else(
+                || MediaContext::without_dialog(capture),
+                |d| MediaContext::for_dialog(d, capture),
+            );
             let mut diag = diagnose_media(&dialog_streams, &ctx);
             diagnose_asymmetry(
                 &mut diag,
-                Some(dialog),
+                dialog,
                 &dialog_streams,
                 &AsymmetryThresholds::default(),
             );
             let diag_json = serde_json::to_value(&diag).unwrap_or(serde_json::Value::Null);
+            let absence = dialog
+                .is_none()
+                .then(|| super::tools::relay::dialog_absence(&ss, &dialog_streams));
             drop(ss);
             drop(ds);
-            serde_json::json!({
+            let mut payload = serde_json::json!({
                 "call_id": call_id,
                 "streams": stream_jsons,
                 "diagnosis": diag_json,
-            })
+            });
+            super::tools::relay::mark_dialog_seen(&mut payload, absence);
+            payload
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
@@ -5456,11 +5477,14 @@ impl SipnabMcp {
     ///
     /// `applicable: false` plus a `reason` for a dialog with no media, so a
     /// call whose media was never seen cannot read as a call whose media was
-    /// fine. Otherwise a `streams` array, one entry per stream of the dialog.
+    /// fine. Otherwise a `streams` array, one entry per stream carrying the
+    /// Call-ID. Every answer carries `dialog_seen`; on a media-relay host,
+    /// which never sees the SIP, it is false and `dialog_absent` says why.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` is not in the active store.
+    /// `invalid_params` (-32602) when neither a dialog nor any stream carries
+    /// `call_id`.
     #[tool(
         name = "media_diagnostics",
         description = "Returns per-stream media facts beyond rtp_stats: QoS \
@@ -5482,20 +5506,27 @@ impl SipnabMcp {
         let payload: serde_json::Value = {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
-            if ds.get(call_id).is_none() {
+            let ss = self.stream_store.read();
+            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+            // A relay host holds the streams and never the dialog: answer from
+            // them, and refuse only when neither store knows the Call-ID.
+            let dialog_seen = ds.get(call_id).is_some();
+            if !dialog_seen && streams.is_empty() {
                 return Err(rmcp::ErrorData::invalid_params(
-                    format!("call_id '{call_id}' not found"),
+                    crate::rtp::stream_store::call_not_carried(call_id),
                     None,
                 ));
             }
-            let ss = self.stream_store.read();
-            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(call_id).collect();
+            let absence =
+                (!dialog_seen).then(|| super::tools::relay::dialog_absence(&ss, &streams));
             if streams.is_empty() {
                 let capture_identity = state.identity.etag(ds.generation(), ss.generation());
                 drop(ss);
                 drop(ds);
                 drop(state);
-                serde_json::json!({
+                // Only a held dialog reaches here: no dialog and no stream
+                // was refused above. Said anyway, so every answer carries it.
+                let mut payload = serde_json::json!({
                     "schema_version": 1,
                     "call_id": call_id,
                     "applicable": false,
@@ -5505,7 +5536,9 @@ impl SipnabMcp {
                                reached the capture point looks the same here as \
                                one that carried none.",
                     "capture_identity": capture_identity,
-                })
+                });
+                super::tools::relay::mark_dialog_seen(&mut payload, absence);
+                payload
             } else {
                 let rows: Vec<serde_json::Value> = streams
                     .iter()
@@ -5533,13 +5566,15 @@ impl SipnabMcp {
                 drop(ss);
                 drop(ds);
                 drop(state);
-                serde_json::json!({
+                let mut payload = serde_json::json!({
                     "schema_version": 1,
                     "call_id": call_id,
                     "applicable": true,
                     "streams": rows,
                     "capture_identity": capture_identity,
-                })
+                });
+                super::tools::relay::mark_dialog_seen(&mut payload, absence);
+                payload
             }
         };
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
@@ -7666,6 +7701,9 @@ impl SipnabMcp {
     }
 
     /// Export one call's audio as a WAV file.
+    ///
+    /// The audio is the streams', so a media-relay host that never saw the
+    /// SIP dialog exports it too, answering `dialog_seen: false`.
     #[tool(
         name = "export_audio",
         description = "Exports a call's RTP audio to a WAV file in the \
@@ -7689,34 +7727,45 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // WRITES a WAV file: the overwrite guard belongs here.
         let path = self.resolve_in_root_for_write(&params.filename)?;
-        let summary = {
+        let (summary, absence) = {
             let ds = self.dialog_store.read();
-            ds.get(&params.call_id).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
-                    format!("call_id '{}' not found", params.call_id),
-                    None,
-                )
-            })?;
             let ss = self.stream_store.read();
             let streams: Vec<&crate::rtp::stream::RtpStream> =
                 ss.streams_for(&params.call_id).collect();
+            // The audio is the streams'. A relay host carries them and never
+            // the dialog, so the dialog is looked up only to say whether it
+            // was seen.
+            let dialog_seen = ds.get(&params.call_id).is_some();
+            if !dialog_seen && streams.is_empty() {
+                return Err(rmcp::ErrorData::invalid_params(
+                    crate::rtp::stream_store::call_not_carried(&params.call_id),
+                    None,
+                ));
+            }
             if streams.is_empty() {
                 return Err(rmcp::ErrorData::invalid_params(
                     format!("call '{}' has no RTP streams to export", params.call_id),
                     None,
                 ));
             }
-            crate::rtp::audio_export::export_dialog_to_wav(&streams, &path).map_err(|e| {
-                rmcp::ErrorData::internal_error(format!("writing {}: {e}", path.display()), None)
-            })?
+            let absence =
+                (!dialog_seen).then(|| super::tools::relay::dialog_absence(&ss, &streams));
+            let summary =
+                crate::rtp::audio_export::export_dialog_to_wav(&streams, &path).map_err(|e| {
+                    rmcp::ErrorData::internal_error(
+                        format!("writing {}: {e}", path.display()),
+                        None,
+                    )
+                })?;
+            (summary, absence)
         };
-        Ok(CallToolResult::success(vec![ContentBlock::json(
-            serde_json::json!({
-                "schema_version": 1,
-                "path": path.display().to_string(),
-                "summary": summary,
-            }),
-        )?]))
+        let mut payload = serde_json::json!({
+            "schema_version": 1,
+            "path": path.display().to_string(),
+            "summary": summary,
+        });
+        super::tools::relay::mark_dialog_seen(&mut payload, absence);
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Replace the loaded capture with another file from the file root.

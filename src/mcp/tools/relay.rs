@@ -132,6 +132,16 @@ pub struct AttributionExplanation {
     /// Surfaced as its own number because it is the one an incident review
     /// acts on, and a reader should not have to count rows to find it.
     pub unauthenticated_endpoints: usize,
+    /// Whether this capture holds the call's SIP dialog.
+    ///
+    /// `false` on a media-relay host, which sees the RTP and the relay's
+    /// control traffic and never the signaling: the endpoints above are then
+    /// the call's streams, found by the Call-ID the relay named.
+    pub dialog_seen: bool,
+    /// Why no dialog explains this call's media, present only when
+    /// `dialog_seen` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialog_absent: Option<DialogAbsence>,
     /// Schema version for this payload.
     pub schema_version: u32,
     /// Which capture answered, and at which store revision.
@@ -214,6 +224,85 @@ pub fn orphan_reason(named: Option<crate::rtp::stream_store::EndpointAssertion>)
     }
 }
 
+/// Which of a stream's two endpoints, if either, something named -- and what
+/// named it.
+///
+/// Both ends are asked: a relay allocation is the midpoint of a leg, so the
+/// named side is as often the destination as the source. Shared by
+/// `reconcile_orphans` and [`dialog_absence`], so "what named this media" is
+/// one rule.
+fn named_endpoint(
+    ss: &crate::rtp::stream_store::StreamStore,
+    stream: &crate::rtp::stream::RtpStream,
+) -> Option<(
+    std::net::SocketAddr,
+    crate::rtp::stream_store::EndpointAssertion,
+)> {
+    [stream.key.src, stream.key.dst].into_iter().find_map(|a| {
+        ss.sdp_endpoint_provenance(a.ip(), a.port())
+            .map(|p| (a, p.asserted_by))
+    })
+}
+
+/// Why a Call-ID that some RTP carries has no SIP dialog in this capture.
+///
+/// The answer a media tool gives beside `dialog_seen: false` when it answered
+/// from the streams alone -- a media-relay host sees RTP and the relay's
+/// control traffic, never the SIP. The verdict is the [`OrphanReason`] that
+/// `reconcile_orphans` gives the same media, not a second vocabulary for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct DialogAbsence {
+    /// What named this call's media, when no dialog did.
+    pub reason: OrphanReason,
+    /// The verdict in a sentence.
+    pub note: &'static str,
+}
+
+/// The [`DialogAbsence`] for a call's streams.
+///
+/// A relay's assertion on ANY stream wins: it is the positive evidence that
+/// this host is a relay and the signaling ran elsewhere. Otherwise the first
+/// SDP naming, otherwise nothing named it.
+#[must_use]
+pub fn dialog_absence(
+    ss: &crate::rtp::stream_store::StreamStore,
+    streams: &[&crate::rtp::stream::RtpStream],
+) -> DialogAbsence {
+    use crate::rtp::stream_store::EndpointAssertion;
+    let named: Vec<EndpointAssertion> = streams
+        .iter()
+        .filter_map(|s| named_endpoint(ss, s).map(|(_, asserted)| asserted))
+        .collect();
+    let strongest = named
+        .iter()
+        .find(|a| matches!(a, EndpointAssertion::MediaRelay { .. }))
+        .or_else(|| named.first())
+        .copied();
+    let reason = orphan_reason(strongest);
+    DialogAbsence {
+        reason,
+        note: reason.explain(),
+    }
+}
+
+/// The two fields every media tool adds when it may answer without a dialog:
+/// `dialog_seen`, and when it is false, `dialog_absent`.
+///
+/// Inserted into an existing JSON object so each tool keeps its own shape.
+pub(crate) fn mark_dialog_seen(payload: &mut serde_json::Value, absence: Option<DialogAbsence>) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    obj.insert("dialog_seen".into(), absence.is_none().into());
+    if let Some(a) = absence {
+        obj.insert(
+            "dialog_absent".into(),
+            serde_json::to_value(a).unwrap_or(serde_json::Value::Null),
+        );
+    }
+}
+
 /// One unexplained stream.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -271,7 +360,9 @@ impl SipnabMcp {
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `call_id` names no dialog.
+    /// `invalid_params` (-32602) when neither a dialog nor any stream carries
+    /// `call_id`. A media-relay host holds the streams and never the dialog,
+    /// and is answered from them with `dialog_seen: false`.
     #[tool(
         name = "explain_attribution",
         description = "For one call, report where each media endpoint came \
@@ -292,21 +383,26 @@ impl SipnabMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let trust = self.relay_delivery_trust();
 
-        let (rows, identity) = {
+        let (rows, identity, absence) = {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
-            if ds.get(&params.call_id).is_none() {
-                drop(ds);
+            let ss = self.stream_store.read();
+            let streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&params.call_id).collect();
+            // The endpoints are the streams'. A relay host holds them and never
+            // the dialog, and is where attribution matters most.
+            let dialog_seen = ds.get(&params.call_id).is_some();
+            if !dialog_seen && streams.is_empty() {
                 return Err(rmcp::ErrorData::invalid_params(
-                    format!("call_id '{}' not found", params.call_id),
+                    crate::rtp::stream_store::call_not_carried(&params.call_id),
                     None,
                 ));
             }
-            let ss = self.stream_store.read();
+            let absence = (!dialog_seen).then(|| dialog_absence(&ss, &streams));
             let identity = state.identity.etag(ds.generation(), ss.generation());
             let mut seen = std::collections::BTreeSet::new();
             let mut rows = Vec::new();
-            for stream in ss.streams_for(&params.call_id) {
+            for stream in &streams {
                 for sock in [stream.key.src, stream.key.dst] {
                     if !seen.insert((sock.ip(), sock.port())) {
                         continue;
@@ -332,7 +428,7 @@ impl SipnabMcp {
                     });
                 }
             }
-            (rows, identity)
+            (rows, identity, absence)
         };
 
         let unauthenticated = rows
@@ -343,6 +439,8 @@ impl SipnabMcp {
             call_id: params.call_id,
             endpoints: rows,
             unauthenticated_endpoints: unauthenticated,
+            dialog_seen: absence.is_none(),
+            dialog_absent: absence,
             schema_version: 1,
             capture_identity: identity,
         };
@@ -385,13 +483,7 @@ impl SipnabMcp {
             let mut consulted = false;
             for stream in ss.iter().filter(|s| s.orphaned()) {
                 total += 1;
-                // Ask about BOTH ends: a relay allocation is the midpoint of a
-                // leg, so the named side is as often the destination as the
-                // source.
-                let named = [stream.key.src, stream.key.dst].into_iter().find_map(|a| {
-                    ss.sdp_endpoint_provenance(a.ip(), a.port())
-                        .map(|p| (a, p.asserted_by))
-                });
+                let named = named_endpoint(&ss, stream);
                 let reason = orphan_reason(named.map(|(_, asserted)| asserted));
                 let (endpoint, asserted) = match named {
                     Some((a, crate::rtp::stream_store::EndpointAssertion::MediaRelay { .. })) => {
@@ -3626,5 +3718,254 @@ mod relay_handler_tests {
         );
         assert!(answer.tags.is_none() && answer.call_ids.is_none());
         assert_eq!(answer.delivery_trust, DeliveryTrust::Asked);
+    }
+
+    // ── Media tools on a relay host ─────────────────────────────────
+    //
+    // A media-relay host sees RTP and the relay's control traffic, never the
+    // SIP: its dialog store is empty, and its streams carry the Call-ID the
+    // relay control protocol named. Every media tool used to look the Call-ID
+    // up in the DIALOG store first and answer "not found", so on such a host no
+    // call could ever be found (production, sipnab 0.5.196, host rtp03).
+
+    /// The Call-ID an SBC's B2B leg carries, as the relay reports it.
+    const RELAY_CALL: &str = "B2B.201.6748799.1790773715.1438467624";
+
+    /// The exact refusal a Call-ID neither store knows must carry.
+    fn nothing_carried(call_id: &str) -> String {
+        format!(
+            "no SIP dialog and no RTP stream associated with call_id '{call_id}' in this capture"
+        )
+    }
+
+    /// A relay host's stores: no dialog at all, and two RTP streams (both
+    /// directions) tied to `call_id` because the relay named one endpoint.
+    ///
+    /// The RTP is recorded AFTER the relay's assertion and inside its TTL,
+    /// which is the order production sees: the relay allocates, then media
+    /// flows. PT 0 (PCMU) and `audio_capture` on, so `export_audio` has
+    /// retained payload to decode.
+    fn relay_host_streams(call_id: &str) -> StreamStore {
+        let mut ss = StreamStore::new(64);
+        ss.set_audio_capture(true);
+        ss.link_endpoint_from(
+            ip(71),
+            31004,
+            call_id,
+            &[],
+            None,
+            SdpProvenance::relay_asserted(
+                crate::relay::RelayImplementation::default(),
+                crate::relay::ControlDelivery::BareDatagram,
+                InputOrigin::Wire,
+                ts0(),
+            ),
+        );
+        rtp(&mut ss, (ip(70), 41004), (ip(71), 31004), 0x5151, 5, ts0());
+        rtp(&mut ss, (ip(71), 31004), (ip(70), 41004), 0x5252, 5, ts0());
+        assert_eq!(
+            ss.streams_for(call_id).count(),
+            2,
+            "the fixture must tie both streams to the relay's Call-ID"
+        );
+        ss
+    }
+
+    async fn stats_of(server: &SipnabMcp, call_id: &str) -> Result<serde_json::Value, String> {
+        server
+            .rtp_stats(Parameters(crate::mcp::server::RtpStatsParams {
+                call_id: Some(call_id.to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map(|r| payload(&r))
+            .map_err(|e| e.message.to_string())
+    }
+
+    /// The relay-host shape every fixed media tool shares: `dialog_seen:
+    /// false`, and the reconcile_orphans verdict for WHY no dialog explains it.
+    fn assert_relay_only(v: &serde_json::Value) {
+        assert_eq!(v["dialog_seen"], false, "{v}");
+        assert_eq!(
+            v["dialog_absent"]["reason"], "relay-asserted-but-no-dialog",
+            "the same verdict reconcile_orphans uses for relay-named media: {v}"
+        );
+        assert_eq!(
+            v["dialog_absent"]["note"],
+            OrphanReason::RelayAssertedButNoDialog.explain()
+        );
+    }
+
+    /// The production bug: a relay host answers `rtp_stats` for a Call-ID its
+    /// streams carry, with no dialog anywhere in the store.
+    #[tokio::test]
+    async fn rtp_stats_on_a_relay_host_answers_from_the_streams() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let v = stats_of(&srv, RELAY_CALL)
+            .await
+            .expect("a Call-ID the streams carry is found without a dialog");
+        assert_eq!(v["call_id"], RELAY_CALL);
+        assert_eq!(v["streams"].as_array().map(Vec::len), Some(2), "{v}");
+        assert!(
+            v["diagnosis"].is_object(),
+            "a diagnosis is still built: {v}"
+        );
+        assert_relay_only(&v);
+    }
+
+    /// With the dialog present the answer is the one it always was, and says
+    /// the dialog was seen.
+    #[tokio::test]
+    async fn rtp_stats_with_the_dialog_says_it_was_seen() {
+        let srv = server(dialogs_with(RELAY_CALL), relay_host_streams(RELAY_CALL));
+        let v = stats_of(&srv, RELAY_CALL).await.expect("held call");
+        assert_eq!(v["streams"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_eq!(v["dialog_seen"], true, "{v}");
+        assert!(v.get("dialog_absent").is_none(), "{v}");
+    }
+
+    /// Neither a dialog nor a stream: refused, and the refusal says what was
+    /// searched, so "this host never carried it" reads apart from a lookup bug.
+    #[tokio::test]
+    async fn rtp_stats_refuses_a_call_neither_store_holds_and_says_what_it_searched() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let err = stats_of(&srv, "elsewhere@example.invalid")
+            .await
+            .expect_err("nothing holds it");
+        assert_eq!(err, nothing_carried("elsewhere@example.invalid"));
+    }
+
+    async fn media_of(server: &SipnabMcp, call_id: &str) -> Result<serde_json::Value, String> {
+        server
+            .media_diagnostics(Parameters(crate::mcp::server::MediaDiagnosticsParams {
+                call_id: call_id.to_string(),
+            }))
+            .await
+            .map(|r| payload(&r))
+            .map_err(|e| e.message.to_string())
+    }
+
+    #[tokio::test]
+    async fn media_diagnostics_on_a_relay_host_answers_from_the_streams() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let v = media_of(&srv, RELAY_CALL)
+            .await
+            .expect("a Call-ID the streams carry is found without a dialog");
+        assert_eq!(v["applicable"], true, "{v}");
+        assert_eq!(v["streams"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_relay_only(&v);
+    }
+
+    #[tokio::test]
+    async fn media_diagnostics_with_the_dialog_says_it_was_seen() {
+        let srv = server(dialogs_with(RELAY_CALL), relay_host_streams(RELAY_CALL));
+        let v = media_of(&srv, RELAY_CALL).await.expect("held call");
+        assert_eq!(v["streams"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_eq!(v["dialog_seen"], true, "{v}");
+        assert!(v.get("dialog_absent").is_none(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn media_diagnostics_refuses_a_call_neither_store_holds_and_says_what_it_searched() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let err = media_of(&srv, "elsewhere@example.invalid")
+            .await
+            .expect_err("nothing holds it");
+        assert_eq!(err, nothing_carried("elsewhere@example.invalid"));
+    }
+
+    async fn attribution_of(
+        server: &SipnabMcp,
+        call_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        server
+            .explain_attribution(Parameters(ExplainAttributionParams {
+                call_id: call_id.to_string(),
+            }))
+            .await
+            .map(|r| payload(&r))
+            .map_err(|e| e.message.to_string())
+    }
+
+    /// The relay host is exactly where attribution matters: the relay's own
+    /// assertion is the only thing naming these endpoints.
+    #[tokio::test]
+    async fn explain_attribution_on_a_relay_host_answers_from_the_streams() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let v = attribution_of(&srv, RELAY_CALL)
+            .await
+            .expect("a Call-ID the streams carry is found without a dialog");
+        assert_eq!(v["endpoints"].as_array().map(Vec::len), Some(2), "{v}");
+        assert!(
+            v["endpoints"]
+                .as_array()
+                .is_some_and(|rows| rows.iter().any(|r| r["asserted_by"] == "media-relay")),
+            "{v}"
+        );
+        assert_relay_only(&v);
+    }
+
+    #[tokio::test]
+    async fn explain_attribution_with_the_dialog_says_it_was_seen() {
+        let srv = server(dialogs_with(RELAY_CALL), relay_host_streams(RELAY_CALL));
+        let v = attribution_of(&srv, RELAY_CALL).await.expect("held call");
+        assert_eq!(v["dialog_seen"], true, "{v}");
+        assert!(v.get("dialog_absent").is_none(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn explain_attribution_refuses_a_call_neither_store_holds_and_says_what_it_searched() {
+        let srv = server(DialogStore::new(16, false), relay_host_streams(RELAY_CALL));
+        let err = attribution_of(&srv, "elsewhere@example.invalid")
+            .await
+            .expect_err("nothing holds it");
+        assert_eq!(err, nothing_carried("elsewhere@example.invalid"));
+    }
+
+    async fn audio_of(
+        ds: DialogStore,
+        call_id: &str,
+    ) -> (Result<serde_json::Value, String>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let srv = server(ds, relay_host_streams(RELAY_CALL)).with_file_root(dir.path());
+        let r = srv
+            .export_audio(Parameters(crate::mcp::server::ExportAudioParams {
+                call_id: call_id.to_string(),
+                filename: "call.wav".to_string(),
+            }))
+            .await
+            .map(|r| payload(&r))
+            .map_err(|e| e.message.to_string());
+        (r, dir)
+    }
+
+    /// The relay carried the RTP, so its retained payload is audio to export.
+    #[tokio::test]
+    async fn export_audio_on_a_relay_host_writes_the_streams_audio() {
+        let (r, dir) = audio_of(DialogStore::new(16, false), RELAY_CALL).await;
+        let v = r.expect("a Call-ID the streams carry is found without a dialog");
+        assert!(
+            dir.path().join("call.wav").is_file(),
+            "the WAV is written: {v}"
+        );
+        assert_relay_only(&v);
+    }
+
+    #[tokio::test]
+    async fn export_audio_with_the_dialog_says_it_was_seen() {
+        let (r, _dir) = audio_of(dialogs_with(RELAY_CALL), RELAY_CALL).await;
+        let v = r.expect("held call");
+        assert_eq!(v["dialog_seen"], true, "{v}");
+        assert!(v.get("dialog_absent").is_none(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn export_audio_refuses_a_call_neither_store_holds_and_says_what_it_searched() {
+        let (r, dir) = audio_of(DialogStore::new(16, false), "elsewhere@example.invalid").await;
+        assert_eq!(
+            r.expect_err("nothing holds it"),
+            nothing_carried("elsewhere@example.invalid")
+        );
+        assert!(!dir.path().join("call.wav").exists(), "nothing is written");
     }
 }

@@ -6806,11 +6806,11 @@
     },
     "/v1/dialogs/{call_id}/audio": {
       "get": {
-        "description": "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.",
+        "description": "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.\n\nOn a media-relay host, which sees the RTP and never the SIP, the call's streams carry the Call-ID the relay named and no dialog is held: the audio is still exported, and the `sipnab-dialog-seen` response header says `false`.",
         "operationId": "get_dialog_audio",
         "parameters": [
           {
-            "description": "The dialog's Call-ID.",
+            "description": "The call's Call-ID: a dialog's, or the one a media relay named for its streams.",
             "in": "path",
             "name": "call_id",
             "required": true,
@@ -6853,7 +6853,7 @@
                 }
               }
             },
-            "description": "No dialog carries that Call-ID in this capture."
+            "description": "No SIP dialog and no RTP stream carries that Call-ID in this capture."
           },
           "422": {
             "content": {
@@ -6863,7 +6863,7 @@
                 }
               }
             },
-            "description": "The dialog exists but sipnab retained no decodable audio for it; the body names why."
+            "description": "The call is held but sipnab retained no decodable audio for it; the body names why."
           },
           "503": {
             "content": {

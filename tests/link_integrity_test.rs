@@ -1092,7 +1092,11 @@ fn wiki_intra_docs_links_resolve() {
     // 1185 -> 1187: the output-file privilege-drop fix links the new
     // troubleshooting section from its symptom table, and the `-O` row in the
     // CLI reference links the note on the drop user under the split section.
-    const EXPECTED_WIKI_LINKS: usize = 1187;
+    // 1187 -> 1194 by the relay-host media tools, attributed by swapping in
+    // HEAD's docs/mcp-tools.md (1187 with it): rtp_stats's relay paragraph
+    // links reconcile_orphans, media_diagnostics, explain_attribution and
+    // export_audio, and each of those three links back to rtp_stats.
+    const EXPECTED_WIKI_LINKS: usize = 1194;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -3521,13 +3521,17 @@ underneath it, and each one says what kind of number it is.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
+| `call_id` | string | A Call-ID a dialog carries, or one a media relay named for its streams. | Required — the call fails. |
 
 **Read `applicable` first.** It is `false` when no RTP stream belongs to the
 dialog, and the response then holds only `call_id`, `reason`,
 `capture_identity` and `schema_version`. An empty `streams` array would read as
 "sipnab checked the media and it was fine", which is a different claim from "no
 media reached the capture point".
+
+`dialog_seen` says whether the capture holds the call's SIP dialog. On a
+media-relay host it is `false` and `dialog_absent` says why, as described
+under [`rtp_stats`](#rtp-stats).
 
 Otherwise `streams` carries one entry per stream, each with five blocks:
 
@@ -3613,7 +3617,7 @@ the sweep alone:
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string? | A Call-ID the store holds. | **Switches modes** — the tool sweeps every stream in the capture, orphans included. |
+| `call_id` | string? | A Call-ID a dialog carries, or one a media relay named for its streams. | **Switches modes** — the tool sweeps every stream in the capture, orphans included. |
 | `min_mos` | f64? | Sweep only. Keeps streams scoring at or above this. Rejected alongside `call_id`. | No lower bound. |
 | `max_mos` | f64? | Sweep only. Keeps streams scoring strictly below this. Rejected alongside `call_id`. | No upper bound. |
 | `orphaned` | bool? | Sweep only. `true` keeps only streams no dialog claims, `false` keeps only streams a dialog claimed. Independent of the MOS bounds — an orphan usually has no dialog to ground its clock, so requiring a bound alongside would filter out most of what this exists to find. | Both kinds sweep. |
@@ -3633,7 +3637,41 @@ packets, SSRC, quality intervals) and `diagnosis` carries the standard one-way /
 NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
 `ptime_asymmetry`, `payload_type_asymmetry`, `duration_asymmetry`,
 `late_media`). A MOS bound alongside a `call_id` returns invalid_params
-(-32602) rather than quietly doing nothing.
+(-32602) rather than quietly doing nothing. `dialog_seen` says whether this
+capture holds the call's SIP dialog.
+
+**On a media-relay host** the dialog is not required. A relay sees the RTP and
+its own control traffic, never the SIP, so its dialog store is empty while its
+streams carry the Call-ID the relay named. `rtp_stats` answers from those
+streams: `dialog_seen` is `false`, and `dialog_absent` says why no dialog
+explains the media, with the same `reason` and `note` that
+[`reconcile_orphans`](#reconcile-orphans) gives it. The diagnosis still runs,
+without the SDP checks (`nat_mismatch`, `no_media`, the [RFC 4961](https://www.rfc-editor.org/rfc/rfc4961) port hints), which
+need the dialog. [`media_diagnostics`](#media-diagnostics),
+[`explain_attribution`](#explain-attribution) and
+[`export_audio`](#export-audio) follow the same rule.
+
+```jsonc
+// rtp_stats { "call_id": "B2B.201.6748799.1790773715.1438467624" }, on the relay host
+{
+  "call_id": "B2B.201.6748799.1790773715.1438467624",
+  "dialog_seen": false,
+  "dialog_absent": {
+    "reason": "relay-asserted-but-no-dialog",
+    "note": "a relay named this endpoint but no captured dialog claims it -- the signaling is missing, not the media"
+  },
+  "streams": [
+    { "associated_dialog": "B2B.201.6748799.1790773715.1438467624", "dialog_assertion": "media-relay", "src": "192.0.2.70:41004", "dst": "192.0.2.71:31004", "codec": "PCMU", "mos": 4.36 /* ... */ },
+    { "associated_dialog": "B2B.201.6748799.1790773715.1438467624", "dialog_assertion": "media-relay", "src": "192.0.2.71:31004", "dst": "192.0.2.70:41004", "codec": "PCMU", "mos": 4.36 /* ... */ }
+  ],
+  "diagnosis": { "one_way_audio": false, "nat_mismatch": false, "no_media": false, "sdp_media": null /* ... */ }
+}
+```
+
+sipnab refuses a Call-ID that neither a dialog nor any stream carries, with
+invalid_params (-32602) and a message naming both searches: `no SIP dialog and
+no RTP stream associated with call_id '…' in this capture`. On a relay host that
+means the call never crossed this relay, not that the lookup failed.
 
 ```jsonc
 // rtp_stats { "call_id": "1-1966@10.0.2.20" }
@@ -3687,7 +3725,8 @@ NAT-mismatch flags plus the asymmetry signals (`codec_asymmetry`,
     "one_way_audio": true,
     "private_media_address": false,
     "sdp_media": "10.0.2.20"
-  }
+  },
+  "dialog_seen": true
 }
 ```
 
@@ -5199,6 +5238,10 @@ whatever posture the run configured. With no posture configured it
 reports the **weakest** reading — a tool whose job is telling you what a claim
 is worth must not round up in the absence of information.
 
+The endpoints are the call's streams, so the tool answers on a media-relay host
+that never saw the SIP dialog. `dialog_seen` is then `false` and
+`dialog_absent` says why, as described under [`rtp_stats`](#rtp-stats).
+
 ```jsonc
 // explain_attribution { "call_id": "call-2c9d47@192.0.2.10" }
 {
@@ -5215,6 +5258,7 @@ is worth must not round up in the absence of information.
     }
   ],
   "unauthenticated_endpoints": 0,
+  "dialog_seen": true,
   "schema_version": 1
 }
 ```
@@ -5355,17 +5399,19 @@ setting, not a finding that the call was silent.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | A Call-ID whose streams carry audio sipnab can decode. | Required — the call fails. |
+| `call_id` | string | A Call-ID whose streams carry audio sipnab can decode. The capture need not hold the dialog: a media-relay host exports the streams the relay named. | Required — the call fails. |
 | `filename` | string | A bare filename inside `--mcp-file-root`, under the same rule `export_capture` applies. sipnab writes a WAV whatever extension you give it. | Required — the call fails. |
 
-Returns `path`, `summary` and `schema_version`:
+Returns `path`, `summary`, `dialog_seen` and `schema_version`, plus
+`dialog_absent` when `dialog_seen` is `false` (see [`rtp_stats`](#rtp-stats)):
 
 ```jsonc
 // export_audio { "call_id": "1-1966@10.0.2.20", "filename": "call.wav" }
 {
   "schema_version": 1,
   "path": "/var/spool/sipnab-exports/call.wav",
-  "summary": "Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to /var/spool/sipnab-exports/call.wav"
+  "summary": "Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to /var/spool/sipnab-exports/call.wav",
+  "dialog_seen": true
 }
 ```
 

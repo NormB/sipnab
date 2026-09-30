@@ -1292,6 +1292,13 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 `Content-Disposition` naming the download after a sanitized Call-ID. An
 `Sipnab-Audio-Partial` header carries one bit — `true` when the file falls
 short of the call — so a program branches on it without parsing the RIFF chunks.
+A `Sipnab-Dialog-Seen` header says whether this capture holds the call's SIP
+dialog.
+
+**On a media-relay host the dialog is not required.** A relay sees the RTP and
+its own control traffic, never the SIP, so its streams carry the Call-ID the
+relay named while the capture holds no dialog. The route exports those streams' audio and
+answers `Sipnab-Dialog-Seen: false`.
 
 **A provenance note travels inside the file, not only in a header.** It names the
 mechanism (`sipnab-capture`), the version that wrote it, and — when the file is
@@ -1304,9 +1311,11 @@ capture point saw and what retention kept. It is not a recording the endpoints
 made.
 
 sipnab must have retained the payload (start the server with `--retain-audio`)
-for there to be anything to decode. A Call-ID no dialog carries is a `404`. A
-dialog that exists but carries only undecodable codecs, or whose payload this run
-did not keep, is a `422` whose body names which — never a silent empty file.
+for there to be anything to decode. A Call-ID that neither a dialog nor any RTP
+stream carries is a `404` whose body names both searches (`no SIP dialog and no
+RTP stream associated with call_id '…' in this capture`). A call this capture holds
+but carries only undecodable codecs, or whose payload this run did not keep, is
+a `422` whose body names which — never a silent empty file.
 
 ---
 
