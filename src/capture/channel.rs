@@ -508,12 +508,30 @@ mod tests {
         tx.send(pkt(64)).unwrap();
         assert_eq!(tx.meter().in_flight(), 2);
 
-        // Third send must block (cap reached).
+        // Third send must block (cap reached). The sender starts late on
+        // purpose: this test used to sleep 100 ms from the SPAWN and assume
+        // the send had been waiting all that time, but the wait is timed from
+        // when the send actually blocks, so a thread the scheduler started
+        // late blocked for under the 1 ms threshold and no backpressure was
+        // recorded -- it failed that way under the parallel test runner. The
+        // wait is now observed (the capacity hit is counted just before it
+        // starts) and then held for a margin, whenever the thread gets there.
         let tx2 = tx.clone();
-        let h = std::thread::spawn(move || tx2.send(pkt(64)));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(!h.is_finished(), "send should block at capacity");
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            tx2.send(pkt(64))
+        });
+        let by = std::time::Instant::now() + Duration::from_secs(10);
+        while tx.meter().capacity_hits() == 0 {
+            assert!(
+                std::time::Instant::now() < by,
+                "the third send never reached the cap"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(tx.meter().capacity_hits() >= 1, "cap hit is visible live");
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!h.is_finished(), "send should block at capacity");
 
         // Receiving one packet returns a credit and unblocks the sender.
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -522,7 +540,8 @@ mod tests {
             "send should unblock after a recv"
         );
         assert_eq!(tx.meter().in_flight(), 2);
-        // The ~100ms stall is recorded once the send completed.
+        // The stall (at least the 50 ms held above) is recorded once the send
+        // completed.
         assert!(tx.meter().backpressure_blocks() >= 1);
     }
 
