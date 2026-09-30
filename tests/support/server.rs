@@ -293,6 +293,25 @@ impl ApiServer {
         http_post(&self.addr, path, body, Some(&format!("Bearer {token}")))
     }
 
+    /// `GET path` with no auth header and `host` as the `Host` header.
+    pub fn get_as_host(&self, path: &str, host: &str) -> Resp {
+        http_get_as(&self.addr, host, path, None)
+    }
+
+    /// `POST path` with a JSON body, no auth header, and `host` as the
+    /// `Host` header.
+    pub fn post_json_as_host(&self, path: &str, body: &str, host: &str) -> Resp {
+        http_post_as(&self.addr, host, path, body, None)
+    }
+
+    /// The port the server is listening on.
+    pub fn port(&self) -> u16 {
+        self.addr
+            .rsplit_once(':')
+            .and_then(|(_, p)| p.parse().ok())
+            .unwrap_or_else(|| panic!("no port in {}", self.addr))
+    }
+
     /// The server's process id.
     pub fn pid(&self) -> u32 {
         self.child.id()
@@ -312,10 +331,17 @@ impl Drop for ApiServer {
 
 /// Minimal blocking HTTP/1.1 GET over a fresh `Connection: close` socket.
 fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
+    http_get_as(addr, addr, path, auth)
+}
+
+/// [`http_get`] sending `host` as the `Host` header instead of the address
+/// the socket connects to -- what a browser sends after a DNS-rebinding
+/// attacker points its own name at the server.
+fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
     let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
     stream.set_read_timeout(Some(test_timeout(10))).ok();
 
-    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
+    let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     if let Some(a) = auth {
         req.push_str(&format!("Authorization: {a}\r\n"));
     }
@@ -359,11 +385,16 @@ fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
 /// by the server mid-character, and the request would fail for a reason that
 /// has nothing to do with what the test is asking.
 fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
+    http_post_as(addr, addr, path, body, auth)
+}
+
+/// [`http_post`] sending `host` as the `Host` header; see [`http_get_as`].
+fn http_post_as(addr: &str, host: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
     let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
     stream.set_read_timeout(Some(test_timeout(10))).ok();
 
     let mut req = format!(
-        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\
          Content-Type: application/json\r\nContent-Length: {}\r\n",
         body.len()
     );

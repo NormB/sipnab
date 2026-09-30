@@ -2166,7 +2166,7 @@ All five still appear in `tools/list` when you omit those flags, because sipnab 
 
 - Stdout is the JSON-RPC wire in stdio mode. Use `--quiet` and don't combine with `--json`/`--report`/etc. — sipnab refuses to start.
 - Non-loopback bind without a token: refused at startup. Loopback bind needs no token.
-- Pass `--mcp-allowed-host` when the client connects via the actual hostname (rmcp's default Host allowlist is just `localhost`/`127.0.0.1`/`::1`).
+- Pass `--mcp-allowed-host` when the client connects via the actual hostname (the default Host allowlist is `localhost`, `127.0.0.1`, `::1` and the bound address).
 
 ---
 
@@ -5000,6 +5000,40 @@ constant-time, to prevent timing side channels.
 Note that sipnab checks the rate limit *before* authentication, so a client over
 its per-IP budget receives `503 Service Unavailable` even when its credentials
 are invalid.
+
+### Which `Host` names the API answers
+
+An API on loopback with no key is safe from other machines, but not from a web page
+in your own browser. A page at `http://evil.example:8080/` can point
+`evil.example` at `127.0.0.1` after it loads, a trick called DNS rebinding.
+The browser then treats the loopback API as the page's own site, so the page
+could read `/v1/dialogs` or send `POST /v1/persistence`. The one thing the page
+cannot change is the name the browser sends in the `Host` header, so sipnab
+checks it before anything else runs, the rate limiter included.
+
+sipnab answers a request only when its `Host` names one of these, on any port:
+
+- `localhost`, `127.0.0.1` or `::1` (`[::1]` in a `Host` header);
+- the address `--api` binds;
+- any IP address, when `--api` binds every interface (`0.0.0.0` or `::`).
+  Rebinding needs a DNS name, so an address typed as an address is safe;
+- a name you add with `--api-allowed-host` or `[api] allowed_hosts`. Write
+  `name:port` to accept that port only.
+
+Anything else gets `403 Forbidden`. The problem body names the rejected host and
+the flag that would add it. A request with no `Host` at all, from an HTTP/1.0
+client, gets `400 Bad Request`, and so does a `Host` value that does not parse.
+The MCP HTTP transport applies the same rule with `--mcp-allowed-host`.
+
+Behind a reverse proxy, add the public name clients use, unless the proxy
+rewrites `Host` to `127.0.0.1`:
+
+```bash
+sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key "secret" --api-allowed-host sipnab.example.com
+```
+
+`--api-allowed-host '*'` turns the check off. Do that only when something in
+front of sipnab already checks `Host`.
 
 ### Metrics endpoints use two different schemes
 
@@ -14256,6 +14290,7 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 | `--api-tls-cert` | `<FILE>` | -- | Serve the REST API over HTTPS with this PEM certificate chain, the server's certificate first. Needs `--api-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1` (no HTTP/2), no client certificates. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. A reverse proxy in front of a loopback bind remains an alternative. See [API TLS](rest-api.md#api-tls). Feature: `api` |
 | `--api-tls-key` | `<FILE>` | -- | PEM private key for `--api-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. Feature: `api` |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
+| `--api-allowed-host` | `<HOST>` | -- | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
 | `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
@@ -14303,6 +14338,8 @@ Unprivileged runs (`sipnab --setup-caps`) now do too.
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps --api-accept-archive-passwords --archive-password-file /etc/sipnab/pcaps.pw` — both at once: configured passwords first, then the request's
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-file-root /var/lib/sipnab/captures` — a live capture whose REST clients may also diff rotations: `GET /v1/captures/compare?a=yesterday.pcap&b=today.pcap` reads two files from that one directory and nothing outside it, ranking what moved. Off without the flag, when the route answers `503`
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key` — a public-facing API over HTTPS with no reverse proxy: signed tokens, a certificate whose key is `chmod 600`, and no plain-HTTP warning at startup
+- `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-allowed-host sipnab.example.com` — behind a reverse proxy that forwards `Host: sipnab.example.com` unchanged: sipnab serves that name, while a page that rebinds any other name to `127.0.0.1` gets `403`
+- `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-allowed-host capture.example.com:8443` — a public-facing HTTPS API reached by name on port 8443 only: sipnab serves `Host: capture.example.com:8443` and refuses the same name on any other port. Clients reaching it by IP address need no entry on a wildcard bind
 - `sipnab -N -I today.pcap --api 127.0.0.1:8443 --api-key s3cret --api-tls-cert api.pem --api-tls-key api.key` — HTTPS on loopback, for a client that insists on `https://` even on the same host; `api.pem` must name `127.0.0.1` for the client to accept it
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps` — the compare route works on a file-backed run too: it diffs the two NAMED files under `/srv/pcaps`, never the loaded `today.pcap`, so a monitoring box can poll one sipnab for a rolling day-over-day comparison
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --metrics-max-conn 64` — an HA Prometheus pair, a federating parent, a `remote_write` shard and an alertmanager sidecar all scraping one sipnab: at sixteen slots a slow scrape turns the next one away with `503`, and the hole in the series reads as a capture that died
@@ -14473,7 +14510,7 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-max-findings` | `<N>` | `1000` | Findings the MCP `save_findings` tool accepts before refusing further writes. The one WRITE budget on that surface: `--mcp-max-rows` and `--mcp-max-body-bytes` bound what an agent may READ, this bounds what it puts into the operator's journal. Past it sipnab refuses the write and says so, and drops nothing to make room -- a finding is a log line the journal already holds, so sipnab keeps no copy a newer one could displace. Raise it for a long agent session on a large capture. Config: `[limits] mcp_max_findings` |
 | `--mcp-sampling-budget` | `<PER_HOUR>` | off | Requests per hour sipnab may ask the CLIENT's model to narrate. Off unless set, because client support for the sampling primitive is thin and uneven and nothing here may depend on a narration arriving; a client that did not advertise the capability is never asked and gets structured evidence instead. Requests dedupe by finding signature before they spend from this budget, so a rule a scanner trips five hundred times costs one narration. `0` means NONE, not unlimited: elsewhere a zero limit removes a ceiling, but this one spends the operator's money and the client's rate limit, so zero reads restrictively. sipnab forwards named fields only -- control characters stripped, length clamped, under a system prompt stating every value is untrusted observation -- and never raw message text. Feature: `mcp` |
 | `--mcp-rate-limit-per-peer` | `<N>` | `100` | Maximum tool calls one peer may make per second (`0` = unlimited). The other half of `--mcp-max-concurrent`: that caps calls *in flight*, this caps their *arrival rate*, and without it an agent that stays under the concurrency cap while looping as fast as sipnab answers has no bound at all. A call over the cap gets the same retry-shortly error, never a queue slot. A peer is the source IP over HTTP (the address, not the socket, so reconnecting mints no fresh allowance) and the pipe itself over stdio. Shares its per-peer accounting with `--hep-rate-limit-per-peer`. Feature: `mcp` |
-| `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
+| `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server accepts (repeatable). DNS-rebind protection accepts `localhost`, `127.0.0.1`, `::1` and the address `--mcp-bind` binds, on any port, and any IP address when it binds `0.0.0.0` or `::`: the same rule as [`--api-allowed-host`](#network-listeners). Add the public hostname when clients connect by that name. Use `*` to disable host checking entirely (not recommended; pair the resulting open binding with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `--mcp-resource-url` | `<URL>` | -- | Public URL clients reach this MCP server at, published as the OAuth 2.0 protected-resource identifier ([RFC 9728](https://www.rfc-editor.org/rfc/rfc9728.html)). Setting it turns on discovery: the `401` challenge gains a `resource_metadata` parameter and sipnab serves the metadata document unauthenticated at the path [RFC 9728 section 3.1](https://www.rfc-editor.org/rfc/rfc9728#section-3.1) derives from this value, so `https://sipnab.example.com/mcp` publishes at `/.well-known/oauth-protected-resource/mcp`. Leave it unset and the challenge still appears — only the metadata half is off. The operator names it rather than sipnab guessing: behind the TLS-terminating proxy this deployment expects, sipnab sees a cleartext request and no scheme, and anything derived from the socket or the `Host` header would name `http://` for a resource the client reached over `https://` — which [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a conformant client discard. Discovery only: sipnab issues and validates no OAuth tokens, so the document advertises no `authorization_servers`, and the bearer tokens it accepts are still its own. Must be absolute, `http` or `https`, with no userinfo, query or fragment; a rejected value is a startup error. Feature: `mcp-http` |
 | `--mcp-file-root` | `<DIR>` | -- | Directory the MCP file tools (`export_capture`, `export_audio`, `list_captures`) may read and write. Without it those tools refuse to run. They take a bare FILENAME, never a path — an agent cannot escape this directory. Feature: `mcp` |
 | `--mcp-evidence-ring` | `<MIB>` | -- | Retain this many MiB of raw frames so a provenance pointer into a LIVE capture resolves. A reader can seek a capture file again and needs none of this; a device or a HEP listener offers no second read, because sipnab holds parsed messages and not frames. The ring keeps frames only from a source nothing can read twice. A pointer it cannot answer names which kind of miss it hit — the ring dropped that frame, the ring has not reached that ordinal, or the ring keeps nothing for that source — because only one of those means "use a bigger ring". A frame it does answer carries the label `retained` rather than resolved: those bytes come from this process's own buffer, and no second reader can confirm them. Feature: `mcp` |
@@ -17634,6 +17671,23 @@ tools = ["core", "voice"]
 voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 ```
 
+### [api]
+
+Which `Host` names the REST API answers, beyond `localhost`, `127.0.0.1`,
+`::1` and the address `--api` binds (any IP address on a `0.0.0.0` or `::`
+bind). The check stops a web page from reaching the API through your browser
+by pointing its own name at `127.0.0.1` (DNS rebinding). See
+[Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
+
+```toml
+[api]
+allowed_hosts = ["sipnab.example.com"]
+```
+
 ### [privilege]
 
 Privilege separation settings (Linux only).
@@ -19926,17 +19980,19 @@ and configure it as a bearer token for `http://capture01.example.net:8731`.
 ### Stop a browser reaching your server (`--mcp-allowed-host`)
 
 The HTTP transport refuses requests whose `Host` header isn't in its
-allowlist. The default set is `localhost`, `127.0.0.1`, `::1`. When
-clients reach sipnab via a hostname or non-loopback IP, add it to the
-allowlist (repeatable). Otherwise rmcp returns
-`403 Forbidden: Host header is not allowed`:
+allowlist. The default set is `localhost`, `127.0.0.1`, `::1` and the
+address `--mcp-bind` names, on any port. On a `0.0.0.0` or `::` bind any IP
+address passes, because DNS rebinding needs a name. When clients reach
+sipnab via a hostname, add it to the allowlist (repeatable). Otherwise
+sipnab returns `403 Forbidden: Host header is not allowed`, followed by the
+host and the flag to add it with. The REST API applies the same rule with
+`--api-allowed-host`:
 
 ```bash
 sipnab --mcp -N --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        --mcp-allowed-host capture.example.com \
-       --mcp-allowed-host 203.0.113.7 \
        -I capture.pcap
 ```
 
@@ -20383,7 +20439,7 @@ Common failure modes:
 | Status | Cause |
 |---|---|
 | `401` | Missing or wrong `Authorization: Bearer ...` |
-| `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the rmcp allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
+| `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
 | `404` | Wrong path — must be exactly `/mcp` |
 | `406 Not Acceptable` | Missing `Accept: application/json, text/event-stream` |
 
@@ -27689,9 +27745,10 @@ For the tools themselves — and for the error codes and response bounds — see
   The operator names the URL rather than sipnab deriving it: behind a TLS-terminating proxy
   sipnab cannot see the scheme a client used, and [RFC 9728 section 3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3) makes a client
   discard a document whose `resource` does not match the URL it requested.
-- **Host header allowlist.** rmcp's DNS-rebind protection runs by
-  default (`localhost`/`127.0.0.1`/`::1`). Extend it with
-  `--mcp-allowed-host` for non-loopback clients.
+- **Host header allowlist.** DNS-rebind protection runs by default:
+  `localhost`, `127.0.0.1`, `::1` and the bound address (any IP address on a
+  wildcard bind), the same rule the REST API applies. Extend it with
+  `--mcp-allowed-host` for clients that connect by name.
 - **Bounded work per caller, in two dimensions.** `--mcp-max-concurrent`
   (default 100) caps the tool calls running *at once*.
   `--mcp-rate-limit-per-peer` (default 100) caps how many one peer may start
@@ -33003,7 +33060,10 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 
 > On a non-loopback bind, a token (static or signed) is **required** — the
 > server refuses to start otherwise. On loopback with no token configured,
-> requests pass (unchanged legacy behavior).
+> requests pass (unchanged legacy behavior), as long as their `Host` header
+> names this server. A web page that rebinds its own name to `127.0.0.1` is
+> refused with `403`; see
+> [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers).
 
 The numbered steps below set up signed tokens from scratch. What a token
 contains, and how its audience binds it to one server, follow the steps.
@@ -33120,6 +33180,7 @@ failure is not automatically a `401`:
 
 | Status | What happened |
 |---|---|
+| `403` | The `Host` header names a host that is not on the allowlist (`--api-allowed-host` / `--mcp-allowed-host`). sipnab checks it before the rate limiter and authentication, so the credential was never read. |
 | `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
 | `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
 | `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |

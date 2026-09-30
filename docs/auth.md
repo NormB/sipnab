@@ -15,7 +15,10 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 
 > On a non-loopback bind, a token (static or signed) is **required** — the
 > server refuses to start otherwise. On loopback with no token configured,
-> requests pass (unchanged legacy behavior).
+> requests pass (unchanged legacy behavior), as long as their `Host` header
+> names this server. A web page that rebinds its own name to `127.0.0.1` is
+> refused with `403`; see
+> [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers).
 
 The numbered steps below set up signed tokens from scratch. What a token
 contains, and how its audience binds it to one server, follow the steps.
@@ -132,6 +135,7 @@ failure is not automatically a `401`:
 
 | Status | What happened |
 |---|---|
+| `403` | The `Host` header names a host that is not on the allowlist (`--api-allowed-host` / `--mcp-allowed-host`). sipnab checks it before the rate limiter and authentication, so the credential was never read. |
 | `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
 | `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
 | `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |

@@ -1105,7 +1105,13 @@ fn wiki_intra_docs_links_resolve() {
     // twelve into the threat model, fault model and auth pages), and
     // docs/threat-model.md and docs/README.md each gain one link to it.
     // Combined PR: 1194 on main -> 1222 measured = +5 (install.md Upgrade section) +23 (assurance-case.md 21, threat-model.md 1, docs/README.md 1).
-    const EXPECTED_WIKI_LINKS: usize = 1222;
+    // 1194 -> 1198: the REST API Host allowlist links its new section
+    // ("Which Host names the API answers") from auth.md, the
+    // --api-allowed-host row and the [api] config section, and the
+    // --mcp-allowed-host row links the network-listeners table.
+    // 1222 -> 1226 with the API Host allowlist: the four new relative links in
+    // its docs (rest-api.md, cli-reference.md, auth.md, threat-model.md).
+    const EXPECTED_WIKI_LINKS: usize = 1226;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

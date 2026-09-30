@@ -1805,3 +1805,132 @@ fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
         "no sampling window was requested, so no rate is claimed"
     );
 }
+
+// ── Host allowlist: DNS rebinding (CWE-352) ─────────────────────────────
+//
+// A page at `http://evil.example:<port>/` that rebinds its own name to
+// 127.0.0.1 is same-origin with a keyless loopback API as far as the browser
+// is concerned. The name it cannot change is the one it sends as `Host`.
+
+/// A keyless loopback API refuses a request whose `Host` names a stranger,
+/// for a read and for the state-changing persistence switch, and says which
+/// host and which flag.
+#[test]
+fn a_rebound_host_is_refused_by_a_keyless_loopback_api() {
+    let srv = ApiServer::spawn(&[]);
+    let evil = format!("evil.example:{}", srv.port());
+    for resp in [
+        srv.get_as_host("/v1/dialogs", &evil),
+        srv.get_as_host("/v1/dialogs", "evil.example"),
+        srv.post_json_as_host("/v1/persistence", r#"{"enabled":false}"#, &evil),
+    ] {
+        assert_eq!(resp.status, 403, "a rebound Host was served: {}", resp.body);
+        assert!(
+            resp.body.contains("evil.example"),
+            "names the host: {}",
+            resp.body
+        );
+        assert!(
+            resp.body.contains("--api-allowed-host"),
+            "names the flag: {}",
+            resp.body
+        );
+    }
+}
+
+/// The loopback names a local client really sends are served, with a port
+/// and without.
+#[test]
+fn loopback_hosts_are_served() {
+    let srv = ApiServer::spawn(&[]);
+    let port = srv.port();
+    for host in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "localhost".to_string(),
+    ] {
+        let resp = srv.get_as_host("/v1/dialogs", &host);
+        assert_eq!(resp.status, 200, "Host {host}: {}", resp.body);
+    }
+}
+
+/// `--api-allowed-host` adds a name (a reverse proxy's public one) and
+/// leaves every other name refused.
+#[test]
+fn api_allowed_host_adds_a_name() {
+    let srv = ApiServer::spawn(&["--api-allowed-host", "proxy.example"]);
+    let resp = srv.get_as_host("/v1/dialogs", "proxy.example");
+    assert_eq!(resp.status, 200, "the added name: {}", resp.body);
+    let resp = srv.get_as_host("/v1/dialogs", "evil.example");
+    assert_eq!(resp.status, 403, "another name: {}", resp.body);
+}
+
+/// `[api] allowed_hosts` in the config file adds a name the way the flag
+/// does.
+#[test]
+fn the_allowed_hosts_config_key_adds_a_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = dir.path().join("sipnab.toml");
+    std::fs::write(&cfg, "[api]\nallowed_hosts = [\"cfg.example\"]\n").expect("config");
+    let srv = ApiServer::spawn(&["--config", cfg.to_str().expect("utf-8 path")]);
+    assert_eq!(srv.get_as_host("/v1/dialogs", "cfg.example").status, 200);
+    assert_eq!(srv.get_as_host("/v1/dialogs", "evil.example").status, 403);
+}
+
+/// `--api-allowed-host '*'` turns the check off.
+#[test]
+fn api_allowed_host_star_disables_the_check() {
+    let srv = ApiServer::spawn(&["--api-allowed-host", "*"]);
+    let resp = srv.get_as_host("/v1/dialogs", "evil.example");
+    assert_eq!(resp.status, 200, "with '*': {}", resp.body);
+}
+
+/// An HTTP/1.0 request with no `Host` header is refused with 400, as the
+/// MCP transport refuses it: the server cannot tell which name it was
+/// reached by.
+#[test]
+fn a_request_without_a_host_is_a_bad_request() {
+    use std::io::{Read, Write};
+    let srv = ApiServer::spawn(&[]);
+    let mut sock = std::net::TcpStream::connect(&srv.addr).expect("connect");
+    sock.set_read_timeout(Some(test_timeout(10))).ok();
+    sock.write_all(b"GET /v1/dialogs HTTP/1.0\r\n\r\n")
+        .expect("write");
+    let mut raw = Vec::new();
+    let _ = sock.read_to_end(&mut raw);
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        text.starts_with("HTTP/1.0 400") || text.starts_with("HTTP/1.1 400"),
+        "no Host must be a 400: {text}"
+    );
+}
+
+/// A refused request changes nothing: the persistence switch a rebound page
+/// tries to close stays open.
+// Only --export-vcon-when grants content authority, so only there does the
+// gate start open and a close have something to change.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_refused_request_does_not_flip_persistence() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let srv = ApiServer::spawn(&[
+        "--export-vcon-when",
+        "response_code >= 200",
+        "--export-vcon-dir",
+        dir.path().to_str().expect("utf-8 temp path"),
+    ]);
+    assert_eq!(
+        srv.get("/v1/persistence").json()["enabled"],
+        true,
+        "the fixture starts open"
+    );
+    let evil = format!("evil.example:{}", srv.port());
+    let resp = srv.post_json_as_host("/v1/persistence", r#"{"enabled":false}"#, &evil);
+    assert_eq!(resp.status, 403, "{}", resp.body);
+    assert_eq!(
+        srv.get("/v1/persistence").json()["enabled"],
+        true,
+        "a refused request closed the gate"
+    );
+}

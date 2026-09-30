@@ -1693,17 +1693,19 @@ and configure it as a bearer token for `http://capture01.example.net:8731`.
 ### Stop a browser reaching your server (`--mcp-allowed-host`)
 
 The HTTP transport refuses requests whose `Host` header isn't in its
-allowlist. The default set is `localhost`, `127.0.0.1`, `::1`. When
-clients reach sipnab via a hostname or non-loopback IP, add it to the
-allowlist (repeatable). Otherwise rmcp returns
-`403 Forbidden: Host header is not allowed`:
+allowlist. The default set is `localhost`, `127.0.0.1`, `::1` and the
+address `--mcp-bind` names, on any port. On a `0.0.0.0` or `::` bind any IP
+address passes, because DNS rebinding needs a name. When clients reach
+sipnab via a hostname, add it to the allowlist (repeatable). Otherwise
+sipnab returns `403 Forbidden: Host header is not allowed`, followed by the
+host and the flag to add it with. The REST API applies the same rule with
+`--api-allowed-host`:
 
 ```bash
 sipnab --mcp -N --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        --mcp-allowed-host capture.example.com \
-       --mcp-allowed-host 203.0.113.7 \
        -I capture.pcap
 ```
 
@@ -2150,7 +2152,7 @@ Common failure modes:
 | Status | Cause |
 |---|---|
 | `401` | Missing or wrong `Authorization: Bearer ...` |
-| `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the rmcp allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
+| `403 Forbidden: Host header is not allowed` | Your `Host:` doesn't match the allowlist. Either send `Host: localhost` explicitly, or start sipnab with `--mcp-allowed-host <your-host>` |
 | `404` | Wrong path — must be exactly `/mcp` |
 | `406 Not Acceptable` | Missing `Accept: application/json, text/event-stream` |
 

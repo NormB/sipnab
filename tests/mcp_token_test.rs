@@ -245,6 +245,11 @@ fn static_mcp_token_file_backward_compat() {
 /// POST `initialize` with an explicit `Host` header (to exercise the DNS-rebind
 /// allowlist), connecting to `addr` regardless of the header value.
 fn initialize_status_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> u16 {
+    initialize_with_host(addr, host_header, bearer).0
+}
+
+/// [`initialize_status_with_host`], returning the body too.
+fn initialize_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> (u16, String) {
     let (host, port_str) = addr.rsplit_once(':').expect("host:port");
     let port: u16 = port_str.parse().expect("port");
     let body = serde_json::json!({
@@ -274,12 +279,18 @@ fn initialize_status_with_host(addr: &str, host_header: &str, bearer: Option<&st
     stream.write_all(req.as_bytes()).expect("write");
     let mut resp = Vec::new();
     stream.read_to_end(&mut resp).expect("read");
-    String::from_utf8_lossy(&resp)
+    let text = String::from_utf8_lossy(&resp);
+    let status = text
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(0);
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    (status, body)
 }
 
 // M6 burn-down: --mcp-allowed-host extends rmcp's Host-header allowlist.
@@ -307,11 +318,23 @@ fn mcp_allowed_host_controls_host_header() {
         200,
         "Host added via --mcp-allowed-host must be accepted"
     );
-    // A Host that is neither loopback nor allow-listed is rejected (not 200).
-    assert_ne!(
-        initialize_status_with_host(&addr, "blocked.invalid", Some(&token)),
-        200,
-        "a non-allowlisted Host must be rejected by DNS-rebind protection"
+    // A Host that is neither loopback nor allow-listed is rejected with 403,
+    // naming the host and the flag that would list it.
+    let (status, body) = initialize_with_host(&addr, "blocked.invalid", Some(&token));
+    assert_eq!(
+        status, 403,
+        "a non-allowlisted Host must be rejected by DNS-rebind protection: {body}"
+    );
+    assert!(
+        body.contains("blocked.invalid") && body.contains("--mcp-allowed-host"),
+        "the refusal names the host and the flag: {body}"
+    );
+    // Without a token too: the Host check runs before authentication, so a
+    // rebound page learns nothing about the credential it lacks.
+    assert_eq!(
+        initialize_status_with_host(&addr, "blocked.invalid", None),
+        403,
+        "a rebound Host is refused before authentication"
     );
     shutdown(child);
 }

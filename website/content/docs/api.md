@@ -256,6 +256,40 @@ Note that sipnab checks the rate limit *before* authentication, so a client over
 its per-IP budget receives `503 Service Unavailable` even when its credentials
 are invalid.
 
+### Which `Host` names the API answers
+
+An API on loopback with no key is safe from other machines, but not from a web page
+in your own browser. A page at `http://evil.example:8080/` can point
+`evil.example` at `127.0.0.1` after it loads, a trick called DNS rebinding.
+The browser then treats the loopback API as the page's own site, so the page
+could read `/v1/dialogs` or send `POST /v1/persistence`. The one thing the page
+cannot change is the name the browser sends in the `Host` header, so sipnab
+checks it before anything else runs, the rate limiter included.
+
+sipnab answers a request only when its `Host` names one of these, on any port:
+
+- `localhost`, `127.0.0.1` or `::1` (`[::1]` in a `Host` header);
+- the address `--api` binds;
+- any IP address, when `--api` binds every interface (`0.0.0.0` or `::`).
+  Rebinding needs a DNS name, so an address typed as an address is safe;
+- a name you add with `--api-allowed-host` or `[api] allowed_hosts`. Write
+  `name:port` to accept that port only.
+
+Anything else gets `403 Forbidden`. The problem body names the rejected host and
+the flag that would add it. A request with no `Host` at all, from an HTTP/1.0
+client, gets `400 Bad Request`, and so does a `Host` value that does not parse.
+The MCP HTTP transport applies the same rule with `--mcp-allowed-host`.
+
+Behind a reverse proxy, add the public name clients use, unless the proxy
+rewrites `Host` to `127.0.0.1`:
+
+```bash
+sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key "secret" --api-allowed-host sipnab.example.com
+```
+
+`--api-allowed-host '*'` turns the check off. Do that only when something in
+front of sipnab already checks `Host`.
+
 ### Metrics endpoints use two different schemes
 
 This catches people out, so it is worth stating plainly:

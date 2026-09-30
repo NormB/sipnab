@@ -2750,6 +2750,15 @@ pub struct ListenerArgs {
     )]
     pub api_max_conn: u32,
 
+    /// Additional `Host` header values the REST API accepts (repeatable),
+    /// against DNS rebinding. Accepted by default: `localhost`, `127.0.0.1`,
+    /// `::1` and the bound address, on any port (any IP address on a
+    /// `0.0.0.0` / `::` bind). Add the name clients use, such as a reverse
+    /// proxy's public name; `name:port` pins the port. `*` disables the check
+    /// (not recommended). Replaces `[api] allowed_hosts`.
+    #[arg(help_heading = "Network listeners", long, value_name = "HOST")]
+    pub api_allowed_host: Vec<String>,
+
     /// Metrics scrapes served at once before further ones get `503`
     /// (default 16). Config: `[limits] metrics_max_conn`.
     ///
@@ -4743,6 +4752,19 @@ impl Cli {
             .unwrap_or(Self::DEFAULT_API_MAX_ROWS) as usize
     }
 
+    /// The REST API's `Host` allowlist additions: `--api-allowed-host`, else
+    /// `[api] allowed_hosts`, else none. The flag REPLACES the key's list
+    /// rather than adding to it, as `--mcp-tools` replaces `[mcp] tools`: a
+    /// command line that names the hosts is the whole answer.
+    #[must_use]
+    pub fn api_allowed_hosts(&self, config: &crate::config::Config) -> Vec<String> {
+        if self.listener_args.api_allowed_host.is_empty() {
+            config.api.allowed_hosts.clone().unwrap_or_default()
+        } else {
+            self.listener_args.api_allowed_host.clone()
+        }
+    }
+
     /// REST per-peer request rate: `--api-rate-limit-per-peer`, else
     /// `[limits] api_rate_limit_per_peer`, else the default. See
     /// [`Self::dialog_limit`] for the precedence rule.
@@ -6163,6 +6185,36 @@ mod tests {
         let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
         let e = plain.mcp_tool_selection(&config).expect_err("config");
         assert!(e.contains("[mcp] tools"), "{e}");
+    }
+
+    /// `--api-allowed-host` is repeatable and replaces `[api] allowed_hosts`;
+    /// with neither, there are no additions.
+    #[test]
+    fn api_allowed_hosts_none_then_config_then_flag() {
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert!(
+            plain.api_allowed_hosts(&config).is_empty(),
+            "none by default"
+        );
+        config.api.allowed_hosts = Some(vec!["cfg.example".into()]);
+        assert_eq!(
+            plain.api_allowed_hosts(&config),
+            vec!["cfg.example".to_string()]
+        );
+        let flagged = Cli::try_parse_from([
+            "sipnab",
+            "--api-allowed-host",
+            "proxy.example",
+            "--api-allowed-host",
+            "*",
+        ])
+        .expect("parses");
+        assert_eq!(
+            flagged.api_allowed_hosts(&config),
+            vec!["proxy.example".to_string(), "*".to_string()],
+            "the flag replaces the config list"
+        );
     }
 
     #[test]

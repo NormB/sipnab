@@ -536,9 +536,12 @@ fn api_server(root: &Path, extra: &[&str], tmp: &Path) -> (std::process::Child, 
 fn get_with_password(ip: std::net::IpAddr, port: u16, key: &str, password: &str) -> u16 {
     use std::io::Read;
     let mut s = std::net::TcpStream::connect((ip, port)).expect("connect");
+    // The address it connected to, as a real client sends it: the API's Host
+    // allowlist serves any address literal on this wildcard bind.
+    let host = std::net::SocketAddr::new(ip, port);
     write!(
         s,
-        "GET /v1/captures/compare?a=locked.zip&b=plain.pcap HTTP/1.1\r\nHost: x\r\n\
+        "GET /v1/captures/compare?a=locked.zip&b=plain.pcap HTTP/1.1\r\nHost: {host}\r\n\
          Authorization: Bearer {key}\r\nSipnab-Archive-Password: {password}\r\n\
          Connection: close\r\n\r\n"
     )

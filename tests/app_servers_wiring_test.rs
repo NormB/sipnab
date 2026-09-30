@@ -38,6 +38,7 @@ fn metrics_only() -> Selection {
         evidence_ring: None,
         mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
         mcp_output_schemas: false,
+        api_allowed_hosts: Vec::new(),
         mcp_row_cap: Cli::DEFAULT_MCP_MAX_ROWS as usize,
         mcp_body_cap: Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
         mcp_wait_seconds: Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,

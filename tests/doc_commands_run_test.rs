@@ -236,7 +236,7 @@ const SEND_FLAGS: &[&str] = &["-H", "--hep-send", "--rtpengine-control"];
 
 /// Flags whose address value only FILTERS what sipnab accepts. Left as the page
 /// wrote them: rewriting an allowlist would test a different command.
-const ADDRESS_FILTER_FLAGS: &[&str] = &["--hep-allow", "--mcp-allowed-host"];
+const ADDRESS_FILTER_FLAGS: &[&str] = &["--hep-allow", "--mcp-allowed-host", "--api-allowed-host"];
 
 /// Where a bind is sent.
 const LOOPBACK_BIND: &str = "127.0.0.1:0";
