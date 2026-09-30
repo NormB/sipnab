@@ -325,6 +325,9 @@ pub struct PrometheusMetrics {
     pub diagnosis_total: HashMap<String, u64>,
     /// The three ways this run's analysis can be incomplete or mistimed.
     pub capture_quality: CaptureQuality,
+    /// The capture-source table: sources held, `max_capture_sources`, and
+    /// packets whose new source it refused because it was full.
+    pub capture_sources: crate::capture::packet::CaptureSourceCounts,
     /// The HEP listener's aggregate counts, when this run has a listener.
     ///
     /// Aggregates only, never a series per sender: sender addresses describe
@@ -566,6 +569,7 @@ impl PrometheusMetrics {
             capture_undecodable_total: undecodable.frames,
             reassembly_timeouts_total: crate::capture::reassembly::reassembly_timeouts(),
             capture_quality: CaptureQuality::current(),
+            capture_sources: crate::capture::packet::capture_source_counts(),
             buckets: configured_buckets(),
             ..Self::default()
         };
@@ -832,6 +836,34 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         metrics.capture_packets_total
     );
     out.push('\n');
+
+    // The capture-source table (interfaces, files, HEP senders, traced
+    // processes). A refusal means packets from a new source lost their frame
+    // pointer: `--json` carries no `frame` for `--show-frame` to follow.
+    for (name, help, kind, value) in [
+        (
+            "sipnab_capture_sources",
+            "Capture sources held in the source table",
+            "gauge",
+            metrics.capture_sources.held,
+        ),
+        (
+            "sipnab_capture_sources_max",
+            "The source table's limit (max_capture_sources)",
+            "gauge",
+            metrics.capture_sources.limit,
+        ),
+        (
+            "sipnab_capture_sources_refused_total",
+            "Packets whose new capture source the full table refused",
+            "counter",
+            metrics.capture_sources.refused,
+        ),
+    ] {
+        write_help_type(&mut out, name, help, kind);
+        let _ = writeln!(out, "{name} {value}");
+        out.push('\n');
+    }
 
     // What the capture counter above does NOT say. `capture_packets_total`
     // counts frames before parsing, so it climbs identically for a link type
@@ -1497,6 +1529,41 @@ mod tests {
         let meter = rx.meter();
         assert!(meter.attach_hep_roster(HepRoster::new(state)));
         meter
+    }
+
+    /// The capture-source table scrapes as two gauges and a counter, and a
+    /// scrape loads them from the process table.
+    #[test]
+    fn the_capture_source_table_scrapes_its_size_limit_and_refusals() {
+        let m = PrometheusMetrics {
+            capture_sources: crate::capture::packet::CaptureSourceCounts {
+                held: 3,
+                limit: 10,
+                refused: 4,
+            },
+            ..PrometheusMetrics::default()
+        };
+        let out = format_metrics(&m);
+        for (name, kind, value) in [
+            ("sipnab_capture_sources", "gauge", 3),
+            ("sipnab_capture_sources_max", "gauge", 10),
+            ("sipnab_capture_sources_refused_total", "counter", 4),
+        ] {
+            assert!(
+                out.contains(&format!("# TYPE {name} {kind}\n")),
+                "{name}: {out}"
+            );
+            assert!(
+                out.contains(&format!("\n{name} {value}\n")),
+                "{name}: {out}"
+            );
+        }
+        // Other tests may raise the process-wide limit for a moment, never
+        // lower it, so the default is a floor.
+        assert!(
+            PrometheusMetrics::for_scrape().capture_sources.limit
+                >= crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES as u64
+        );
     }
 
     /// **A HEP listener scrapes its sender count, its received total, and a

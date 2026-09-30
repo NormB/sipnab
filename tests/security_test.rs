@@ -1049,12 +1049,12 @@ fn event_exec_queue_depth_recovers_after_reaping() {
     let depth_before = engine.queue_depth();
     assert!(depth_before > 0, "should have spawned children");
 
-    // Poll fire-then-check until reaping has dropped the depth below
-    // depth_before + 1 (each fire spawns one child and reaps completed
-    // ones, so once the originals exit this converges immediately).
+    // Reap without firing: each fire spawns another child, and on a loaded
+    // host the new ones outran the old, so the depth climbed (5 -> 34)
+    // instead of recovering.
     let recovered = wait_until(std::time::Duration::from_secs(10), || {
-        engine.fire_dialog_event(&dialog);
-        (engine.queue_depth() < depth_before + 1).then_some(())
+        engine.reap_finished();
+        (engine.queue_depth() < depth_before).then_some(())
     });
     assert!(
         recovered.is_some(),

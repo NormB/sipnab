@@ -6738,6 +6738,10 @@ pub mod schema {
         pub dialogs: RuntimeOccupancy,
         /// Stream-store occupancy.
         pub streams: RuntimeOccupancy,
+        /// Capture-source table occupancy against `max_capture_sources`.
+        pub capture_sources: RuntimeOccupancy,
+        /// Packets whose new capture source the full table refused.
+        pub capture_sources_refused_total: u64,
         /// Packets the capture path has seen.
         pub capture_packets_total: u64,
         /// Packets waiting in the capture queue. Absent when this run owns no

@@ -1076,21 +1076,35 @@ fn a_peer_that_hangs_is_stopped_and_reported() {
          echo $! > \"$(dirname \"$0\")/sleep.pid\"\n\
          wait",
     );
-    let started = std::time::Instant::now();
-    let err = fake
-        .explicit()
-        .invoke_with(&TfpsCommand::Status, Duration::from_millis(300))
-        .expect_err("a hang is an error");
+    // The premise is a grandchild holding the pipe. On a loaded host the
+    // shell can be stopped before it starts `sleep`, and then there is no
+    // grandchild to check, so a run without one is repeated with a longer
+    // timeout until the premise holds.
+    let pid_file = fake.dir.path().join("sleep.pid");
+    let mut outcome = None;
+    for timeout_ms in [300, 1_000, 3_000] {
+        let _ = std::fs::remove_file(&pid_file);
+        let started = std::time::Instant::now();
+        let err = fake
+            .explicit()
+            .invoke_with(&TfpsCommand::Status, Duration::from_millis(timeout_ms))
+            .expect_err("a hang is an error");
+        let elapsed = started.elapsed();
+        if let Ok(text) = std::fs::read_to_string(&pid_file)
+            && !text.trim().is_empty()
+        {
+            outcome = Some((err, elapsed, timeout_ms, text));
+            break;
+        }
+    }
+    let (err, elapsed, timeout_ms, text) =
+        outcome.expect("the fake never started its grandchild, even with a 3 s timeout");
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the call took {:?}: the reader waited on a pipe the grandchild held",
-        started.elapsed()
+        elapsed < Duration::from_millis(timeout_ms) + Duration::from_secs(5),
+        "the call took {elapsed:?} against a {timeout_ms} ms timeout: the reader \
+         waited on a pipe the grandchild held",
     );
-    let pid: i32 = std::fs::read_to_string(fake.dir.path().join("sleep.pid"))
-        .expect("the fake recorded its grandchild")
-        .trim()
-        .parse()
-        .expect("a pid");
+    let pid: i32 = text.trim().parse().expect("a pid");
     // `kill(pid, 0)` asks whether the process exists without signaling it.
     // A moment's grace: the group kill is asynchronous with the wait.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -1114,7 +1128,7 @@ fn a_peer_that_hangs_is_stopped_and_reported() {
     }
     match &err {
         TfpsError::TimedOut { after, stderr, .. } => {
-            assert_eq!(*after, Duration::from_millis(300));
+            assert_eq!(*after, Duration::from_millis(timeout_ms));
             assert!(stderr.contains("still opening"), "{stderr}");
         }
         other => panic!("expected TimedOut, got {other:?}"),

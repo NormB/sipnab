@@ -56,7 +56,7 @@ pub mod load;
 // scope: `metrics`'s own `[`MAX_TOOLS`]` stopped resolving the moment a summary
 // line was added here. Every module below states its own summary in its file.
 pub mod metrics;
-pub mod profile;
+pub use crate::mcp_profile as profile;
 pub mod progress;
 pub mod prompts;
 pub mod reference;

@@ -490,6 +490,7 @@ Resource limits to prevent unbounded memory growth.
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. `--api-rate-limit-per-peer` overrides it |
 | `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
+| `max_capture_sources` | integer | `65536` | Distinct capture sources sipnab remembers by name: each input file, the device, every HEP sender (`capture_id@address`) and every traced process. The table holds a name so a packet can point back at the bytes it came from: the `frame` field of `--json`, which `--show-frame` follows and `--mcp-evidence-ring` keys on. Past the limit a packet from a NEW source is still analyzed, but carries no `frame` pointer, and sipnab counts it in `sipnab_capture_sources_refused_total` and warns once. sipnab refuses to start when the limit cannot hold every source the run can have: the input files, or the device, plus `max_tracked_peers` senders on a HEP listener. Raise it, or lower `max_tracked_peers`. The floor is 1. Flag: `--max-capture-sources` |
 
 ```toml
 [limits]
@@ -520,6 +521,28 @@ for longer than ten minutes while still being the thing under investigation:
 [limits]
 idle_compact_after_secs = 3600
 keep_messages_per_idle_dialog = 500
+```
+
+### [mcp]
+
+Which tools the MCP server registers, and whether it sends their output
+schemas. Every tool sipnab offers a client costs its context window before the
+agent asks anything, so give a client that needs a few tools only those few.
+See [Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load) for what
+each bundle holds.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tools` | list of strings | `["full"]` | Bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. sipnab refuses to start, naming the entry, when a name is unknown or empty. Names are case-sensitive. `--mcp-tools` replaces the list |
+| `output_schemas` | boolean | `false` | Send each tool's output schema on `tools/list`. MCP makes them optional, and they are more than half of what the tools cost a client. Responses carry the same JSON either way. `--mcp-output-schemas` overrides it |
+| `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
+
+```toml
+[mcp]
+tools = ["core", "voice"]
+
+[mcp.bundles]
+voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 ```
 
 ### [privilege]

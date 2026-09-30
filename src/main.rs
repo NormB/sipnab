@@ -177,6 +177,8 @@ fn main() {
         Ok(plan) => plan,
         Err(e) => e.exit(),
     };
+    // The capture-source table's size, before any capture can name a source.
+    sipnab::capture::packet::set_max_capture_sources(plan.max_capture_sources);
     // `-I` is resolved: from here on nothing waits on the terminal for an
     // archive password.
     bootstrap::end_archive_prompts();

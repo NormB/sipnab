@@ -135,6 +135,8 @@ pub struct RunPlan {
     pub portrange: (u16, u16),
     /// Output split / autostop policy.
     pub policy: CapturePolicy,
+    /// `max_capture_sources`, checked against what this run's sources need.
+    pub max_capture_sources: usize,
     /// Header-level SIP matcher.
     pub matcher: SipMatcher,
     /// Compiled `--filter` DSL expression, when given.
@@ -1051,6 +1053,46 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         _ => Vec::new(),
     };
 
+    // Every capture source the run can have must fit the capture-source
+    // table, or packets from the ones that do not lose their pointer back to
+    // where they came from: each input file, and with --hep-listen every HEP
+    // sender the roster can track. Traced processes (uprobe) have no fixed
+    // count and are not part of the check.
+    // An unknown MCP tool or bundle name refuses the run here, in every
+    // build, rather than when the MCP server starts.
+    cli.mcp_tool_selection(config).map_err(PlanError::arg)?;
+
+    let max_capture_sources = cli.max_capture_sources(config);
+    let hep_senders = if cli.hep_args.hep_listen.is_some() {
+        cli.tracked_peer_capacity(config)
+    } else {
+        0
+    };
+    let needed = input_files
+        .len()
+        .max(usize::from(cli.capture_args.device.is_some()))
+        + hep_senders;
+    if max_capture_sources < needed {
+        return Err(PlanError::arg(format!(
+            "max_capture_sources is {max_capture_sources}, but this run can have {needed} \
+             capture sources ({} input(s){}); raise --max-capture-sources / [limits] \
+             max_capture_sources to at least {needed}{}",
+            input_files
+                .len()
+                .max(usize::from(cli.capture_args.device.is_some())),
+            if hep_senders > 0 {
+                format!(" and up to {hep_senders} HEP senders, max_tracked_peers")
+            } else {
+                String::new()
+            },
+            if hep_senders > 0 {
+                ", or lower max_tracked_peers"
+            } else {
+                ""
+            },
+        )));
+    }
+
     Ok(RunPlan {
         source,
         input_files,
@@ -1073,6 +1115,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         event_exec,
         mode,
         metrics_bind,
+        max_capture_sources,
     })
 }
 
@@ -4792,6 +4835,89 @@ mod tests {
     /// A headless live capture (`-N -d ...`) must reach the capture thread with
     /// immediate mode OFF — the whole point of the change, since that is what
     /// lets libpcap choose TPACKET_V3.
+    #[test]
+    fn a_capture_source_limit_below_the_hep_senders_it_must_hold_is_refused() {
+        let mut cli = base_cli();
+        cli.hep_args.hep_listen = Some("127.0.0.1:0".to_string());
+        cli.limits_args.max_capture_sources = Some(100);
+        let text = match plan(&cli, &Config::default()) {
+            Err(e) => e.message,
+            Ok(_) => panic!("100 cannot hold 4096 HEP senders"),
+        };
+        assert!(
+            text.contains("max_capture_sources") && text.contains("max_tracked_peers"),
+            "the refusal names both settings: {text}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_mcp_tool_name_refuses_the_run_naming_it() {
+        let mut cli = base_cli();
+        cli.mcp_args.mcp_tools = Some("core,minimal".to_string());
+        let e = match plan(&cli, &Config::default()) {
+            Err(e) => e,
+            Ok(_) => panic!("an unknown tool name must refuse the run"),
+        };
+        assert_eq!(e.exit_code, 2);
+        assert!(
+            e.message.contains("--mcp-tools") && e.message.contains("'minimal'"),
+            "{}",
+            e.message
+        );
+        cli.mcp_args.mcp_tools = Some("core,relay".to_string());
+        assert!(plan(&cli, &Config::default()).is_ok(), "known names run");
+    }
+
+    #[test]
+    fn a_malformed_config_bundle_refuses_the_run_even_unused() {
+        let cli = base_cli();
+        let mut config = Config::default();
+        config
+            .mcp
+            .bundles
+            .insert("mine".into(), vec!["nope".into()]);
+        let e = match plan(&cli, &config) {
+            Err(e) => e,
+            Ok(_) => panic!("a bundle naming an unknown tool must refuse the run"),
+        };
+        assert!(e.message.contains("[mcp.bundles] mine"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_capture_source_limit_that_covers_the_run_is_accepted_and_carried() {
+        let mut cli = base_cli();
+        cli.hep_args.hep_listen = Some("127.0.0.1:0".to_string());
+        cli.limits_args.max_capture_sources = Some(5_000);
+        let p = plan(&cli, &Config::default()).expect("5000 holds 4096 senders");
+        assert_eq!(p.max_capture_sources, 5_000);
+    }
+
+    #[test]
+    fn without_hep_the_limit_must_cover_the_inputs() {
+        let mut cli = base_cli();
+        cli.capture_args.input = vec![
+            "tests/fixtures/sip_call.pcap".into(),
+            "tests/fixtures/ice_checks.pcap".into(),
+        ];
+        cli.limits_args.max_capture_sources = Some(1);
+        assert!(
+            plan(&cli, &Config::default()).is_err(),
+            "one slot cannot hold two input files"
+        );
+        cli.limits_args.max_capture_sources = Some(2);
+        let p = plan(&cli, &Config::default()).expect("two slots hold two files");
+        assert_eq!(p.max_capture_sources, 2);
+    }
+
+    #[test]
+    fn the_default_limit_is_carried_when_nothing_sets_it() {
+        let p = plan(&base_cli(), &Config::default()).expect("plan");
+        assert_eq!(
+            p.max_capture_sources,
+            crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES
+        );
+    }
+
     #[test]
     fn plan_turns_immediate_mode_off_for_headless_capture() {
         let mut cli = base_cli(); // -N

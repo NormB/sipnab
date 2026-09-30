@@ -3738,6 +3738,16 @@
               "null"
             ]
           },
+          "capture_sources": {
+            "$ref": "#/components/schemas/RuntimeOccupancy",
+            "description": "Capture-source table occupancy against `max_capture_sources`."
+          },
+          "capture_sources_refused_total": {
+            "description": "Packets whose new capture source the full table refused.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "dialogs": {
             "$ref": "#/components/schemas/RuntimeOccupancy",
             "description": "Dialog-store occupancy."
@@ -3809,6 +3819,8 @@
           "interfaces",
           "dialogs",
           "streams",
+          "capture_sources",
+          "capture_sources_refused_total",
           "capture_packets_total",
           "uptime_seconds"
         ],

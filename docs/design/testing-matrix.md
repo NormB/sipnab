@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 292 | 227 | 39 | 25 | 1 |
+| CLI flags | 294 | 229 | 39 | 25 | 1 |
 | HTTP routes | 41 | 41 | -- | 0 | 0 |
 | MCP tools | 70 | 70 | -- | 0 | 0 |
 
@@ -291,7 +291,8 @@ behind them.
 | `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
 | `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_archive_password_test.rs` +1 |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
-| `--mcp-tools` |  | `PROFILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
+| `--mcp-tools` |  | `LIST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
+| `--mcp-output-schemas` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
 | `--mcp-max-rows` |  | `N` | MCP (Model Context Protocol) | parsed | `tests/mcp_row_cap_test.rs` |  |  |
 | `--mcp-max-body-bytes` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs` | **behavior** | via config key: probe_mcp_max_body_bytes changes the search_messages snippet length |
 | `--mcp-max-wait-seconds` |  | `N` | MCP (Model Context Protocol) | referenced | `src/cli.rs`, `src/mcp/tools/await_condition.rs` | **behavior** | via config key: probe_mcp_max_wait_seconds changes the effective await_condition deadline |
@@ -361,6 +362,7 @@ behind them.
 | `--no-priv-drop` |  |  | Privilege | e2e | `tests/cli_options_test.rs` | **behavior** | SAFETY SWITCH. Credentials proven unchanged as root, discriminated by the drop case. The flag->boolean hop is untested and the test self-skips without root |
 | `--chroot` |  | `DIR` | Privilege | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--setup-caps` |  |  | Privilege | parsed | `src/cli.rs` |  |  |
+| `--max-capture-sources` |  | `N` | Resource limits | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--max-reassembly` |  | `N` | Resource limits | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--reassembly-ttl` |  | `SECS` | Resource limits | referenced | `src/cli.rs` | **behavior** | probe_reassembly_ttl_secs walks the flag's OWN resolver, alone among the limit probes |
 | `--max-tcp-buffer` |  | `BYTES` | Resource limits | parsed | `src/cli.rs` |  |  |
@@ -371,7 +373,7 @@ behind them.
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +12 |  |  |
-| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +11 |  |  |
+| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +12 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
@@ -430,7 +432,7 @@ behind them.
 | `aggregate_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
 | `await_condition` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `build_evidence_package` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
-| `capture_health` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
+| `capture_health` | exercised | `tests/config_wiring_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `capture_status` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_audit_sink_test.rs` +13 |
 | `check_codec_negotiation` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
 | `compare_captures` | exercised | `tests/mcp_stdio_test.rs`, `tests/population_claim_test.rs` |

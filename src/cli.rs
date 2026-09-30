@@ -2979,27 +2979,39 @@ pub struct McpArgs {
     )]
     pub mcp_max_concurrent: u32,
 
-    /// Which tools the MCP server registers: `full` (every tool, the default)
-    /// or `core` (a small set that still answers a whole call).
+    /// Which tools the MCP server registers: a comma-separated list of
+    /// bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`,
+    /// `tfps`, `server`, `vcon`, `tls`), tool names, `[mcp.bundles]` names, or
+    /// `full` (every tool, the default). Replaces `[mcp] tools`.
     ///
     /// Every registered tool's name, description and JSON schema is sent on
     /// `tools/list` and then carried in the model's context for the session,
     /// before the agent has asked anything. On a client with a small context
     /// window that fixed cost is worth cutting; on a batch client it is not.
-    ///
-    /// A clap `default_value` is right here and wrong on `--mcp-max-rows`,
-    /// because this knob has no config key to be overruled by: the tool set is
-    /// a property of the CLIENT the server is answering, and a config file is
-    /// per host. What `core` holds is documented on
-    /// [`crate::mcp::profile::CORE_TOOLS`].
+    /// An unknown name refuses the run. What each bundle holds is
+    /// [`crate::mcp_profile::BUNDLES`].
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-tools",
-        value_name = "PROFILE",
-        value_parser = ["core", "full"],
-        default_value = "full"
+        value_name = "LIST"
     )]
-    pub mcp_tools: String,
+    pub mcp_tools: Option<String>,
+
+    /// Send each tool's output schema on `tools/list` (`[mcp] output_schemas`,
+    /// default off). Output schemas are optional in MCP and are most of the
+    /// bytes a tool costs; responses carry the same JSON either way.
+    /// `--mcp-output-schemas=false` turns them off over a config that turns
+    /// them on.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-output-schemas",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = clap::value_parser!(bool)
+    )]
+    pub mcp_output_schemas: Option<bool>,
 
     /// One-way network delay of the observed path, in milliseconds.
     ///
@@ -3878,6 +3890,17 @@ pub struct PrivilegeArgs {
 /// 2 MiB libtest thread stack.
 #[derive(clap::Args, Debug, Clone)]
 pub struct LimitsArgs {
+    /// Distinct capture sources remembered by name (`[limits]
+    /// max_capture_sources`, default 65536): input files, devices, HEP
+    /// senders, traced processes. Must cover every source the run can have.
+    #[arg(
+        help_heading = "Resource limits",
+        long = "max-capture-sources",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    pub max_capture_sources: Option<u64>,
+
     /// Maximum concurrent TCP/TLS reassembly sessions.
     #[arg(help_heading = "Resource limits", long, value_name = "N")]
     pub max_reassembly: Option<u64>,
@@ -4420,6 +4443,38 @@ impl Cli {
     /// [`Self::dialog_limit`], which bounds dialogs tracked over the whole run
     /// and defaults 100x higher -- the two are confused often enough that the
     /// difference is worth stating here.
+    /// MCP tool selection: `--mcp-tools`, else `[mcp] tools`, else `full`.
+    /// Custom bundles always come from `[mcp.bundles]`.
+    ///
+    /// # Errors
+    ///
+    /// The resolver's message, naming the flag or the key it came from, for
+    /// an empty or unknown name or a malformed custom bundle.
+    pub fn mcp_tool_selection(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<crate::mcp_profile::ToolSelection, String> {
+        let (asked, from): (Vec<String>, &str) = match (&self.mcp_args.mcp_tools, &config.mcp.tools)
+        {
+            (Some(flag), _) => (flag.split(',').map(str::to_string).collect(), "--mcp-tools"),
+            (None, Some(list)) => (list.clone(), "[mcp] tools"),
+            // Still resolved, so a malformed `[mcp.bundles]` refuses the run
+            // before anything names it.
+            (None, None) => (vec![crate::mcp_profile::FULL.to_string()], "[mcp.bundles]"),
+        };
+        crate::mcp_profile::resolve(&asked, &config.mcp.bundles).map_err(|e| format!("{from}: {e}"))
+    }
+
+    /// Whether the MCP server sends output schemas: `--mcp-output-schemas`,
+    /// else `[mcp] output_schemas`, else off.
+    #[must_use]
+    pub fn mcp_output_schemas(&self, config: &crate::config::Config) -> bool {
+        self.mcp_args
+            .mcp_output_schemas
+            .or(config.mcp.output_schemas)
+            .unwrap_or(false)
+    }
+
     #[must_use]
     pub fn mcp_row_cap(&self, config: &crate::config::Config) -> usize {
         self.mcp_args
@@ -4790,6 +4845,18 @@ impl Cli {
             .reassembly_ttl_secs
             .or(config.limits.reassembly_ttl_secs)
             .unwrap_or_else(|| crate::capture::reassembly::DEFAULT_TTL.as_secs())
+    }
+
+    /// Capture-source table size: `--max-capture-sources`, else `[limits]
+    /// max_capture_sources`, else the default. See [`Self::dialog_limit`].
+    #[must_use]
+    pub fn max_capture_sources(&self, config: &crate::config::Config) -> usize {
+        self.limits_args
+            .max_capture_sources
+            .or(config.limits.max_capture_sources)
+            .map_or(crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES, |v| {
+                usize::try_from(v).unwrap_or(usize::MAX)
+            })
     }
 
     /// HEP global ingest ceiling: `--hep-rate-limit`, else
@@ -6024,6 +6091,114 @@ mod tests {
         assert!(
             none.fraud_destinations().is_empty(),
             "absent flag: an empty watch list"
+        );
+    }
+
+    #[test]
+    fn max_capture_sources_flag_beats_config_beats_default() {
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert_eq!(
+            plain.max_capture_sources(&config),
+            crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES,
+            "no flag, no key: the default"
+        );
+        config.limits.max_capture_sources = Some(5_000);
+        assert_eq!(
+            plain.max_capture_sources(&config),
+            5_000,
+            "the key when there is no flag"
+        );
+        let flagged =
+            Cli::try_parse_from(["sipnab", "--max-capture-sources", "7000"]).expect("parses");
+        assert_eq!(
+            flagged.max_capture_sources(&config),
+            7_000,
+            "the flag over the key"
+        );
+    }
+
+    #[test]
+    fn mcp_tools_flag_beats_config_beats_full() {
+        use crate::mcp_profile::ToolSelection;
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert_eq!(plain.mcp_tool_selection(&config), Ok(ToolSelection::Full));
+        config.mcp.tools = Some(vec!["relay".into()]);
+        let sel = plain.mcp_tool_selection(&config).expect("config list");
+        assert_eq!(sel.asked(), vec!["relay".to_string()]);
+        assert!(sel.keeps("query_relay") && !sel.keeps("get_dialog"));
+        let flagged = Cli::try_parse_from(["sipnab", "--mcp-tools", "core,get_sdp_timeline"])
+            .expect("parses");
+        let sel = flagged.mcp_tool_selection(&config).expect("flag list");
+        assert!(sel.keeps("get_dialog") && sel.keeps("get_sdp_timeline"));
+        assert!(
+            !sel.keeps("query_relay"),
+            "the flag replaces the config list"
+        );
+    }
+
+    #[test]
+    fn mcp_tools_flag_can_name_a_config_bundle() {
+        let mut config = crate::config::Config::default();
+        config
+            .mcp
+            .bundles
+            .insert("voice".into(), vec!["media".into(), "rtp_stats".into()]);
+        let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", "voice"]).expect("parses");
+        let sel = cli.mcp_tool_selection(&config).expect("custom bundle");
+        assert!(sel.keeps("export_audio") && sel.keeps("rtp_stats"));
+    }
+
+    #[test]
+    fn mcp_tools_flag_refuses_unknown_and_empty_names_naming_the_flag() {
+        let config = crate::config::Config::default();
+        for bad in ["minimal", "core,,relay", "", "core,Relay"] {
+            let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", bad]).expect("parses");
+            let e = cli.mcp_tool_selection(&config).expect_err(bad);
+            assert!(e.contains("--mcp-tools"), "{bad}: {e}");
+        }
+        let mut config = crate::config::Config::default();
+        config.mcp.tools = Some(vec!["nope".into()]);
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let e = plain.mcp_tool_selection(&config).expect_err("config");
+        assert!(e.contains("[mcp] tools"), "{e}");
+    }
+
+    #[test]
+    fn mcp_output_schemas_default_off_config_then_flag() {
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert!(!plain.mcp_output_schemas(&config), "off by default");
+        config.mcp.output_schemas = Some(true);
+        assert!(plain.mcp_output_schemas(&config), "the key turns them on");
+        let off = Cli::try_parse_from(["sipnab", "--mcp-output-schemas=false"]).expect("parses");
+        assert!(
+            !off.mcp_output_schemas(&config),
+            "the flag turns them off again"
+        );
+        let on = Cli::try_parse_from(["sipnab", "--mcp-output-schemas"]).expect("parses");
+        assert!(on.mcp_output_schemas(&crate::config::Config::default()));
+        assert!(Cli::try_parse_from(["sipnab", "--mcp-output-schemas=maybe"]).is_err());
+    }
+
+    #[test]
+    fn max_capture_sources_flag_accepts_positive_integers_only() {
+        for bad in ["0", "-1", "many", "1.5", "", "99999999999999999999999"] {
+            assert!(
+                Cli::try_parse_from(["sipnab", "--max-capture-sources", bad]).is_err(),
+                "--max-capture-sources {bad:?} must be refused"
+            );
+        }
+        for good in ["1", "65536", "18446744073709551615"] {
+            assert!(
+                Cli::try_parse_from(["sipnab", "--max-capture-sources", good]).is_ok(),
+                "--max-capture-sources {good} must be accepted"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["sipnab", "--max-capture-sources"]).is_err(),
+            "the flag needs a value"
         );
     }
 

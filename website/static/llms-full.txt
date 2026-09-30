@@ -3882,7 +3882,7 @@ sipnab -D --no-config
 **Pitfalls:**
 
 - `-D` dumps the **effective** configuration, which includes values that came from a file you did not name. Add `--no-config` to see the flags alone.
-- A config file is per host. The tool set an MCP server registers is per client. That is why `--mcp-tools` has an ordinary flag default and the row caps do not.
+- A config file is per host, and the tool set an MCP server registers is usually per client. Set the host default in `[mcp] tools` and give each client its own list with `--mcp-tools`, which replaces the config list rather than adding to it.
 
 ---
 
@@ -4675,6 +4675,9 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_capture_quality_degraded` | gauge | `1` when any of the three *loss* counters above exceeds zero, `0` otherwise. Undecodable frames are deliberately **not** folded in: ARP makes them non-zero on nearly every capture, so a flag including them would always be `1` and carry no information — use `sipnab_capture_undecoded_fraction` with a threshold instead. The one series to put on a dashboard or an alert rule to know whether the rest of the scrape describes the whole capture. `0` means nothing **surfaced** as wrong, not that the capture provably saw every packet: loss upstream of the capture point — an oversubscribed SPAN port, a tap mirroring one direction, a filter that excluded the traffic — is invisible to all three counters. |
 | `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
 | `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
+| `sipnab_capture_sources` | gauge | Capture sources held in the source table: input files, the device, HEP senders, traced processes. Both servers fill it. |
+| `sipnab_capture_sources_max` | gauge | The source table's limit, `[limits] max_capture_sources` / `--max-capture-sources`. |
+| `sipnab_capture_sources_refused_total` | counter | Packets whose new capture source the full table refused. They are still analyzed, but carry no `frame` pointer for `--show-frame`. Nonzero means raise `max_capture_sources`. |
 | `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener: a zero would claim a listener that heard nothing. **Aggregates only, never a series per sender** — sender addresses describe the estate, and a `metrics`-scoped token must not read what the full-scope [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) withholds from it; a spoofed flood would also set the label cardinality. For which sender stopped, ask that route, the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
 | `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
 | `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by why: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused nothing for it, so a rule on `auth_mismatch` reads zero rather than no-data. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
@@ -4690,7 +4693,7 @@ Metric names emitted by [`src/output/prometheus.rs`](https://github.com/NormB/si
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution. A ladder at 5/10/20ms, plus `[quality] jitter_warn_ms` and `jitter_bad_ms` and multiples above them (30/50/100/200ms at the shipped settings). **`--api` only.** |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution. A ladder at 0.1/0.5%, plus `[quality] loss_warn_pct` and `loss_bad_pct` and multiples above them (1/2/5/10/20% at the shipped settings). **`--api` only.** |
 
-Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_undecodable_frames_total`, `sipnab_capture_snapped_frames_total`, the two MCP counters (`sipnab_mcp_tool_calls_total`, `sipnab_mcp_tool_response_bytes_total`) and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say.
+Two shapes of counter share that table, and an alert rule has to know which one it reads. `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`, `sipnab_kill_responses_sent_total`, `sipnab_capture_backpressure_blocks_total`, `sipnab_capture_sources_refused_total`, `sipnab_capture_undecodable_frames_total`, `sipnab_capture_snapped_frames_total`, the two MCP counters (`sipnab_mcp_tool_calls_total`, `sipnab_mcp_tool_response_bytes_total`) and the three capture-quality counters (`sipnab_capture_kernel_dropped_packets_total`, `sipnab_capture_interface_dropped_packets_total`, `sipnab_capture_invalid_timestamps_total`) count events since the process started and only ever climb, so `rate()` and `increase()` over them mean what they say.
 
 The rest — dialogs, messages, responses, streams, diagnosis findings, and the four NAT gauges — describe what sipnab tracks right now, and every one of them falls as well as rises: dialogs and streams age out of their stores, a late STUN answer clears an unanswered request, a TURN Refresh unsays a lapsed allocation. Alert on the current value or on a ratio there, never on `increase()`.
 
@@ -6863,7 +6866,7 @@ per-dialog summary and ranks nothing.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 37 Prometheus metrics, and the listener that serves them is off
+sipnab exports 40 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -6901,6 +6904,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "interfaces": [],
   "dialogs": { "used": 2, "capacity": 100000, "pct": 0.002 },
   "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.0015 },
+  "capture_sources_refused_total": 0,
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
@@ -14247,7 +14252,8 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 | `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
 | `--mcp-audit-file` | `<FILE>` | -- | Append every MCP tool call to this file, one JSON record per line (`seq`, `ts`, `tool`, `id`, `caller`, `outcome`, `elapsed_ms`, `args`, `error`). The same facts already ride the normal log under the `mcp_audit` target, but that is a console view `--quiet` suppresses and `SIPNAB_LOG` filters; this is the durable copy for the question the record exists for — what did an agent look at in this capture — which somebody who did not choose the log level asks later. Opened `O_APPEND` and never truncated, so restarts and a second sipnab on the same path add to it; created mode `0600` when absent. The `seq` counter starts at 1 each run, so a gap within a run is a missing record. **sipnab refuses a call whose record it cannot write, rather than answering it**, so no result leaves the server that is not in the file; a path sipnab cannot open stops the run at startup. Records reach the kernel rather than an `fsync`. Leave it off and nothing changes. Feature: `mcp` |
 | `--mcp-max-concurrent` | `<N>` | `100` | Maximum tool calls the MCP server runs at once (`0` = unlimited). sipnab refuses a call that cannot take a slot immediately, with a retry-shortly error, rather than queueing it — an unbounded backlog behind the cap is the exhaustion the cap prevents. The default mirrors `--api-max-conn` and bounds a flooding client without impeding an agent's ordinary parallel calls. Applies to both stdio and HTTP servers, though a network-exposed HTTP server is the case it matters for. Feature: `mcp` |
-| `--mcp-tools` | `core\|full` | `full` | Which tools the MCP server registers. Every registered tool's name, description and JSON schema goes to the client on `tools/list` and then rides in the model's context for the whole session — a fixed cost paid before the agent asks anything, and it scales with the surface rather than with the question. `core` registers eight that still answer a whole call end to end: `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`. `full` stays the default, because taking tools away at upgrade time would change what every existing client can do. sipnab removes the dropped tools from the router rather than hiding them, so a `core` server answers a call to one of them as an unknown tool. Feature: `mcp` |
+| `--mcp-tools` | `<LIST>` | `full` | Which tools the MCP server registers: a comma-separated list of bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. Every registered tool's name, description and schema goes to the client on `tools/list` and then stays in the model's context for the whole session. That is a fixed cost paid before the agent asks anything, and it grows with the surface rather than with the question. `core` holds nine tools that still answer a whole call end to end: `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report`. [Choosing which tools load](mcp-tools.md#choosing-which-tools-load) lists every bundle and its size. An unknown or empty name refuses the run, exit 2. sipnab removes the tools you did not choose from the router rather than hiding them, so a call to one of them fails as an unknown tool. The handshake names the tools sipnab loaded and the bundles it left out. Replaces `[mcp] tools`. Feature: `mcp` |
+| `--mcp-output-schemas` | `[=BOOL]` | off | Send each tool's output schema on `tools/list`. Off by default: MCP makes output schemas optional, and they are more than half the bytes the tools cost a client (78,920 bytes for every tool without them, 181,691 with them, measured on 0.5.196). Responses carry the same JSON, as text and as `structuredContent`, either way; only a client that validates responses against a schema needs them. `--mcp-output-schemas=false` turns them off over a config that turns them on. Config: `[mcp] output_schemas`. Feature: `mcp` |
 | `--one-way-delay` | `<MS>` | -- | One-way network path delay, in milliseconds — the single MOS input a passive tap cannot measure directly. Declared here it beats an RTCP-reported round trip, which an unauthenticated packet can move, and that in turn beats the round trip sipnab derives from a sender-report echo carried in a receiver report; with none of the three, sipnab assumes 100 ms and says so. Config: `[media] one_way_delay_ms` |
 | `--mcp-max-rows` | `<N>` | `1000` | Maximum rows in one list-style MCP response. The consumer decides the right value: a small-context agent wants fewer, a batch client wants more. Config: `[limits] mcp_max_rows`. Do not mistake this for `-l`/`--limit`, which bounds dialogs tracked over the run |
 | `--mcp-max-body-bytes` | `<N>` | `4096` | Maximum bytes of SIP body or matched snippet in one MCP response. `--mcp-max-rows` bounds how many rows an answer carries; this bounds how wide one row may be, and a caller can ask for fewer rows but cannot widen one. An SDP body with a dozen codecs and ICE candidates passes the default, and the agent reading the clipped half cannot tell a truncated answer from a short one. Config: `[limits] mcp_max_body_bytes` |
@@ -14305,6 +14311,9 @@ it. See [MCP Server](mcp.md) for the full guide. [Network Listeners](#network-li
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-max-concurrent 8` — a network-facing MCP server that runs at most eight tool calls at once and refuses the ninth with a retry-shortly error rather than queueing it
 - `sipnab -N -I capture.pcap --mcp --mcp-max-concurrent 0` — a stdio replay for one trusted agent with no concurrency cap (`0` = unlimited)
 - `sipnab -N -I capture.pcap --mcp --mcp-tools core` — a small-context agent: nine tools instead of the whole surface, so the schema block sipnab sends it before it asks anything is a fraction of the size
+- `sipnab -N -I capture.pcap --mcp --mcp-tools core,relay,get_sdp_timeline` — a small-context agent that also chases relay-side media: the core set, the relay bundle and one signaling tool, rather than every bundle
+- `sipnab -N -I capture.pcap --mcp --mcp-output-schemas` — the whole surface with its output schemas, for a client that validates each response against the tool's declared shape
+- `sipnab -N -I capture.pcap --mcp --config sipnab.toml --mcp-output-schemas=false` — a host config that turns output schemas on, overridden for one client that does not validate responses
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-tools full` — the default written out, for a service definition that should say what it offers rather than leave it to whatever the next release registers
 - `sipnab -N -I capture.pcap --mcp --quiet --mcp-audit-file /var/log/sipnab-mcp.jsonl` — record every tool call to a file that survives `--quiet`, for the question asked after the fact rather than at the console
 - `sipnab -N -I sat-trunk.pcap --one-way-delay 280` — score MOS for a satellite trunk, where the real one-way delay is 280 ms. Without it sipnab falls back to the trunk's own RTCP and, on a capture carrying none, to an assumed 100 ms that reports roughly a full point too high, because G.107's delay penalty has a knee at 177.3 ms the assumption never crosses
@@ -14373,6 +14382,7 @@ CoreAudio the moment anything touches it.
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
+| `--max-capture-sources` | `<N>` | `65536` | Distinct capture sources sipnab remembers by name: input files, the device, HEP senders, traced processes. A packet from a new source past the limit is still analyzed but carries no `frame` pointer, so `--show-frame` cannot reach its bytes; sipnab counts it (`sipnab_capture_sources_refused_total`) and warns once. sipnab refuses to start, exit 2, when the limit cannot hold the input files or device plus `[limits] max_tracked_peers` HEP senders. Accepts 1 and up. Config: `[limits] max_capture_sources` |
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
 | `--reassembly-ttl` | `<SECS>` | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `--max-reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `--max-reassembly` caps the extra state either way. Config: `[limits] reassembly_ttl_secs` |
 | `--lint-max-per-rule` | `<N>` | `25` | Findings one lint rule may report for one dialog. A dialog that retransmits an `INVITE` eleven times trips a message rule eleven times and every one of them is true, so this decides whether the other rules stay readable underneath. Needs `--lint`. Config: `[limits] lint_max_per_rule` |
@@ -14394,6 +14404,8 @@ CoreAudio the moment anything touches it.
 - `sipnab -N -I calls.pcap --lint --lint-no-suppress --no-cli-print` — the full catalog, ignoring every suppression file, for auditing what the project has agreed to live with
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --report` — read the embedded names and TLS secrets out of an 8 GiB ring member you captured yourself, which the shipped ceiling refuses outright
 - `sipnab -N -I ring-00042.pcapng --max-metadata-file-bytes 8589934592 --strip-secrets sanitized.pcapng` — the same file, sanitized for handover. The copy costs roughly twice the ceiling in memory, so raise it only for a file you trust
+- `sipnab -N -L 0.0.0.0:9060 --config collector.toml --max-capture-sources 100000` — a HEP collector whose `collector.toml` sets `[limits] max_tracked_peers = 100000` for a large agent fleet: at the shipped 65536 sipnab refuses to start, exit 2, because the table could not hold every sender the listener may admit
+- `sipnab -N -I a.pcap -I b.pcap --max-capture-sources 2 --report` — the smallest table two input files can run with; one less and sipnab refuses to start, naming the setting
 - `sipnab -N -I archive.pcapng.gz --max-gunzip-bytes 8589934592 --strip-secrets sanitized.pcapng` — sanitize an 8 GiB pcapng you compressed yourself, without spending the disk that decompressing it by hand would need
 - `sipnab -N -I from-customer.pcapng.gz --max-gunzip-bytes 268435456 --report` — the opposite, for a file that arrived from outside: a quarter-gigabyte ceiling on the embedded names and secrets sipnab reads out of it, so a gzip bomb wearing a capture's name cannot take the box down
 - `sipnab -N -I isup-trunk.pcap --max-tcp-buffer 1048576 --json-dialogs --no-cli-print` — a carrier trunk whose SIP/TCP messages carry encapsulated ISUP bodies past 64 KiB: at the shipped ceiling sipnab cuts each one in half and reports it malformed, and at 1 MiB the same bytes produce the call
@@ -17355,6 +17367,7 @@ Resource limits to prevent unbounded memory growth.
 | `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. `--api-rate-limit-per-peer` overrides it |
 | `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
+| `max_capture_sources` | integer | `65536` | Distinct capture sources sipnab remembers by name: each input file, the device, every HEP sender (`capture_id@address`) and every traced process. The table holds a name so a packet can point back at the bytes it came from: the `frame` field of `--json`, which `--show-frame` follows and `--mcp-evidence-ring` keys on. Past the limit a packet from a NEW source is still analyzed, but carries no `frame` pointer, and sipnab counts it in `sipnab_capture_sources_refused_total` and warns once. sipnab refuses to start when the limit cannot hold every source the run can have: the input files, or the device, plus `max_tracked_peers` senders on a HEP listener. Raise it, or lower `max_tracked_peers`. The floor is 1. Flag: `--max-capture-sources` |
 
 ```toml
 [limits]
@@ -17385,6 +17398,28 @@ for longer than ten minutes while still being the thing under investigation:
 [limits]
 idle_compact_after_secs = 3600
 keep_messages_per_idle_dialog = 500
+```
+
+### [mcp]
+
+Which tools the MCP server registers, and whether it sends their output
+schemas. Every tool sipnab offers a client costs its context window before the
+agent asks anything, so give a client that needs a few tools only those few.
+See [Choosing which tools load](mcp-tools.md#choosing-which-tools-load) for what
+each bundle holds.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tools` | list of strings | `["full"]` | Bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. sipnab refuses to start, naming the entry, when a name is unknown or empty. Names are case-sensitive. `--mcp-tools` replaces the list |
+| `output_schemas` | boolean | `false` | Send each tool's output schema on `tools/list`. MCP makes them optional, and they are more than half of what the tools cost a client. Responses carry the same JSON either way. `--mcp-output-schemas` overrides it |
+| `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
+
+```toml
+[mcp]
+tools = ["core", "voice"]
+
+[mcp.bundles]
+voice = ["media", "get_sdp_timeline", "check_codec_negotiation"]
 ```
 
 ### [privilege]
@@ -21054,6 +21089,60 @@ ordinary update.
 | [`list_tls_libraries`](#list_tls_libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 
 
+### Choosing which tools load
+
+Every tool the server registers sends its name, description and schemas to the
+client on `tools/list`, and the client keeps them in the model's context for
+the whole session. The client pays that cost before the agent asks anything, so
+give a client that needs a few tools only those few:
+
+```sh
+sipnab -N -I capture.pcap --mcp --mcp-tools core,relay,get_sdp_timeline
+```
+
+`--mcp-tools` (or `[mcp] tools` in the [config file](config-reference.md#mcp))
+takes a comma-separated list of:
+
+- **bundles**, from the table below. Every tool is in exactly one, so the
+  bundles together are `full`.
+- **single tool names**, for one tool from a bundle you do not want whole.
+- **your own bundles**, defined under `[mcp.bundles]` in the config file.
+- **`full`**, every tool. This is the default.
+
+sipnab refuses to start, exit 2, when a name is unknown or empty, and lists the
+valid bundles. Names are case-sensitive. The handshake's `instructions` string
+names the tools sipnab loaded and the bundles it left out, so an agent that misses a
+tool can tell the operator which bundle holds it.
+
+Output schemas are **off by default**. MCP makes them optional, and they are
+more than half the bytes. Every response carries the same JSON with or without
+them, as a text block and as `structuredContent`. Only a client that validates
+responses against a declared shape needs them. Turn them on with
+`--mcp-output-schemas` or `[mcp] output_schemas = true`.
+
+| Bundle | Tools | Bytes (default) | Bytes with output schemas | What it holds |
+|---|---|---|---|---|
+| core | 9 | 10,985 | 30,964 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
+| signaling | 20 | 21,955 | 36,466 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
+| captures | 9 | 10,524 | 15,996 | `build_evidence_package`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
+| security | 6 | 9,938 | 9,938 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
+| media | 4 | 3,113 | 11,400 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
+| relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
+| tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
+| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
+| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 70 | 78,920 | 181,691 | Every tool the build carries (the default) |
+
+Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
+bundle.
+
+> **Measured on sipnab 0.5.196**, a build with every feature. Sizes, tool
+> counts and bundle membership may change in later releases. A build without a
+> feature does not register that feature's tools, so its bundles are smaller.
+> The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
+> past its recorded ceiling; update this table in the same change.
+
 ### Rules every tool follows
 
 Six rules hold across the whole surface. Each tool section below states only
@@ -21369,7 +21458,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 37 Prometheus metrics, and the listener that serves them is off
+sipnab exports 40 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -21397,6 +21486,8 @@ parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
   "interfaces": [],
   "dialogs": { "used": 1, "capacity": 100000, "pct": 0.001 },
   "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.0015 },
+  "capture_sources_refused_total": 0,
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
@@ -21559,6 +21650,14 @@ Returns:
   "source_exhausted": true,
   "source_stopped_early": false
 }
+```
+
+Every response carries `capture_sources`: how many capture sources the source
+table holds, its limit (`[limits] max_capture_sources`), and packets from a new
+source it refused because it was full. Counts only, never the names.
+
+```jsonc
+  "capture_sources": { "held": 1, "limit": 65536, "refused": 0 }
 ```
 
 On a run with a HEP listener (`-L`), the response also carries `hep`: the

@@ -98,7 +98,7 @@ decisions downstream read the source as a scalar:
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
 ([`src/capture/file.rs:356`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L356)), `capture_hep` ([`src/capture/hep.rs:2492`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L2492)), the
-uprobe reader — builds a `Packet` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502)) and calls
+uprobe reader — builds a `Packet` ([`src/capture/packet.rs:631`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L631)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)). The consumer is the batch receive loop at
@@ -109,7 +109,7 @@ is, when the last sender clone drops.
 many-producer, the receive loop already ends on the last producer, and the
 parser already tells the two kinds of packet apart:
 
-- `Packet::interface` ([`src/capture/packet.rs:502`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L502)) is an `Arc<str>` naming the
+- `Packet::interface` ([`src/capture/packet.rs:631`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L631)) is an `Arc<str>` naming the
   source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
   ([`src/capture/hep_roster.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L183)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
@@ -323,7 +323,7 @@ operator discount a suspicious attribution instead of trusting it.
 ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:388`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L388)) carries the same field at line 323
 carry it downstream.
 
-The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:651`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L651))
+The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:692`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L692))
 requires **both** a source name and a frame ordinal, and the live and HEP readers
 stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L778),
 [`src/parallel.rs:675`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L675) and the uprobe readers; neither `capture_live_fanout` nor
@@ -432,14 +432,14 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:4082`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4082)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:4121`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4121)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
 ([`src/app/batch.rs:2846`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2846)), and the two members disagree: live capture yields
-`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:845`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L845)) sets
+`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:886`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L886)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
 [`src/capture/hep.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L84) onward: fabricating a `DLT_RAW` header made `etherparse`
@@ -496,7 +496,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:4082`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4082)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:4121`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4121)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

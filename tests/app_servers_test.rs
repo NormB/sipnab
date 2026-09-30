@@ -49,6 +49,8 @@ fn nothing_enabled_spawns_nothing() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -90,6 +92,8 @@ fn selection_gates_configured_servers() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -132,6 +136,8 @@ fn invalid_api_addr_is_an_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -171,6 +177,8 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -217,6 +225,8 @@ fn api_port_in_use_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -264,6 +274,8 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -315,6 +327,8 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -363,6 +377,8 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -409,6 +425,8 @@ fn unknown_mcp_transport_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -456,6 +474,8 @@ fn invalid_mcp_bind_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -563,6 +583,8 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,
@@ -609,6 +631,8 @@ fn metrics_on_loopback_ephemeral_port_starts() {
         Some(&alerts),
         Selection {
             evidence_ring: None,
+            mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_ROWS as usize,
             mcp_body_cap: sipnab::cli::Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
             mcp_wait_seconds: sipnab::cli::Cli::DEFAULT_MCP_MAX_WAIT_SECONDS,

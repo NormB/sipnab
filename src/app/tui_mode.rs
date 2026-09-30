@@ -802,6 +802,8 @@ pub fn run_tui_mode(
             // every live pointer answer "nothing retained" where "no ring" is
             // the truth.
             evidence_ring: None,
+            mcp_tools: cli.mcp_tool_selection(&config).unwrap_or_default(),
+            mcp_output_schemas: cli.mcp_output_schemas(&config),
             mcp_row_cap: cli.mcp_row_cap(&config),
             mcp_body_cap: cli.mcp_body_cap(&config),
             mcp_wait_seconds: cli.mcp_wait_cap(&config),

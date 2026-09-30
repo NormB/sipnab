@@ -179,6 +179,8 @@ pub struct SipnabMcp {
     /// `[actions]`). Empty by default, so `tfps_ban` and `tfps_unban` refuse
     /// and name the setting that would enable them.
     pub(crate) actions: crate::security::actions::Actions,
+    /// The tools this server was told to register, repeated in the handshake.
+    pub(crate) tool_selection: super::profile::ToolSelection,
     /// Whether `start_tls_capture` may install kernel uprobes.
     ///
     /// Separate from `allow_open_capture` because it is a different act. That
@@ -360,6 +362,7 @@ impl SipnabMcp {
             control_decoder: None,
             tfps: Default::default(),
             actions: Default::default(),
+            tool_selection: Default::default(),
             allow_tls_capture: false,
             allow_save_findings: false,
             findings: Arc::new(RwLock::new(crate::mcp::findings::FindingsLog::new())),
@@ -445,9 +448,27 @@ impl SipnabMcp {
     ///
     /// See [`crate::mcp::profile`] for what `core` holds and why.
     #[must_use]
-    pub fn with_tool_profile(mut self, profile: super::profile::ToolProfile) -> Self {
-        for name in super::profile::excluded(profile, &self.registered_tool_names()) {
+    pub fn with_tool_selection(mut self, selection: &super::profile::ToolSelection) -> Self {
+        for name in super::profile::excluded(selection, &self.registered_tool_names()) {
             self.tool_router.remove_route(&name);
+        }
+        self.tool_selection = selection.clone();
+        self
+    }
+
+    /// Keep or drop every tool's output schema on `tools/list`.
+    ///
+    /// Output schemas are optional in MCP (2025-06-18 onward) and are most of
+    /// what a tool costs a client's context: `capture_status` alone is ~17 KB
+    /// of schema. Dropping them changes nothing a call returns — the response
+    /// still carries its JSON as text and as `structuredContent` — only what
+    /// a client can validate it against.
+    #[must_use]
+    pub fn with_output_schemas(mut self, keep: bool) -> Self {
+        if !keep {
+            for route in self.tool_router.map.values_mut() {
+                route.attr.output_schema = None;
+            }
         }
         self
     }
@@ -3253,6 +3274,9 @@ pub struct CaptureHealth {
     /// accumulates in a day. A caller comparing times between two servers
     /// should read this from both before trusting a time-based match.
     pub clock: crate::clock::ClockDiscipline,
+    /// The capture-source table against `max_capture_sources`. Counts only:
+    /// the source names are capture identity and stay out of this tool.
+    pub capture_sources: CaptureHealthSources,
     /// The HEP listener's aggregate counts, when this run has one. Absent
     /// otherwise, because a zero would claim a listener that heard nothing.
     ///
@@ -3260,6 +3284,29 @@ pub struct CaptureHealth {
     /// and the ids they claim are `hep_senders`' answer, not this tool's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hep: Option<CaptureHealthHep>,
+}
+
+/// The capture-source table, as `capture_health` carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct CaptureHealthSources {
+    /// Sources held: interfaces, files, HEP senders, traced processes.
+    pub held: u64,
+    /// The table's limit, `max_capture_sources`.
+    pub limit: u64,
+    /// Packets whose new source the full table refused. Those packets are
+    /// still analyzed, but carry no `frame` pointer to their bytes.
+    pub refused: u64,
+}
+
+impl From<crate::capture::packet::CaptureSourceCounts> for CaptureHealthSources {
+    fn from(c: crate::capture::packet::CaptureSourceCounts) -> Self {
+        Self {
+            held: c.held,
+            limit: c.limit,
+            refused: c.refused,
+        }
+    }
 }
 
 /// A HEP listener's counts, as `capture_health` carries them.
@@ -3422,6 +3469,7 @@ fn build_health(
         // or gain its time source while sipnab runs, and a cached "synced"
         // would keep saying so for the life of the process.
         clock: crate::clock::discipline(),
+        capture_sources: crate::capture::packet::capture_source_counts().into(),
         // Filled by the caller, which holds the capture meter this pure
         // function does not.
         hep: None,
@@ -8279,7 +8327,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 37 Prometheus metrics and the listener that serves them
+    /// sipnab exports 40 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.
@@ -9537,10 +9585,32 @@ impl ServerHandler for SipnabMcp {
              exports write only under the configured file root, and stopping \
              the server requires an explicit server-side opt-in."
                 .to_string()
-                + &actions_sentence(self.actions.policy()),
+                + &actions_sentence(self.actions.policy())
+                + &tools_sentence(&self.tool_selection),
         );
         info
     }
+}
+
+/// The handshake's sentence about tools: what this client was given, and the
+/// bundles it was not, so an agent missing a tool knows how to get it.
+fn tools_sentence(selection: &super::profile::ToolSelection) -> String {
+    let asked = selection.asked().join(", ");
+    // A bundle is "other" unless every one of its tools is already loaded,
+    // however it got there: by name, or inside a custom bundle.
+    let others: Vec<&str> = super::profile::BUNDLES
+        .iter()
+        .filter(|(_, tools)| !tools.iter().all(|t| selection.keeps(t)))
+        .map(|(name, _)| *name)
+        .collect();
+    if matches!(selection, super::profile::ToolSelection::Full) || others.is_empty() {
+        return format!(" Tools loaded: {asked}.");
+    }
+    format!(
+        " Tools loaded: {asked}. Other bundles, which the operator can add with \
+         --mcp-tools or [mcp] tools: {}.",
+        others.join(", ")
+    )
 }
 
 /// The handshake's sentence about actions: that this server changes no
@@ -10680,6 +10750,155 @@ mod tests {
             !info.server_info.version.is_empty(),
             "an empty version is not an identity"
         );
+    }
+
+    /// The bundle catalog and the router agree exactly: every registered tool
+    /// is in a bundle, and every bundled name is a registered tool. Needs a
+    /// build with every tool, so it runs where `full` does.
+    #[cfg(all(
+        feature = "mcp-http",
+        feature = "tls",
+        feature = "hep",
+        target_os = "linux"
+    ))]
+    #[test]
+    fn the_bundle_catalog_is_exactly_the_registered_tools() {
+        let registered: std::collections::BTreeSet<String> =
+            empty_server().registered_tool_names().into_iter().collect();
+        let catalog: std::collections::BTreeSet<String> = crate::mcp_profile::BUNDLES
+            .iter()
+            .flat_map(|(_, t)| t.iter().map(|n| (*n).to_string()))
+            .collect();
+        let unbundled: Vec<_> = registered.difference(&catalog).collect();
+        let unregistered: Vec<_> = catalog.difference(&registered).collect();
+        assert!(
+            unbundled.is_empty() && unregistered.is_empty(),
+            "tools in no bundle: {unbundled:?}; bundled names no tool answers to: \
+             {unregistered:?}"
+        );
+    }
+
+    /// What each bundle costs a client on `tools/list` by default (output
+    /// schemas off), in bytes of compact JSON, stays under its ceiling.
+    ///
+    /// A ratchet: the ceilings are the sizes measured on 0.5.196 rounded up to
+    /// the next 500 bytes. A tool that grows past one is a cost every client of
+    /// that bundle pays before asking anything, so raise the ceiling in the same
+    /// commit, deliberately, and update the table in docs/mcp-tools.md.
+    #[cfg(all(
+        feature = "mcp-http",
+        feature = "tls",
+        feature = "hep",
+        target_os = "linux"
+    ))]
+    #[test]
+    fn each_bundle_stays_within_its_byte_budget() {
+        const CEILINGS: &[(&str, usize)] = &[
+            ("core", 11_000),
+            ("signaling", 22_000),
+            ("captures", 11_000),
+            ("security", 10_000),
+            ("media", 3_500),
+            ("relay", 4_500),
+            ("tfps", 6_000),
+            ("server", 5_500),
+            ("vcon", 5_000),
+            ("tls", 3_000),
+            ("full", 79_000),
+        ];
+        let sizes: std::collections::BTreeMap<String, usize> = empty_server()
+            .with_output_schemas(false)
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|t| {
+                (
+                    t.name.to_string(),
+                    serde_json::to_string(t).expect("serializes").len(),
+                )
+            })
+            .collect();
+        let mut over = Vec::new();
+        for (bundle, ceiling) in CEILINGS {
+            let bytes: usize = if *bundle == crate::mcp_profile::FULL {
+                sizes.values().sum()
+            } else {
+                crate::mcp_profile::bundle(bundle)
+                    .expect("a built-in bundle")
+                    .iter()
+                    .map(|t| sizes.get(*t).copied().expect("a registered tool"))
+                    .sum()
+            };
+            if bytes > *ceiling {
+                over.push(format!("{bundle}: {bytes} > {ceiling}"));
+            }
+        }
+        assert!(
+            crate::mcp_profile::BUNDLES.len() + 1 == CEILINGS.len(),
+            "every bundle and full carry a ceiling"
+        );
+        assert!(over.is_empty(), "bundles over their byte budget: {over:?}");
+    }
+
+    /// Output schemas are dropped from `tools/list` unless asked for, and kept
+    /// when they are. The input schemas stay either way.
+    #[test]
+    fn output_schemas_are_dropped_unless_asked_for() {
+        let with = |on: bool| {
+            empty_server()
+                .with_output_schemas(on)
+                .tool_router
+                .list_all()
+        };
+        let off = with(false);
+        assert!(
+            off.iter().all(|t| t.output_schema.is_none()),
+            "off leaves no output schema"
+        );
+        assert!(off.iter().all(|t| !t.input_schema.is_empty()));
+        assert!(
+            with(true).iter().any(|t| t.output_schema.is_some()),
+            "on keeps them"
+        );
+    }
+
+    /// The handshake names the tools a client was given and the bundles it
+    /// was not, so an agent missing a tool knows it exists.
+    #[test]
+    fn the_handshake_names_the_loaded_tools_and_the_other_bundles() {
+        let sel = crate::mcp_profile::resolve(
+            &["relay".to_string(), "get_sdp_timeline".to_string()],
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("known names");
+        let text = empty_server()
+            .with_tool_selection(&sel)
+            .get_info()
+            .instructions
+            .unwrap_or_default();
+        assert!(
+            text.contains("Tools loaded: relay, get_sdp_timeline"),
+            "{text}"
+        );
+        assert!(
+            text.contains("signaling") && text.contains("tfps"),
+            "{text}"
+        );
+        assert!(text.contains("--mcp-tools"), "{text}");
+        let full = empty_server().get_info().instructions.unwrap_or_default();
+        assert!(full.contains("Tools loaded: full"), "{full}");
+
+        // A bundle a custom bundle already loads whole is not "other".
+        let mut custom = std::collections::BTreeMap::new();
+        custom.insert("voice".to_string(), vec!["media".to_string()]);
+        let sel = crate::mcp_profile::resolve(&["voice".to_string()], &custom).expect("ok");
+        let text = empty_server()
+            .with_tool_selection(&sel)
+            .get_info()
+            .instructions
+            .unwrap_or_default();
+        let others = &text[text.find("Other bundles").expect("others listed")..];
+        assert!(!others.contains("media"), "{text}");
     }
 
     /// The handshake tells every client, before it calls anything, whether
@@ -13607,6 +13826,32 @@ mod tests {
         );
     }
 
+    /// `capture_health` reports the capture-source table: held, the
+    /// `max_capture_sources` limit, and refusals. Read-only: no tool sets it.
+    #[tokio::test]
+    async fn capture_health_reports_the_capture_source_table() {
+        let server = server_with_dialog("sources@x");
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .capture_health(
+                    Parameters(CaptureHealthParams { sample_seconds: 1 }),
+                    Extension(crate::mcp::progress::Progress::silent()),
+                )
+                .await
+                .expect("health"),
+        ))
+        .unwrap();
+        let t = &v["capture_sources"];
+        assert!(t["held"].is_u64() && t["refused"].is_u64(), "{v}");
+        // Other tests may raise the process-wide limit for a moment, never
+        // lower it, so the default is a floor.
+        assert!(
+            t["limit"].as_u64().expect("limit")
+                >= crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES as u64,
+            "{v}"
+        );
+    }
+
     /// The generation must move when the store does, or the etag says
     /// "unchanged" about a store that changed.
     #[tokio::test]
@@ -14421,6 +14666,11 @@ mod tests {
             // default: the no-strings gate below must see the fully-inhabited
             // shape, and a default that happened to be all zeros could hide a
             // string field added to this type later.
+            capture_sources: CaptureHealthSources {
+                held: 4,
+                limit: 65_536,
+                refused: 7,
+            },
             clock: crate::clock::ClockDiscipline {
                 synchronized: true,
                 max_error_us: 16_000,
@@ -14469,8 +14719,11 @@ mod tests {
         // untracked_packets), all integers. The HEP listener's addresses and
         // ids are `hep_senders`' answer, and this pin is what shows none of
         // them crept in here.
+        //
+        // Raised 50 -> 53 by `capture_sources`: held, limit, refused, all
+        // integers. The source names are capture identity and stay out.
         /// Leaf values the response shape is expected to carry.
-        const EXPECTED_LEAVES: usize = 50;
+        const EXPECTED_LEAVES: usize = 53;
         assert_eq!(
             leaves, EXPECTED_LEAVES,
             "the response shape changed: {EXPECTED_LEAVES} leaf values were \
@@ -14797,6 +15050,7 @@ mod tests {
             keys(&v),
             vec![
                 "attachment",
+                "capture_sources",
                 "clock",
                 "dialogs_tracked",
                 "in_window",

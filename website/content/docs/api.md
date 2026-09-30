@@ -2121,7 +2121,7 @@ per-dialog summary and ranks nothing.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 37 Prometheus metrics, and the listener that serves them is off
+sipnab exports 40 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. This endpoint answers the same questions without one,
 and adds two things that did not exist anywhere: sipnab's own resource use, and
@@ -2159,6 +2159,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/runt
   "interfaces": [],
   "dialogs": { "used": 2, "capacity": 100000, "pct": 0.002 },
   "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.0015 },
+  "capture_sources_refused_total": 0,
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,

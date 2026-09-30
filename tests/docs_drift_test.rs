@@ -4275,7 +4275,9 @@ fn no_documentation_table_repeats_a_row() {
     // docs/design/surface-capability-matrix.md, which has no site page.
     // 1021 -> 1032: docs/threat-model.md, one table per trust boundary (nine)
     // plus the asset table and the boundary overview.
-    const EXPECTED_TABLES: usize = 1032;
+    // 1032 -> 1036: the MCP tool-bundle table, the [mcp] config table, and
+    // their website copies.
+    const EXPECTED_TABLES: usize = 1036;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
