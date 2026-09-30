@@ -604,6 +604,17 @@ impl EventExecEngine {
         }
     }
 
+    /// Reap children that have exited and book their outcomes, spawning
+    /// nothing.
+    ///
+    /// Reaping otherwise happens only when a command is dispatched, so a
+    /// caller waiting for earlier commands to finish would have to start new
+    /// ones to see them settle, and on a loaded host the new ones outrun the
+    /// old.
+    pub fn reap_finished(&mut self) {
+        self.reap_children();
+    }
+
     /// Return the current queue depth (number of tracked children).
     pub fn queue_depth(&self) -> usize {
         self.children.len()

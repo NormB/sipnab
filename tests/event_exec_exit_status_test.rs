@@ -228,6 +228,13 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
             sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
         );
         fire_n(&mut succeeding, &dialog, 10);
+        // Teardown never waits for a hook, so wait here: on a loaded host all
+        // ten were still running at the drop and the totals said so.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while succeeding.outcomes().settled() < 10 && std::time::Instant::now() < deadline {
+            succeeding.reap_finished();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         drop(succeeding);
         let ok_events = capture.since(ok_start);
         assert!(
