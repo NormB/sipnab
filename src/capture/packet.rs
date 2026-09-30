@@ -301,25 +301,109 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The most distinct capture-source names the process interns.
+///
+/// Each distinct name is leaked once, which is what lets a frame pointer be
+/// `Copy`. The names are a capture file's path, a device, a HEP sender
+/// (`capture_id@address`, and the roster tracks at most `max_tracked_peers` of
+/// those) or a uprobe's `comm/pid`, so a real run holds a handful to a few
+/// thousand. The cap is what keeps "one per distinct source" a bound when the
+/// sources themselves are unbounded, a long run of short-lived processes under
+/// uprobe capture for one. Past it, a packet from a NEW source carries no frame
+/// pointer, and that is counted; nothing more is leaked.
+pub const MAX_INTERNED_SOURCES: usize = 65_536;
+
+/// Every distinct source name, interned once for the life of the process.
+#[derive(Debug)]
+pub(crate) struct SourceInterner {
+    /// The most names this interns.
+    cap: usize,
+    /// The names interned so far.
+    names: std::collections::HashSet<&'static str>,
+    /// New names refused because the table was full.
+    refused: u64,
+}
+
+impl SourceInterner {
+    /// An interner that holds at most `cap` names.
+    pub(crate) fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            names: std::collections::HashSet::new(),
+            refused: 0,
+        }
+    }
+
+    /// The interned copy of `name`: the one already held, or a new one while
+    /// there is room. `None`, counted, once the table is full.
+    pub(crate) fn intern(&mut self, name: &str) -> Option<&'static str> {
+        if let Some(held) = self.names.get(name) {
+            return Some(*held);
+        }
+        if self.names.len() >= self.cap {
+            self.refused += 1;
+            return None;
+        }
+        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+        self.names.insert(leaked);
+        Some(leaked)
+    }
+
+    /// How many names are interned.
+    pub(crate) fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// How many new names were refused because the table was full.
+    pub(crate) fn refused(&self) -> u64 {
+        self.refused
+    }
+}
+
+/// The process's source table.
+fn source_table() -> &'static parking_lot::Mutex<SourceInterner> {
+    static TABLE: std::sync::OnceLock<parking_lot::Mutex<SourceInterner>> =
+        std::sync::OnceLock::new();
+    TABLE.get_or_init(|| parking_lot::Mutex::new(SourceInterner::new(MAX_INTERNED_SOURCES)))
+}
+
 /// Intern a capture source so it can be carried as `Copy`.
 ///
-/// Leaks one `str` per distinct source for the process lifetime. That is
-/// bounded by how many captures a run opens — a handful for a file set,
-/// exactly one for a live capture or a HEP listener — and is the same bound
-/// the `Arc<str>` it replaces already had.
+/// One leaked `str` per distinct source NAME for the process lifetime, capped
+/// at [`MAX_INTERNED_SOURCES`]. The name is the key, not the `Arc`: the HEP
+/// listener and the uprobe readers build a fresh source `Arc` for every packet,
+/// and keying on the pointer leaked a copy of the name per packet (measured
+/// 2026-09-29: linear RSS growth under HEP, ~9 B per packet sent).
+///
+/// The common path takes no lock: a per-thread memo answers when the source is
+/// the same `Arc` as last time (a pointer comparison) or the same text (a
+/// short compare). Only a source this thread did not see last takes the table.
+///
+/// `None` once the table is full and this is a new name; the packet then
+/// carries no frame pointer, which is honest, rather than leaking.
 #[must_use]
-pub fn intern_source(source: &Arc<str>) -> &'static str {
+pub fn intern_source(source: &Arc<str>) -> Option<&'static str> {
     SOURCE_MEMO.with(|m| {
         let mut m = m.borrow_mut();
         if let Some((cached, interned)) = m.as_ref()
-            && Arc::ptr_eq(cached, source)
+            && (Arc::ptr_eq(cached, source) || **cached == **source)
         {
-            return *interned;
+            return Some(*interned);
         }
-        // Cold: a new file, or the first packet on this thread.
-        let leaked: &'static str = Box::leak(source.to_string().into_boxed_str());
-        *m = Some((Arc::clone(source), leaked));
-        leaked
+        let interned = {
+            let mut table = source_table().lock();
+            let got = table.intern(source);
+            if got.is_none() && table.refused() == 1 {
+                tracing::warn!(
+                    "{} distinct capture sources have been named; packets from new \
+                     sources now carry no frame pointer (counted, not leaked)",
+                    table.len()
+                );
+            }
+            got
+        }?;
+        *m = Some((Arc::clone(source), interned));
+        Some(interned)
     })
 }
 
@@ -595,7 +679,7 @@ impl Packet {
     #[must_use]
     pub fn frame_locator(&self) -> Option<FrameLocator> {
         Some(FrameLocator {
-            source: intern_source(self.interface.as_ref()?),
+            source: intern_source(self.interface.as_ref()?)?,
             origin: self.origin?,
         })
     }
@@ -826,5 +910,112 @@ mod tests {
             .frame_ref()
             .expect("pointer");
         assert!(matches!(r.source_kind(), FrameSource::Wire));
+    }
+
+    // ── Interning a source never leaks per packet ────────────────────────
+
+    #[test]
+    fn the_interner_holds_one_copy_per_name() {
+        let mut t = SourceInterner::new(8);
+        let a = t.intern("hep:1@10.0.0.1").expect("room");
+        for _ in 0..100 {
+            let again = t.intern(&String::from("hep:1@10.0.0.1")).expect("held");
+            assert!(std::ptr::eq(a, again));
+        }
+        assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn a_full_interner_refuses_new_names_counts_them_and_keeps_the_old() {
+        let mut t = SourceInterner::new(2);
+        let a = t.intern("a").expect("room");
+        t.intern("b").expect("room");
+        assert!(
+            t.intern("c").is_none(),
+            "past the cap a new name is refused"
+        );
+        assert!(t.intern("d").is_none());
+        assert_eq!(t.refused(), 2, "and counted");
+        assert_eq!(t.len(), 2, "nothing more was leaked");
+        assert!(
+            std::ptr::eq(t.intern("a").expect("still held"), a),
+            "names already held still answer"
+        );
+    }
+
+    /// A HEP or uprobe packet, built the way their readers build one: a fresh
+    /// `format!`ed source per packet, and an origin, so parsing interns it.
+    fn per_packet_source_packet(label: &str, ordinal: u64) -> Packet {
+        let mut p = Packet::with_pre_parsed(
+            Utc::now(),
+            b"OPTIONS sip:a SIP/2.0\r\n\r\n".to_vec(),
+            Some(format!("hep:{label}")),
+            PreParsed {
+                src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 1, 0, 1)),
+                dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 2, 0, 1)),
+                src_port: 5060,
+                dst_port: 5060,
+                ip_protocol: 17,
+                hep: None,
+            },
+        );
+        p.origin = Some(FrameOrigin {
+            ordinal,
+            digest: None,
+            verifiable: false,
+        });
+        p
+    }
+
+    /// The leak this closes: `intern_source` recognized a source only by
+    /// `Arc` pointer, and the HEP listener and the uprobe readers build a new
+    /// source `Arc` for every packet, so every packet leaked a fresh copy of
+    /// its source name. Measured 2026-09-29: RSS grew linearly, ~9 bytes per
+    /// HEP packet sent, on a workload that should hold flat. The same text
+    /// must intern to the same pointer, however many `Arc`s carry it.
+    #[test]
+    fn a_source_rebuilt_for_every_packet_is_interned_once() {
+        let first = per_packet_source_packet("7@10.1.0.1-once", 0)
+            .frame_locator()
+            .expect("both halves")
+            .source;
+        for ordinal in 1..1_000 {
+            let again = per_packet_source_packet("7@10.1.0.1-once", ordinal)
+                .frame_locator()
+                .expect("both halves")
+                .source;
+            assert!(
+                std::ptr::eq(first, again),
+                "packet {ordinal} interned its source anew: a leaked copy per packet"
+            );
+        }
+    }
+
+    /// Two senders taking turns must not leak on every switch, which a
+    /// remember-the-last-one cache would.
+    #[test]
+    fn alternating_sources_intern_once_each() {
+        let a0 = per_packet_source_packet("1@10.1.0.1-alt", 0)
+            .frame_locator()
+            .expect("a")
+            .source;
+        let b0 = per_packet_source_packet("2@10.1.0.2-alt", 1)
+            .frame_locator()
+            .expect("b")
+            .source;
+        for n in 0..500u64 {
+            let a = per_packet_source_packet("1@10.1.0.1-alt", 2 * n)
+                .frame_locator()
+                .expect("a")
+                .source;
+            let b = per_packet_source_packet("2@10.1.0.2-alt", 2 * n + 1)
+                .frame_locator()
+                .expect("b")
+                .source;
+            assert!(
+                std::ptr::eq(a, a0) && std::ptr::eq(b, b0),
+                "switch {n} leaked a copy"
+            );
+        }
     }
 }

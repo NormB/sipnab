@@ -256,9 +256,20 @@ no constructor signature changes.
 
 What is being leaked is one interned path per capture source, for the process
 lifetime — a handful of short strings for a file set, exactly one for a live
-capture or a HEP listener. That is interning, not a leak in the sense that
-matters: the count is bounded by the number of sources a run opens, which is
-the same thing already true of the `Arc<str>` it replaces.
+capture. That is interning, not a leak in the sense that matters, only while
+the count is bounded by the number of sources a run opens.
+
+**Corrected 2026-09-29: it was not bounded.** HEP provenance became the
+sender (`capture_id@address`) rather than the listener, and the HEP listener
+and the uprobe readers build a fresh source `Arc` for every packet. The
+interner recognized a source only by `Arc` pointer and remembered only the
+last one, so every such packet leaked a new copy of its name: resident memory
+grew linearly under HEP, about 9 bytes per packet sent, on a workload that
+should hold flat. `intern_source` now keys on the name, in a process-wide
+table capped at `MAX_INTERNED_SOURCES` (65,536) distinct names, with a
+per-thread memo that answers by pointer or by text without taking the table's
+lock. Past the cap a packet from a new source carries no frame pointer, and
+the refusal is counted and warned once; nothing more is leaked.
 
 The multi-file case falls out correctly by construction, which is the property
 worth having: each packet carries its own source pointer, so a pointer from the

@@ -318,12 +318,12 @@ operator discount a suspicious attribution instead of trusting it.
 
 **Provenance: build on it, and it needs one small extension.**
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
-([`src/capture/packet.rs:377`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L377)) resolves a fact to the bytes behind it, and
+([`src/capture/packet.rs:491`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L491)) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)), `SipDialog`
 ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:388`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L388)) carries the same field at line 323
 carry it downstream.
 
-The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:563`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L563))
+The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:651`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L651))
 requires **both** a source name and a frame ordinal, and the live and HEP readers
 stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L778),
 [`src/parallel.rs:675`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L675) and the uprobe readers; neither `capture_live_fanout` nor
@@ -439,7 +439,7 @@ nothing.
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
 ([`src/app/batch.rs:2846`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2846)), and the two members disagree: live capture yields
-`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:747`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L747)) sets
+`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:845`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L845)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
 [`src/capture/hep.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L84) onward: fabricating a `DLT_RAW` header made `etherparse`
