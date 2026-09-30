@@ -291,10 +291,14 @@ fn the_badge_is_registered_and_wired_consistently() {
 }
 
 /// The same project also holds the OpenSSF Baseline badge: level 1 achieved
-/// 2026-09-30 02:03 UTC and level 2 at 11:55 UTC the same day
-/// (bestpractices.dev project JSON, `achieved_baseline_2_at`). The
-/// README carries the badge image; the home page carries a text link for the
-/// same `img-src 'self'` reason as the Best Practices badge above.
+/// 2026-09-30T02:03Z and level 2 at 11:55Z the same day (bestpractices.dev
+/// project JSON, `achieved_baseline_1_at` and `achieved_baseline_2_at`; the
+/// badge image reads "openssf baseline v2026.08.28: 2"). The README carries
+/// the badge image, which follows the live level by itself; the home page
+/// carries a text link for the same `img-src 'self'` reason as the Best
+/// Practices badge above, and that text does not follow anything. It said
+/// "Level 1" after level 2 was reached, so the level it names is pinned here
+/// and moves by hand, with the JSON as the evidence.
 #[test]
 fn the_baseline_badge_is_wired_in_readme_and_homepage() {
     const PROJECT_URL: &str = "https://www.bestpractices.dev/projects/13931";
