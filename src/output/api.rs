@@ -9934,6 +9934,56 @@ mod tests {
 
     /// `--api-tls-cert` without `--api-tls-key` is refused, naming the file
     /// that was given and the flag that was not.
+    /// The accept loop backs off only for errors that belong to the listener.
+    /// A peer that resets or aborts before it is taken says nothing about the
+    /// listener and is skipped at once; anything else (EMFILE above all) would
+    /// spin hot if retried immediately, so it waits a second first.
+    #[test]
+    fn only_per_connection_accept_errors_skip_the_backoff() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::ConnectionRefused,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+        ] {
+            assert!(
+                is_connection_error(&Error::from(kind)),
+                "{kind:?} belongs to one connection"
+            );
+        }
+        for e in [
+            Error::from_raw_os_error(libc::EMFILE),
+            Error::from_raw_os_error(libc::ENFILE),
+            Error::from(ErrorKind::PermissionDenied),
+            Error::from(ErrorKind::Other),
+        ] {
+            assert!(
+                !is_connection_error(&e),
+                "{e} is a listener error and must back off"
+            );
+        }
+    }
+
+    /// `local_addr` reports the address the TLS listener actually bound, so a
+    /// port-0 bind can be discovered through axum like a plain TCP listener.
+    #[tokio::test]
+    async fn the_tls_listener_reports_the_address_it_bound() {
+        use axum::serve::Listener as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_ca, cert, key) = tls_pki(dir.path(), "addr");
+        let config = api_tls_config(&tls_server_config(Some(&cert), Some(&key)))
+            .expect("a matching pair loads")
+            .expect("TLS is configured");
+        let tcp = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let bound = tcp.local_addr().expect("bound address");
+        let listener =
+            TlsListener::new(tcp, config, Duration::from_secs(1), 4).expect("the listener starts");
+        assert_eq!(listener.local_addr().expect("local_addr"), bound);
+        assert_ne!(bound.port(), 0, "port 0 must resolve to the real port");
+    }
+
     #[test]
     fn api_tls_refuses_a_cert_without_a_key() {
         let dir = tempfile::tempdir().expect("tempdir");
