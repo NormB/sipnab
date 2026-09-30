@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# A stand-in for curl, for the `classify-origin-cert.sh --probe` tests in
+# tests/site_liveness_test.rs. Each call appends a line to $STUB_DIR/calls,
+# prints the status on the matching line of $STUB_DIR/responses (the last
+# line once they run out) and exits with the code beside it.
+#
+# Committed rather than written by the test: see
+# the_probe_stub_is_never_written_by_the_test_process for why.
+echo x >>"$STUB_DIR/calls"
+n=$(wc -l <"$STUB_DIR/calls")
+line=$(sed -n "${n}p" "$STUB_DIR/responses")
+[ -n "$line" ] || line=$(tail -n 1 "$STUB_DIR/responses")
+# shellcheck disable=SC2086 # split "status exit" into two words on purpose
+set -- $line
+printf '%s' "$1"
+exit "$2"
