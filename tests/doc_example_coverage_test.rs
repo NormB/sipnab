@@ -27,7 +27,9 @@ const MIN_EXAMPLES: usize = 2;
 ///
 /// The parenthetical "(none today)" survived here after three waivers were
 /// added underneath it, so the file said every flag was demonstrated while
-/// three were excused.
+/// three were excused. Two of the three, `--api-tls-cert` and
+/// `--api-tls-key`, left when the REST API gained built-in HTTPS and a
+/// runnable example stopped being a command that always errors.
 /// Each entry MUST carry a written justification, mirroring the
 /// `KNOWN_UNTESTED` ratchet convention in `flag_coverage_test.rs`.
 const WAIVED: &[(&str, &str)] = &[
@@ -38,17 +40,6 @@ const WAIVED: &[(&str, &str)] = &[
     (
         "panic-selftest",
         "hidden internal panic-hook self-test, not user-facing",
-    ),
-    // Built-in API TLS is not wired up (axum-server not integrated): setting
-    // these makes sipnab exit at startup. Documented as reverse-proxy-only, so
-    // a runnable example would be a command that always errors.
-    (
-        "api-tls-cert",
-        "API TLS not implemented; documented as reverse-proxy-only",
-    ),
-    (
-        "api-tls-key",
-        "API TLS not implemented; documented as reverse-proxy-only",
     ),
 ];
 

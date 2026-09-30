@@ -1037,31 +1037,311 @@ fn rate_limiter_rejects_when_per_ip_budget_exhausted() {
     );
 }
 
-/// Passing `--api-tls-cert`/`--api-tls-key` fails fast with the documented
-/// "requires the axum-server crate" error and the API never starts listening.
+/// A certificate authority and a server certificate it issued for
+/// `127.0.0.1`, written as PEM files into a temporary directory.
+///
+/// A CA plus a leaf rather than one self-signed certificate: webpki, which
+/// the rustls client verifies with, does not accept an end-entity
+/// certificate as its own trust anchor, and a leaf issued by a private CA is
+/// also what an operator hands `--api-tls-cert` in practice.
+struct TestPki {
+    /// Holds the files; removed on drop.
+    _dir: tempfile::TempDir,
+    /// The server certificate, `--api-tls-cert`.
+    cert: String,
+    /// The server's private key, mode 0600, `--api-tls-key`.
+    key: String,
+    /// The CA a client must trust to accept `cert`.
+    ca: rustls::pki_types::CertificateDer<'static>,
+}
+
+/// Issue a fresh [`TestPki`].
+fn test_pki() -> TestPki {
+    use rcgen::{
+        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+        KeyPair, KeyUsagePurpose, SanType,
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ca_key = KeyPair::generate().expect("CA key");
+    let mut ca_params = CertificateParams::default();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+    ca_params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    ca_params
+        .distinguished_name
+        .push(DnType::CommonName, "sipnab API test CA");
+    let ca_cert = ca_params
+        .clone()
+        .self_signed(&ca_key)
+        .expect("self-signed CA");
+    let issuer = Issuer::new(ca_params, &ca_key);
+
+    let leaf_key = KeyPair::generate().expect("server key");
+    let mut leaf = CertificateParams::default();
+    leaf.is_ca = IsCa::ExplicitNoCa;
+    leaf.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
+        std::net::Ipv4Addr::LOCALHOST,
+    ))];
+    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    leaf.distinguished_name
+        .push(DnType::CommonName, "sipnab API test server");
+    let leaf_cert = leaf.signed_by(&leaf_key, &issuer).expect("issue the leaf");
+
+    let cert = dir.path().join("api.pem");
+    let key = dir.path().join("api.key");
+    std::fs::write(&cert, leaf_cert.pem()).expect("write api.pem");
+    std::fs::write(&key, leaf_key.serialize_pem()).expect("write api.key");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod the key");
+    }
+    TestPki {
+        cert: cert.to_string_lossy().into_owned(),
+        key: key.to_string_lossy().into_owned(),
+        ca: ca_cert.der().clone(),
+        _dir: dir,
+    }
+}
+
+impl TestPki {
+    /// The CLI arguments that turn on HTTPS with this certificate.
+    fn args(&self) -> [&str; 4] {
+        ["--api-tls-cert", &self.cert, "--api-tls-key", &self.key]
+    }
+}
+
+/// `GET path` over HTTPS, trusting only `ca`.
+///
+/// # Returns
+///
+/// `(status, body)`, or the error text when the TLS handshake or the
+/// exchange failed — a test about a refused handshake asserts on it.
+fn https_get(
+    addr: &str,
+    path: &str,
+    ca: &rustls::pki_types::CertificateDer<'static>,
+) -> Result<(u16, String), String> {
+    use std::io::{Read, Write};
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(ca.clone())
+        .map_err(|e| format!("trust store: {e}"))?;
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("protocol versions: {e}"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let port = addr.rsplit_once(':').map(|(_, p)| p).unwrap_or_default();
+    let target = format!("127.0.0.1:{port}");
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("IP server name");
+    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name)
+        .map_err(|e| format!("client: {e}"))?;
+    let sock = std::net::TcpStream::connect(&target).map_err(|e| format!("connect: {e}"))?;
+    sock.set_read_timeout(Some(test_timeout(10))).ok();
+    let mut tls = rustls::StreamOwned::new(conn, sock);
+    tls.write_all(
+        format!("GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .map_err(|e| format!("handshake or write: {e}"))?;
+    let mut raw = Vec::new();
+    match tls.read_to_end(&mut raw) {
+        Ok(_) => {}
+        // A peer that closes without close_notify: what was read still counts.
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !raw.is_empty() => {}
+        Err(e) => return Err(format!("read: {e}")),
+    }
+    let text = String::from_utf8_lossy(&raw);
+    let status = text
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| format!("no status line in response:\n{text}"))?;
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default();
+    Ok((status, body))
+}
+
+/// With `--api-tls-cert` and `--api-tls-key` the REST API serves HTTPS: a
+/// client trusting the issuing CA gets `/health` with a 200 and its body.
 #[test]
-fn tls_flags_fail_fast_and_do_not_serve() {
-    // Reality check: API TLS is NOT implemented — run_server returns an error
-    // and the REST API never starts. This test pins that documented behavior
-    // (HTTPS serving is a known gap; use a TLS-terminating proxy). If TLS is
-    // ever implemented, this test must change to assert HTTPS works instead.
+fn tls_flags_serve_https() {
+    let pki = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let (status, body) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS /health");
+    assert_eq!(status, 200, "/health over HTTPS");
+    assert_eq!(body.trim(), "ok");
+}
+
+/// The peer address still reaches the handlers over TLS: `/v1/dialogs`
+/// extracts `ConnectInfo<SocketAddr>` for its rate limiter and answers 500
+/// ("Missing request extension") when the listener does not supply it.
+#[test]
+fn tls_keeps_the_peer_address_for_guarded_routes() {
+    let pki = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let (status, body) = https_get(&srv.addr, "/v1/dialogs", &pki.ca).expect("HTTPS /v1/dialogs");
+    assert_eq!(status, 200, "/v1/dialogs over HTTPS: {body}");
+    assert!(body.contains("\"total\""), "a dialog listing: {body}");
+}
+
+/// A plain-HTTP request to the TLS port is not served: whatever comes back,
+/// it is not an HTTP 200.
+#[test]
+fn plain_http_to_the_tls_port_is_not_served() {
+    use std::io::{Read, Write};
+    let pki = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let mut sock = std::net::TcpStream::connect(&srv.addr).expect("connect");
+    sock.set_read_timeout(Some(test_timeout(10))).ok();
+    sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        .expect("write");
+    let mut raw = Vec::new();
+    let _ = sock.read_to_end(&mut raw);
+    let text = String::from_utf8_lossy(&raw);
+    assert!(
+        !text.starts_with("HTTP/1.1 200") && !text.starts_with("HTTP/1.0 200"),
+        "plain HTTP must not be answered on the TLS port: {text}"
+    );
+}
+
+/// A client that does not trust the server's certificate fails the
+/// handshake rather than being served.
+#[test]
+fn a_client_not_trusting_the_certificate_fails_the_handshake() {
+    let pki = test_pki();
+    let other = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let err = https_get(&srv.addr, "/health", &other.ca)
+        .expect_err("a client trusting another CA must not complete the handshake");
+    assert!(
+        err.contains("certificate") || err.contains("UnknownIssuer"),
+        "the failure must be the certificate check: {err}"
+    );
+}
+
+/// One client's failed handshake does not stop the server: after an
+/// untrusting client, a plain-HTTP client and a client sending garbage, a
+/// trusting client is still served.
+#[test]
+fn a_failed_handshake_does_not_stop_the_server() {
+    use std::io::{Read, Write};
+    let pki = test_pki();
+    let other = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    assert!(https_get(&srv.addr, "/health", &other.ca).is_err());
+    for garbage in [
+        &b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"[..],
+        &[0x16, 0x03, 0x01, 0xff, 0xff, 0, 0, 0][..],
+    ] {
+        let mut s = std::net::TcpStream::connect(&srv.addr).expect("connect");
+        s.set_read_timeout(Some(test_timeout(10))).ok();
+        let _ = s.write_all(garbage);
+        let _ = s.read_to_end(&mut Vec::new());
+    }
+    let (status, _) = https_get(&srv.addr, "/health", &pki.ca).expect("server still serving");
+    assert_eq!(status, 200);
+}
+
+/// A client that connects and never speaks does not hold up anyone else's
+/// handshake (Slowloris): the handshakes run side by side, off the accept
+/// path, so a trusting client connecting after it is served within 2 s — far
+/// inside the 10 s handshake timeout the silent peer would otherwise hold
+/// the listener for.
+#[test]
+fn a_silent_client_does_not_block_other_handshakes() {
+    let pki = test_pki();
+    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let _silent = std::net::TcpStream::connect(&srv.addr).expect("silent connect");
+    let started = std::time::Instant::now();
+    let (status, _) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS behind a silent peer");
+    assert_eq!(status, 200);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "served after {:?}: the silent peer held the accept loop",
+        started.elapsed()
+    );
+}
+
+/// A non-loopback bind warns about plain HTTP, and does not once TLS is on.
+///
+/// Both halves: without the first, a warning deleted outright would pass the
+/// second.
+#[test]
+fn the_non_loopback_warning_fires_only_without_tls() {
+    let pki = test_pki();
+    let plain = ApiServer::spawn_unsettled_on("0.0.0.0:0", &["--api-key", "k"]);
+    assert!(
+        plain.startup_log.contains("without TLS"),
+        "a plain non-loopback bind must warn:\n{}",
+        plain.startup_log
+    );
+    let mut args = vec!["--api-key", "k"];
+    args.extend(pki.args());
+    let tls = ApiServer::spawn_unsettled_on("0.0.0.0:0", &args);
+    assert!(
+        !tls.startup_log.contains("without TLS"),
+        "a TLS bind must not warn about plain HTTP:\n{}",
+        tls.startup_log
+    );
+    let (status, _) = https_get(&tls.addr, "/health", &pki.ca).expect("HTTPS on 0.0.0.0");
+    assert_eq!(status, 200);
+}
+
+/// A bad TLS configuration stops the run before the API serves, with an
+/// error naming the file at fault. The cases themselves are unit-tested in
+/// `src/output/api.rs`; this is the end-to-end proof that the error reaches
+/// the operator and the port is never opened.
+#[test]
+fn a_missing_tls_file_fails_fast_naming_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("no-such-cert.pem");
+    let missing = missing.to_string_lossy();
+    let pki = test_pki();
     let logs = run_and_capture_stderr(
-        &[
-            "--api-tls-cert",
-            "/tmp/none.pem",
-            "--api-tls-key",
-            "/tmp/none.pem",
-        ],
+        &["--api-tls-cert", &missing, "--api-tls-key", &pki.key],
         test_timeout(3),
     );
     assert!(
-        logs.contains("requires the axum-server crate"),
-        "expected the documented TLS-not-implemented error, got:\n{logs}"
+        logs.contains(missing.as_ref()),
+        "the error must name {missing}, got:\n{logs}"
     );
     assert!(
         !logs.contains("REST API listening on"),
-        "TLS flags must prevent the API from serving"
+        "a bad TLS file must prevent the API from serving:\n{logs}"
     );
+}
+
+/// Only one of the two TLS flags stops the run before the API serves, with
+/// an error naming the file that was given and the flag that was not —
+/// rather than serving plain HTTP on a port the operator meant for HTTPS.
+#[test]
+fn one_tls_flag_alone_fails_fast_naming_it() {
+    let pki = test_pki();
+    for (given, missing) in [
+        (["--api-tls-cert", pki.cert.as_str()], "--api-tls-key"),
+        (["--api-tls-key", pki.key.as_str()], "--api-tls-cert"),
+    ] {
+        let logs = run_and_capture_stderr(&given, test_timeout(3));
+        assert!(
+            logs.contains(given[1]) && logs.contains(missing),
+            "{} alone must be refused naming {} and {missing}, got:\n{logs}",
+            given[0],
+            given[1]
+        );
+        assert!(
+            !logs.contains("REST API listening on"),
+            "{} alone must prevent the API from serving:\n{logs}",
+            given[0]
+        );
+    }
 }
 
 /// `GET /metrics` returns 200 and contains the `sipnab_dialogs_total` counter

@@ -2136,8 +2136,11 @@ pub fn launch(
     }
 
     // 16g. Validate --api-tls-cert/--api-tls-key consistency
-    if cli.listener_args.api_tls_cert.is_some() != cli.listener_args.api_tls_key.is_some() {
-        tracing::error!("--api-tls-cert and --api-tls-key must both be specified together");
+    if let Some(problem) = crate::cli::api_tls_pair_problem(
+        cli.listener_args.api_tls_cert.as_deref(),
+        cli.listener_args.api_tls_key.as_deref(),
+    ) {
+        tracing::error!("{problem}");
         capture::stop_and_join(handle, rx);
         crate::capture::archive::release_run_and_exit(2);
     }

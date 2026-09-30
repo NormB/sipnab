@@ -27,6 +27,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use super::channel::PacketTx;
+use crate::tls_files::pem_certificates;
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, TimeZone, Utc};
 
@@ -2009,21 +2010,21 @@ fn hep_tls_server_config(
 ) -> Result<std::sync::Arc<rustls::ServerConfig>> {
     let cert = cert.context("--hep-listen-transport tls needs --hep-tls-cert")?;
     let key_path = key.context("--hep-listen-transport tls needs --hep-tls-key")?;
-    let chain = pem_certificates(cert)?;
-    let key = pem_private_key(key_path)?;
-    let config = rustls::ServerConfig::builder_with_provider(hep_tls_provider())
-        .with_safe_default_protocol_versions()
-        .context("HEP TLS listener: no usable protocol versions")?
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .with_context(|| {
-            format!(
-                "HEP TLS listener: {} does not go with {}",
-                cert.display(),
-                key_path.display()
-            )
-        })?;
-    Ok(std::sync::Arc::new(config))
+    // No ALPN: HEP over TLS is HEP v3 packets end to end, not a protocol an
+    // agent negotiates.
+    crate::tls_files::server_config(cert, key_path, "HEP TLS", Vec::new())
+}
+
+/// [`crate::tls_files::pem_private_key`] with the HEP listener named in its
+/// errors: the key-label tests below drive it under the name they were
+/// written against.
+///
+/// # Errors
+///
+/// As [`crate::tls_files::pem_private_key`].
+#[cfg(test)]
+fn pem_private_key(path: &std::path::Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    crate::tls_files::pem_private_key(path, "HEP TLS")
 }
 
 /// The state every stream connection of one listener shares.
@@ -2800,122 +2801,6 @@ fn server_name_of(target: &str) -> Option<String> {
     )
 }
 
-/// Every `-----BEGIN <label>-----` block in a PEM file, as `(label, DER)`.
-///
-/// Written here rather than pulled in as a dependency because it is thirty
-/// lines of base64 between two markers, and because the alternative that also
-/// supplies the public trust roots — `webpki-roots` — is CDLA-Permissive-2.0,
-/// which is not on `deny.toml`'s allow list. See [`hep_tls_roots`] for what
-/// replaces it.
-///
-/// # Arguments
-///
-/// * `pem` — the file's bytes.
-///
-/// # Errors
-///
-/// A block whose base64 body does not decode. A stray `BEGIN` with no `END` is
-/// discarded rather than refused: a CA bundle routinely carries comments and
-/// human-readable certificate dumps between its blocks.
-fn pem_blocks(pem: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
-    use base64::Engine;
-    let text = String::from_utf8_lossy(pem);
-    let mut out = Vec::new();
-    let mut label: Option<String> = None;
-    let mut body = String::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("-----BEGIN ") {
-            label = rest.strip_suffix("-----").map(str::to_string);
-            body.clear();
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("-----END ") {
-            let ending = rest.strip_suffix("-----").unwrap_or_default();
-            if let Some(open) = label.take()
-                && open == ending
-            {
-                let der = base64::engine::general_purpose::STANDARD
-                    .decode(body.as_bytes())
-                    .with_context(|| format!("PEM block '{open}' is not valid base64"))?;
-                out.push((open, der));
-            }
-            body.clear();
-            continue;
-        }
-        if label.is_some() {
-            body.push_str(line);
-        }
-    }
-    Ok(out)
-}
-
-/// The certificates in a PEM file, in file order.
-///
-/// # Errors
-///
-/// The file cannot be read, a block does not decode, or it holds no
-/// certificate at all. The last is deliberately an error rather than an empty
-/// list: an empty chain and an empty trust store both "work" and then refuse
-/// every peer, which reads as a broken far end rather than a typo in a path.
-fn pem_certificates(
-    path: &std::path::Path,
-) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
-    let certs: Vec<_> = pem_blocks(&pem)
-        .with_context(|| format!("{}", path.display()))?
-        .into_iter()
-        .filter(|(label, _)| label == "CERTIFICATE" || label == "X509 CERTIFICATE")
-        .map(|(_, der)| rustls::pki_types::CertificateDer::from(der))
-        .collect();
-    ensure!(
-        !certs.is_empty(),
-        "{}: no certificate in this file",
-        path.display()
-    );
-    Ok(certs)
-}
-
-/// The first private key in a PEM file, refusing one any other user can read.
-///
-/// A key file the world can read is not a private key, and a tool that loads
-/// it anyway lets the operator believe the HEP listener is authenticated when
-/// any local account can impersonate it. Group-readable is allowed on purpose:
-/// `root:sipnab 0640` is how a key is normally handed to a service account.
-///
-/// # Errors
-///
-/// The file cannot be read or stat'd, it is world-readable, it holds no
-/// private key, or a block does not decode.
-fn pem_private_key(path: &std::path::Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
-        let mode = meta.permissions().mode();
-        ensure!(
-            mode & 0o004 == 0,
-            "{}: the HEP TLS private key is world-readable (mode {:04o}); chmod 600 it",
-            path.display(),
-            mode & 0o7777
-        );
-    }
-    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
-    for (label, der) in pem_blocks(&pem).with_context(|| format!("{}", path.display()))? {
-        let key = match label.as_str() {
-            "PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Pkcs8(der.into()),
-            "RSA PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Pkcs1(der.into()),
-            "EC PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Sec1(der.into()),
-            _ => continue,
-        };
-        return Ok(key);
-    }
-    bail!(
-        "{}: no PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY block in this file",
-        path.display()
-    )
-}
-
 /// CA bundles a host may keep, tried in order when no `--hep-tls-ca` is named.
 ///
 /// Reading the host's own bundle rather than compiling Mozilla's list in has
@@ -2998,15 +2883,6 @@ fn hep_tls_roots(ca: Option<&std::path::Path>) -> Result<rustls::RootCertStore> 
         bundle.display()
     );
     Ok(store)
-}
-
-/// The crypto provider both HEP TLS sides are built on.
-///
-/// Named explicitly rather than taken from the process default, which
-/// `ClientConfig::builder()` panics on when no provider is installed. A capture
-/// tool must not abort a run inside a builder.
-fn hep_tls_provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
-    std::sync::Arc::new(rustls::crypto::ring::default_provider())
 }
 
 /// The flag an operator types to ask for the HEP export, quoted verbatim in
@@ -3356,7 +3232,7 @@ fn hep_tls_sink(
     use std::net::TcpStream;
 
     let config = std::sync::Arc::new(
-        rustls::ClientConfig::builder_with_provider(hep_tls_provider())
+        rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
             .with_safe_default_protocol_versions()
             .context("HEP TLS sender: no usable protocol versions")?
             .with_root_certificates(hep_tls_roots(ca)?)

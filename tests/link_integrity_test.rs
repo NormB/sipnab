@@ -1079,7 +1079,14 @@ fn wiki_intra_docs_links_resolve() {
     // 1161 -> 1179: docs/threat-model.md adds 17 (ten in-page anchors, seven
     // links to other docs pages) and docs/README.md's index entry for it
     // adds one.
-    const EXPECTED_WIKI_LINKS: usize = 1179;
+    // 1179 -> 1182 by built-in API HTTPS (`--api-tls-cert`), attributed per
+    // file by swapping in HEAD's copy of each changed page: docs/auth.md,
+    // docs/cli-reference.md and docs/rest-api.md each measured one fewer
+    // with HEAD's text, every other changed page held its count. The three
+    // new links all point at rest-api.md's "API TLS" section -- from the
+    // auth page's plain-HTTP warning, from the `--api-tls-cert` row, and
+    // from the bind-address advice -- rather than restating it.
+    const EXPECTED_WIKI_LINKS: usize = 1182;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

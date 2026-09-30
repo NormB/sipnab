@@ -132,10 +132,12 @@ enum Prepared {
     #[cfg(feature = "api")]
     Api {
         /// Pre-bound on the caller's thread so a busy port (or any other
-        /// bind failure) is fatal before the TUI hides stderr.
-        listener: std::net::TcpListener,
-        /// Shared stores + verifier + rate limiter the handlers read.
-        state: crate::output::api::ApiState,
+        /// bind failure) is fatal before the TUI hides stderr, with its TLS
+        /// files already loaded for the same reason.
+        listener: crate::output::api::ApiListener,
+        /// Shared stores + verifier + rate limiter the handlers read (boxed
+        /// to keep the variant small, like the MCP server below).
+        state: Box<crate::output::api::ApiState>,
         /// Connection cap and optional TLS certificate/key paths.
         config: crate::output::api::ApiServerConfig,
     },
@@ -187,7 +189,7 @@ impl Prepared {
                 state,
                 config,
             } => {
-                if let Err(e) = crate::output::api::serve_on(listener, state, config).await {
+                if let Err(e) = crate::output::api::serve_on(listener, *state, config).await {
                     tracing::error!("API server error: {e}");
                 }
             }
@@ -602,7 +604,7 @@ pub fn start_servers(
         let listener = api::prepare_listener(bind, &state.verifier, &config)?;
         prepared.push(Prepared::Api {
             listener,
-            state,
+            state: Box::new(state),
             config,
         });
     }

@@ -295,15 +295,18 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
     );
 }
 
-/// TLS flags (unimplemented) must also surface as a startup error rather
-/// than an async log.
+/// An API TLS file that cannot be read must surface as a startup error
+/// naming it, rather than as an async log from the servers thread.
 #[cfg(feature = "api")]
 #[test]
-fn api_tls_flags_are_a_startup_error() {
+fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("absent-cert.pem");
+    let missing = missing.to_string_lossy().into_owned();
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api = Some("127.0.0.1:0".into());
-    cli.listener_args.api_tls_cert = Some("/tmp/none.pem".into());
-    cli.listener_args.api_tls_key = Some("/tmp/none.pem".into());
+    cli.listener_args.api_tls_cert = Some(missing.clone());
+    cli.listener_args.api_tls_key = Some(missing.clone());
     let (ds, ss, alerts) = stores();
     let err = servers::start_servers(
         &cli,
@@ -335,11 +338,11 @@ fn api_tls_flags_are_a_startup_error() {
         None,
     )
     .err()
-    .expect("API TLS flags must be a startup error");
+    .expect("an API TLS file that cannot be read must be a startup error");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("axum-server"),
-        "error must carry the documented TLS-not-implemented text: {msg}"
+        msg.contains(&missing),
+        "the error must name the file it could not read: {msg}"
     );
 }
 

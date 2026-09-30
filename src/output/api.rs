@@ -36,7 +36,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::extract::{ConnectInfo, Path, Query, State};
@@ -1066,10 +1066,63 @@ pub struct ApiServerConfig {
     /// lifetime of a request, so it caps in-flight requests, not open TCP
     /// connections.
     pub max_conn: u32,
-    /// TLS certificate file path.
+    /// `--api-tls-cert`: the PEM certificate chain to serve HTTPS with.
+    /// Given with `tls_key`, the API speaks HTTPS only; given alone, it is a
+    /// startup error.
     pub tls_cert: Option<String>,
-    /// TLS private key file path.
+    /// `--api-tls-key`: the PEM private key for `tls_cert`.
     pub tls_key: Option<String>,
+}
+
+/// How long a connecting client has to finish its TLS handshake.
+///
+/// A client that connects and says nothing would otherwise hold its task and
+/// its handshake slot forever. Ten seconds is generous for a handshake over
+/// any real path and short enough that a slow drip of silent connections
+/// cannot hold [`API_TLS_MAX_HANDSHAKES`] slots for long.
+pub const API_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// TLS handshakes the API runs at once before it sheds new connections.
+///
+/// Handshakes run off the accept path, one task each, so a silent client
+/// cannot stall anyone else's; this bounds how many such tasks a flood of
+/// connections can create. A connection arriving past it is closed at once.
+/// Separate from `--api-max-conn`, which caps requests in flight once a
+/// connection is established, over HTTPS as over plain HTTP.
+pub const API_TLS_MAX_HANDSHAKES: usize = 256;
+
+/// The application protocols the API offers in the TLS handshake.
+///
+/// `http/1.1` only: the API is served by `axum::serve` and this build does
+/// not enable axum's `http2` feature, so offering `h2` would promise a
+/// protocol the server does not speak.
+const API_TLS_ALPN: &[&[u8]] = &[b"http/1.1"];
+
+/// A bound API listener from [`prepare_listener`], with the TLS
+/// configuration it serves when `--api-tls-cert`/`--api-tls-key` were given.
+#[derive(Debug)]
+pub struct ApiListener {
+    /// The bound, non-blocking socket.
+    tcp: std::net::TcpListener,
+    /// `Some` when the API serves HTTPS.
+    tls: Option<Arc<rustls::ServerConfig>>,
+}
+
+impl ApiListener {
+    /// The address the listener is bound to (the real port when `:0` was
+    /// asked for).
+    ///
+    /// # Errors
+    ///
+    /// As [`std::net::TcpListener::local_addr`].
+    pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.tcp.local_addr()
+    }
+
+    /// Whether this listener serves HTTPS.
+    pub fn is_tls(&self) -> bool {
+        self.tls.is_some()
+    }
 }
 
 /// Start the API server on the given address.
@@ -1081,17 +1134,17 @@ pub struct ApiServerConfig {
 ///
 /// * `bind_addr` — Address to bind the TCP listener on.
 /// * `state` — Shared stores, verifier, and rate limiter.
-/// * `server_config` — Connection cap and (unsupported) TLS paths.
+/// * `server_config` — Request cap and TLS files.
 ///
 /// # Errors
 ///
-/// Propagates every failure from `prepare_listener` (TLS flags supplied,
+/// Propagates every failure from `prepare_listener` (bad TLS files,
 /// unauthenticated non-loopback bind, bind failure) and `serve_on`.
 ///
 /// # Side effects
 ///
-/// Binds a TCP listener and serves HTTP until shutdown; logs a warning if
-/// the bind address is non-loopback without TLS.
+/// Binds a TCP listener and serves HTTP or HTTPS until shutdown; logs a
+/// warning if the bind address is non-loopback without TLS.
 pub async fn run_server(
     bind_addr: SocketAddr,
     state: ApiState,
@@ -1101,49 +1154,45 @@ pub async fn run_server(
     serve_on(listener, state, server_config).await
 }
 
-/// Vet the API configuration and bind its listener synchronously, so
-/// configuration and bind errors (port in use, unauthenticated non-loopback
-/// bind, unsupported TLS flags) surface on the caller's thread BEFORE the TUI
-/// takes over the terminal — logged from the detached servers thread they are
+/// Vet the API configuration, load its TLS files and bind its listener
+/// synchronously, so configuration and bind errors (port in use,
+/// unauthenticated non-loopback bind, an unreadable or mismatched
+/// certificate and key) surface on the caller's thread BEFORE the TUI takes
+/// over the terminal — logged from the detached servers thread they are
 /// invisible.
 ///
 /// # Arguments
 ///
 /// * `bind_addr` — Requested listen address.
 /// * `verifier` — Used to decide whether the bind-auth policy is satisfied.
-/// * `server_config` — Checked for the (unsupported) TLS flags.
+/// * `server_config` — The TLS files, if any.
 ///
 /// # Returns
 ///
-/// The bound, non-blocking `std::net::TcpListener` ready for `serve_on`.
+/// The bound listener, with its TLS configuration, ready for `serve_on`.
 ///
 /// # Errors
 ///
-/// Returns `crate::Error::Server` when TLS flags are supplied (not yet
-/// integrated), when the bind is non-loopback with no authentication
-/// configured, or when binding/configuring the listener fails.
+/// Returns `crate::Error::Server`, naming the file at fault, when only one of
+/// `--api-tls-cert`/`--api-tls-key` is given, when either file cannot be
+/// read, holds no certificate or no private key, when the key is readable by
+/// any user, or when the key is not the certificate's. Also when the bind is
+/// non-loopback with no authentication configured, or when binding or
+/// configuring the listener fails.
 ///
 /// # Side effects
 ///
-/// Binds the OS socket and logs a warning for a non-loopback bind without
-/// TLS.
+/// Reads both TLS files, binds the OS socket, and logs a warning for a
+/// non-loopback bind without TLS.
 pub fn prepare_listener(
     bind_addr: SocketAddr,
     verifier: &crate::auth::TokenVerifier,
     server_config: &ApiServerConfig,
-) -> Result<std::net::TcpListener, crate::Error> {
-    let has_tls = server_config.tls_cert.is_some() && server_config.tls_key.is_some();
-
-    if has_tls {
-        return Err(crate::Error::Server(
-            "API TLS (--api-tls-cert/--api-tls-key) requires the axum-server crate \
-             which is not yet integrated. Use a TLS-terminating reverse proxy instead."
-                .to_string(),
-        ));
-    }
+) -> Result<ApiListener, crate::Error> {
+    let tls = api_tls_config(server_config)?;
 
     enforce_bind_auth_policy(&bind_addr, verifier)?;
-    if !bind_addr.ip().is_loopback() {
+    if tls.is_none() && !bind_addr.ip().is_loopback() {
         tracing::warn!(
             "API server binding to non-loopback address {} without TLS — \
              consider using 127.0.0.1 or enabling TLS",
@@ -1157,20 +1206,51 @@ pub fn prepare_listener(
     listener
         .set_nonblocking(true)
         .map_err(|e| crate::Error::Server(format!("failed to configure the API listener: {e}")))?;
-    Ok(listener)
+    Ok(ApiListener { tcp: listener, tls })
+}
+
+/// The HTTPS configuration `server_config` asks for, or `None` for plain
+/// HTTP.
+///
+/// # Errors
+///
+/// `crate::Error::Server` naming the file at fault: only one of the two
+/// flags, an unreadable file, no certificate, no private key, a
+/// world-readable key, or a key that is not the certificate's.
+fn api_tls_config(
+    server_config: &ApiServerConfig,
+) -> Result<Option<Arc<rustls::ServerConfig>>, crate::Error> {
+    let cert = server_config.tls_cert.as_deref();
+    let key = server_config.tls_key.as_deref();
+    if let Some(problem) = crate::cli::api_tls_pair_problem(cert, key) {
+        return Err(crate::Error::Server(problem));
+    }
+    let (Some(cert), Some(key)) = (cert, key) else {
+        return Ok(None);
+    };
+    crate::tls_files::server_config(
+        std::path::Path::new(cert),
+        std::path::Path::new(key),
+        "API TLS",
+        API_TLS_ALPN.iter().map(|p| p.to_vec()).collect(),
+    )
+    .map(Some)
+    .map_err(|e| crate::Error::Server(format!("{e:#}")))
 }
 
 /// Serve the REST API on an already-bound listener from `prepare_listener`.
 ///
 /// # Arguments
 ///
-/// * `listener` — Bound, non-blocking listener to serve on.
+/// * `listener` — Bound listener to serve on, HTTPS when it carries a TLS
+///   configuration.
 /// * `state` — Shared stores, verifier, and rate limiter.
 /// * `server_config` — `max_conn > 0` adds a semaphore middleware that caps
 ///   concurrently in-flight requests, answering 503 once that many are being
 ///   handled at once. Despite the `max_conn` name, the permit is held for the
 ///   duration of a request (not a TCP connection), so it bounds in-flight
-///   requests, not open connections.
+///   requests, not open connections. It applies over HTTPS exactly as over
+///   plain HTTP, since both serve the same router.
 ///
 /// # Errors
 ///
@@ -1182,7 +1262,7 @@ pub fn prepare_listener(
 /// Runs the HTTP accept loop until shutdown (never returns `Ok` before
 /// then) and logs the actual bound address at startup.
 pub async fn serve_on(
-    listener: std::net::TcpListener,
+    listener: ApiListener,
     state: ApiState,
     server_config: ApiServerConfig,
 ) -> Result<(), crate::Error> {
@@ -1215,9 +1295,30 @@ pub async fn serve_on(
         router
     };
 
-    let listener = tokio::net::TcpListener::from_std(listener)
+    serve_router(listener, router).await
+}
+
+/// Serve `router` on `listener`, over TLS when the listener carries a TLS
+/// configuration, with the peer's `SocketAddr` as `ConnectInfo` either way —
+/// the rate limiter and the loopback checks key on it.
+///
+/// # Errors
+///
+/// `crate::Error::Server` if the listener cannot be registered with tokio or
+/// the server fails.
+///
+/// # Side effects
+///
+/// Logs the bound address, then serves until shutdown.
+async fn serve_router(listener: ApiListener, router: Router) -> Result<(), crate::Error> {
+    use axum::serve::ListenerExt as _;
+    let ApiListener { tcp, tls } = listener;
+    let listener = tokio::net::TcpListener::from_std(tcp)
         .map_err(|e| crate::Error::Server(format!("failed to register the API listener: {e}")))?;
 
+    if tls.is_some() {
+        tracing::info!("REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
+    }
     // Log the *actual* bound address: with port 0 the OS assigns an ephemeral
     // port, so logging the requested address would print ":0". Matches the
     // MCP HTTP server.
@@ -1226,12 +1327,184 @@ pub async fn serve_on(
         Err(_) => tracing::info!("REST API listening"),
     }
 
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
+    let served = match tls {
+        None => axum::serve(listener, service).await,
+        // `tap_io` with a no-op is how the peer address reaches handlers:
+        // axum implements `Connected` for `L::Addr` of a `TapIo<L, _>` but
+        // not of an arbitrary listener, and implementing it here for
+        // `SocketAddr` would break the orphan rule.
+        Some(config) => {
+            let tls_listener = TlsListener::new(
+                listener,
+                config,
+                API_TLS_HANDSHAKE_TIMEOUT,
+                API_TLS_MAX_HANDSHAKES,
+            )
+            .map_err(|e| {
+                crate::Error::Server(format!("failed to start the API TLS listener: {e}"))
+            })?;
+            axum::serve(tls_listener.tap_io(|_| {}), service).await
+        }
+    };
+    served.map_err(|e| crate::Error::Server(format!("API server error: {e}")))
+}
+
+/// A TCP listener that hands axum only connections whose TLS handshake has
+/// completed.
+///
+/// axum calls [`axum::serve::Listener::accept`] serially, so a handshake run
+/// inside it would let one client that connects and never speaks stall every
+/// other client (Slowloris). Instead a background task accepts TCP
+/// connections and gives each handshake its own task, bounded by a timeout
+/// and by a cap on handshakes in progress; finished connections arrive on a
+/// channel that `accept` reads.
+struct TlsListener {
+    /// Connections whose handshake completed, with their peer address.
+    ready: tokio::sync::mpsc::Receiver<(
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        SocketAddr,
+    )>,
+    /// The bound address, captured before the socket moved into the task.
+    local: SocketAddr,
+    /// The accept task; aborted when the listener is dropped, which closes
+    /// the socket.
+    acceptor: tokio::task::JoinHandle<()>,
+}
+
+impl TlsListener {
+    /// Start accepting on `tcp`.
+    ///
+    /// # Arguments
+    ///
+    /// * `tcp` — the bound listener.
+    /// * `config` — the TLS configuration to serve.
+    /// * `handshake_timeout` — how long one client has to finish its
+    ///   handshake before its connection is dropped.
+    /// * `max_handshakes` — handshakes in progress at once; a connection
+    ///   arriving past it is closed without one.
+    ///
+    /// # Errors
+    ///
+    /// The listener's local address cannot be read.
+    ///
+    /// # Side effects
+    ///
+    /// Spawns the accept task on the current tokio runtime.
+    fn new(
+        tcp: tokio::net::TcpListener,
+        config: Arc<rustls::ServerConfig>,
+        handshake_timeout: Duration,
+        max_handshakes: usize,
+    ) -> std::io::Result<Self> {
+        let local = tcp.local_addr()?;
+        let (tx, ready) = tokio::sync::mpsc::channel(max_handshakes.max(1));
+        let acceptor = tokio::spawn(accept_tls(
+            tcp,
+            tokio_rustls::TlsAcceptor::from(config),
+            tx,
+            handshake_timeout,
+            Arc::new(tokio::sync::Semaphore::new(max_handshakes)),
+        ));
+        Ok(Self {
+            ready,
+            local,
+            acceptor,
+        })
+    }
+}
+
+impl Drop for TlsListener {
+    fn drop(&mut self) {
+        self.acceptor.abort();
+    }
+}
+
+impl axum::serve::Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        match self.ready.recv().await {
+            Some(conn) => conn,
+            // The accept task only ends when this receiver is gone, so this
+            // arm is unreachable while `self` exists; waiting forever is what
+            // a listener with nothing more to offer does.
+            None => std::future::pending().await,
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        Ok(self.local)
+    }
+}
+
+/// The accept loop behind [`TlsListener`]: take TCP connections, run each
+/// handshake in its own task, send the completed ones to `ready`.
+///
+/// # Side effects
+///
+/// Accepts connections until `ready`'s receiver is dropped. Logs a failed or
+/// timed-out handshake at debug and a shed connection at debug; neither stops
+/// the loop, so one bad client never takes the server down.
+async fn accept_tls(
+    tcp: tokio::net::TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    ready: tokio::sync::mpsc::Sender<(
+        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        SocketAddr,
+    )>,
+    handshake_timeout: Duration,
+    slots: Arc<tokio::sync::Semaphore>,
+) {
+    while !ready.is_closed() {
+        let (socket, peer) = match tcp.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                // Per-connection errors (the peer reset before we took it)
+                // say nothing about the listener; anything else — EMFILE
+                // above all — would spin hot if retried at once. axum's own
+                // TcpListener does the same.
+                if !is_connection_error(&e) {
+                    tracing::warn!("API TLS accept error: {e}; retrying in 1s");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                continue;
+            }
+        };
+        let Ok(slot) = Arc::clone(&slots).try_acquire_owned() else {
+            tracing::debug!("API TLS: {peer} shed, handshake slots full");
+            drop(socket);
+            continue;
+        };
+        let acceptor = acceptor.clone();
+        let ready = ready.clone();
+        tokio::spawn(async move {
+            match tokio::time::timeout(handshake_timeout, acceptor.accept(socket)).await {
+                Ok(Ok(stream)) => {
+                    // The slot is held until axum has the connection, so a
+                    // backlog of finished handshakes counts against the cap.
+                    let _ = ready.send((stream, peer)).await;
+                }
+                Ok(Err(e)) => tracing::debug!("API TLS handshake with {peer} failed: {e}"),
+                Err(_) => tracing::debug!(
+                    "API TLS handshake with {peer} timed out after {handshake_timeout:?}"
+                ),
+            }
+            drop(slot);
+        });
+    }
+}
+
+/// Whether an `accept` error belongs to one connection rather than to the
+/// listener.
+fn is_connection_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
     )
-    .await
-    .map_err(|e| crate::Error::Server(format!("API server error: {e}")))
 }
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
@@ -9437,6 +9710,509 @@ mod tests {
         // Public bind WITH auth → allowed.
         let configured = make_state_with_key("supersecret");
         assert!(enforce_bind_auth_policy(&public, &configured.verifier).is_ok());
+    }
+
+    // ── HTTPS (--api-tls-cert / --api-tls-key) ───────────────────────
+
+    /// A CA and a server certificate it issued for `127.0.0.1`, written into
+    /// `dir` as PEM, the key at mode 0600.
+    ///
+    /// # Returns
+    ///
+    /// `(ca, cert_path, key_path)`: the CA a client must trust, and the two
+    /// files `--api-tls-cert` and `--api-tls-key` take.
+    fn tls_pki(
+        dir: &std::path::Path,
+        tag: &str,
+    ) -> (
+        rustls::pki_types::CertificateDer<'static>,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        use rcgen::{
+            BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
+            KeyPair, KeyUsagePurpose, SanType,
+        };
+        let ca_key = KeyPair::generate().expect("CA key");
+        let mut ca_params = CertificateParams::default();
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
+        ca_params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        ca_params
+            .distinguished_name
+            .push(DnType::CommonName, "sipnab API unit-test CA");
+        let ca_cert = ca_params
+            .clone()
+            .self_signed(&ca_key)
+            .expect("self-signed CA");
+        let issuer = Issuer::new(ca_params, &ca_key);
+        let leaf_key = KeyPair::generate().expect("server key");
+        let mut leaf = CertificateParams::default();
+        leaf.is_ca = IsCa::ExplicitNoCa;
+        leaf.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::LOCALHOST,
+        ))];
+        leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        leaf.distinguished_name
+            .push(DnType::CommonName, "sipnab API unit-test server");
+        let leaf_cert = leaf.signed_by(&leaf_key, &issuer).expect("issue the leaf");
+        let cert = dir.join(format!("{tag}.pem"));
+        let key = dir.join(format!("{tag}.key"));
+        std::fs::write(&cert, leaf_cert.pem()).expect("write cert");
+        std::fs::write(&key, leaf_key.serialize_pem()).expect("write key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod the key");
+        }
+        (ca_cert.der().clone(), cert, key)
+    }
+
+    /// An [`ApiServerConfig`] naming the given TLS files.
+    fn tls_server_config(
+        cert: Option<&std::path::Path>,
+        key: Option<&std::path::Path>,
+    ) -> ApiServerConfig {
+        ApiServerConfig {
+            max_conn: 0,
+            tls_cert: cert.map(|p| p.to_string_lossy().into_owned()),
+            tls_key: key.map(|p| p.to_string_lossy().into_owned()),
+        }
+    }
+
+    /// The text of the startup error `prepare_listener` returns for `config`
+    /// on a loopback bind, panicking if it starts instead.
+    fn tls_startup_error(config: &ApiServerConfig) -> String {
+        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+        match prepare_listener(bind, &make_state().verifier, config) {
+            Ok(_) => panic!("a bad TLS configuration must not start: {config:?}"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    /// `--api-tls-cert` without `--api-tls-key` is refused, naming the file
+    /// that was given and the flag that was not.
+    #[test]
+    fn api_tls_refuses_a_cert_without_a_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, _) = tls_pki(dir.path(), "only-cert");
+        let err = tls_startup_error(&tls_server_config(Some(&cert), None));
+        assert!(
+            err.contains(&*cert.to_string_lossy()),
+            "names the file: {err}"
+        );
+        assert!(
+            err.contains("--api-tls-key"),
+            "names the missing flag: {err}"
+        );
+    }
+
+    /// `--api-tls-key` without `--api-tls-cert` is refused the same way.
+    #[test]
+    fn api_tls_refuses_a_key_without_a_cert() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, _, key) = tls_pki(dir.path(), "only-key");
+        let err = tls_startup_error(&tls_server_config(None, Some(&key)));
+        assert!(
+            err.contains(&*key.to_string_lossy()),
+            "names the file: {err}"
+        );
+        assert!(
+            err.contains("--api-tls-cert"),
+            "names the missing flag: {err}"
+        );
+    }
+
+    /// A certificate file that does not exist is refused, naming it.
+    #[test]
+    fn api_tls_refuses_a_missing_cert_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, _, key) = tls_pki(dir.path(), "missing-cert");
+        let absent = dir.path().join("absent.pem");
+        let err = tls_startup_error(&tls_server_config(Some(&absent), Some(&key)));
+        assert!(
+            err.contains(&*absent.to_string_lossy()),
+            "names the file: {err}"
+        );
+    }
+
+    /// A key file that does not exist is refused, naming it.
+    #[test]
+    fn api_tls_refuses_a_missing_key_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, _) = tls_pki(dir.path(), "missing-key");
+        let absent = dir.path().join("absent.key");
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&absent)));
+        assert!(
+            err.contains(&*absent.to_string_lossy()),
+            "names the file: {err}"
+        );
+    }
+
+    /// A certificate file holding no certificate (here: the key, passed by
+    /// mistake) is refused, naming it and saying what is missing.
+    #[test]
+    fn api_tls_refuses_a_cert_file_with_no_certificate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, _, key) = tls_pki(dir.path(), "no-cert");
+        let err = tls_startup_error(&tls_server_config(Some(&key), Some(&key)));
+        assert!(
+            err.contains(&*key.to_string_lossy()),
+            "names the file: {err}"
+        );
+        assert!(
+            err.contains("no certificate"),
+            "says what is missing: {err}"
+        );
+    }
+
+    /// A key file holding no private key (here: the certificate, passed by
+    /// mistake) is refused, naming it and saying what is missing.
+    #[test]
+    fn api_tls_refuses_a_key_file_with_no_private_key() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, _) = tls_pki(dir.path(), "no-key");
+        // The world-readable check runs first; keep it out of the way.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cert, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        }
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&cert)));
+        assert!(
+            err.contains(&*cert.to_string_lossy()),
+            "names the file: {err}"
+        );
+        assert!(
+            err.contains("no PRIVATE KEY"),
+            "says what is missing: {err}"
+        );
+    }
+
+    /// A key that is not the certificate's is refused, naming both files.
+    #[test]
+    fn api_tls_refuses_a_key_that_does_not_match_the_cert() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, _) = tls_pki(dir.path(), "one");
+        let (_, _, other_key) = tls_pki(dir.path(), "two");
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&other_key)));
+        assert!(
+            err.contains(&*cert.to_string_lossy()),
+            "names the cert: {err}"
+        );
+        assert!(
+            err.contains(&*other_key.to_string_lossy()),
+            "names the key: {err}"
+        );
+        assert!(
+            err.contains("does not go with"),
+            "says they do not match: {err}"
+        );
+    }
+
+    /// A private key any local account can read is refused, as it is for
+    /// the HEP listener: it is not private.
+    #[cfg(unix)]
+    #[test]
+    fn api_tls_refuses_a_world_readable_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, key) = tls_pki(dir.path(), "world");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&key)));
+        assert!(
+            err.contains(&*key.to_string_lossy()),
+            "names the file: {err}"
+        );
+        assert!(err.contains("world-readable"), "says what is wrong: {err}");
+    }
+
+    /// One HTTPS `GET` over a fresh connection, trusting only `ca`.
+    ///
+    /// # Returns
+    ///
+    /// `(status, body, the client's own address)`, or the error text when the
+    /// handshake or the exchange failed.
+    fn https_exchange(
+        addr: SocketAddr,
+        path: &str,
+        ca: &rustls::pki_types::CertificateDer<'static>,
+    ) -> Result<(u16, String, SocketAddr), String> {
+        use std::io::{Read, Write};
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.clone()).map_err(|e| e.to_string())?;
+        let config = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| e.to_string())?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("IP name");
+        let conn =
+            rustls::ClientConnection::new(Arc::new(config), name).map_err(|e| e.to_string())?;
+        let sock = std::net::TcpStream::connect(addr).map_err(|e| e.to_string())?;
+        sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
+        let me = sock.local_addr().map_err(|e| e.to_string())?;
+        let mut tls = rustls::StreamOwned::new(conn, sock);
+        tls.write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .map_err(|e| format!("handshake or write: {e}"))?;
+        let mut raw = Vec::new();
+        match tls.read_to_end(&mut raw) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !raw.is_empty() => {}
+            Err(e) => return Err(format!("read: {e}")),
+        }
+        let text = String::from_utf8_lossy(&raw);
+        let status = text
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|c| c.parse::<u16>().ok())
+            .ok_or_else(|| format!("no status line: {text}"))?;
+        let body = text
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or_default();
+        Ok((status, body, me))
+    }
+
+    /// A bound HTTPS listener for a fresh certificate, and the CA to trust.
+    fn tls_listener_for_test(
+        dir: &std::path::Path,
+    ) -> (ApiListener, rustls::pki_types::CertificateDer<'static>) {
+        let (ca, cert, key) = tls_pki(dir, "serve");
+        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+        let listener = prepare_listener(
+            bind,
+            &make_state().verifier,
+            &tls_server_config(Some(&cert), Some(&key)),
+        )
+        .expect("a matching pair must start");
+        (listener, ca)
+    }
+
+    /// A handler behind the HTTPS listener sees the client's real address —
+    /// its own port included — as `ConnectInfo`, the value the rate limiter
+    /// and the loopback checks key on. A placeholder such as `0.0.0.0:0`, or
+    /// the server's own address, fails the equality.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_tls_hands_handlers_the_real_peer_address() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (listener, ca) = tls_listener_for_test(dir.path());
+        assert!(listener.is_tls());
+        let addr = listener.local_addr().expect("bound");
+        // A fallback rather than a route: the route inventories (the
+        // coverage and capability matrices, and their tests) read every
+        // route registered in this file as one the API serves, and this
+        // echo exists only in this test.
+        let router = Router::new()
+            .fallback(|ConnectInfo(peer): ConnectInfo<SocketAddr>| async move { peer.to_string() });
+        let server = tokio::spawn(serve_router(listener, router));
+        let (status, body, me) =
+            tokio::task::spawn_blocking(move || https_exchange(addr, "/peer", &ca))
+                .await
+                .expect("client task")
+                .expect("HTTPS exchange");
+        server.abort();
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            me.to_string(),
+            "the handler must see this client's address"
+        );
+    }
+
+    /// Plain HTTP on the HTTPS port is not served, and the listener still
+    /// serves a TLS client afterwards.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_tls_refuses_plain_http_and_keeps_serving() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (listener, ca) = tls_listener_for_test(dir.path());
+        let addr = listener.local_addr().expect("bound");
+        let router = Router::new().fallback(|| async { "ok" });
+        let server = tokio::spawn(serve_router(listener, router));
+        let (plain, (status, body, _)) = tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+            sock.set_read_timeout(Some(Duration::from_secs(10))).ok();
+            sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+                .expect("write");
+            let mut raw = Vec::new();
+            let _ = sock.read_to_end(&mut raw);
+            (
+                String::from_utf8_lossy(&raw).into_owned(),
+                https_exchange(addr, "/health", &ca).expect("HTTPS after plain HTTP"),
+            )
+        })
+        .await
+        .expect("client task");
+        server.abort();
+        assert!(
+            !plain.contains(" 200 "),
+            "plain HTTP must not be served: {plain}"
+        );
+        assert_eq!((status, body.as_str()), (200, "ok"));
+    }
+
+    /// Slowloris: a client that connects and never sends a ClientHello does
+    /// not stall the listener. With a 10 s handshake timeout, a trusting
+    /// client connecting after it completes within 2 s — which fails if the
+    /// handshake runs inside `accept`, where the silent peer holds it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_tls_a_silent_client_does_not_stall_the_listener() {
+        use axum::serve::Listener as _;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (listener, ca) = tls_listener_for_test(dir.path());
+        let addr = listener.local_addr().expect("bound");
+        let ApiListener { tcp, tls } = listener;
+        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let mut tls_listener = TlsListener::new(
+            tcp,
+            tls.expect("TLS configured"),
+            Duration::from_secs(10),
+            API_TLS_MAX_HANDSHAKES,
+        )
+        .expect("listener");
+        let _silent = std::net::TcpStream::connect(addr).expect("silent connect");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let client = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca).expect("root");
+            let config = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+                .with_safe_default_protocol_versions()
+                .expect("versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("name");
+            let conn = rustls::ClientConnection::new(Arc::new(config), name).expect("client");
+            let sock = std::net::TcpStream::connect(addr).expect("connect");
+            let mut tls = rustls::StreamOwned::new(conn, sock);
+            // Completing the write completes the handshake.
+            tls.write_all(b"x").expect("handshake");
+            tls
+        });
+        let accepted = tokio::time::timeout(Duration::from_secs(2), tls_listener.accept()).await;
+        let (_, peer) = accepted.expect("a well-behaved client must be accepted within 2 s");
+        assert_eq!(
+            peer.ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
+        drop(client.await);
+    }
+
+    /// A client that never finishes its handshake is dropped once the
+    /// handshake timeout passes, rather than holding its task forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_tls_a_silent_client_is_dropped_after_the_handshake_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (listener, _ca) = tls_listener_for_test(dir.path());
+        let addr = listener.local_addr().expect("bound");
+        let ApiListener { tcp, tls } = listener;
+        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let _tls_listener = TlsListener::new(
+            tcp,
+            tls.expect("TLS configured"),
+            Duration::from_millis(300),
+            API_TLS_MAX_HANDSHAKES,
+        )
+        .expect("listener");
+        let started = std::time::Instant::now();
+        let outcome = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            // A signal meant for another test in this binary interrupts the
+            // read without saying anything about the connection: retry it.
+            loop {
+                match sock.read(&mut [0u8; 16]) {
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            }
+        })
+        .await
+        .expect("client task");
+        let closed = match &outcome {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
+        };
+        assert!(
+            closed,
+            "the server must close a silent connection: {outcome:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "closed after {:?}, not at the 300 ms timeout",
+            started.elapsed()
+        );
+    }
+
+    /// Past the handshake cap a new connection is closed at once, while the
+    /// connection holding the slot is still waiting out its (long) timeout.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn api_tls_sheds_connections_past_the_handshake_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (listener, _ca) = tls_listener_for_test(dir.path());
+        let addr = listener.local_addr().expect("bound");
+        let ApiListener { tcp, tls } = listener;
+        let tcp = tokio::net::TcpListener::from_std(tcp).expect("register");
+        let _tls_listener = TlsListener::new(
+            tcp,
+            tls.expect("TLS configured"),
+            Duration::from_secs(30),
+            1,
+        )
+        .expect("listener");
+        let holder = std::net::TcpStream::connect(addr).expect("holder connect");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let started = std::time::Instant::now();
+        let outcome = tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+            sock.set_read_timeout(Some(Duration::from_secs(5))).ok();
+            // A signal meant for another test in this binary interrupts the
+            // read without saying anything about the connection: retry it.
+            loop {
+                match sock.read(&mut [0u8; 16]) {
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            }
+        })
+        .await
+        .expect("client task");
+        let closed = match &outcome {
+            Ok(0) => true,
+            Ok(_) => false,
+            Err(e) => e.kind() == std::io::ErrorKind::ConnectionReset,
+        };
+        assert!(
+            closed,
+            "a connection past the cap must be closed: {outcome:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(holder);
+    }
+
+    /// A matching pair starts: the listener binds and reports its address.
+    #[test]
+    fn api_tls_accepts_a_matching_pair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (_, cert, key) = tls_pki(dir.path(), "good");
+        let bind: SocketAddr = "127.0.0.1:0".parse().expect("addr");
+        let listener = prepare_listener(
+            bind,
+            &make_state().verifier,
+            &tls_server_config(Some(&cert), Some(&key)),
+        )
+        .expect("a matching pair must start");
+        assert_ne!(listener.local_addr().expect("bound").port(), 0);
     }
 
     use crate::test_utils::build_sip_message as build_sip;

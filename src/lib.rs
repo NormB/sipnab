@@ -384,6 +384,10 @@ pub mod provenance;
 pub mod journal;
 #[cfg(any(feature = "hep", feature = "mcp", feature = "api"))]
 pub mod rate_limit;
+// Server-side TLS files (PEM chain, private key, rustls config) for the two
+// listeners that terminate TLS themselves: HEP and the REST API.
+#[cfg(any(feature = "hep", feature = "api"))]
+pub(crate) mod tls_files;
 // Native only, alongside `rtpengine`, which together with the MCP surface is
 // its only caller: `reconcile` holds a `TransmitPermit`, which is itself
 // native-gated, and a browser analyzer has no control plane to reconcile
