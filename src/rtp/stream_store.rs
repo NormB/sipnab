@@ -1956,6 +1956,19 @@ impl StreamStore {
     }
 }
 
+/// The refusal for a Call-ID that neither the dialog store nor any RTP stream
+/// holds.
+///
+/// Says what was searched, because on a media-relay host -- which sees RTP
+/// and never the SIP -- a bare "not found" cannot be told apart from a lookup
+/// that only ever consulted the dialogs. Every media surface that answers a
+/// Call-ID from its streams when no dialog is held refuses with this one
+/// sentence, so the MCP tools and the REST routes cannot drift apart.
+#[must_use]
+pub fn call_not_carried(call_id: &str) -> String {
+    format!("no SIP dialog and no RTP stream associated with call_id '{call_id}' in this capture")
+}
+
 /// Check if a codec supports audio payload capture for playback/export.
 ///
 /// Delegates rather than deciding. This used to list Opus's spellings itself

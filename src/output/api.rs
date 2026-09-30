@@ -3225,14 +3225,16 @@ fn wav_filename_stem(call_id: &str) -> String {
 /// * `state` — Shared application state.
 /// * `addr` — Client socket address used for rate limiting.
 /// * `headers` — Request headers (auth).
-/// * `call_id` — The dialog's Call-ID, from the path.
+/// * `call_id` — The call's Call-ID, from the path: a dialog's, or the one a
+///   media relay named for its streams.
 ///
 /// # Returns
 ///
 /// 200 with an `audio/wav` body (the same bytes the file export and the vCon
-/// inliner produce, provenance note embedded); 404 when no dialog carries that
-/// Call-ID; 422 when the dialog exists but sipnab retained no decodable audio
-/// for it; 401/503 from the guard.
+/// inliner produce, provenance note embedded) and a `sipnab-dialog-seen`
+/// header saying whether the SIP dialog is held; 404 when neither a dialog nor
+/// any RTP stream carries that Call-ID; 422 when the call is held but sipnab
+/// retained no decodable audio for it; 401/503 from the guard.
 ///
 /// # Side effects
 ///
@@ -3243,16 +3245,16 @@ fn wav_filename_stem(call_id: &str) -> String {
     path = "/v1/dialogs/{call_id}/audio",
     tag = "dialogs",
     summary = "The call's decoded RTP as a WAV",
-    description = "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.",
+    description = "The call's decoded RTP audio as a standalone `audio/wav` file — mono for one direction, stereo for two, with a provenance note embedded in the file naming what it is and every way it falls short of the call. The same bytes the MCP `export_audio` tool writes and the vCon inliner carries, from one decode, so a `.wav` exported here verifies against a container's `content_hash`.\n\nsipnab must have retained the payload (`--retain-audio`) for there to be anything to decode. A dialog that carries only undecodable codecs, or whose payload this run did not keep, is a 422 whose body explains which — never a silent empty file. The audio is bounded by where the capture point sat and by what retention kept; it is not a recording the endpoints made.\n\nOn a media-relay host, which sees the RTP and never the SIP, the call's streams carry the Call-ID the relay named and no dialog is held: the audio is still exported, and the `sipnab-dialog-seen` response header says `false`.",
     params(
-        ("call_id" = String, Path, description = "The dialog's Call-ID."),
+        ("call_id" = String, Path, description = "The call's Call-ID: a dialog's, or the one a media relay named for its streams."),
     ),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The decoded audio, with its provenance note embedded.", content_type = "audio/wav", body = Vec<u8>),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 404, description = "No dialog carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 422, description = "The dialog exists but sipnab retained no decodable audio for it; the body names why.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 404, description = "No SIP dialog and no RTP stream carries that Call-ID in this capture.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The call is held but sipnab retained no decodable audio for it; the body names why.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
 )]
@@ -3265,14 +3267,19 @@ async fn get_dialog_audio(
     guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
-    if ds.get(&call_id).is_none() {
-        return Err(Problem::detailed(
-            StatusCode::NOT_FOUND,
-            format!("no dialog carries Call-ID '{call_id}' in this capture"),
-        ));
-    }
     let ss = state.stream_store.read();
     let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
+    // The audio is the streams'. A media-relay host carries them under the
+    // Call-ID the relay named and never sees the dialog, so the dialog is
+    // looked up only to say whether it was seen; 404 is for a Call-ID neither
+    // store holds.
+    let dialog_seen = ds.get(&call_id).is_some();
+    if !dialog_seen && streams.is_empty() {
+        return Err(Problem::detailed(
+            StatusCode::NOT_FOUND,
+            crate::rtp::stream_store::call_not_carried(&call_id),
+        ));
+    }
     // Decode while the lock is held — `streams` borrows the store. The decode is
     // shared with the file export and the vCon inliner, so this WAV is byte-for-
     // byte what those produce. A dialog with no decodable retained payload is a
@@ -3298,6 +3305,7 @@ async fn get_dialog_audio(
                 "sipnab-audio-partial",
                 (!audio.partial.is_empty()).to_string(),
             ),
+            ("sipnab-dialog-seen", dialog_seen.to_string()),
         ],
         audio.wav,
     ))
@@ -8540,6 +8548,68 @@ mod tests {
             .await
             .expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = body_to_string(resp.into_body()).await;
+        assert!(
+            body.contains(
+                "no SIP dialog and no RTP stream associated with call_id \
+                 'does-not-exist@nowhere' in this capture"
+            ),
+            "the 404 says what was searched, so a host that never carried the \
+             call reads apart from a lookup bug: {body}"
+        );
+    }
+
+    /// A media-relay host holds no dialog -- it never sees the SIP -- but its
+    /// RTP carries the Call-ID the relay named. The audio is the relay's to
+    /// export, and the answer says the dialog was not seen here.
+    #[tokio::test]
+    async fn audio_on_a_relay_host_answers_from_the_streams() {
+        let state = make_state();
+        state.stream_store.write().set_audio_capture(true);
+        add_stream(&state, 0x5151, 40000, 30000);
+        state.stream_store.write().link_to_dialog(
+            IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "relay-only@test",
+        );
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/relay-only@test/audio"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("sipnab-dialog-seen")
+                .and_then(|v| v.to_str().ok()),
+            Some("false")
+        );
+    }
+
+    /// With the dialog held, the header says so.
+    #[tokio::test]
+    async fn audio_with_the_dialog_says_it_was_seen() {
+        let state = make_state();
+        populate_dialogs(&state);
+        state.stream_store.write().set_audio_capture(true);
+        add_stream(&state, 0x5151, 40000, 30000);
+        state.stream_store.write().link_to_dialog(
+            IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "call-0@test",
+        );
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-0@test/audio"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get("sipnab-dialog-seen")
+                .and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
     }
 
     /// A dialog that exists but carries no exportable audio is a 422, not a

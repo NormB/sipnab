@@ -551,6 +551,23 @@ impl MediaContext {
         ctx
     }
 
+    /// The context for media whose SIP dialog this capture never saw.
+    ///
+    /// A media-relay host sees RTP and the relay's control traffic and never
+    /// the signaling, so there is no SDP to read: no advertised address, no
+    /// completed negotiation, no answer. Every finding that compares the
+    /// packets against the SDP (NAT mismatch, the RFC 4961 port checks,
+    /// `no_media`) therefore stays silent rather than guessing, and the
+    /// findings the streams can support on their own (one-way audio,
+    /// amplitude) still run. The capture half is real, unlike
+    /// [`MediaContext::default`], because the capture is not what is missing.
+    pub fn without_dialog(capture: CaptureMedia) -> Self {
+        MediaContext {
+            capture,
+            ..MediaContext::default()
+        }
+    }
+
     /// A context that knows one SDP session and nothing about the dialog or
     /// the capture around it. For callers holding a bare session (and for
     /// tests); it can never satisfy `no_media`, which needs the dialog.
