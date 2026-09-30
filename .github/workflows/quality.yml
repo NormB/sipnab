@@ -5,17 +5,46 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # For the branch-coverage job alone: every other job below declares
+  # `if: github.event_name != 'schedule'`. Wednesdays 04:23 UTC, offset from
+  # fuzz.yml (Mon 05:17), codeql.yml (Tue 02:34) and sanitizers.yml (Tue 06:11).
+  schedule:
+    - cron: '23 4 * * 3'
+  workflow_dispatch:
 
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.ref }}
+  # event_name keeps the weekly scheduled run and a push to main -- both on
+  # refs/heads/main -- from canceling each other.
+  group: quality-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
-# Least privilege by default. All three jobs below declare their own
+# Least privilege by default. Every job below declares their own
 # `permissions:` block, which REPLACES this one rather than adding to it — so
 # this grants the floor for any job added later that forgets to, instead of
 # handing it the repository default.
 permissions:
   contents: read
+
+# The coverage SCOPE, stated once. Both the line-coverage job and the weekly
+# branch-coverage job collect and report under exactly these, and
+# scripts/coverage.sh reads them from here rather than repeating them: two
+# copies of a scope is how two numbers that claim to describe one suite come to
+# measure different populations.
+#
+# COVERAGE_TEST_SKIPS -- `cli_goldens` spawns the instrumented binary as 13
+# parallel subprocesses that collide on the llvm-cov merge-pool .profraw
+# ("LLVM Profile Error: ... File exists"); `wasm_plugin_` shells out to
+# `cargo build --target wasm32-unknown-unknown`, and wasm32 ships no
+# `profiler_builtins`, so the nested build fails E0463 (scrubbing the coverage
+# variables from the child environment was not enough). Both run in full under
+# the CI workflow's plain `cargo test`; only their coverage contribution is
+# dropped.
+#
+# COVERAGE_IGNORE_REGEX -- the dev-only src/bin/gen_fixture.rs [[bin]] is not
+# shipped product code (mirrors codecov.yml `ignore:`).
+env:
+  COVERAGE_TEST_SKIPS: --skip cli_goldens --skip wasm_plugin_
+  COVERAGE_IGNORE_REGEX: gen_fixture\.rs
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -35,6 +64,7 @@ jobs:
   # as "the benchmarks still run", not "performance has not regressed".
   # ---------------------------------------------------------------------------
   bench:
+    if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
@@ -94,6 +124,7 @@ jobs:
   # is skipped cleanly when the secret is absent, so the job stays green.
   # ---------------------------------------------------------------------------
   coverage:
+    if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
@@ -160,31 +191,20 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Collect coverage
-        # Skip the trycmd CLI-golden test under coverage: it spawns the
-        # instrumented binary as 13 parallel subprocesses, which collide on the
-        # llvm-cov merge-pool .profraw file ("LLVM Profile Error: ... File
-        # exists") and fail the run. The goldens are still validated by the CI
-        # workflow's plain `cargo test`; only their coverage contribution is
-        # dropped here.
-        #
-        # Skip the wasm_plugin_* tests for a related reason: they shell out to
-        # `cargo build --target wasm32-unknown-unknown`, and that nested build
-        # cannot carry this harness's instrumentation — wasm32 ships no
-        # `profiler_builtins`, so it fails with E0463. Scrubbing the coverage
-        # variables from the child environment was not enough, which is why
-        # this is a skip rather than more env plumbing. They run in full in the
-        # CI workflow's plain `cargo test`; only their coverage contribution is
-        # dropped, and the wasm artifact was never instrumented anyway.
-        run: cargo llvm-cov --all-features --workspace --no-report -- --skip cli_goldens --skip wasm_plugin_
+        # The skips are the workflow-level COVERAGE_TEST_SKIPS; the comment
+        # there says why each one exists.
+        run: |
+          # Unquoted on purpose: COVERAGE_TEST_SKIPS is a list of arguments.
+          # shellcheck disable=SC2086
+          cargo llvm-cov --all-features --workspace --no-report -- $COVERAGE_TEST_SKIPS
 
       - name: Coverage summary
-        # Exclude the dev-only src/bin/gen_fixture.rs [[bin]] from every report
-        # (mirrors codecov.yml `ignore:`); it is not shipped product code.
+        # Every report excludes the workflow-level COVERAGE_IGNORE_REGEX.
         run: |
           {
             echo '### Test coverage'
             echo '```'
-            cargo llvm-cov report --summary-only --ignore-filename-regex 'gen_fixture\.rs'
+            cargo llvm-cov report --summary-only --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -200,18 +220,17 @@ jobs:
       #
       # 92 was set from 92.85% (53407/57518) on the aaeb06e report.
       # 93 is set from 93.64% (128472/137200) measured on e8bb9e9e, with
-      # functions at 94.19% and regions at 93.90% -- the same `--skip
-      # cli_goldens --skip wasm_plugin_` scope this job collects under, so the
+      # functions at 94.19% and regions at 93.90% -- the same
+      # COVERAGE_TEST_SKIPS scope this job collects under, so the
       # number and the gate describe one run.
       - name: Enforce coverage floor
         run: |
-          cargo llvm-cov report --fail-under-lines 93 \
-            --ignore-filename-regex 'gen_fixture\.rs'
+          cargo llvm-cov report --fail-under-lines 93 --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
 
       - name: Generate lcov + HTML report
         run: |
-          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'gen_fixture\.rs'
-          cargo llvm-cov report --html --ignore-filename-regex 'gen_fixture\.rs'
+          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
+          cargo llvm-cov report --html --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
 
       - name: Upload HTML coverage artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -229,12 +248,111 @@ jobs:
           fail_ci_if_error: false
 
   # ---------------------------------------------------------------------------
+  # Branch coverage, weekly and on demand (OpenSSF Gold test_branch_coverage80).
+  #
+  # The line job above cannot measure branches: cargo-llvm-cov's --branch
+  # needs rustc's `-Z coverage-options=branch`, which is nightly-only, and the
+  # line gate stays on the pinned stable toolchain the release builds with.
+  # Nightly is a TOOL here, as in fuzz.yml and sanitizers.yml, on the same pin.
+  #
+  # Same scope as the line job (COVERAGE_TEST_SKIPS, COVERAGE_IGNORE_REGEX), so
+  # the two numbers describe one suite. cargo-llvm-cov has no
+  # --fail-under-branches; scripts/branch-coverage.py reads the JSON summary
+  # and refuses a report holding no branches at all (a run where --branch did
+  # not take effect), which would otherwise read as a vacuous pass.
+  #
+  # Uploaded under the Codecov flag `branch` so it sits beside the per-push
+  # line report instead of replacing it.
+  # ---------------------------------------------------------------------------
+  coverage-branch:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Instrumented nightly build plus the full suite; the line job's slowest
+    # observed run was 12.9 min, and branch instrumentation adds to it.
+    timeout-minutes: 60
+    name: Branch coverage (nightly)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # No GITHUB_TOKEN left in .git/config; nothing here pushes.
+          persist-credentials: false
+          # Tags and full history for site_advertises_only_a_released_version,
+          # exactly as the line job fetches them.
+          fetch-tags: true
+          fetch-depth: 0
+
+      - name: Free disk space
+        uses: ./.github/actions/free-disk
+
+      - name: Install system deps
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@4fd1da8b0805d2d2e936788875a7d65dbd677dc2 # nightly
+        with:
+          components: llvm-tools-preview
+          # plugin_example_test builds crates/sipnab-plugin-example for wasm32.
+          targets: wasm32-unknown-unknown
+
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-branch-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-branch-
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@7623a79cdfecb99d681017af368ca353d9f49bb5 # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Collect branch coverage
+        run: |
+          # Unquoted on purpose: COVERAGE_TEST_SKIPS is a list of arguments.
+          # shellcheck disable=SC2086
+          cargo llvm-cov --branch --all-features --workspace --no-report -- $COVERAGE_TEST_SKIPS
+
+      - name: Branch coverage summary
+        run: |
+          cargo llvm-cov report --json --summary-only --output-path branch-summary.json --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
+          {
+            echo '### Branch coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check branch coverage
+        run: python3 scripts/branch-coverage.py branch-summary.json
+
+      - name: Generate lcov with branches
+        run: cargo llvm-cov report --lcov --output-path lcov-branch.info --ignore-filename-regex "$COVERAGE_IGNORE_REGEX"
+
+      - name: Upload to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
+        with:
+          files: lcov-branch.info
+          flags: branch
+          token: ${{ env.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ---------------------------------------------------------------------------
   # Surface Clippy lints as GitHub Code Scanning alerts (SARIF).
   # CI already gates on `clippy -Dwarnings`; this makes the findings visible
   # inline on PRs and in the Security tab. Lints here are reported, not gated,
   # so this job does not fail the build.
   # ---------------------------------------------------------------------------
   clippy-sarif:
+    if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
@@ -313,6 +431,7 @@ jobs:
   # it produced on first run.
   # ---------------------------------------------------------------------------
   docs:
+    if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 12.9 min slowest (Coverage / Benchmarks).
     timeout-minutes: 40
@@ -550,6 +669,7 @@ jobs:
   # three choices next to the constant that implements it.
   # ---------------------------------------------------------------------------
   accessibility:
+    if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its concurrency group
     # indefinitely. Observed locally: 12s for the nine specs, so this is
     # bounding a hang rather than the work.

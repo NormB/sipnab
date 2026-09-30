@@ -65,7 +65,7 @@ compiles, which is exactly why CI has a feature matrix.
 |---|---|---|
 | `ci.yml` | push, PR | The merge gate. See below. |
 | `cert-expiry.yml` | daily at 07:10 UTC, and on changes to itself | Reads the EDGE and the ORIGIN certificates for sipnab.com and fails with three weeks to spare. Both, because the public name resolves to the CDN: on 2026-09-11 the edge certificate was healthy with 85 days left while the origin had expired and every visitor got a 526. It also refuses a CNAME that disagrees with `base_url`, which is what had been dropping the certificate on every deploy |
-| `quality.yml` | push to main, PR | Coverage (`cargo-llvm-cov`), clippy SARIF upload, and the prose gates below. Not required by `ci-success`. |
+| `quality.yml` | push to main, PR, weekly cron (Wednesdays 04:23 UTC) + manual | Line coverage (`cargo-llvm-cov`), clippy SARIF upload, and the prose gates below on push and PR. Branch coverage (nightly) runs on the schedule, where it is the only job, and on a manual run, alongside the rest. Not required by `ci-success`. |
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
@@ -227,8 +227,10 @@ Report the last collection without re-running it:
 scripts/coverage.sh --report
 ```
 
-It **reads the floor and the skips out of the workflow** rather than repeating
-them. Two copies of a threshold is how a gate and its local rehearsal come to
+It **reads the floor and the scope out of the workflow** rather than repeating
+them. The scope is the workflow-level `COVERAGE_TEST_SKIPS` and
+`COVERAGE_IGNORE_REGEX` in `quality.yml`, stated once and used by every
+`cargo llvm-cov` call there. Two copies of a threshold is how a gate and its local rehearsal come to
 disagree, and the rehearsal is the one that gets trusted, because it is the one
 that answered first. [`tests/coverage_gate_test.rs`](../../tests/coverage_gate_test.rs) fails if the script grows
 its own floor, if the two skip different tests, or if someone walks the floor
@@ -247,6 +249,25 @@ build, and wasm32 ships no `profiler_builtins`, so the nested build fails
 Both run in full under the plain `cargo test`, so the run loses only their
 coverage contribution — which is why this total falls short of the whole suite
 by design.
+
+### Branch coverage
+
+The line job cannot count branches: `cargo llvm-cov --branch` needs rustc's
+`-Z coverage-options=branch`, which only nightly accepts, and the line gate
+stays on the pinned stable toolchain. So `quality.yml` has a second job,
+`coverage-branch`, that runs weekly (Wednesdays 04:23 UTC) and on a manual
+run only, on the same nightly pin `fuzz.yml` and `sanitizers.yml` use. It
+collects under the same scope as the line job and uploads to Codecov under the
+flag `branch`, beside the line report rather than over it.
+
+`cargo llvm-cov` has `--fail-under-lines`, `-regions` and `-functions` but no
+branch floor. [`scripts/branch-coverage.py`](../../scripts/branch-coverage.py) reads the
+`--json --summary-only` export instead. It fails a report that holds no
+branches at all, because that means `--branch` never took effect, and it
+enforces `--floor` when the job passes one. The job passes none yet: the first
+measurement, a local aarch64 run on 2026-09-30 over the job's scope, was **77.46%**
+(13221 of 17069 branches), under OpenSSF Gold's 80%. Once the real number
+clears 80, set the floor just under it, the same ratchet as the line floor.
 
 ### What actually gates a merge
 

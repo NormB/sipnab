@@ -5799,7 +5799,12 @@ fn packaging_scripts_reference_existing_paths() {
     // 133 -> 134: `scripts/test-pre-commit.sh` in the Git hook scenarios
     // job's new run step. Attributed by measurement: with HEAD's ci.yml the
     // scan reads 133.
-    const EXPECTED_REFERENCES: usize = 134;
+    // 134 -> 137: three, all in `.github/workflows/quality.yml`, from the
+    // weekly branch-coverage job (which runs `scripts/branch-coverage.py`)
+    // and the shared coverage scope's comment (which names
+    // `scripts/coverage.sh`). Attributed by measurement to that file as a
+    // whole: with HEAD's quality.yml swapped back in, the scan reads 134.
+    const EXPECTED_REFERENCES: usize = 137;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

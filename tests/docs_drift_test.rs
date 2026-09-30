@@ -157,6 +157,31 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // `cargo llvm-cov --branch` and `report --json --summary-only`, and
+    // `scripts/branch-coverage.py --floor`, named by the release page's
+    // "Branch coverage" section. cargo-llvm-cov's flags and the script's,
+    // not sipnab's.
+    (
+        "branch",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "summary-only",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "floor",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // The MCP Inspector's, named by the schema-lint section of the MCP page.
     // `--strict` is a flag of `@modelcontextprotocol/inspector --cli`, not of
     // sipnab, and documenting how to lint sipnab's advertised schemas must not
