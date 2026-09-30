@@ -18,10 +18,13 @@
 
 ## Checklist
 
-- [ ] Tests added or updated (and `cargo test` passes locally)
+- [ ] Tests added or updated, including one that fails without this change (and `cargo test` passes locally)
 - [ ] `cargo clippy` is clean (CI builds with `-Dwarnings`)
 - [ ] `cargo fmt` applied
 - [ ] Docs / README / website updated if behavior or flags changed
+- [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for a user-visible change
+- [ ] Security impact considered against the trust boundaries in [threat-model.md](../docs/threat-model.md)
+- [ ] No secrets, private hostnames, addresses or home paths in the diff
 - [ ] Any new analysis claim is honest and backed by the implementation (cite the RFC/ITU standard where relevant)
 - [ ] **Who reads this, and is that where it's written?** If the change adds a
       caveat, a limit or a disclosure, check it lands where its consumer looks —

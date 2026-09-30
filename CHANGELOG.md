@@ -8,6 +8,37 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **How to upgrade.** [docs/install.md](docs/install.md#upgrade-sipnab) now gives
+  the upgrade command for every install route (install script, tarball, `.deb`,
+  `.rpm` with `rpm -U`, Homebrew, cargo, source, Docker), says what survives an
+  upgrade, and says when to rerun `--setup-caps` or restart the service.
+- **An assurance case.** [docs/assurance-case.md](docs/assurance-case.md) argues,
+  with code citations, how sipnab applies each secure-design principle and
+  answers each entry of the 2025 CWE Top 25, and names the gaps it found.
+- **Code review requirements** in
+  [CONTRIBUTING.md](CONTRIBUTING.md#code-review): who reviews, how, what is
+  checked, and what a change needs before it merges.
+
+### Security
+
+- **Two-factor authentication is now mandatory** for anyone with write access to
+  the repository or access to the project's credentials, using an authenticator
+  app or a security key. SMS is not accepted
+  ([MAINTAINERS.md](MAINTAINERS.md#getting-commit-access), linked from
+  [SECURITY.md](SECURITY.md)).
+
+### Fixed
+
+- The Homebrew install command in [docs/install.md](docs/install.md) read
+  `brew install sipnab`. The formula lives in the tap, so it is now
+  `brew install NormB/tap/sipnab`.
+- `THIRD-PARTY-NOTICES.md` now records the vendored Mermaid and Scalar scripts and
+  the vCon schema copy, each with its version, source, license and hash.
+
 ## [0.5.197] - 2026-09-30
 
 ### Added

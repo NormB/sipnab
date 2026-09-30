@@ -710,6 +710,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "print",
         &["docs/install.md", "website/content/docs/install.md"],
     ),
+    // `cargo install sipnab --features full --locked --force`, the cargo route
+    // of the Upgrade section. `--force` is what replaces an installed binary,
+    // and `--locked` builds against the lockfile the release was tested with.
+    (
+        "force",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    (
+        "locked",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
     // cargo / cross / xcode-select build & install recipes
     (
         "release",
@@ -3012,6 +3023,253 @@ fn third_party_notices_cover_system_libraries() {
     );
 }
 
+/// The rows of the notices' "Vendored files" table, keyed by repository path:
+/// `(version, sha256)`.
+fn vendored_notice_rows(notices: &str) -> std::collections::BTreeMap<String, (String, String)> {
+    let section = notices
+        .split("\n## Vendored files")
+        .nth(1)
+        .expect("THIRD-PARTY-NOTICES.md has no `## Vendored files` section");
+    let section = section.split("\n## ").next().unwrap_or(section);
+    section
+        .lines()
+        .filter(|l| l.starts_with("| `"))
+        .map(|l| {
+            let cells: Vec<&str> = l.split('|').map(str::trim).collect();
+            assert!(
+                cells.len() >= 8,
+                "vendored row has {} cells, expected File | Component | Version | \
+                 Upstream | License | SHA-256: {l}",
+                cells.len()
+            );
+            (
+                cells[1].trim_matches('`').to_string(),
+                (cells[3].to_string(), cells[6].trim_matches('`').to_string()),
+            )
+        })
+        .collect()
+}
+
+/// A file under `website/static/js/` is someone else's minified code when its
+/// name says `.min.` or any line is longer than a person writes. sipnab's own
+/// scripts top out near 530 columns; the vendored bundles exceed 300,000.
+fn is_vendored_minified(name: &str, text: &str) -> bool {
+    name.contains(".min.") || text.lines().any(|l| l.len() > 1000)
+}
+
+/// Where a vendored bundle states its own version, as `(file name, pattern)`.
+/// The first capture group is the version. Every vendored script must have an
+/// entry, so adding a bundle forces someone to find its version marker.
+const EMBEDDED_VERSION: &[(&str, &str)] = &[
+    // Mermaid's `getVersion()` returns this object's field.
+    ("mermaid.min.js", r#"\{version:"([0-9][^"]*)"\}"#),
+    // Scalar logs its package and version to the console on load.
+    (
+        "scalar.min.js",
+        r"console\.info\(`@scalar/api-reference@([0-9][^`]*)`\)",
+    ),
+];
+
+/// `updateable_reused_components` (OpenSSF Silver): code copied into the tree
+/// must say what it is and which version, or nobody can tell when it needs
+/// updating. The two browser bundles and the vCon working group's schema sat
+/// in the repository with no recorded version or source.
+///
+/// Every vendored script under `website/static/js/`, and the vendored schema,
+/// has a row in the notices' "Vendored files" table. The row's SHA-256 is the
+/// file on disk, so replacing the file without updating its row fails here,
+/// and a script's recorded version is the one the bundle embeds.
+#[test]
+fn every_vendored_file_is_recorded_with_its_version() {
+    use sha2::{Digest, Sha256};
+
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let notices = std::fs::read_to_string(repo.join("THIRD-PARTY-NOTICES.md"))
+        .expect("read THIRD-PARTY-NOTICES.md");
+    let rows = vendored_notice_rows(&notices);
+
+    let mut vendored: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(repo.join("website/static/js")).expect("read js dir") {
+        let path = entry.expect("dir entry").path();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if is_vendored_minified(&name, &text) {
+            vendored.push(format!("website/static/js/{name}"));
+        }
+    }
+    assert!(
+        vendored.len() >= 2,
+        "found {} vendored scripts; the scan is not seeing mermaid and scalar",
+        vendored.len()
+    );
+    vendored.push("tests/schemas/publisher/vcon_json_schema.json".to_string());
+
+    for rel in &vendored {
+        let (version, sha) = rows.get(rel).unwrap_or_else(|| {
+            panic!(
+                "{rel} is vendored third-party code with no row in \
+                 THIRD-PARTY-NOTICES.md's Vendored files table. Add it to \
+                 VENDORED in scripts/build-third-party-notices.py and regenerate."
+            )
+        });
+        assert!(!version.is_empty(), "{rel}: the recorded version is empty");
+        let bytes = std::fs::read(repo.join(rel)).expect("read vendored file");
+        let digest: String = Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            &digest, sha,
+            "{rel} is not the file THIRD-PARTY-NOTICES.md records. An updated \
+             vendored file needs its version and SHA-256 updated in VENDORED in \
+             scripts/build-third-party-notices.py."
+        );
+        if rel.ends_with(".js") {
+            let name = rel.rsplit('/').next().unwrap();
+            let pattern = EMBEDDED_VERSION
+                .iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{rel} has no entry in EMBEDDED_VERSION saying where it states its version"
+                    )
+                })
+                .1;
+            let text = String::from_utf8_lossy(&bytes);
+            let embedded = regex::Regex::new(pattern)
+                .unwrap()
+                .captures(&text)
+                .unwrap_or_else(|| panic!("{rel}: no version marker matching {pattern}"))[1]
+                .to_string();
+            assert_eq!(
+                &embedded, version,
+                "{rel} embeds version {embedded}, THIRD-PARTY-NOTICES.md records {version}"
+            );
+        }
+    }
+    for rel in rows.keys() {
+        assert!(
+            repo.join(rel).is_file(),
+            "THIRD-PARTY-NOTICES.md records vendored file {rel}, which does not exist"
+        );
+    }
+}
+
+/// The classifier above is what decides which scripts need a row, so it must
+/// tell sipnab's own readable scripts from a minified bundle.
+#[test]
+fn the_vendored_script_classifier_discriminates() {
+    assert!(is_vendored_minified("x.min.js", "short"));
+    assert!(is_vendored_minified("bundle.js", &"a".repeat(1001)));
+    assert!(!is_vendored_minified(
+        "analyze.js",
+        "// sipnab\nlet x = 1;\n"
+    ));
+}
+
+/// `maintenance_or_update` (OpenSSF Silver): a user must be able to find how
+/// to move to a newer release, by the same route they installed with. The
+/// install page documented eight routes and said nothing about upgrading by
+/// any of them, and its only `.rpm` recipe, `rpm -i`, refuses a package that
+/// is already installed.
+///
+/// Each pair is an install route the page documents and the text its Upgrade
+/// section must carry for it. The section also has to say how to check the
+/// running version, where breaking changes are marked, and which releases are
+/// supported.
+#[test]
+fn install_docs_say_how_to_upgrade_every_install_route() {
+    let doc = include_str!("../docs/install.md");
+    let start = doc
+        .find("\n## Upgrade sipnab\n")
+        .expect("docs/install.md has no `## Upgrade sipnab` section");
+    let rest = &doc[start + 1..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |i| i + 3);
+    let section = &rest[..end];
+
+    let routes: &[(&str, &str, &str)] = &[
+        (
+            "one-line installer",
+            "curl -fsSL https://sipnab.com/install.sh | sh",
+            "install.sh | sh",
+        ),
+        (
+            "installer into a custom directory",
+            "SIPNAB_INSTALL_DIR=",
+            "SIPNAB_INSTALL_DIR=",
+        ),
+        (
+            "release tarball",
+            "sudo install -m 755",
+            "sudo install -m 755",
+        ),
+        (
+            ".deb with apt",
+            "sudo apt install \"./sipnab_",
+            "sudo apt install \"./sipnab_",
+        ),
+        (
+            ".deb with dpkg",
+            "sipnab_<version>_amd64.deb",
+            "sudo dpkg -i",
+        ),
+        (".rpm", "sudo rpm -i sipnab-", "sudo rpm -U"),
+        (".rpm with dnf", "dnf", "sudo dnf upgrade"),
+        (
+            "Homebrew",
+            "brew install NormB/tap/sipnab",
+            "brew upgrade NormB/tap/sipnab",
+        ),
+        (
+            "cargo",
+            "cargo install sipnab --features full",
+            "cargo install sipnab --features full --locked --force",
+        ),
+        (
+            "source checkout",
+            "scripts/install-from-source.sh",
+            "git pull",
+        ),
+        (
+            "Docker",
+            "ghcr.io/normb/sipnab:latest",
+            "docker pull ghcr.io/normb/sipnab:latest",
+        ),
+    ];
+    for (route, installed_by, upgrade) in routes {
+        assert!(
+            doc.contains(installed_by),
+            "docs/install.md no longer documents the {route} route ({installed_by}); \
+             drop it from this list"
+        );
+        assert!(
+            section.contains(upgrade),
+            "the Upgrade section does not say how to upgrade a {route} install \
+             (expected `{upgrade}`)"
+        );
+    }
+    for (what, needle) in [
+        ("how to check the running version", "sipnab --version"),
+        ("where breaking changes are marked", "**Breaking:**"),
+        ("the changelog", "CHANGELOG.md"),
+        ("the support policy", "Only the latest release"),
+        ("the capabilities a replaced binary loses", "--setup-caps"),
+        (
+            "that a running service keeps the old binary",
+            "systemctl restart sipnab",
+        ),
+    ] {
+        assert!(
+            section.contains(needle),
+            "the Upgrade section does not cover {what} (expected `{needle}`)"
+        );
+    }
+    assert!(
+        doc.contains("| Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |"),
+        "the page's goal table does not point at the Upgrade section"
+    );
+}
+
 /// The MCP tool table must list every tool the server registers.
 ///
 /// `docs/mcp.md`'s table listed seven; the server registers eleven. The three
@@ -3809,7 +4067,8 @@ fn no_documentation_table_repeats_a_row() {
     // kamailio, kamailio-sipnab) under docs/ and their four generated site
     // pages.
     // 257 -> 258: docs/threat-model.md (wiki only, no site page).
-    const EXPECTED_MARKDOWN_FILES: usize = 258;
+    // 258 -> 259: docs/assurance-case.md (wiki only, no site page).
+    const EXPECTED_MARKDOWN_FILES: usize = 259;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4282,7 +4541,20 @@ fn no_documentation_table_repeats_a_row() {
     // runtime-library table went (its two rows became a paragraph), and two
     // came: "Other ways in" under Install, and "Where to read next". The
     // README has no site mirror, so each costs one.
-    const EXPECTED_TABLES: usize = 1038;
+    // 1038 -> 1040: the vendored-files tables. Measured against HEAD: with
+    // HEAD's CONTRIBUTING.md the count is 1039 ("Updating vendored files"),
+    // and with HEAD's THIRD-PARTY-NOTICES.md it is 1039 (its "Vendored files"
+    // section). Neither page has a site mirror, so each costs one.
+    // 1038 -> 1041: docs/assurance-case.md (the principles table and the CWE
+    // Top 25 table) and the Silver table in docs/design/openssf-badge-answers.md.
+    // 1038 -> 1039: the Gold-level table in
+    // docs/design/openssf-badge-answers.md (code_review_standards,
+    // require_2FA, secure_2FA). Measured: with HEAD's copy of that file the
+    // count is 1038, and no other changed file adds a table.
+    // Combined PR (upgrade docs + assurance case + code review/2FA): 1038 on
+    // main -> 1044 measured, the six tables the three commits' comments above
+    // attribute (2 + 3 + 1).
+    const EXPECTED_TABLES: usize = 1044;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

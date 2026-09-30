@@ -144,6 +144,31 @@ attacker-controlled bytes, which is the reason the coverage is this wide.
 languages. Safe Rust makes this N/A in the badge's terms, though the fuzz
 targets cover the same ground.
 
+## Silver level
+
+Answers prepared for Silver criteria as each is met. A row here cites its
+evidence the same way the passing rows above do.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| `assurance_case` | Met | [`docs/assurance-case.md`](https://github.com/NormB/sipnab/blob/main/docs/assurance-case.md) argues that each Saltzer and Schroeder principle (plus limited attack surface and allowlist input validation) was applied, and gives every entry of the 2025 CWE Top 25 a verdict with the code behind it. The threat model and trust boundaries it rests on are in [`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md). Rows marked "partially" name the gap |
+
+## Gold level
+
+The gold level adds criteria beyond passing. Three of them are answered by
+policy text, and a test holds each text in place.
+
+| Criterion | Answer | Evidence |
+|---|---|---|
+| `code_review_standards` | Met | The [Code review](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#code-review) section of [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) says who reviews (the maintainer, through [`.github/CODEOWNERS`](https://github.com/NormB/sipnab/blob/main/.github/CODEOWNERS)), how (pull requests only, against the pull request template checklist), what is checked, and what a change needs to merge: the required `CI success` and `license/cla` checks, signed commits and resolved conversations. Each is a branch protection setting on `main`. `contributing_md_states_the_code_review_requirements` in [`tests/security_policy_doc_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/security_policy_doc_test.rs) fails if the section stops naming the checks that [`tests/branch_protection_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/branch_protection_drift_test.rs) declares |
+| `require_2FA` | Met | The [Getting commit access](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md#getting-commit-access) section of [`MAINTAINERS.md`](https://github.com/NormB/sipnab/blob/main/MAINTAINERS.md) requires two-factor authentication for anyone with write or admin access, or with access to the project's credentials and private vulnerability reports. `maintainers_md_requires_two_factor_authentication_without_sms` holds it |
+| `secure_2FA` | Met | The same section accepts only an authenticator app (TOTP) or a hardware security key or passkey, and says SMS is not accepted. The same test holds it |
+
+One maintainer means the maintainer's own changes get self-review plus the
+automated gates, and [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) says so. When a second maintainer
+joins, one approving review from someone other than the author becomes
+required.
+
 ## Done
 
 Registered and submitted at project

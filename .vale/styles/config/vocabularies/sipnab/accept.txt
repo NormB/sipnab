@@ -1,5 +1,7 @@
 [Bb]itrate
 [Bb]itrates
+[Dd]ereference
+[Dd]eserialization
 [Dd]iotic
 [Ff]ullband
 [Mm]onotic
@@ -23,6 +25,7 @@ allocs
 allowlist
 allowlist_len
 allowlisted
+allowlists
 ANDed
 ANDs
 api
@@ -534,12 +537,14 @@ rustdoc
 Rustdoc
 rustfmt
 rustls
+Saltzer
 samply
 sandboxed
 sanitization
 SBCs
 SBOMs
 schema_version
+Schroeder
 scrapable
 scriptable
 scrollable

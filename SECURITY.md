@@ -82,6 +82,12 @@ all: the `crates-io` job in `release.yml` uses crates.io trusted publishing,
 exchanging the job's short-lived OpenID Connect identity for an upload token
 that crates.io revokes when the job ends.
 
+Every account that can change these secrets, or sign in to the services they
+unlock, must have two-factor authentication turned on, with an authenticator
+app or a hardware security key rather than SMS.
+[MAINTAINERS.md](MAINTAINERS.md#getting-commit-access) states the rule and how
+the maintainer checks it.
+
 ## Code scanning
 
 `main` carries no open code-scanning alerts. CodeQL analyzes every pull

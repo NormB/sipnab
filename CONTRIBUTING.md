@@ -421,6 +421,44 @@ cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
 cargo deny check
 ```
 
+### Updating vendored files
+
+A few files come from other projects' releases, copied into the repository
+rather than fetched by a package manager. Dependabot and `cargo audit` do not
+see them, so nothing tells you when a new version comes out. Each one has a row in
+the "Vendored files" table of
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) naming its version, where
+it came from, its license and its SHA-256.
+
+| File | What it is | Where a new version comes from |
+|---|---|---|
+| [`website/static/js/mermaid.min.js`](website/static/js/mermaid.min.js) | Mermaid, which draws the site's diagrams | `dist/mermaid.min.js` in the `mermaid` package on the `npm` registry |
+| [`website/static/js/scalar.min.js`](website/static/js/scalar.min.js) | Scalar, which renders the REST API reference | `dist/browser/standalone.js` in the `@scalar/api-reference` package on the `npm` registry |
+| [`tests/schemas/publisher/vcon_json_schema.json`](tests/schemas/publisher/vcon_json_schema.json) | The vCon working group's JSON schema, a test fixture | `vcon_json_schema.json` at a commit of [draft-ietf-vcon-vcon-core](https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core) |
+
+To update one:
+
+1. Download the new release and copy the file over the old one unchanged. For
+   a package on the `npm` registry, `npm pack <package>@<version>` downloads the release
+   tarball without installing anything.
+2. In `VENDORED` in
+   [`scripts/build-third-party-notices.py`](scripts/build-third-party-notices.py),
+   change the file's version and SHA-256. `sha256sum <file>` prints the new
+   hash.
+3. Regenerate the notices with
+   `python3 scripts/build-third-party-notices.py` and commit both files.
+4. For the vCon schema, also change `VCON_PUBLISHER_COMMIT` and
+   `VCON_PUBLISHER_SHA256` in
+   [`tests/json_schema_test.rs`](tests/json_schema_test.rs). A test there then
+   checks that sipnab's own `tests/schemas/vcon.schema.json` still differs from
+   the new file only where it documents a deviation.
+
+`every_vendored_file_is_recorded_with_its_version` in
+[`tests/docs_drift_test.rs`](tests/docs_drift_test.rs) fails when a file's
+hash is not the one recorded, or a script's recorded version is not the one
+the script itself contains. A new minified script under `website/static/js/`
+also fails it until it has a row.
+
 ## Commit Messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) format:
@@ -449,6 +487,87 @@ test: add pcap round-trip tests for IPv6
 4. Add or update tests for new functionality.
 5. Update documentation if you add or change CLI flags or config keys.
 6. Describe the "why" in the PR body, not just the "what".
+
+## Code review
+
+A reviewer reads every change to `main` before it merges. This section says
+who reviews it, how, what the review checks, and what a change needs before it
+can merge. Where a setting or a file enforces a rule rather than a person, the
+rule names it.
+
+### Who reviews
+
+The maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) reviews every pull
+request. [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns the whole tree
+(`*  @NormB`), so GitHub requests that review automatically when a pull request
+opens.
+
+sipnab has one maintainer today, so nobody else can review changes the
+maintainer writes. Those changes go through the same pull request, the same
+checklist and the same required checks as a contribution from anyone, and the
+maintainer reviews the diff before merging. Branch protection on `main` therefore requires zero approving
+reviews: requiring one would block every change the only maintainer makes.
+When a second maintainer joins (see
+[Getting commit access](MAINTAINERS.md#getting-commit-access)), the
+requirement becomes one approving review from someone other than the author.
+
+### How a review works
+
+- **Through a pull request only.** Branch protection on `main` requires a pull
+  request and applies to administrators too, so nobody pushes to `main`
+  directly. `tests/branch_protection_drift_test.rs` fails if that setting and
+  this documentation disagree.
+- **Against the checklist.** The reviewer works through the checklist in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) and
+  the points below.
+- **In the pull request's conversation.** Questions and requested changes go
+  in review comments. Branch protection requires every conversation to be
+  resolved before the pull request merges. A new push dismisses an earlier
+  approval, so an approval always covers the code that merges.
+
+### What the reviewer checks
+
+- **Correctness, with tests.** The change does what its description says, and
+  it comes with a test that fails without the change and passes with it.
+- **Documentation.** The change updates the docs for any new or changed flag,
+  config key or behavior, as [Documentation](#documentation) describes.
+- **Security impact.** The reviewer asks which trust boundary in the
+  [threat model](docs/threat-model.md) the change touches, such as capture
+  input, HEP senders, API clients or plugins, and whether it weakens the
+  checks listed there. A change that moves a boundary updates that page.
+- **Dependencies.** A new or updated crate meets the rules in
+  [Dependencies](#dependencies). `cargo deny check` enforces some of them, and
+  the reviewer checks the rest.
+- **No secrets and no private names.** Nothing in the diff is a token, a
+  password, or a private hostname, address or path. The repository has
+  GitHub secret scanning with push protection turned on, and
+  `tests/private_identity_test.rs` enforces the rules in
+  [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network).
+- **Public claims match the code.** Anything the change says in the README,
+  the site or the docs is true of the code as merged.
+- **A changelog entry.** A user-visible change adds an entry under
+  `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+- **The contributor agreement.** Everyone who committed to the branch has
+  signed the [CLA](#contributor-license-agreement).
+
+### What a change needs before it can merge
+
+A pull request is acceptable when all of these hold:
+
+1. **The required checks are green.** Branch protection on `main` requires
+   `CI success` and `license/cla`, and requires the branch to be up to date
+   with `main` before it merges. `CI success` passes only when every CI job it
+   depends on passes. `license/cla` passes when everyone who committed to the
+   branch has signed the CLA.
+2. **Every commit carries a signature.** Branch protection on `main` requires signed
+   commits, so GitHub refuses a merge that contains an unsigned or unverified
+   one.
+3. **No review conversation stays open.** Branch protection blocks the merge
+   until someone marks each one resolved.
+4. **The reviewer agrees** that the change meets the pull request template
+   checklist and the points under
+   [What the reviewer checks](#what-the-reviewer-checks). The template checklist is where the contributor says so; the reviewer
+   confirms it.
 
 ## Reporting Bugs
 

@@ -8,7 +8,9 @@ about where to add their own.
 
 [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) says how
 to report a vulnerability and which classes of bug count as one. This page is
-the analysis behind that list.
+the analysis behind that list. The [assurance case](assurance-case.md) builds
+on it: it argues that sipnab applies secure design principles and walks the
+CWE Top 25 weaknesses one by one.
 
 ## Terms used on this page
 

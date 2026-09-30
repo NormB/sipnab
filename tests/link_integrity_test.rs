@@ -1096,7 +1096,16 @@ fn wiki_intra_docs_links_resolve() {
     // HEAD's docs/mcp-tools.md (1187 with it): rtp_stats's relay paragraph
     // links reconcile_orphans, media_diagnostics, explain_attribution and
     // export_audio, and each of those three links back to rtp_stats.
-    const EXPECTED_WIKI_LINKS: usize = 1194;
+    // 1187 -> 1192: docs/install.md's Upgrade section, measured against HEAD
+    // (with HEAD's install.md the count is 1187). The goal-table row to it,
+    // and four links from it to the sections each route repeats: the tarball
+    // download, the package-manager section twice, and live capture without
+    // root.
+    // 1187 -> 1210: docs/assurance-case.md adds 21 (nine same-page anchors,
+    // twelve into the threat model, fault model and auth pages), and
+    // docs/threat-model.md and docs/README.md each gain one link to it.
+    // Combined PR: 1194 on main -> 1222 measured = +5 (install.md Upgrade section) +23 (assurance-case.md 21, threat-model.md 1, docs/README.md 1).
+    const EXPECTED_WIKI_LINKS: usize = 1222;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1205,7 +1214,14 @@ fn root_community_file_links_resolve() {
     // the OpenSIPS/Kamailio/Homer HEP guides, REST, Prometheus, MCP and MCP
     // deployment), adds a security section (auth, API TLS, threat model), and
     // links the CLA and Dependencies sections of CONTRIBUTING.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 72;
+    // 72 -> 73: CONTRIBUTING.md's "Updating vendored files" links
+    // THIRD-PARTY-NOTICES.md, where each vendored file's version is recorded.
+    // Measured against HEAD: with HEAD's CONTRIBUTING.md the count is 72.
+    // 72 -> 84, attributed per file against HEAD: CONTRIBUTING.md +10 (the
+    // links in its new Code review section), MAINTAINERS.md +1 (Code review in CONTRIBUTING.md) and
+    // SECURITY.md +1 (the 2FA rule in MAINTAINERS.md).
+    // Combined PR: 72 on main -> 85 measured = +1 (upgrade docs: CONTRIBUTING.md -> THIRD-PARTY-NOTICES.md) +12 (code review and 2FA: 10 CONTRIBUTING, 1 MAINTAINERS, 1 SECURITY).
+    const EXPECTED_COMMUNITY_LINKS: usize = 85;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2295,7 +2311,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // 65 -> 69: docs/opensips.md, docs/opensips-sipnab.md, docs/kamailio.md
     // and docs/kamailio-sipnab.md.
     // 69 -> 70: docs/threat-model.md.
-    const EXPECTED_DOCS_PAGES: usize = 70;
+    // 70 -> 71: docs/assurance-case.md.
+    const EXPECTED_DOCS_PAGES: usize = 71;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

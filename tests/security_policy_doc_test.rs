@@ -8,6 +8,13 @@
 //! - VM-06.01: `SECURITY.md` states the code-scanning policy, and the gate that
 //!   enforces it (`code-scanning-clean`) still feeds the required `CI success`.
 //! - GV-04.01: `MAINTAINERS.md` says how someone is given escalated access.
+//! - OpenSSF Gold `code_review_standards`: `CONTRIBUTING.md` says who reviews a
+//!   change, how, what is checked, and what makes it acceptable, naming the
+//!   required checks exactly as `tests/branch_protection_drift_test.rs`
+//!   declares them.
+//! - OpenSSF Gold `require_2FA` and `secure_2FA`: `MAINTAINERS.md` requires
+//!   two-factor authentication for write access and credentials, and does not
+//!   accept SMS as the second factor.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -107,4 +114,73 @@ fn maintainers_md_says_how_escalated_access_is_granted() {
             "MAINTAINERS.md's access section must mention {needle:?}"
         );
     }
+}
+
+/// The value of `const {name}: &str = "...";` in the branch-protection drift
+/// test. That file is the one place the required checks are declared, and it
+/// compares them with the live API; an integration test cannot import another
+/// test's constants, so this reads the declaration rather than copying it.
+fn drift_test_constant(name: &str) -> String {
+    let src = read("tests/branch_protection_drift_test.rs");
+    let marker = format!("const {name}: &str = \"");
+    let start = src
+        .find(&marker)
+        .unwrap_or_else(|| panic!("branch_protection_drift_test.rs no longer declares {name}"))
+        + marker.len();
+    let end = src[start..].find('"').expect("unterminated constant") + start;
+    src[start..end].to_string()
+}
+
+#[test]
+fn contributing_md_states_the_code_review_requirements() {
+    let doc = read("CONTRIBUTING.md");
+    let text = section(&doc, "CONTRIBUTING.md", "Code review")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let status = drift_test_constant("DECLARED_STATUS_CHECK");
+    let cla = drift_test_constant("DECLARED_CLA_CHECK");
+    assert!(
+        !status.is_empty() && !cla.is_empty(),
+        "the reader of the drift test's constants broke"
+    );
+    for needle in [
+        format!("`{status}`"),
+        format!("`{cla}`"),
+        "CODEOWNERS".to_string(),
+        "signed".to_string(),
+        "CLA".to_string(),
+        "resolved".to_string(),
+        "threat-model.md".to_string(),
+        "PULL_REQUEST_TEMPLATE.md".to_string(),
+    ] {
+        assert!(
+            text.contains(&needle),
+            "CONTRIBUTING.md's code review section must mention {needle:?}"
+        );
+    }
+}
+
+#[test]
+fn maintainers_md_requires_two_factor_authentication_without_sms() {
+    let doc = read("MAINTAINERS.md");
+    // Prose wraps at any word, so compare with every run of whitespace as one space.
+    let text = section(&doc, "MAINTAINERS.md", "Getting commit access")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for needle in [
+        "two-factor authentication",
+        "authenticator app",
+        "security key",
+    ] {
+        assert!(
+            text.contains(needle),
+            "MAINTAINERS.md's access section must require {needle:?}"
+        );
+    }
+    assert!(
+        text.contains("SMS is not accepted"),
+        "MAINTAINERS.md's access section must say SMS is not an accepted second factor"
+    );
 }

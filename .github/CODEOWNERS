@@ -1,7 +1,8 @@
 # Code owners for sipnab.
-# These owners are automatically requested for review on PRs that touch
-# matching paths, and (with "Require review from Code Owners" enabled on the
-# protected branch) their approval is required before merge.
+# GitHub automatically requests the listed owner's review on every pull
+# request that touches a matching path. This is a review request, not a merge
+# requirement: while sipnab has one maintainer, branch protection on main does
+# not require code-owner approval (see MAINTAINERS.md).
 #
 # Syntax: https://docs.github.com/articles/about-code-owners
 
