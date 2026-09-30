@@ -1227,7 +1227,15 @@ fn root_community_file_links_resolve() {
     // links in its new Code review section), MAINTAINERS.md +1 (Code review in CONTRIBUTING.md) and
     // SECURITY.md +1 (the 2FA rule in MAINTAINERS.md).
     // Combined PR: 72 on main -> 85 measured = +1 (upgrade docs: CONTRIBUTING.md -> THIRD-PARTY-NOTICES.md) +12 (code review and 2FA: 10 CONTRIBUTING, 1 MAINTAINERS, 1 SECURITY).
-    const EXPECTED_COMMUNITY_LINKS: usize = 85;
+    // 72 -> 98: ROADMAP.md joins ROOT_FILES (24 relative .md links, all in
+    // ROADMAP.md), and README.md's Contributing section and MAINTAINERS.md's
+    // "What that means for you" each gain one link to it (72 -> 74 measured
+    // before ROADMAP.md was listed, 98 after).
+    // 98 -> 99: ROADMAP.md's badge paragraph links MAINTAINERS.md.
+    // 85 -> 112 with ROADMAP.md: 24 relative .md links in it, one more to
+    // MAINTAINERS.md from its badge paragraph, and one each from README.md and
+    // MAINTAINERS.md to it (+27, the same delta measured on the older base).
+    const EXPECTED_COMMUNITY_LINKS: usize = 112;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -1235,6 +1243,7 @@ fn root_community_file_links_resolve() {
         "CONTRIBUTING.md",
         "SECURITY.md",
         "CODE_OF_CONDUCT.md",
+        "ROADMAP.md",
     ];
     let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap();
     let mut problems = Vec::new();

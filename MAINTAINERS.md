@@ -24,6 +24,9 @@ has to satisfy. Two things save the most time on both sides:
 - Run the suite before pushing. The pre-commit hook runs the same gates CI does,
   so a green local run is usually a green pull request.
 
+[ROADMAP.md](ROADMAP.md) states where the project is going over the next year,
+and what it does not intend to do. Check it before proposing something large.
+
 ## The contributor agreement
 
 [CLA Assistant](https://cla-assistant.io/NormB/sipnab) runs the signing flow, and

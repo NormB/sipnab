@@ -4068,7 +4068,8 @@ fn no_documentation_table_repeats_a_row() {
     // pages.
     // 257 -> 258: docs/threat-model.md (wiki only, no site page).
     // 258 -> 259: docs/assurance-case.md (wiki only, no site page).
-    const EXPECTED_MARKDOWN_FILES: usize = 259;
+    // 259 -> 260: ROADMAP.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 260;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
