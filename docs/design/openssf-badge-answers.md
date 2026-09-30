@@ -4,8 +4,8 @@
 [13931](https://www.bestpractices.dev/projects/13931) — the badge is live in
 [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) and linked from the sipnab.com home page.
 
-The same project holds **OpenSSF Baseline level 2**, achieved 2026-09-30
-(level 1 earlier the same day). The Baseline answers are submitted on
+The same project holds **OpenSSF Baseline level 3**, the top level, achieved
+2026-09-30 (levels 1 and 2 earlier the same day). The Baseline answers are submitted on
 bestpractices.dev; the evidence they cite is
 [`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md) (SA-03.01),
 the [Dependencies section of [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md)](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#dependencies)
@@ -155,8 +155,10 @@ The badge markup is live in [`README.md`](https://github.com/NormB/sipnab/blob/m
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/13931/baseline)](https://www.bestpractices.dev/projects/13931)
 ```
 
-The Baseline image tracks the level live, so it read 1 and now reads 2 with
-no markup change.
+The Baseline image tracks the level live, so it read 1, then 2, and now 3 with
+no markup change. The sipnab.com home page cannot load it (its CSP allows only
+its own images), so it carries one text link naming both the passing badge and
+Baseline 3 instead.
 
 and linked (as a CSP-safe inline pill rather than the badge image, since the
 site's `img-src 'self'` policy blocks an externally-hosted SVG) from the

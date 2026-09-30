@@ -291,9 +291,10 @@ fn the_badge_is_registered_and_wired_consistently() {
 }
 
 /// The same project also holds the OpenSSF Baseline badge: level 1 achieved
-/// 2026-09-30T02:03Z and level 2 at 11:55Z the same day (bestpractices.dev
-/// project JSON, `achieved_baseline_1_at` and `achieved_baseline_2_at`; the
-/// badge image reads "openssf baseline v2026.08.28: 2"). The README carries
+/// 2026-09-30T02:03Z, level 2 at 11:55Z and level 3, the top level, at
+/// 14:38:52Z the same day (bestpractices.dev project JSON,
+/// `achieved_baseline_3_at`; the badge image reads "openssf baseline
+/// v2026.08.28: 3"). The README carries
 /// the badge image, which follows the live level by itself; the home page
 /// carries a text link for the same `img-src 'self'` reason as the Best
 /// Practices badge above, and that text does not follow anything. It said
@@ -312,16 +313,24 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() {
     );
 
     assert!(
-        sheet().contains("OpenSSF Baseline level 2"),
+        sheet().contains("OpenSSF Baseline level 3"),
         "the answer sheet must record the Baseline level the project holds"
     );
 
     let homepage = read("website/templates/index.html");
     assert!(
-        homepage.contains("OpenSSF Baseline — Level 2")
-            && !homepage.contains("OpenSSF Baseline — Level 1"),
-        "the home page must name the Baseline level the project holds, in a \
-         text link beside the Best Practices one"
+        homepage.contains("OpenSSF Best Practices — Passing · Baseline 3")
+            && !homepage.contains("Level 1")
+            && !homepage.contains("Level 2"),
+        "the home page must name both levels the project holds in its one \
+         OpenSSF link: Passing, and Baseline 3 (which includes 1 and 2)"
+    );
+    // One project, one link. Separate pills for the passing badge and each
+    // Baseline level all pointed at the same page and said the same thing.
+    assert_eq!(
+        homepage.matches(&format!("href=\"{PROJECT_URL}\"")).count(),
+        1,
+        "the home page must link the bestpractices.dev project exactly once"
     );
     assert!(
         !homepage.contains(&format!("{PROJECT_URL}/baseline")),
