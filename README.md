@@ -366,6 +366,8 @@ once, and a pull request cannot merge until the `license/cla` check passes.
 If your change adds a dependency,
 read [Dependencies](CONTRIBUTING.md#dependencies) first. This project follows
 the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+[ROADMAP.md](ROADMAP.md) says what we intend to work on over the next year,
+and what we have decided not to build.
 
 ## Security
 
