@@ -18,8 +18,8 @@
 # Why: every published binary is stripped, so a crash report or a core dump
 # from a user names no functions. The symbols come from the SAME compile as the
 # binary and are matched to it by the GNU build ID (ELF) or the Mach-O UUID.
-# A rebuild later does not reproduce them byte for byte, so they are published
-# with the release or they are gone.
+# A rebuild reproduces them only with the release's exact toolchain (see
+# scripts/reproducible-build.sh), so they are published with the release.
 #
 # Why rustflags and not `profile.release.strip = false`: cargo hashes the
 # profile into every crate's `-C metadata`, which reseeds symbol hashes and

@@ -205,23 +205,31 @@ fn cargo_config(target: &str) -> std::process::Output {
 /// own dsymutil run, and on the first CI run it produced no `.dSYM` at all.
 #[test]
 fn the_build_keeps_the_symbols_the_split_needs() {
+    // Both build steps build through scripts/reproducible-build.sh, the one
+    // place the release build command lives, so the flags are asserted there.
     for step in ["Build (native)", "Build (cross)"] {
         let script = step_script(step);
         assert!(
-            script.contains(
-                "RUSTFLAGS=\"${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags"
-            ),
-            "{step} must append split-debuginfo.sh --rustflags to RUSTFLAGS; \
-             without it the linker strips the symbols before the split can \
-             keep them:\n{script}"
+            script.contains("bash scripts/reproducible-build.sh build"),
+            "{step} must build through scripts/reproducible-build.sh:\n{script}"
         );
     }
+    let build = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/reproducible-build.sh"),
+    )
+    .expect("read scripts/reproducible-build.sh");
+    assert!(
+        build.contains("split-debuginfo.sh\" --rustflags \"$target\")")
+            && build.contains("export RUSTFLAGS=\"${RUSTFLAGS:+$RUSTFLAGS }$split"),
+        "the build must append split-debuginfo.sh --rustflags to RUSTFLAGS; \
+         without it the linker strips the symbols before the split can keep \
+         them"
+    );
     // cross ALSO passes --config: whether it forwards RUSTFLAGS into its
     // container is its choice, and --config reaches cargo either way.
     assert!(
-        step_script("Build (cross)")
-            .contains("--config \"$(bash scripts/split-debuginfo.sh --cargo-config"),
-        "Build (cross) must also pass --cargo-config"
+        build.contains("split-debuginfo.sh\" --cargo-config \"$target\")"),
+        "the cross build must also pass --cargo-config"
     );
     let mut seen = BTreeSet::new();
     for (target, _) in matrix() {
@@ -838,6 +846,13 @@ fn build_step_rustflags(
     let w = dir.path();
     std::fs::create_dir_all(w.join("scripts")).unwrap();
     std::fs::copy(dbgsym::script(), w.join("scripts/split-debuginfo.sh")).unwrap();
+    // The release's build steps build through this script, which appends the
+    // split's flags; see tests/reproducible_build_test.rs for the rest of it.
+    std::fs::copy(
+        repo().join("scripts/reproducible-build.sh"),
+        w.join("scripts/reproducible-build.sh"),
+    )
+    .unwrap();
     let bin = w.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let rec = w.join("seen");
@@ -865,6 +880,10 @@ fn build_step_rustflags(
         .current_dir(w)
         .env("PATH", path)
         .env("TARGET", target)
+        .env("FEATURES", "native")
+        // The temp dir is no git checkout, so the commit time the build
+        // script would read is given instead.
+        .env("SOURCE_DATE_EPOCH", "1")
         .env("RUSTFLAGS", ambient)
         .output()
         .unwrap();

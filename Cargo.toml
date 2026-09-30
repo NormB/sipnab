@@ -52,6 +52,7 @@ include = [
   "!/src/bin/gen_fixture.rs",
   "/build.rs",
   "/build_script/git_triggers.rs",
+  "/build_script/bpf_flags.rs",
   "/Cargo.toml",
   "/Cargo.lock",
   "/README.md",

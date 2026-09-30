@@ -364,8 +364,12 @@ jobs:
             exit 1
           fi
 
-          rustup toolchain install nightly --profile minimal --component rust-src
-          rustup component add rust-src --toolchain nightly
+          # The DATED nightly bpf/rust-toolchain.toml pins, with the rust-src
+          # component it lists: run in bpf/, `rustup toolchain install` with no
+          # name installs the toolchain that file selects. Never a bare
+          # `nightly`: the eBPF object is embedded in the binary, and a floating
+          # nightly would make every release impossible to rebuild bit for bit.
+          (cd bpf && rustup toolchain install --profile minimal && rustc --version)
 
           # zstd is how the upstream tarball is compressed; bookworm's tar needs
           # the binary present for `--zstd`.
@@ -394,17 +398,19 @@ jobs:
           rm -f "$tarball" bpf-linker
           bpf-linker --version
 
+      # Both build steps go through scripts/reproducible-build.sh, the one place
+      # the release build command lives. It appends the symbol-split flags
+      # (split-debuginfo.sh --rustflags, and --cargo-config for cross, whose
+      # forwarding of RUSTFLAGS into its container is its own choice) and the
+      # path remaps that make the binary reproducible, and builds --locked.
+      # reproducible.yml builds the same way twice and compares the bytes.
       - name: Build (cross)
         if: matrix.cross
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        # The split flags go in RUSTFLAGS AND in --config: whether cross
-        # forwards RUSTFLAGS into its container is its choice, and a set
-        # RUSTFLAGS replaces --config's build.rustflags, so passing both gets
-        # the flags to cargo either way.
-        run: |
-          RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags ${{ matrix.target }})" \
-            cross build --release --config "$(bash scripts/split-debuginfo.sh --cargo-config ${{ matrix.target }})" --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ steps.features.outputs.features }}
+        run: bash scripts/reproducible-build.sh build "$TARGET" "$FEATURES" cross
 
       # SIPNAB_BPF_REQUIRED=1 turns build.rs's degrading default into a hard
       # error. Without it, a runner missing bpf-linker or nightly would embed an
@@ -425,9 +431,9 @@ jobs:
         if: '!matrix.cross'
         env:
           SIPNAB_BPF_REQUIRED: ${{ steps.features.outputs.bpf_required }}
-        run: |
-          RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags ${{ matrix.target }})" \
-            cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+          TARGET: ${{ matrix.target }}
+          FEATURES: ${{ steps.features.outputs.features }}
+        run: bash scripts/reproducible-build.sh build "$TARGET" "$FEATURES"
 
       - name: Build audio plugin (cross)
         if: matrix.cross && steps.features.outputs.audio_plugin == 'yes'
@@ -441,9 +447,9 @@ jobs:
       #
       # A crash report from a user holds frame addresses and a build ID, and a
       # stripped binary cannot turn either into a function name. The symbols
-      # exist only in THIS compile: a rebuild later is not byte-identical, so
-      # its symbols would describe a different binary. So the build above kept
-      # them, and this step moves them into sipnab-<version>-<target>.debug
+      # come from THIS compile. A rebuild reproduces them only with this job's
+      # exact toolchain (scripts/reproducible-build.sh), which nobody reading a
+      # crash report should need. So the build above kept them, and this step moves them into sipnab-<version>-<target>.debug
       # (Linux, paired by GNU build ID) or .dSYM.zip (macOS, paired by Mach-O
       # UUID) in dist/, and strips the Linux binary in place. Every step after
       # this one sees the stripped binary, which is what ships. The script

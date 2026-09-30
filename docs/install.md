@@ -616,6 +616,71 @@ grype "sbom:sipnab-$VERSION.cdx.json"      # or trivy sbom, osv-scanner, ...
 The binary SBOM covers all features, so it is a superset of
 what any single published binary contains — it never under-reports.
 
+### Rebuild a release and compare it
+
+A checksum and an attestation say where a binary came from. A rebuild says
+what it contains: the `sipnab` binary in each Linux gnu tarball is
+reproducible, so building the release's tag yourself gives the same bytes.
+Compare the binary, not the tarball or a package: those carry file times.
+The audio plugin beside the binary is not covered yet. This applies to
+releases built after reproducible builds landed. [`CHANGELOG.md`](https://github.com/NormB/sipnab/blob/main/CHANGELOG.md) names the
+first one.
+
+You need a git checkout of the tag, not a source tarball: the binary embeds
+the commit hash and the tag, and a tarball has neither. You also need the
+same toolchain the release used. For the gnu targets, that is the
+`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.98.1, the eBPF
+nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names, and bpf-linker 0.11.0. The release
+job's log shows each version it used.
+
+1. Check out the tag and install the pinned eBPF nightly:
+
+   ```bash
+   # Run all of these, in order.
+   git clone https://github.com/NormB/sipnab && cd sipnab
+   git checkout "v$VERSION"
+   (cd bpf && rustup toolchain install)
+   ```
+
+2. Build the way the release does, with the feature set the release gives
+   that target (`full,bpf` for the gnu tarballs):
+
+   ```bash
+   SIPNAB_BPF_REQUIRED=1 bash scripts/reproducible-build.sh build x86_64-unknown-linux-gnu full,bpf
+   ```
+
+3. Strip it the way the release does. The binary carries the symbol file's
+   name, so use the release's name for it:
+
+   ```bash
+   bash scripts/split-debuginfo.sh target/x86_64-unknown-linux-gnu/release/sipnab \
+       "sipnab-$VERSION-x86_64-unknown-linux-gnu"
+   ```
+
+4. Compare it with the binary from the release tarball:
+
+   ```bash
+   bash scripts/reproducible-build.sh compare \
+       target/x86_64-unknown-linux-gnu/release/sipnab "sipnab-$VERSION-x86_64-unknown-linux-gnu/sipnab"
+   ```
+
+   `identical` and a sha256 means the bytes match. Otherwise the script prints
+   both hashes, where the files first differ, and the strings that differ.
+   The usual cause is a different toolchain rather than a different source.
+
+To check that the project's own build repeats, without a published binary to
+compare against, `check` builds a commit or tag twice in two directories and
+compares the two:
+
+```bash
+SIPNAB_BPF_REQUIRED=1 bash scripts/reproducible-build.sh check \
+    x86_64-unknown-linux-gnu full,bpf /tmp/sipnab-repro "v$VERSION"
+```
+
+The project runs that check weekly.
+[Reproducible builds](internals/build-ci-release.md#reproducible-builds) says
+what it covers and what a rebuild must hold fixed.
+
 ## Capture live traffic without root
 
 Reading a pcap file needs no special permissions at all. Live capture

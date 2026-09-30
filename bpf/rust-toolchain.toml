@@ -1,5 +1,12 @@
 # The kernel half needs nightly for `-Z build-std`; sipnab itself does not and
 # pins 1.98.1. Scoped to this directory so it cannot leak into a host build.
+#
+# A DATED nightly, not `nightly`: the object this builds is embedded in the
+# release binary, and a bare `nightly` is a different compiler every day, so a
+# release could not be rebuilt bit for bit. build.rs runs this channel and the
+# release installs it (`rustup toolchain install` in this directory). Move it
+# deliberately, together with bpf-linker: the linker reads this nightly's LLVM
+# bitcode (2026-08-10 is LLVM 23.1, which bpf-linker 0.11 wants).
 [toolchain]
-channel = "nightly"
+channel = "nightly-2026-08-10"
 components = ["rust-src"]

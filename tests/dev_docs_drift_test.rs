@@ -801,6 +801,10 @@ fn linked_code_targets_exist() {
     // 473 -> 474: build-ci-release.md's new "Branch coverage" section links
     // `scripts/branch-coverage.py`, which reads the weekly job's JSON summary.
     // Attributed by measurement: with HEAD's page the count is 473.
+    // 473 -> 479: six, all in build-ci-release.md's "Reproducible builds"
+    // section: `scripts/reproducible-build.sh`, `build_script/bpf_flags.rs`,
+    // `bpf/Cargo.toml`, `bpf/sipnab-bpf-types` and `bpf/rust-toolchain.toml`
+    // twice. Attributed by measurement: with HEAD's page the count is 473.
     const EXPECTED_CODE_LINKS: usize = 474;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
@@ -1658,9 +1662,9 @@ fn every_site_operator_page_is_in_the_docs_nav_list() {
 /// half until `scorecard.yml` became the ninth.
 #[test]
 fn workflow_inventory_heading_counts_the_workflows() {
-    const WORDS: [&str; 16] = [
+    const WORDS: [&str; 17] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-        "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
     ];
     let dir = repo().join(".github/workflows");
     let mut names: Vec<String> = std::fs::read_dir(&dir)

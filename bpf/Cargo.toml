@@ -17,13 +17,24 @@ description = "eBPF programs that pair TLS plaintext with the socket it went out
 repository = "https://github.com/NormB/sipnab"
 publish = false
 
-# Empty on purpose: this makes the package its own workspace root rather than a
-# member of sipnab's.
+# This makes the package its own workspace root rather than a member of
+# sipnab's.
+#
+# `sipnab-bpf-types` is reached through the symlink `bpf/sipnab-bpf-types`
+# (to `../crates/sipnab-bpf-types`) rather than by `../crates/...` directly,
+# and excluded here so it stays a member of sipnab's workspace. The reason is
+# reproducibility: cargo hashes a path dependency OUTSIDE the workspace root
+# into its `-C metadata` by ABSOLUTE path, that hash is in every mangled symbol
+# of this object, and the object is embedded in the release binary. Measured
+# 2026-09-30: two builds of one commit in two directories differed in
+# `_RNvCs..._10sipnab_bpf15try_tcp_sendmsg` and nothing else once the paths
+# were remapped. Inside the root, cargo hashes the path relative to it.
 [workspace]
+exclude = ["sipnab-bpf-types"]
 
 [dependencies]
 aya-ebpf = "0.1.1"
-sipnab-bpf-types = { path = "../crates/sipnab-bpf-types" }
+sipnab-bpf-types = { path = "sipnab-bpf-types" }
 
 [[bin]]
 name = "sipnab-bpf"

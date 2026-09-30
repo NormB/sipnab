@@ -176,6 +176,7 @@ fn the_full_workflow_set_is_accounted_for() {
         "pages.yml",
         "quality.yml",
         "release.yml",
+        "reproducible.yml",
         "sanitizers.yml",
         "scorecard.yml",
         "self-hosted-smoke.yml",
