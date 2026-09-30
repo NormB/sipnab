@@ -86,10 +86,10 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +3 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +3 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +87 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +88 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
-| `--output` | `-O` | `FILE` | Capture | e2e | `tests/archive_password_prompt_test.rs`, `tests/batch_run_paths_test.rs` +9 |  |  |
+| `--output` | `-O` | `FILE` | Capture | e2e | `tests/archive_password_prompt_test.rs`, `tests/batch_run_paths_test.rs` +10 |  |  |
 | `--buffer` | `-B` | `MIB` | Capture | parsed | `src/cli.rs` |  |  |
 | `--buffer-budget` |  | `MIB` | Capture | parsed | `src/cli.rs` |  |  |
 | `--snaplen` |  | `BYTES` | Capture | e2e | `tests/cli_options_test.rs` |  |  |
@@ -117,7 +117,7 @@ behind them.
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +87 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +88 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +3 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
@@ -146,7 +146,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +2 | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +18 |  |  |
+| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +19 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +1 |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +26 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
@@ -271,8 +271,8 @@ behind them.
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--api-revoked-file` |  | `FILE` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
 | `--api-token-ttl` |  | `SECS` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
-| `--api-tls-cert` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | tls_flags_fail_fast_and_do_not_serve. NOTE: what is proven is that TLS is unimplemented and fails closed |
-| `--api-tls-key` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | same test. The XOR consistency check that stops one-flag-alone serving plaintext has NO test |
+| `--api-tls-cert` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | tls_flags_serve_https: HTTPS /health 200 with a CA-issued cert; plain HTTP to the port not served; an untrusting client fails the handshake; one_tls_flag_alone_fails_fast_naming_it; a_missing_tls_file_fails_fast_naming_it; unit api_tls_refuses_* cover no-certificate, mismatch and missing-file |
+| `--api-tls-key` |  | `FILE` | Network listeners | e2e | `tests/api_test.rs` | **behavior** | same tests; unit api_tls_refuses_a_world_readable_key and api_tls_refuses_a_key_file_with_no_private_key; one_tls_flag_alone_fails_fast_naming_it covers the key without the cert |
 | `--api-max-conn` |  | `N` | Network listeners | e2e | `tests/api_test.rs` | **parse-only** | DoS BOUND. Asserts the server still serves with the flag set; the 503 saturation path is untested |
 | `--metrics-max-conn` |  | `N` | Network listeners | referenced | `src/cli.rs` | **parse-only** | DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not |
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
@@ -343,13 +343,13 @@ behind them.
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
 | `--tls-key` | `-k` | `FILE` | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
-| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +2 |  |  |
+| `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decrypted_export_test.rs` +3 |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | parsed | `src/cli.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
 | `--tls-lockon-window` |  | `RECORDS` | TLS / Decryption | parsed | `tests/cli_defaults_test.rs` |  |  |
 | `--dtls-keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/decryption_wrapper_matrix_test.rs` | **behavior** | DECRYPTION MATERIAL. Split proof: parse -> extract -> an SRTP packet decrypts. The file-load hop is untested |
 | `--srtp-keys` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` | **behavior** | DECRYPTION MATERIAL. Key-file parsing and decryption both tested, with a wrong-key negative. The file-load hop is untested |
-| `--pcap-export-mode` |  | `MODE` | TLS / Decryption | e2e | `tests/review_regressions_test.rs` | **parse-only** | Three tests assert the string->enum mapping. No test writes a file in two modes and compares |
+| `--pcap-export-mode` |  | `MODE` | TLS / Decryption | e2e | `tests/cli_flag_behavior_test.rs`, `tests/decrypted_export_test.rs` +1 | **parse-only** | Three tests assert the string->enum mapping. No test writes a file in two modes and compares |
 | `--allow-coredump` |  |  | TLS / Decryption | e2e | `tests/archive_password_test.rs`, `tests/cli_options_test.rs` | **parse-only** | SAFETY SWITCH. Its smoke test runs on a capture with NO key material, so the code it guards never executes either way |
 | `--uprobe-tls` |  |  | TLS / Decryption | parsed | `tests/uprobe_cli_test.rs` |  |  |
 | `--uprobe-library` |  | `PATH` | TLS / Decryption | parsed | `tests/uprobe_cli_test.rs` |  |  |
@@ -371,7 +371,7 @@ behind them.
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +12 |  |  |
-| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +10 |  |  |
+| `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +11 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +2 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |

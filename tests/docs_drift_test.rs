@@ -33,6 +33,13 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section:
+    // how a client trusts the CA behind `--api-tls-cert`. curl's flag, not
+    // sipnab's.
+    (
+        "cacert",
+        &["docs/rest-api.md", "website/content/docs/api.md"],
+    ),
     // `llvm-symbolizer --obj` and `dwarfdump --uuid`, named by the
     // troubleshooting page's "Send us a crash report", which shows how to
     // resolve a report's frames against the published symbol file.

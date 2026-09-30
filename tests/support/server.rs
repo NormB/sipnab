@@ -10,9 +10,9 @@
 //! the port, and the server's own coverage profile is written.
 //!
 //! A raw socket client (rather than `reqwest`) is deliberate: it matches the
-//! existing `mcp_http_test`, needs no TLS backend (API HTTPS is unimplemented —
-//! see `tls_flags_fail_fast_and_do_not_serve`), and avoids dragging
-//! aws-lc-rs/quinn into the test build.
+//! existing `mcp_http_test`, needs no TLS backend, and avoids dragging
+//! aws-lc-rs/quinn into the test build. The HTTPS tests in `api_test.rs`
+//! bring their own small rustls client and use [`ApiServer::spawn_unsettled`].
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -69,6 +69,10 @@ pub struct ApiServer {
     child: Child,
     /// `host:port` the server actually bound to.
     pub addr: String,
+    /// Everything the server logged up to and including its "REST API
+    /// listening on" line: what it said about its own configuration at
+    /// startup (the non-loopback warning, for one).
+    pub startup_log: String,
 }
 
 impl ApiServer {
@@ -85,6 +89,29 @@ impl ApiServer {
     /// it is already absolute, so a caller that generated a capture into a
     /// tempdir can point at it without inventing a second spawn.
     pub fn spawn_with_pcap(pcap_rel: &str, extra_args: &[&str]) -> ApiServer {
+        let srv = Self::launch(pcap_rel, "127.0.0.1:0", extra_args);
+        srv.settle(extra_args);
+        srv
+    }
+
+    /// Spawn and wait only for the "REST API listening on" line, without the
+    /// plain-HTTP readiness poll [`Self::spawn`] runs afterwards.
+    ///
+    /// For a server started with `--api-tls-cert`/`--api-tls-key`: its port
+    /// speaks TLS, so the plain-HTTP `/v1/stats` poll would get no status line
+    /// and panic. The caller drives the server with its own HTTPS client.
+    pub fn spawn_unsettled(extra_args: &[&str]) -> ApiServer {
+        Self::spawn_unsettled_on("127.0.0.1:0", extra_args)
+    }
+
+    /// [`Self::spawn_unsettled`] with `--api <bind>` rather than
+    /// `127.0.0.1:0`, for the tests about what a non-loopback bind logs.
+    pub fn spawn_unsettled_on(bind: &str, extra_args: &[&str]) -> ApiServer {
+        Self::launch("tests/fixtures/sip_call.pcap", bind, extra_args)
+    }
+
+    /// Start the child and wait for its "REST API listening on" line.
+    fn launch(pcap_rel: &str, bind: &str, extra_args: &[&str]) -> ApiServer {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let pcap = if std::path::Path::new(pcap_rel).is_absolute() {
             pcap_rel.to_string()
@@ -93,7 +120,7 @@ impl ApiServer {
         };
 
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
-        cmd.args(["-N", "-I", &pcap, "--api", "127.0.0.1:0", "--quiet"]);
+        cmd.args(["-N", "-I", &pcap, "--api", bind, "--quiet"]);
         cmd.args(extra_args);
         // --quiet sets the default level to warn; force info so the
         // "REST API listening on" line (which carries the bound port) appears.
@@ -117,9 +144,12 @@ impl ApiServer {
         let start = Instant::now();
         let deadline = start + budget;
         let mut addr = None;
+        let mut startup_log = String::new();
         while Instant::now() < deadline {
             match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(line) => {
+                    startup_log.push_str(&line);
+                    startup_log.push('\n');
                     if let Some(rest) = line.split("REST API listening on ").nth(1) {
                         addr = Some(rest.trim().to_string());
                         break;
@@ -179,6 +209,15 @@ impl ApiServer {
             );
         });
 
+        ApiServer {
+            child,
+            addr,
+            startup_log,
+        }
+    }
+
+    /// Wait until the capture behind a freshly spawned server has settled.
+    fn settle(&self, extra_args: &[&str]) {
         // The API serves *concurrently* with offline-pcap processing, so a bound
         // socket does NOT mean the dialog/stream store is fully populated (a real
         // race that flakes under load). Poll /v1/stats until it STABILIZES — two
@@ -205,9 +244,7 @@ impl ApiServer {
                 sipnab::auth::SCOPE_FULL,
             ));
         }
-        let srv = ApiServer { child, addr };
-        srv.await_stable(bearer.as_deref());
-        srv
+        self.await_stable(bearer.as_deref());
     }
 
     /// Poll `/v1/stats` until two consecutive reads are identical and

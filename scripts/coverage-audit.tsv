@@ -62,8 +62,8 @@
 --api-key	behavior	auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes
 --api-signing-key	behavior	seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope
 --api-revoked-file	behavior	revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens
---api-tls-cert	behavior	tls_flags_fail_fast_and_do_not_serve. NOTE: what is proven is that TLS is unimplemented and fails closed
---api-tls-key	behavior	same test. The XOR consistency check that stops one-flag-alone serving plaintext has NO test
+--api-tls-cert	behavior	tls_flags_serve_https: HTTPS /health 200 with a CA-issued cert; plain HTTP to the port not served; an untrusting client fails the handshake; one_tls_flag_alone_fails_fast_naming_it; a_missing_tls_file_fails_fast_naming_it; unit api_tls_refuses_* cover no-certificate, mismatch and missing-file
+--api-tls-key	behavior	same tests; unit api_tls_refuses_a_world_readable_key and api_tls_refuses_a_key_file_with_no_private_key; one_tls_flag_alone_fails_fast_naming_it covers the key without the cert
 --api-max-conn	parse-only	DoS BOUND. Asserts the server still serves with the flag set; the 503 saturation path is untested
 --metrics-max-conn	parse-only	DoS BOUND (SN-02). Resolver precedence tested, ConnGate tested, the join between them is not
 --api-max-rows	parse-only	Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not

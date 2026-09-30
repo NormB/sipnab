@@ -39,7 +39,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | r-efi | MIT OR Apache-2.0 OR LGPL-2.1-or-later | **Apache-2.0** |
 | termina | MIT OR MPL-2.0 | **MIT** |
 
-## Rust crates (411)
+## Rust crates (412)
 
 | Crate | Version | License |
 |---|---|---|
@@ -363,6 +363,7 @@ These offer a copyleft option alongside permissive ones. sipnab elects the permi
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.53.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
+| tokio-rustls | 0.26.4 | MIT OR Apache-2.0 |
 | tokio-stream | 0.1.18 | MIT |
 | tokio-util | 0.7.18 | MIT |
 | toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 |

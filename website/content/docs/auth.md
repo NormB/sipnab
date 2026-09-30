@@ -252,8 +252,8 @@ rotated naturally already. Long-TTL tokens are the ones to check.
 - Static secrets carry no audience. If you set the same static
   `--api-key` and `--mcp-token`, that one secret opens both surfaces. Audience
   binding applies to signed tokens only.
-- TLS for the REST API is **not yet built in**. `--api-tls-cert` and
-  `--api-tls-key` exist as flags, and passing both makes sipnab refuse to
-  start — the listener errors out rather than quietly serving plaintext on a
-  port whose flags promised otherwise. Terminate TLS at a reverse proxy for
-  non-loopback deployments.
+- Anyone on the path can read a bearer credential sent over plain HTTP. For a non-loopback deployment, serve the REST API over HTTPS with
+  `--api-tls-cert` and `--api-tls-key`, or terminate TLS at a reverse proxy
+  in front of a loopback bind. Passing only one of the two flags stops
+  sipnab at startup rather than serving plain HTTP on a port meant for HTTPS.
+  See [API TLS](@/docs/api.md#api-tls).

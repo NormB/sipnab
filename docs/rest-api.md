@@ -265,10 +265,59 @@ with no `--metrics-auth` / `--metrics-auth-file` refuses to start.
 
 ## API TLS
 
-Direct TLS termination on the API endpoint is **not yet implemented** —
-supplying `--api-tls-cert`/`--api-tls-key` makes sipnab refuse to start
-with an explanatory error. Terminate TLS in a reverse proxy (nginx,
-Caddy, HAProxy) in front of a loopback-bound API instead:
+Give sipnab a certificate and its private key, and the REST API serves
+HTTPS instead of plain HTTP on the `--api` port:
+
+```bash
+sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
+  --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key
+```
+
+A client then trusts the CA that issued the certificate. With curl:
+
+```bash
+curl --cacert /etc/sipnab/ca.pem -H "Authorization: Bearer secret" https://capture.example.net:8443/v1/dialogs
+```
+
+- `--api-tls-cert` is a PEM certificate chain, the server's own certificate
+  first. `--api-tls-key` is its PEM private key (`PRIVATE KEY`,
+  `RSA PRIVATE KEY` or `EC PRIVATE KEY`).
+- The port speaks HTTPS only. A plain-HTTP request to it fails the TLS
+  handshake and is not served.
+- TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN
+  (application-layer protocol negotiation) and does not offer HTTP/2.
+- No client certificates. Clients authenticate with the bearer credential,
+  as over plain HTTP.
+
+sipnab checks both files at startup and refuses to start, naming the file,
+when:
+
+- you pass only one of the two flags (sipnab refuses to serve plain HTTP on
+  a port you meant for HTTPS)
+- sipnab cannot read either file
+- the certificate file holds no certificate, or the key file no private key
+- any other user on the host can read the key file (`chmod 600` it;
+  group-readable stays allowed, for a `root:sipnab 0640` service account)
+- the key does not belong to the certificate
+
+A client that fails its handshake, or connects and sends nothing, does not
+affect anyone else: each handshake runs on its own, gets 10 seconds to
+finish, and at most 256 run at once. sipnab closes a connection that
+arrives while 256 handshakes are in progress straight away. `--api-max-conn` applies over
+HTTPS as it does over plain HTTP.
+
+A non-loopback `--api` bind still needs `--api-key` or `--api-signing-key`,
+with or without TLS. Without TLS, sipnab also logs a warning that the bind
+is non-loopback and plain HTTP. With TLS it does not.
+
+sipnab reads the certificate once, at startup. To pick up a renewed
+certificate, restart sipnab.
+
+### Terminating TLS in a reverse proxy instead
+
+A reverse proxy (nginx, Caddy, HAProxy) in front of a loopback-bound API
+remains a good choice when the proxy already manages certificates for the
+host, for example with automatic renewal:
 
 ```bash
 sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
@@ -277,7 +326,7 @@ sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
 
 ## Bind address & connection limits
 
-The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only behind a token and a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
+The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). All network listeners bind to loopback by default. Bind a routable address (e.g. `0.0.0.0:8080`) only with a token, and with TLS: either [`--api-tls-cert`/`--api-tls-key`](#api-tls) or a reverse proxy. Data endpoints use a `/v1/` prefix, and utility endpoints (`/health`, `/metrics`) have none.
 
 `--api-max-conn` (default `100`) caps concurrent API connections to prevent resource exhaustion. The API refuses a request body larger than 1 MiB (`MAX_REQUEST_BODY_BYTES`) with HTTP 413 on every route that reads one: `POST /v1/persistence`, `POST /v1/tfps/ban`, `POST /v1/tfps/unban`, `POST /v1/actions/revert` and `POST /v1/vcon/validate`. A body that is merely malformed is a 400, so the two answers stay distinct. Requests are additionally rate-limited to 100 per second per source IP. Requests rejected by the rate limiter or connection cap return **`503 Service Unavailable`** (not 429).
 
@@ -3474,7 +3523,7 @@ Full end-to-end clients (bearer auth, pagination, `/metrics` scraping, error han
 - Rate limiting on every guarded endpoint (100 RPS per source IP by default). Two exceptions worth knowing: `/health` sits outside the guard entirely — no auth, no rate limit — and `--api-rate-limit-per-peer 0` turns the cap off altogether
 - Bearer token authentication required on every REST endpoint except `/health` — `/metrics` on the `--api` server sits on the same guarded router and takes the same credential (the *standalone* `--metrics` server is the one that uses HTTP Basic instead)
 - Constant-time key comparison prevents timing attacks
-- TLS not terminated in-process. Run behind a reverse proxy (see [API TLS](#api-tls))
+- HTTPS in-process with `--api-tls-cert` and `--api-tls-key`, or behind a reverse proxy (see [API TLS](#api-tls))
 - Connection limits prevent resource exhaustion
 
 > **Note:** The API runs as a thread in the sipnab process, sharing the in-memory dialog/stream stores read-only. It never touches capture file descriptors or TLS key material, and exposes only dialog/stream metadata — but it is not a separate OS process. Treat the API bind address and key accordingly.

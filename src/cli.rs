@@ -2731,11 +2731,13 @@ pub struct ListenerArgs {
     )]
     pub api_token_ttl: i64,
 
-    /// TLS certificate for API endpoint.
+    /// Serve the REST API over HTTPS with this certificate chain (PEM, leaf
+    /// first). Needs --api-tls-key. TLS 1.2 and 1.3; ALPN http/1.1.
     #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
     pub api_tls_cert: Option<String>,
 
-    /// TLS private key for API endpoint.
+    /// Private key (PEM) for --api-tls-cert. Refused when any other user can
+    /// read it: chmod 600.
     #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
     pub api_tls_key: Option<String>,
 
@@ -4194,6 +4196,35 @@ impl FromToModeArg {
             Self::UserHostPort => "user-host-port",
         }
     }
+}
+
+/// Why an `--api-tls-cert` / `--api-tls-key` pair is incomplete, or `None`
+/// when both or neither were given.
+///
+/// One rule for the two places that check it: startup validation, which runs
+/// whether or not this build has the `api` feature, and the API listener
+/// itself, which a library caller reaches without the CLI. Either half alone
+/// is refused rather than ignored, because ignoring it would serve plain HTTP
+/// on a port the operator meant for HTTPS.
+///
+/// # Arguments
+///
+/// * `cert` — `--api-tls-cert`, if given.
+/// * `key` — `--api-tls-key`, if given.
+///
+/// # Returns
+///
+/// The refusal, naming the file that was given and the flag that was not.
+pub fn api_tls_pair_problem(cert: Option<&str>, key: Option<&str>) -> Option<String> {
+    let (given_flag, file, missing) = match (cert, key) {
+        (Some(file), None) => ("--api-tls-cert", file, "--api-tls-key"),
+        (None, Some(file)) => ("--api-tls-key", file, "--api-tls-cert"),
+        _ => return None,
+    };
+    Some(format!(
+        "{given_flag} {file} was given without {missing}: HTTPS needs both, and \
+         sipnab will not serve plain HTTP on a port meant for HTTPS"
+    ))
 }
 
 /// `DO, gb,,do` → `["DO", "GB"]`: one rule for the flag and the config key.

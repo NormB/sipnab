@@ -194,6 +194,12 @@ opus-decoder = "0.1"
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
+# HTTPS for the REST API (`--api-tls-cert` / `--api-tls-key`): the async
+# TLS stream the API's listener hands axum. Already in Cargo.lock (through
+# reqwest, a dev-dependency); promoted to a direct dep under `api`. Default
+# features OFF because they select aws-lc-rs; `ring` matches the rustls line
+# above, so one crypto provider serves every TLS surface.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
 # OpenAPI 3.1 document for the REST surface, derived from the handlers rather
 # than written beside them. `docs/rest-api.md` is the prose reference and stays
 # hand-written; this is the machine-readable contract the website's Scalar page
@@ -320,7 +326,9 @@ hep = ["native", "dep:hmac", "dep:sha2", "dep:rustls", "dep:base64"]
 # so it is independent of the `api` feature). Needs base64 for Basic-auth.
 metrics = ["native", "dep:base64"]
 audio = ["dep:libloading", "dep:libc"]
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa"]
+# `rustls` and `tokio-rustls` are HTTPS for the API (`--api-tls-cert`). Not
+# `tls`: that feature is capture-side decryption and would drag rsa/aes/cbc in.
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
