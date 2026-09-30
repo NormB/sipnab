@@ -3603,7 +3603,7 @@ impl BatchRunner {
                                     && let Err(e) =
                                         w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                                 {
-                                    tracing::warn!("Failed to write DSB: {e}");
+                                    tracing::warn!("Failed to write DSB: {e:#}");
                                 }
                                 // Embed a Name Resolution Block when name resolution is active
                                 // (SNB-0001): headless `--names`/`--resolve` should travel with
@@ -3616,7 +3616,7 @@ impl BatchRunner {
                                         let entries = resolver.nrb_entries(include_dns);
                                         if let Err(e) = w.write_name_resolution_block(&entries) {
                                             tracing::warn!(
-                                                "Failed to write name resolution block: {e}"
+                                                "Failed to write name resolution block: {e:#}"
                                             );
                                         }
                                     }
@@ -3624,7 +3624,13 @@ impl BatchRunner {
                                 writer = Some(w);
                             }
                             Err(e) => {
-                                tracing::error!("Failed to open output file: {e}");
+                                tracing::error!(
+                                    "{}",
+                                    crate::capture::writer::describe_output_error(
+                                        &e,
+                                        crate::privilege::dropped_to()
+                                    )
+                                );
                                 crate::capture::archive::release_run_and_exit(1);
                             }
                         }
@@ -3646,7 +3652,13 @@ impl BatchRunner {
                         && let Some(ref mut w) = writer
                         && let Err(e) = w.write(&packet)
                     {
-                        tracing::error!("Failed to write packet: {e}");
+                        tracing::error!(
+                            "Failed to write packet: {}",
+                            crate::capture::writer::describe_output_error(
+                                &e,
+                                crate::privilege::dropped_to()
+                            )
+                        );
                         // Failing to OPEN the output exits 1 a few lines above; failing
                         // to WRITE it used to exit 0, so `sipnab -O out.pcap && process
                         // out.pcap` proceeded on a truncated capture.
@@ -3812,7 +3824,13 @@ impl BatchRunner {
             if let (Some(x), Some(w)) = (decrypted_export.as_mut(), writer.as_mut()) {
                 for frame in x.ready() {
                     if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
-                        tracing::error!("Failed to write packet: {e}");
+                        tracing::error!(
+                            "Failed to write packet: {}",
+                            crate::capture::writer::describe_output_error(
+                                &e,
+                                crate::privilege::dropped_to()
+                            )
+                        );
                         output_failed = true;
                         break;
                     }
@@ -3912,7 +3930,13 @@ impl BatchRunner {
             } else if let Some(ref mut w) = writer {
                 for frame in x.finish() {
                     if let Err(e) = capture::decrypted_export::write_frame(w, &frame) {
-                        tracing::error!("Failed to write packet: {e}");
+                        tracing::error!(
+                            "Failed to write packet: {}",
+                            crate::capture::writer::describe_output_error(
+                                &e,
+                                crate::privilege::dropped_to()
+                            )
+                        );
                         output_failed = true;
                         break;
                     }
@@ -3927,7 +3951,7 @@ impl BatchRunner {
         if let Some(ref mut w) = writer
             && let Err(e) = w.finish()
         {
-            tracing::error!("Output file may be incomplete: {e}");
+            tracing::error!("Output file may be incomplete: {e:#}");
             output_failed = true;
         }
 

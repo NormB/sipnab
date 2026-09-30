@@ -17,6 +17,26 @@
 
 use anyhow::{Result, bail};
 
+/// The account sipnab drops to when neither `--user` nor `[privilege] user`
+/// names one. The one place this default lives: the drop itself and the
+/// kill worker's `run_as` both read it.
+pub const DEFAULT_DROP_USER: &str = "nobody";
+
+/// The user this process dropped privileges to, set once by a drop that
+/// succeeded. Empty when no drop happened (`--no-priv-drop`, not root, or the
+/// macOS skip), so a report can tell "we shed root" from "we never had it".
+static DROPPED_TO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// The user a successful [`drop_privileges`] switched this process to, or
+/// `None` when no drop happened.
+///
+/// Read by the output-file error reports: a file created after the drop is
+/// created by THIS user, and a permission failure is only explainable by
+/// naming it.
+pub fn dropped_to() -> Option<&'static str> {
+    DROPPED_TO.get().map(String::as_str)
+}
+
 /// Drop privileges to an unprivileged user after capture devices are opened.
 ///
 /// When `no_priv_drop` is `true`, privilege dropping is skipped entirely
@@ -63,7 +83,7 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
         return Ok(());
     }
 
-    let user = target_user.unwrap_or("nobody");
+    let user = target_user.unwrap_or(DEFAULT_DROP_USER);
 
     // Resolve user to UID/GID
     let (uid, gid) = resolve_user(user)?;
@@ -89,6 +109,11 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
 
     // Verify we actually dropped
     verify_dropped(uid, gid)?;
+
+    // Recorded only after the verification, so `dropped_to()` never names a
+    // user the process is not actually running as. A second drop in one
+    // process (none exists today) keeps the first name: `set` is first-wins.
+    let _ = DROPPED_TO.set(user.to_string());
 
     Ok(())
 }
@@ -871,6 +896,20 @@ mod tests {
     fn non_root_skips_privilege_drop() {
         // When not root, drop_privileges is a no-op
         assert!(drop_privileges(None, false).is_ok());
+    }
+
+    /// A drop that did not happen records no user, so an output-file error
+    /// never blames a privilege drop that never ran. The recording side needs
+    /// root to reach (`set_uid`); a non-root test process cannot drive it.
+    #[test]
+    fn a_skipped_drop_records_no_user() {
+        if is_root() {
+            eprintln!("skipped: running as root, a drop would really happen");
+            return;
+        }
+        assert!(drop_privileges(None, true).is_ok());
+        assert!(drop_privileges(Some("nobody"), false).is_ok());
+        assert_eq!(dropped_to(), None);
     }
 
     /// `nobody` resolves to a non-zero uid or gid on Linux and macOS.

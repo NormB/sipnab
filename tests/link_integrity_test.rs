@@ -1089,7 +1089,10 @@ fn wiki_intra_docs_links_resolve() {
     // 1182 -> 1185, measured after rebasing onto the API HTTPS change: the
     // MCP bundle docs link the [mcp] config section and
     // the bundle table from the CLI and config references.
-    const EXPECTED_WIKI_LINKS: usize = 1185;
+    // 1185 -> 1187: the output-file privilege-drop fix links the new
+    // troubleshooting section from its symptom table, and the `-O` row in the
+    // CLI reference links the note on the drop user under the split section.
+    const EXPECTED_WIKI_LINKS: usize = 1187;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
