@@ -68,6 +68,14 @@ and the parts that matter to a contributor are:
 - `CHANGELOG.md` accumulates under `## [Unreleased]` between releases. Adding an
   entry with your change is part of the change.
 
+## Getting commit access
+
+Write or admin access to this repository goes only to contributors with a
+record of reviewed pull requests merged here. The maintainer grants it after
+reviewing that record, and records every grant, with its scope, in the table
+at the top of MAINTAINERS.md in the same change that grants it. The maintainer
+removes access the same way when it is no longer needed.
+
 ## Succession
 
 There is none, and that is worth stating plainly. If this project matters to your

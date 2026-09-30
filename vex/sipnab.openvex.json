@@ -1,0 +1,34 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
+  "author": "sipnab maintainers <n.brandinger@gmail.com>",
+  "role": "Project maintainer",
+  "timestamp": "2026-09-30T12:30:00Z",
+  "version": 1,
+  "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "RUSTSEC-2023-0071",
+        "aliases": [
+          "CVE-2023-49092",
+          "GHSA-c827-hfw6-qwvm"
+        ],
+        "description": "rsa crate \"Marvin Attack\": timing side channel in RSA PKCS#1 v1.5 decryption"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/sipnab",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/rsa@0.9.10"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
+      "impact_statement": "The Marvin Attack is an online chosen-ciphertext oracle: it needs a service that decrypts attacker-supplied RSA ciphertexts and leaks decryption timing back to the attacker. sipnab uses the rsa crate only under the optional `tls` feature, to decrypt offline the pre-master secret of an already-captured TLS 1.2 handshake with an operator-supplied key (`--tls-key`). No network-facing decryption oracle exists, nothing an attacker supplies is decrypted on demand, and no decryption timing is returned to anyone. No fixed rsa release exists as of 0.9.x. Re-evaluate if sipnab ever grows an online decryption path."
+    }
+  ]
+}

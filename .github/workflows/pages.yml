@@ -36,13 +36,11 @@ on:
       - 'yang/**'
   workflow_dispatch:
 
-# Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin;
-# actions:read lets the csp job download the deployed pages artifact.
+# Read-only for every job. The write scopes live on the one job that deploys
+# (OpenSSF Baseline AC-04.02), and actions:read on the csp job that downloads
+# the deployed pages artifact.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-  actions: read
 
 # One concurrent deploy; let an in-progress run finish to avoid half-published state.
 concurrency:
@@ -210,6 +208,11 @@ jobs:
     timeout-minutes: 25
     needs: build
     runs-on: ubuntu-latest
+    # Deploy to Pages and prove the deployment origin with an OIDC token.
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       # Whichever attempt promoted carries the URL; the first is empty when it
@@ -249,6 +252,10 @@ jobs:
     timeout-minutes: 20
     needs: deploy
     runs-on: ubuntu-latest
+    # Downloads the deployed pages artifact.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

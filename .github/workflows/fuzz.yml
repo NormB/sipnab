@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       max_total_time:
-        description: "Seconds to run each target"
+        description: "Seconds to run each target (a positive whole number)"
         required: false
         default: "300"
 
@@ -70,6 +70,13 @@ jobs:
           MAX_TOTAL_TIME: ${{ github.event.inputs.max_total_time || '300' }}
         shell: bash
         run: |
+          # max_total_time is collaborator input (workflow_dispatch). Accept a
+          # positive whole number of seconds and nothing else: libFuzzer reads
+          # 0 as "no limit", and anything non-numeric is a typo.
+          if ! [[ "$MAX_TOTAL_TIME" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max_total_time must be a positive whole number of seconds, got '$MAX_TOTAL_TIME'"
+            exit 1
+          fi
           # The target's parser name (bin without the fuzz_ prefix) is the
           # tracked seed-corpus dir; pass it so hand-authored seeds prime
           # the run. Missing dir is fine — cargo-fuzz just skips it.

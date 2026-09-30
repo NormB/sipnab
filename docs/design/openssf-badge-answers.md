@@ -4,6 +4,13 @@
 [13931](https://www.bestpractices.dev/projects/13931) — the badge is live in
 [`README.md`](https://github.com/NormB/sipnab/blob/main/README.md) and linked from the sipnab.com home page.
 
+The same project holds **OpenSSF Baseline level 2**, achieved 2026-09-30
+(level 1 earlier the same day). The Baseline answers are submitted on
+bestpractices.dev; the evidence they cite is
+[`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md) (SA-03.01),
+the [Dependencies section of [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md)](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md#dependencies)
+(DO-06.01), and the required `license/cla` check on `main` (LE-01.01).
+
 The badge is a self-certification questionnaire at
 [bestpractices.dev](https://www.bestpractices.dev/). Submission requires signing
 in as the project owner, so this page was the prepared answer sheet used for
@@ -145,7 +152,11 @@ The badge markup is live in [`README.md`](https://github.com/NormB/sipnab/blob/m
 
 ```markdown
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13931/badge)](https://www.bestpractices.dev/projects/13931)
+[![OpenSSF Baseline](https://www.bestpractices.dev/projects/13931/baseline)](https://www.bestpractices.dev/projects/13931)
 ```
+
+The Baseline image tracks the level live, so it read 1 and now reads 2 with
+no markup change.
 
 and linked (as a CSP-safe inline pill rather than the badge image, since the
 site's `img-src 'self'` policy blocks an externally-hosted SVG) from the
