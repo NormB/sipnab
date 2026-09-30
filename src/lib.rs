@@ -357,6 +357,7 @@ pub use error::{CaptureError, Error, ParseError};
 pub mod clock;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod mcp_profile;
 pub mod mermaid;
 #[cfg(feature = "native")]
 pub mod output;

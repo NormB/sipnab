@@ -2902,7 +2902,7 @@ sipnab -D --no-config
 **Pitfalls:**
 
 - `-D` dumps the **effective** configuration, which includes values that came from a file you did not name. Add `--no-config` to see the flags alone.
-- A config file is per host. The tool set an MCP server registers is per client. That is why `--mcp-tools` has an ordinary flag default and the row caps do not.
+- A config file is per host, and the tool set an MCP server registers is usually per client. Set the host default in `[mcp] tools` and give each client its own list with `--mcp-tools`, which replaces the config list rather than adding to it.
 
 ---
 

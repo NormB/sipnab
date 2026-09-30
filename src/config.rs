@@ -43,6 +43,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "actions",
             "action_limits",
             "journal",
+            "mcp",
         ]
         .as_slice(),
     );
@@ -217,10 +218,12 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "api_max_rows",
             "api_rate_limit_per_peer",
             "max_tracked_peers",
+            "max_capture_sources",
             "metrics_max_conn",
         ]
         .as_slice(),
     );
+    m.insert("mcp", ["tools", "output_schemas", "bundles"].as_slice());
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
     m.insert(
         "names",
@@ -389,6 +392,28 @@ pub struct Config {
     /// Where the actions journal lives -- see [`JournalConfig`].
     #[serde(default)]
     pub journal: JournalConfig,
+    /// The MCP server's tool surface -- see [`McpConfig`].
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// `[mcp]`: which tools the MCP server registers, and whether it advertises
+/// output schemas.
+///
+/// `tools` and `bundles` names are checked when sipnab starts, against the
+/// built-in bundles and tool names, and an unknown one refuses the run.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct McpConfig {
+    /// Bundles, tool names and `[mcp.bundles]` names to register. Absent:
+    /// `full`. `--mcp-tools` replaces the list.
+    pub tools: Option<Vec<String>>,
+    /// Send each tool's output schema on `tools/list`. Absent: off.
+    /// `--mcp-output-schemas` overrides it.
+    pub output_schemas: Option<bool>,
+    /// `[mcp.bundles]`: a name for a list of tool and built-in bundle names,
+    /// usable in `tools` and `--mcp-tools`.
+    pub bundles: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// `[actions]`: what may change another system, per target, as a list of the
@@ -1549,6 +1574,14 @@ pub struct LimitsConfig {
     /// fail-closed direction is deliberate; how many peers a deployment has
     /// is not something sipnab can know.
     pub max_tracked_peers: Option<u64>,
+    /// Distinct capture sources the process remembers by name (default:
+    /// 65536): each input file, capture device, HEP sender and traced
+    /// process packets come from. Every packet points back to its source by
+    /// that name, so a full table means packets from a NEW source carry no
+    /// such pointer (counted in `sipnab_capture_sources_refused_total`).
+    /// Must hold every source the run can have: startup refuses a value below
+    /// the inputs plus, with `--hep-listen`, `max_tracked_peers`.
+    pub max_capture_sources: Option<u64>,
 }
 
 impl LimitsConfig {
@@ -1764,6 +1797,16 @@ impl LimitsConfig {
                 "[limits] metrics_max_conn must be > 0 (0 refuses every scrape \
                  and the /metrics endpoint answers 503 forever; to serve no \
                  metrics, drop --metrics)"
+                    .into(),
+            ));
+        }
+        // 0 would leave no room for even the one capture a run reads, so
+        // every packet would lose its pointer back to where it came from.
+        if let Some(0) = self.max_capture_sources {
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_capture_sources must be >= 1 (it must hold every \
+                 capture source a run reads: input files, devices, HEP senders, \
+                 traced processes)"
                     .into(),
             ));
         }
@@ -3188,6 +3231,61 @@ column_selector = "F10"
     }
 
     #[test]
+    fn the_mcp_section_parses_and_its_keys_are_known() {
+        let text = "[mcp]\ntools = [\"core\", \"voice\"]\noutput_schemas = true\n\n\
+                    [mcp.bundles]\nvoice = [\"media\", \"rtp_stats\"]\n";
+        assert_eq!(
+            Config::unknown_keys(text).expect("parses"),
+            Vec::<String>::new()
+        );
+        let c: Config = toml::from_str(text).expect("deserializes");
+        assert_eq!(
+            c.mcp.tools,
+            Some(vec!["core".to_string(), "voice".to_string()])
+        );
+        assert_eq!(c.mcp.output_schemas, Some(true));
+        assert_eq!(
+            c.mcp.bundles.get("voice"),
+            Some(&vec!["media".to_string(), "rtp_stats".to_string()])
+        );
+        assert_eq!(
+            Config::unknown_keys("[mcp]\ntool = [\"core\"]\n").expect("parses"),
+            vec!["mcp.tool".to_string()],
+            "a misspelled key is reported"
+        );
+    }
+
+    #[test]
+    fn max_capture_sources_is_a_known_key_and_zero_is_refused() {
+        assert!(
+            Config::unknown_keys("[limits]\nmax_capture_sources = 5000\n")
+                .expect("scan")
+                .is_empty(),
+            "max_capture_sources must be registered, or every user of it is warned"
+        );
+        let ok: Config = toml::from_str("[limits]\nmax_capture_sources = 1\n").expect("parses");
+        assert!(
+            ok.limits.validate().is_ok(),
+            "1 is the smallest valid value"
+        );
+        assert_eq!(ok.limits.max_capture_sources, Some(1));
+        let zero: Config = toml::from_str("[limits]\nmax_capture_sources = 0\n").expect("parses");
+        let err = zero.limits.validate().expect_err("0 must be rejected");
+        assert!(
+            err.to_string().contains("max_capture_sources"),
+            "error must name the key: {err}"
+        );
+        assert!(
+            toml::from_str::<Config>("[limits]\nmax_capture_sources = -1\n").is_err(),
+            "a negative value is refused when the file is read"
+        );
+        assert!(
+            toml::from_str::<Config>("[limits]\nmax_capture_sources = \"many\"\n").is_err(),
+            "a string is refused when the file is read"
+        );
+    }
+
+    #[test]
     fn limits_valid_values() {
         let limits = LimitsConfig {
             dialog_limit: Some(50000),
@@ -3218,6 +3316,7 @@ column_selector = "F10"
             api_rate_limit_per_peer: Some(100),
             max_tracked_peers: Some(4096),
             metrics_max_conn: Some(16),
+            max_capture_sources: None,
         };
         assert!(limits.validate().is_ok());
     }

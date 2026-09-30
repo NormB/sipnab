@@ -301,7 +301,8 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// The most distinct capture-source names the process interns.
+/// The default for `[limits] max_capture_sources` / `--max-capture-sources`:
+/// the most distinct capture sources the process remembers by name.
 ///
 /// Each distinct name is leaked once, which is what lets a frame pointer be
 /// `Copy`. The names are a capture file's path, a device, a HEP sender
@@ -311,7 +312,7 @@ thread_local! {
 /// sources themselves are unbounded, a long run of short-lived processes under
 /// uprobe capture for one. Past it, a packet from a NEW source carries no frame
 /// pointer, and that is counted; nothing more is leaked.
-pub const MAX_INTERNED_SOURCES: usize = 65_536;
+pub const DEFAULT_MAX_CAPTURE_SOURCES: usize = 65_536;
 
 /// Every distinct source name, interned once for the life of the process.
 #[derive(Debug)]
@@ -358,19 +359,58 @@ impl SourceInterner {
     pub(crate) fn refused(&self) -> u64 {
         self.refused
     }
+    /// Change the cap. Names already held stay; the cap decides only what
+    /// may be added from now on.
+    pub(crate) fn set_cap(&mut self, cap: usize) {
+        self.cap = cap;
+    }
+
+    /// The cap.
+    pub(crate) fn cap(&self) -> usize {
+        self.cap
+    }
+}
+
+/// The capture-source table's counts, for `/metrics`, `runtime_stats` and
+/// `capture_health`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureSourceCounts {
+    /// Distinct capture sources held.
+    pub held: u64,
+    /// The most it holds (`max_capture_sources`).
+    pub limit: u64,
+    /// New sources refused because it was full.
+    pub refused: u64,
+}
+
+/// Apply `max_capture_sources` to the process's table. Called once at
+/// startup, before any capture begins.
+pub fn set_max_capture_sources(limit: usize) {
+    source_table().lock().set_cap(limit);
+}
+
+/// The process's capture-source counts.
+#[must_use]
+pub fn capture_source_counts() -> CaptureSourceCounts {
+    let table = source_table().lock();
+    CaptureSourceCounts {
+        held: table.len() as u64,
+        limit: table.cap() as u64,
+        refused: table.refused(),
+    }
 }
 
 /// The process's source table.
 fn source_table() -> &'static parking_lot::Mutex<SourceInterner> {
     static TABLE: std::sync::OnceLock<parking_lot::Mutex<SourceInterner>> =
         std::sync::OnceLock::new();
-    TABLE.get_or_init(|| parking_lot::Mutex::new(SourceInterner::new(MAX_INTERNED_SOURCES)))
+    TABLE.get_or_init(|| parking_lot::Mutex::new(SourceInterner::new(DEFAULT_MAX_CAPTURE_SOURCES)))
 }
 
 /// Intern a capture source so it can be carried as `Copy`.
 ///
 /// One leaked `str` per distinct source NAME for the process lifetime, capped
-/// at [`MAX_INTERNED_SOURCES`]. The name is the key, not the `Arc`: the HEP
+/// at [`DEFAULT_MAX_CAPTURE_SOURCES`]. The name is the key, not the `Arc`: the HEP
 /// listener and the uprobe readers build a fresh source `Arc` for every packet,
 /// and keying on the pointer leaked a copy of the name per packet (measured
 /// 2026-09-29: linear RSS growth under HEP, ~9 B per packet sent).
@@ -395,9 +435,10 @@ pub fn intern_source(source: &Arc<str>) -> Option<&'static str> {
             let got = table.intern(source);
             if got.is_none() && table.refused() == 1 {
                 tracing::warn!(
-                    "{} distinct capture sources have been named; packets from new \
-                     sources now carry no frame pointer (counted, not leaked)",
-                    table.len()
+                    "max_capture_sources ({}) reached: packets from new capture \
+                     sources now carry no frame pointer (counted in \
+                     sipnab_capture_sources_refused_total)",
+                    table.cap()
                 );
             }
             got
@@ -923,6 +964,44 @@ mod tests {
             assert!(std::ptr::eq(a, again));
         }
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn a_lowered_cap_refuses_new_names_and_keeps_the_ones_held() {
+        let mut t = SourceInterner::new(10);
+        let a = t.intern("a").expect("room");
+        t.intern("b").expect("room");
+        t.set_cap(2);
+        assert_eq!(t.cap(), 2);
+        assert!(
+            t.intern("c").is_none(),
+            "at the new cap a new name is refused"
+        );
+        assert!(
+            std::ptr::eq(t.intern("a").expect("held"), a),
+            "held names still answer"
+        );
+        t.set_cap(3);
+        assert!(
+            t.intern("c").is_some(),
+            "a raised cap admits new names again"
+        );
+    }
+
+    #[test]
+    fn the_process_table_reports_its_counts_and_takes_its_limit() {
+        // Only ever RAISED here: the table is shared by every test in this
+        // binary, and lowering it could refuse another test's source.
+        set_max_capture_sources(DEFAULT_MAX_CAPTURE_SOURCES + 1);
+        let before = capture_source_counts();
+        assert_eq!(before.limit, (DEFAULT_MAX_CAPTURE_SOURCES + 1) as u64);
+        let _ = per_packet_source_packet("99@10.9.9.9-counts", 0).frame_locator();
+        let after = capture_source_counts();
+        assert!(
+            after.held >= before.held.max(1),
+            "a new source is counted as held"
+        );
+        set_max_capture_sources(DEFAULT_MAX_CAPTURE_SOURCES);
     }
 
     #[test]

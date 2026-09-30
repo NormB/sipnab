@@ -144,9 +144,9 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5111`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5111)) returns headers and
+- `get_message` ([`server.rs:5159`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5159)) returns headers and
   body.
-- `search_messages` ([`server.rs:5525`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5525)) returns a
+- `search_messages` ([`server.rs:5552`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5552)) returns a
   `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.

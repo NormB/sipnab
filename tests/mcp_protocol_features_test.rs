@@ -872,7 +872,8 @@ fn every_declared_output_schema_matches_the_payload_it_describes() {
     let root = root.display().to_string();
     let actions = tfps_action_args(&fake);
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
-    args.extend(["--mcp-file-root", &root]);
+    // Output schemas are off by default; this gate needs them declared.
+    args.extend(["--mcp-file-root", &root, "--mcp-output-schemas"]);
     let mut wire = Wire::start_with(&args);
     let call_id = wire.a_call_id();
     let probes = schema_probes(&call_id);

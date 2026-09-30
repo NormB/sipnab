@@ -266,7 +266,7 @@ interner recognized a source only by `Arc` pointer and remembered only the
 last one, so every such packet leaked a new copy of its name: resident memory
 grew linearly under HEP, about 9 bytes per packet sent, on a workload that
 should hold flat. `intern_source` now keys on the name, in a process-wide
-table capped at `MAX_INTERNED_SOURCES` (65,536) distinct names, with a
+table capped at `DEFAULT_MAX_CAPTURE_SOURCES` (65,536) distinct names, with a
 per-thread memo that answers by pointer or by text without taking the table's
 lock. Past the cap a packet from a new source carries no frame pointer, and
 the refusal is counted and warned once; nothing more is leaked.

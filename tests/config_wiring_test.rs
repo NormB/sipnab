@@ -1143,6 +1143,12 @@ fn limit_probes() -> Vec<LimitProbe> {
             observe: probe_max_tracked_peers,
             waits_out_a_window: true,
         },
+        LimitProbe {
+            key: "max_capture_sources",
+            enabled: true,
+            observe: probe_max_capture_sources,
+            waits_out_a_window: false,
+        },
     ]
 }
 
@@ -1185,6 +1191,106 @@ fn probe_dialog_limit() -> (String, String) {
         &["--json-dialogs"],
         |out| format!("dialogs={}", dialog_count(out)),
     )
+}
+
+/// `max_capture_sources`: two input files against a one-source table.
+///
+/// The files are the sources whose count is known before the run, so the key
+/// bites at startup: sipnab refuses a limit that cannot hold them rather than
+/// letting the second file's packets lose their frame pointers. The runtime
+/// refusal (a traced process or a HEP sender past the table) is pinned in
+/// `capture::packet`'s tests, against the table itself.
+fn probe_max_capture_sources() -> (String, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let a = write_multi_call_pcap(&dir, 1);
+    let b = dir.path().join("second.pcap");
+    std::fs::copy(&a, &b).unwrap();
+    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 1\n");
+    let observe = |cfg_args: &[&str]| {
+        let mut args = vec!["-N", "-I", a.to_str().unwrap(), "-I", b.to_str().unwrap()];
+        args.extend_from_slice(cfg_args);
+        let (_, stderr, code) = run(&args);
+        format!(
+            "exit={code} names_key={}",
+            stderr.contains("max_capture_sources is 1")
+        )
+    };
+    (
+        observe(&["--no-config"]),
+        observe(&["--config", cfg.to_str().unwrap()]),
+    )
+}
+
+/// The limit the flag or the config names is the one the process-wide table
+/// enforces, read back through `capture_health` from a running server. The
+/// startup check alone cannot show that: it reads the resolved value, and a
+/// run that never handed that value to the table would still pass it.
+#[cfg(feature = "mcp")]
+#[test]
+fn the_capture_source_limit_reaches_the_table_it_governs() {
+    fn limit_reported(args: &[&str]) -> u64 {
+        use std::io::{BufRead, BufReader, Write};
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn mcp server");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+        let mut send = |v: serde_json::Value| {
+            writeln!(stdin, "{v}").expect("write");
+            stdin.flush().expect("flush");
+        };
+        send(serde_json::json!({
+            "jsonrpc":"2.0","id":1,"method":"initialize",
+            "params":{"protocolVersion":"2024-11-05","capabilities":{},
+                      "clientInfo":{"name":"probe","version":"0"}}}));
+        let mut line = String::new();
+        out.read_line(&mut line).expect("initialize reply");
+        send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        send(serde_json::json!({
+            "jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":"capture_health","arguments":{"sample_seconds":1}}}));
+        let mut limit = None;
+        for _ in 0..40 {
+            line.clear();
+            if out.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if v["id"] != serde_json::json!(2) {
+                continue;
+            }
+            let text = v["result"]["content"][0]["text"].as_str().expect("text");
+            let health: serde_json::Value = serde_json::from_str(text).expect("json");
+            limit = health["capture_sources"]["limit"].as_u64();
+            break;
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        limit.expect("capture_health reported the table's limit")
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = write_multi_call_pcap(&dir, 1);
+    let pcap = pcap.to_str().unwrap();
+    let base = ["--mcp", "-N", "-I", pcap, "--quiet"];
+    let flag: Vec<&str> = base
+        .iter()
+        .copied()
+        .chain(["--no-config", "--max-capture-sources", "3"])
+        .collect();
+    assert_eq!(limit_reported(&flag), 3, "the flag's limit");
+    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 5\n");
+    let config: Vec<&str> = base
+        .iter()
+        .copied()
+        .chain(["--config", cfg.to_str().unwrap()])
+        .collect();
+    assert_eq!(limit_reported(&config), 5, "the config's limit");
 }
 
 /// `mcp_max_rows`: eight dialogs asked for at once, against a cap of two.

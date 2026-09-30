@@ -161,6 +161,60 @@ ordinary update.
 | [`list_tls_libraries`](#list_tls_libraries) | -- | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 
 
+### Choosing which tools load
+
+Every tool the server registers sends its name, description and schemas to the
+client on `tools/list`, and the client keeps them in the model's context for
+the whole session. The client pays that cost before the agent asks anything, so
+give a client that needs a few tools only those few:
+
+```sh
+sipnab -N -I capture.pcap --mcp --mcp-tools core,relay,get_sdp_timeline
+```
+
+`--mcp-tools` (or `[mcp] tools` in the [config file](config-reference.md#mcp))
+takes a comma-separated list of:
+
+- **bundles**, from the table below. Every tool is in exactly one, so the
+  bundles together are `full`.
+- **single tool names**, for one tool from a bundle you do not want whole.
+- **your own bundles**, defined under `[mcp.bundles]` in the config file.
+- **`full`**, every tool. This is the default.
+
+sipnab refuses to start, exit 2, when a name is unknown or empty, and lists the
+valid bundles. Names are case-sensitive. The handshake's `instructions` string
+names the tools sipnab loaded and the bundles it left out, so an agent that misses a
+tool can tell the operator which bundle holds it.
+
+Output schemas are **off by default**. MCP makes them optional, and they are
+more than half the bytes. Every response carries the same JSON with or without
+them, as a text block and as `structuredContent`. Only a client that validates
+responses against a declared shape needs them. Turn them on with
+`--mcp-output-schemas` or `[mcp] output_schemas = true`.
+
+| Bundle | Tools | Bytes (default) | Bytes with output schemas | What it holds |
+|---|---|---|---|---|
+| core | 9 | 10,985 | 30,964 | `capture_status`, `list_dialogs`, `get_dialog`, `triage_call`, `rtp_stats`, `find_problems`, `aggregate_dialogs`, `search_messages`, `get_capture_report` |
+| signaling | 20 | 21,955 | 36,466 | `await_condition`, `check_codec_negotiation`, `compare_dialogs`, `explain_response_code`, `explain_rule`, `find_correlated`, `generate_repro`, `generate_wireshark_filter`, `get_call_tree`, `get_dialog_report`, `get_message`, `get_sdp_timeline`, `group_dialogs`, `lint_dialog`, `render_ladder`, `search_by_time`, `tail_dialogs`, `timeline`, `validate_filter`, `validate_message` |
+| captures | 9 | 10,524 | 15,996 | `build_evidence_package`, `compare_captures`, `decode_evidence`, `export_capture`, `find_in_captures`, `list_captures`, `open_capture`, `save_findings`, `show_evidence` |
+| security | 6 | 9,938 | 9,938 | `describe_endpoint`, `diagnose_registration`, `evaluate_expectations`, `generate_fail2ban_rule`, `security_findings`, `top_talkers` |
+| media | 4 | 3,113 | 11,400 | `explain_attribution`, `export_audio`, `media_diagnostics`, `reconcile_orphans` |
+| relay | 4 | 4,217 | 20,006 | `decode_ng`, `query_relay`, `relay_compare`, `relay_stats` |
+| tfps | 7 | 5,563 | 15,947 | `actions_revert`, `tfps_ban`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_status`, `tfps_unban` |
+| server | 5 | 5,285 | 23,377 | `capture_health`, `hep_senders`, `runtime_stats`, `server_capabilities`, `shutdown_server` |
+| vcon | 3 | 4,481 | 12,642 | `export_vcon`, `siprec_metadata`, `validate_vcon` |
+| tls | 3 | 2,859 | 4,955 | `list_tls_libraries`, `start_tls_capture`, `stop_tls_capture` |
+| full | 70 | 78,920 | 181,691 | Every tool the build carries (the default) |
+
+Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
+bundle.
+
+> **Measured on sipnab 0.5.196**, a build with every feature. Sizes, tool
+> counts and bundle membership may change in later releases. A build without a
+> feature does not register that feature's tools, so its bundles are smaller.
+> The test `each_bundle_stays_within_its_byte_budget` fails when a bundle grows
+> past its recorded ceiling; update this table in the same change.
+
 ### Rules every tool follows
 
 Six rules hold across the whole surface. Each tool section below states only
@@ -476,7 +530,7 @@ says whether this RUN did.
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 37 Prometheus metrics, and the listener that serves them is off
+sipnab exports 40 Prometheus metrics, and the listener that serves them is off
 by default — so on most deployments those numbers exist inside the process and
 nothing can read them. An agent asked "is this server healthy" could not enable
 a listener to find out. This answers without one.
@@ -504,6 +558,8 @@ parameter, `sample_seconds`, buys a rate at the cost of a wait that long.
   "interfaces": [],
   "dialogs": { "used": 1, "capacity": 100000, "pct": 0.001 },
   "streams": { "used": 2, "capacity": 10000, "pct": 0.02 },
+  "capture_sources": { "used": 1, "capacity": 65536, "pct": 0.0015 },
+  "capture_sources_refused_total": 0,
   "capture_packets_total": 852,
   "capture_queue_depth_packets": 0,
   "capture_backpressure_blocks_total": 0,
@@ -666,6 +722,14 @@ Returns:
   "source_exhausted": true,
   "source_stopped_early": false
 }
+```
+
+Every response carries `capture_sources`: how many capture sources the source
+table holds, its limit (`[limits] max_capture_sources`), and packets from a new
+source it refused because it was full. Counts only, never the names.
+
+```jsonc
+  "capture_sources": { "held": 1, "limit": 65536, "refused": 0 }
 ```
 
 On a run with a HEP listener (`-L`), the response also carries `hep`: the

@@ -1086,7 +1086,10 @@ fn wiki_intra_docs_links_resolve() {
     // new links all point at rest-api.md's "API TLS" section -- from the
     // auth page's plain-HTTP warning, from the `--api-tls-cert` row, and
     // from the bind-address advice -- rather than restating it.
-    const EXPECTED_WIKI_LINKS: usize = 1182;
+    // 1182 -> 1185, measured after rebasing onto the API HTTPS change: the
+    // MCP bundle docs link the [mcp] config section and
+    // the bundle table from the CLI and config references.
+    const EXPECTED_WIKI_LINKS: usize = 1185;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

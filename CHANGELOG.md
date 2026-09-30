@@ -10,7 +10,41 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP tool bundles: load only the tools a client needs.** `--mcp-tools` now
+  takes a comma-separated list of bundles (`core`, `signaling`, `captures`,
+  `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool
+  names, and your own bundles from `[mcp.bundles]`; `full` stays the default.
+  The list can also be set in the config file as `[mcp] tools`, and the flag
+  replaces it. An unknown or empty name refuses the run, exit 2, listing the
+  valid bundles. The handshake names what was loaded and the bundles that were
+  not. [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load)
+  lists every bundle and what it costs a client.
+
+- **`max_capture_sources` sets how many capture sources sipnab remembers by
+  name.** Input files, the device, HEP senders and traced processes each take
+  one slot, which is how a packet points back at its bytes (the `frame` field
+  of `--json`, which `--show-frame` follows). Set it with `--max-capture-sources N` or `[limits]
+  max_capture_sources` (default 65536, floor 1). sipnab refuses to start, exit
+  2, when the limit cannot hold the input files or device plus
+  `max_tracked_peers` HEP senders. Past the limit, a packet from a new source is
+  still analyzed but carries no frame pointer; sipnab warns once and counts it.
+  The table is read-only on every surface: `sipnab_capture_sources`,
+  `sipnab_capture_sources_max` and `sipnab_capture_sources_refused_total` on
+  `/metrics`, `capture_sources` and `capture_sources_refused_total` in
+  `runtime_stats` and `GET /v1/runtime`, and `capture_sources` in MCP
+  `capture_health`.
+
 ### Changed
+
+- **Breaking: MCP output schemas are off by default.** `tools/list` no longer
+  carries each tool's `outputSchema`, which cut what every tool costs a client
+  from 181,691 bytes to 78,920 (measured on 0.5.196). MCP makes output schemas
+  optional, and every response still carries the same JSON as text and as
+  `structuredContent`. A client that validates responses against the declared
+  shape turns them back on with `--mcp-output-schemas` or `[mcp] output_schemas
+  = true`.
 
 - **CI's feature matrix runs on the project's own runners, and the pre-push
   hook no longer repeats it.** The Features job builds every reduced
@@ -45,6 +79,11 @@ entry that carries them.
 
 ### Fixed
 
+- **A HEP listener or uprobe capture no longer grows memory with every
+  packet.** Each packet's source label (`capture_id@address`, `uprobe:comm/pid`)
+  was built fresh and stored again, so the table of source names grew with the
+  packet count instead of with the number of senders. sipnab now stores each
+  name once and bounds the table with `max_capture_sources`.
 - **A build in a git worktree no longer rebuilds everything every time.** The
   build script watched `.git/HEAD`, `.git/packed-refs` and the branch's ref
   file so a new commit re-stamps `sipnab --version`. In a linked worktree

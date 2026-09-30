@@ -4,7 +4,7 @@
 //!
 //! # Why this module exists
 //!
-//! sipnab exports 37 Prometheus metrics and none of them is reachable over MCP
+//! sipnab exports 40 Prometheus metrics and none of them is reachable over MCP
 //! or REST. The metrics listener is also off by default, so on most
 //! deployments those numbers exist in-process and nothing can read them — an
 //! agent asked "is this server healthy" cannot enable a listener to find out.
@@ -352,6 +352,10 @@ pub struct RuntimeStats {
     pub dialogs: Occupancy,
     /// Stream-store occupancy against its cap.
     pub streams: Occupancy,
+    /// Capture-source table occupancy against `max_capture_sources`.
+    pub capture_sources: Occupancy,
+    /// Packets whose new capture source the full table refused.
+    pub capture_sources_refused_total: u64,
     /// Packets the capture path has seen.
     pub capture_packets_total: u64,
     /// Packets waiting in the capture queue, when this run owns a meter.
@@ -686,6 +690,7 @@ pub fn collect(
     let process = process_stats();
     let host = host_stats();
     let impact = impact(&process, &host, significant_pct);
+    let sources = crate::capture::packet::capture_source_counts();
     RuntimeStats {
         schema_version: 1,
         process,
@@ -694,6 +699,8 @@ pub fn collect(
         interfaces: interfaces.iter().map(|n| interface_stats(n)).collect(),
         dialogs: Occupancy::new(dialogs.len() as u64, dialogs.max_dialogs() as u64),
         streams: Occupancy::new(streams.len() as u64, streams.max_streams() as u64),
+        capture_sources: Occupancy::new(sources.held, sources.limit),
+        capture_sources_refused_total: sources.refused,
         capture_packets_total: crate::capture::captured_packets(),
         capture_queue_depth_packets: meter.map(|m| m.in_flight() as u64),
         capture_backpressure_blocks_total: meter.map(CaptureMeterExt::blocks),
@@ -817,6 +824,27 @@ mod tests {
             "and the field is omitted on the wire rather than sent as null or \
              zero: {json}"
         );
+    }
+
+    /// The capture-source table is reported against its limit, with its
+    /// refusals, on the same structure `runtime_stats` and `GET /v1/runtime`
+    /// serialize.
+    #[test]
+    fn the_capture_source_table_is_reported_against_its_limit() {
+        let ds = crate::sip::dialog_store::DialogStore::new(10, true);
+        let ss = crate::rtp::stream_store::StreamStore::new(10);
+        let stats = collect(&ds, &ss, None, &[], 0, SIGNIFICANT_MEMORY_PCT);
+        // Other tests may raise the process-wide limit for a moment, never
+        // lower it, so the default is a floor.
+        assert!(
+            stats.capture_sources.capacity
+                >= crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES as u64,
+            "{:?}",
+            stats.capture_sources
+        );
+        let json = serde_json::to_value(&stats).expect("serializes");
+        assert!(json["capture_sources"]["capacity"].is_u64(), "{json}");
+        assert!(json["capture_sources_refused_total"].is_u64(), "{json}");
     }
 
     /// A systemd unit's own `MemoryMax=` is found.

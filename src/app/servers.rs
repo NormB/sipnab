@@ -38,6 +38,12 @@ pub struct Selection {
     /// parameter for the same reason the flags above are: this struct is where
     /// per-run decisions about the servers already live.
     pub mcp_row_cap: usize,
+    /// The MCP tools this run registers, resolved and checked by `plan()`
+    /// from `--mcp-tools` / `[mcp] tools`.
+    pub mcp_tools: crate::mcp_profile::ToolSelection,
+    /// Whether `tools/list` carries output schemas (`--mcp-output-schemas` /
+    /// `[mcp] output_schemas`, default off).
+    pub mcp_output_schemas: bool,
     /// Ceiling on body/snippet bytes in one MCP response.
     ///
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
@@ -656,15 +662,10 @@ pub fn start_servers(
                 .with_evidence_ring(selection.evidence_ring.clone())
                 .with_protected_inputs(protected_inputs.clone())
                 .with_max_concurrent(cli.mcp_args.mcp_max_concurrent as usize)
-                // Clap has already refused any spelling but `core` and
-                // `full`, so the fallback here is unreachable rather than a
-                // second policy: taking `full` silently for an unknown name
-                // would hand the largest surface to an operator who asked for
-                // a smaller one.
-                .with_tool_profile(
-                    crate::mcp::profile::ToolProfile::parse(&cli.mcp_args.mcp_tools)
-                        .unwrap_or_default(),
-                )
+                // Resolved and checked by `plan()`, which refuses an unknown
+                // name before anything starts.
+                .with_tool_selection(&selection.mcp_tools)
+                .with_output_schemas(selection.mcp_output_schemas)
                 .with_rate_limit_per_peer(
                     cli.mcp_args.mcp_rate_limit_per_peer,
                     selection.max_tracked_peers,
@@ -965,6 +966,8 @@ mod tests {
     fn selection_with(rate: u32, peers: usize) -> Selection {
         Selection {
             evidence_ring: None,
+            mcp_tools: crate::mcp_profile::ToolSelection::Full,
+            mcp_output_schemas: false,
             mcp_row_cap: 1,
             mcp_body_cap: 1,
             mcp_wait_seconds: 1,

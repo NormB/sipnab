@@ -18,7 +18,7 @@
 
 use parking_lot::RwLock;
 use sipnab::mcp::SipnabMcp;
-use sipnab::mcp::profile::{CORE_TOOLS, ToolProfile, orphaned_core_tools};
+use sipnab::mcp::profile::{CORE_TOOLS, ToolSelection, orphaned_core_tools, resolve};
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use std::sync::Arc;
@@ -26,13 +26,19 @@ use std::sync::Arc;
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
-/// A server with the given profile applied.
-fn server(profile: ToolProfile) -> SipnabMcp {
+/// The selection a `--mcp-tools` list resolves to.
+fn sel(list: &str) -> ToolSelection {
+    let asked: Vec<String> = list.split(',').map(str::to_string).collect();
+    resolve(&asked, &std::collections::BTreeMap::new()).expect("known names")
+}
+
+/// A server with the given selection applied.
+fn server(selection: ToolSelection) -> SipnabMcp {
     SipnabMcp::new(
         Arc::new(RwLock::new(DialogStore::new(64, false))),
         Arc::new(RwLock::new(StreamStore::new(64))),
     )
-    .with_tool_profile(profile)
+    .with_tool_selection(&selection)
 }
 
 /// `core` registers strictly fewer tools than `full`.
@@ -42,8 +48,8 @@ fn server(profile: ToolProfile) -> SipnabMcp {
 /// would advertise.
 #[test]
 fn core_registers_fewer_tools_than_full() {
-    let full = server(ToolProfile::Full).registered_tool_names();
-    let core = server(ToolProfile::Core).registered_tool_names();
+    let full = server(ToolSelection::Full).registered_tool_names();
+    let core = server(sel("core")).registered_tool_names();
 
     assert!(
         full.len() > 20,
@@ -76,15 +82,15 @@ fn full_is_the_default_and_removes_nothing() {
     .registered_tool_names();
 
     assert_eq!(
-        server(ToolProfile::Full).registered_tool_names(),
+        server(ToolSelection::Full).registered_tool_names(),
         untouched,
         "applying the default profile must be indistinguishable from applying \
          none"
     );
     assert_eq!(
-        ToolProfile::default(),
-        ToolProfile::Full,
-        "a server built with no profile registers everything"
+        ToolSelection::default(),
+        ToolSelection::Full,
+        "a server built with no selection registers everything"
     );
 }
 
@@ -96,7 +102,7 @@ fn full_is_the_default_and_removes_nothing() {
 /// was built around.
 #[test]
 fn every_core_tool_is_a_registered_tool() {
-    let full = server(ToolProfile::Full).registered_tool_names();
+    let full = server(ToolSelection::Full).registered_tool_names();
     assert!(
         orphaned_core_tools(&full).is_empty(),
         "these core tools are not registered under any name: {:?}. The core \
@@ -109,7 +115,7 @@ fn every_core_tool_is_a_registered_tool() {
 /// A `core` server carries every core tool and nothing else.
 #[test]
 fn the_core_router_holds_exactly_the_core_set() {
-    let core = server(ToolProfile::Core).registered_tool_names();
+    let core = server(sel("core")).registered_tool_names();
     for name in CORE_TOOLS {
         assert!(
             core.iter().any(|r| r == name),
@@ -130,7 +136,7 @@ fn the_core_router_holds_exactly_the_core_set() {
 /// client the largest hazard on the surface.
 #[test]
 fn core_drops_the_state_changing_tools() {
-    let core = server(ToolProfile::Core).registered_tool_names();
+    let core = server(sel("core")).registered_tool_names();
     for name in [
         "shutdown_server",
         "open_capture",
@@ -153,7 +159,7 @@ fn core_drops_the_state_changing_tools() {
 /// above proves the builder works and would keep passing on a build where
 /// `--mcp-tools` was parsed, stored, and never read.
 #[cfg(unix)]
-fn advertised_tools(profile: &str) -> Vec<String> {
+fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -171,10 +177,10 @@ fn advertised_tools(profile: &str) -> Vec<String> {
             "--mcp",
             "--mcp-transport",
             "stdio",
-            "--mcp-tools",
-            profile,
             "--quiet",
+            "--no-config",
         ])
+        .args(extra)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -223,9 +229,7 @@ fn advertised_tools(profile: &str) -> Vec<String> {
                         v["result"]["tools"]
                             .as_array()
                             .unwrap_or_else(|| panic!("tools/list returns an array: {v}"))
-                            .iter()
-                            .filter_map(|t| t["name"].as_str().map(str::to_string))
-                            .collect::<Vec<String>>(),
+                            .clone(),
                     );
                     break;
                 }
@@ -235,7 +239,16 @@ fn advertised_tools(profile: &str) -> Vec<String> {
     }
     let _ = terminate(&mut child);
 
-    names.unwrap_or_else(|| panic!("`sipnab --mcp-tools {profile}` never answered tools/list"))
+    names.unwrap_or_else(|| panic!("`sipnab --mcp {extra:?}` never answered tools/list"))
+}
+
+/// Tool names a spawned server advertises for one `--mcp-tools` list.
+#[cfg(unix)]
+fn advertised_tools(list: &str) -> Vec<String> {
+    tools_list(&["--mcp-tools", list])
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// `--mcp-tools core` reaches the router: a real client sees fewer tools.
@@ -265,5 +278,42 @@ fn the_flag_changes_what_a_client_is_offered() {
         core.len(),
         CORE_TOOLS.len(),
         "a core client is offered exactly the core set: {core:?}"
+    );
+}
+
+/// A bundle and a single tool name combine on the command line, and the
+/// client is offered exactly their union.
+#[cfg(unix)]
+#[test]
+fn a_bundle_and_a_tool_name_reach_the_router() {
+    let mut got = advertised_tools("relay,get_sdp_timeline");
+    got.sort();
+    assert_eq!(
+        got,
+        [
+            "decode_ng",
+            "get_sdp_timeline",
+            "query_relay",
+            "relay_compare",
+            "relay_stats"
+        ]
+    );
+}
+
+/// By default no tool advertises an output schema; `--mcp-output-schemas`
+/// brings them back. Counted off the wire, from a spawned server.
+#[cfg(unix)]
+#[test]
+fn output_schemas_are_off_by_default_and_the_flag_restores_them() {
+    let off = tools_list(&["--mcp-tools", "core"]);
+    assert!(!off.is_empty());
+    assert!(
+        off.iter().all(|t| t.get("outputSchema").is_none()),
+        "no output schema by default"
+    );
+    let on = tools_list(&["--mcp-tools", "core", "--mcp-output-schemas"]);
+    assert!(
+        on.iter().any(|t| t.get("outputSchema").is_some()),
+        "the flag restores them"
     );
 }
