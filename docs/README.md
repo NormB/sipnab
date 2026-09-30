@@ -162,6 +162,9 @@ Read these when you want to know *why*, not *how*.
   design decisions that still hold.
 - [Fault model](fault-model.md): what sipnab does when things go wrong, and
   what it deliberately does not do.
+- [Threat model](threat-model.md): the security assessment, covering what an
+  attacker wants, where they can reach sipnab, what stops them, and the known
+  gaps.
 - [Benchmarks](benchmarks.md): measured throughput and memory, where the
   numbers came from, and how to reproduce them.
 

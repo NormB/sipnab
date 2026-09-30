@@ -4129,15 +4129,17 @@ pub enum SandboxModeArg {
 /// How much syscall recording a run wants.
 ///
 /// Deliberately separate from [`SandboxModeArg`]. They are different controls
-/// with different failure modes — one denies opens, the other denies nothing
-/// at all — and folding them into one flag would let an operator believe that
-/// asking for a sandbox had asked for a syscall filter too.
+/// with different failure modes — Landlock denies an open and the run goes
+/// on, while seccomp `log` denies nothing and `enforce` kills the process —
+/// and folding them into one flag would let an operator believe that asking
+/// for a sandbox had asked for a syscall filter too.
 ///
-/// There is no enforcing variant, and its absence is the design rather than an
-/// omission: `docs/design/syscall-sandbox.md`
-/// [section 8, "Recommendation"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#8-recommendation) puts the derived filter last
-/// because a mis-derived allowlist kills the process on a capture box during
-/// the incident the capture was started for.
+/// `off` is the default because a mis-derived allowlist kills the process on
+/// a capture box during the incident the capture was started for:
+/// `docs/design/syscall-sandbox.md`
+/// [section 8, "Recommendation"](https://github.com/NormB/sipnab/blob/main/docs/design/syscall-sandbox.md#8-recommendation).
+/// `enforce` exists, and refuses to run without an allowlist derived on the
+/// host that runs the capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum SeccompModeArg {
     /// No filter. The default, and the only mode fit for a live capture.

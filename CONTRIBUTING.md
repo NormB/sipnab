@@ -41,15 +41,11 @@ reads as an ordinary comment and signs nothing. The bot then reports a
 `license/cla` status on the pull request, and turns it green once everyone who
 committed to that branch has signed.
 
-**What that status does not do yet.** Branch protection on `main` requires one
-check, `CI success`, so GitHub does not block a merge on `license/cla`; the
-maintainer reads it instead. Two steps stand between that and real enforcement,
-and only the repository owner can take either: allowlist bot accounts in the
-CLA Assistant settings, then add `license/cla` to the required checks. The order
-matters, because Dependabot cannot sign an agreement -- requiring the check
-first would stall every dependency pull request behind a signature nobody can
-give. Until both land, treat a `license/cla` that is not green as a blocker by
-convention rather than by enforcement.
+**A merge waits for it.** Branch protection on `main` requires `license/cla`
+alongside `CI success`, so a pull request cannot merge until everyone who
+committed to it has signed. Bot accounts such as Dependabot cannot sign an
+agreement. They are on the allowlist in the CLA Assistant settings, so their
+pull requests pass the check without one.
 
 ## Prerequisites
 
@@ -354,6 +350,76 @@ when you stage a cited file without touching `docs/internals/`; it is advisory
 because only you can tell whether the prose is still true. The hard gate is
 `dev_docs_drift_test`, and it catches only the mechanical half — a link that no
 longer resolves. Prose that has quietly become wrong is caught by nothing.
+
+## Dependencies
+
+A dependency is a crate that sipnab's code pulls in from someone else. Each one
+is code that runs with sipnab's privileges, so adding one is a review decision,
+not a convenience.
+
+### Choosing a new crate
+
+Before you add a crate, check it against these rules. `cargo deny check`
+enforces the first three: it reads [`deny.toml`](deny.toml) and fails the pull
+request when a crate breaks one.
+
+- **Its license is on the allow list.** sipnab's own license is
+  `MIT OR Apache-2.0`. `[licenses]` in [`deny.toml`](deny.toml) lists the
+  licenses a dependency may carry. Adding a license to that list takes its
+  own reviewed change, with the reason written next to it.
+- **It comes from crates.io.** `[sources]` in [`deny.toml`](deny.toml)
+  rejects git dependencies and any other registry. That also rules out
+  swapping in a patched fork of a crate: fix the problem upstream instead.
+- **It has no open security advisory.** The advisories come from the
+  [RustSec database](https://rustsec.org/). The project accepts an advisory
+  that does not apply to sipnab only with a written reason, as the one `rsa`
+  exception in [`deny.toml`](deny.toml) shows.
+
+The reviewer checks the rest:
+
+- **Prefer what you already have.** Use the standard library or a crate
+  already in [`Cargo.lock`](Cargo.lock) before adding a new one.
+  `cargo deny check` warns when two versions of the same crate end up in the
+  build.
+- **Take only the features you need.** When a crate's default features bring
+  in more than sipnab uses, set `default-features = false` and list the
+  features you need, as several entries in [`Cargo.toml`](Cargo.toml) do. If
+  only one sipnab feature needs the crate, mark it `optional = true` and let
+  that feature turn it on.
+- **Someone still maintains it.** Look for recent releases and answered
+  issues. Say in the pull request why you chose this crate over the
+  alternatives.
+
+### Tracking the crates you have
+
+- **The repository commits its lock files.** [`Cargo.lock`](Cargo.lock) pins
+  the exact version of every crate in the build. The fuzz targets form a
+  separate workspace with their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock),
+  also committed.
+- **Dependabot opens update pull requests weekly** for both lock files, as
+  [`.github/dependabot.yml`](.github/dependabot.yml) sets up. It groups minor
+  and patch updates into one pull request.
+- **CI scans every pull request to `main`.** The `Security audit` job in
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `cargo audit` on
+  both lock files and `cargo deny check` on the build. A failure turns the
+  required `CI success` check red, which blocks the merge.
+- **OSV-Scanner checks every lock file** on each pull request, each push to
+  `main`, and every Wednesday, from
+  [`.github/workflows/osv-scanner.yml`](.github/workflows/osv-scanner.yml).
+  It uses the [osv.dev](https://osv.dev/) database, which covers more than
+  Rust crates, and reports findings as code scanning alerts.
+  [`osv-scanner.toml`](osv-scanner.toml) lists the accepted advisories, each
+  with its reason.
+
+When you add or update a dependency, run the same checks CI runs before you
+push. Install the tools once with `cargo install cargo-audit cargo-deny`.
+
+```bash
+# Run all of these, in order.
+cargo audit --ignore RUSTSEC-2023-0071
+cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+cargo deny check
+```
 
 ## Commit Messages
 

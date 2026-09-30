@@ -271,3 +271,36 @@ fn the_job_reader_finds_keys_permissions_and_jobs() {
         ]
     );
 }
+
+/// `release.yml` also runs by `workflow_dispatch` to build without releasing.
+/// A manual run started on a tag has `github.ref` = `refs/tags/v…`, so a job
+/// gated only on the ref would still publish from it: until 2026-09-29 the
+/// `release` and `tap` jobs did, creating a GitHub release and bumping the
+/// Homebrew tap from a hand-started run. Every job gated on a release tag
+/// also requires the push event.
+#[test]
+fn a_manual_run_releases_nothing() {
+    let body = read(".github/workflows/release.yml");
+    let mut tag_gated = Vec::new();
+    for (id, lines) in jobs(&body) {
+        let condition = job_key(&lines, "if").unwrap_or_default();
+        if !condition.contains("refs/tags/v") {
+            continue;
+        }
+        assert!(
+            condition.contains("github.event_name == 'push'"),
+            "release.yml job `{id}` is gated on a release tag but not on the \
+             push event (`if: {condition}`). A workflow_dispatch run started on \
+             a tag would run it and publish."
+        );
+        tag_gated.push(id);
+    }
+    tag_gated.sort();
+    assert_eq!(
+        tag_gated,
+        ["crates-io", "release", "tap"],
+        "the jobs that publish from a tag are the GitHub release, the crates.io \
+         upload and the Homebrew tap bump; a change here must be reviewed \
+         against this guard"
+    );
+}

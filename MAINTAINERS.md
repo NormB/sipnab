@@ -44,22 +44,15 @@ which is worse than recording none. Budget for the other half of that edit:
 CLA Assistant binds every signature to the gist revision current when the
 contributor signed, so a new revision asks each previous signer again.
 
-**Nothing enforces `license/cla` yet.** Branch protection on `main` requires
-`CI success` and nothing else, so the status the bot posts informs a merge
-rather than blocking one. Turning it into a real gate takes two owner actions,
-in this order:
-
-1. Add bot accounts to the allowlist in the CLA Assistant settings for this
-   repository. Dependabot opens most pull requests here and cannot sign an
-   agreement, so a required check without that allowlist stalls every dependency
-   update. All nine Dependabot pull requests opened since the bot went live on
-   2026-08-06 still carry a pending `license/cla`, and five of them merged that
-   way.
-2. Add `license/cla` to the required status checks for `main`.
-
-The order matters: step 2 before step 1 blocks the routine pull requests on a
-signature nobody can give. When step 2 lands, drop the caveat that ends the
-[CLA section of CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).
+**`license/cla` is a required check on `main`**, next to `CI success`, since
+2026-09-29. Bot accounts, Dependabot among them, are on the allowlist in the
+CLA Assistant settings for this repository, because a bot cannot sign an
+agreement. Before that, nine Dependabot pull requests carried a pending
+`license/cla` and five of them merged that way. Adding a new bot that opens
+pull requests means adding it to that allowlist first, or its pull requests
+stall on a signature nobody can give.
+[`tests/branch_protection_drift_test.rs`](tests/branch_protection_drift_test.rs)
+fails if the required check and this page disagree.
 
 ## How releases happen
 

@@ -1076,7 +1076,10 @@ fn wiki_intra_docs_links_resolve() {
     // 1160 -> 1161: output-formats.md's pcap section links examples.md for
     // the decrypted export (PCAPX-DEC). Attributed by measurement: with HEAD's
     // output-formats.md the extractor finds 1160.
-    const EXPECTED_WIKI_LINKS: usize = 1161;
+    // 1161 -> 1179: docs/threat-model.md adds 17 (ten in-page anchors, seven
+    // links to other docs pages) and docs/README.md's index entry for it
+    // adds one.
+    const EXPECTED_WIKI_LINKS: usize = 1179;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1173,6 +1176,9 @@ fn root_community_file_links_resolve() {
     /// the header, re-added under "Support the project".
     // 49 -> 52: README.md links the glossary, the command-line triage
     // tutorial and the keybindings page from its first-run and TUI sections.
+    // 52 -> 52: SECURITY.md gains a link to docs/threat-model.md, and
+    // MAINTAINERS.md loses one to CONTRIBUTING.md's CLA section, which pointed
+    // at a caveat to drop once `license/cla` was required (it now is).
     const EXPECTED_COMMUNITY_LINKS: usize = 52;
     const ROOT_FILES: &[&str] = &[
         "README.md",
@@ -2262,7 +2268,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // 63 -> 65: docs/prometheus.md and docs/prometheus-sipnab.md.
     // 65 -> 69: docs/opensips.md, docs/opensips-sipnab.md, docs/kamailio.md
     // and docs/kamailio-sipnab.md.
-    const EXPECTED_DOCS_PAGES: usize = 69;
+    // 69 -> 70: docs/threat-model.md.
+    const EXPECTED_DOCS_PAGES: usize = 70;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

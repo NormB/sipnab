@@ -289,3 +289,172 @@ fn the_badge_is_registered_and_wired_consistently() {
          sheet and README but never reached the site a visitor actually looks at"
     );
 }
+
+/// The same project also holds the OpenSSF Baseline badge: level 1 achieved
+/// 2026-09-30 (bestpractices.dev project JSON, `achieved_baseline_1_at`). The
+/// README carries the badge image; the home page carries a text link for the
+/// same `img-src 'self'` reason as the Best Practices badge above.
+#[test]
+fn the_baseline_badge_is_wired_in_readme_and_homepage() {
+    const PROJECT_URL: &str = "https://www.bestpractices.dev/projects/13931";
+
+    let readme = read("README.md");
+    let markup = format!("[![OpenSSF Baseline]({PROJECT_URL}/baseline)]({PROJECT_URL})");
+    assert!(
+        readme.contains(&markup),
+        "README.md must carry the Baseline badge exactly as bestpractices.dev \
+         issues it: {markup}"
+    );
+
+    let homepage = read("website/templates/index.html");
+    assert!(
+        homepage.contains("OpenSSF Baseline — Level 1"),
+        "the home page must name the Baseline level the project holds, in a \
+         text link beside the Best Practices one"
+    );
+    assert!(
+        !homepage.contains(&format!("{PROJECT_URL}/baseline")),
+        "the home page must not load the badge image: the site CSP is \
+         `img-src 'self'`, so an external badge renders as a broken image"
+    );
+}
+
+/// `know_secure_design` and OpenSSF Baseline SA-03.01 (security assessment).
+///
+/// The sheet once answered `know_secure_design` by pointing at "an explicitly
+/// documented threat model in SECURITY.md". SECURITY.md holds a reporting
+/// scope list, which says what a reporter may send, not what an attacker is
+/// likely to try or what stops them. A reviewer caught it. The assessment now
+/// lives in `docs/threat-model.md`, and this test holds it to three things a
+/// reader relies on:
+///
+/// 1. It names every trust boundary the reviewer asked for, as a heading, so a
+///    boundary cannot quietly drop out of the document.
+/// 2. Every repository path it cites exists, and every `path.rs::name`
+///    citation names something that is really in that file. A mitigation
+///    cited to a file that moved is a mitigation nobody can check.
+/// 3. The sheet and SECURITY.md both point at it rather than at a document
+///    that does not contain one.
+#[test]
+fn the_threat_model_exists_covers_each_boundary_and_cites_real_code() {
+    const DOC: &str = "docs/threat-model.md";
+    assert!(
+        repo().join(DOC).is_file(),
+        "{DOC} is the security assessment (Baseline SA-03.01) that \
+         `know_secure_design` cites; it does not exist"
+    );
+    let doc = read(DOC);
+
+    let headings: Vec<String> = doc
+        .lines()
+        .filter(|l| l.starts_with('#'))
+        .map(str::to_lowercase)
+        .collect();
+    // (what the reviewer asked for, a phrase its heading must contain)
+    let required = [
+        ("assets", "assets"),
+        ("packet capture input", "packet capture"),
+        ("capture and archive files", "archive"),
+        ("HEP senders", "hep"),
+        ("REST API clients", "rest api"),
+        ("MCP clients", "mcp"),
+        ("exec hooks", "exec hook"),
+        ("WASM plugins", "plugin"),
+        ("TLS key material", "key material"),
+        ("configuration files", "configuration"),
+        ("residual risks", "residual risk"),
+    ];
+    for (what, needle) in required {
+        assert!(
+            headings.iter().any(|h| h.contains(needle)),
+            "{DOC} has no heading covering {what} (looked for {needle:?} in a \
+             heading); the assessment must name every trust boundary"
+        );
+    }
+
+    // Every cited repository path must exist. Two citation forms are
+    // recognized: a backtick span that starts with a tracked top-level
+    // directory or names a root file, and a relative Markdown link.
+    const ROOTS: [&str; 9] = [
+        "src/", "docs/", "tests/", "crates/", "fuzz/", "scripts/", ".github/", "bpf/", "website/",
+    ];
+    let mut cited = 0usize;
+    let mut problems = Vec::new();
+    for span in doc.split('`').skip(1).step_by(2) {
+        let (path, item) = match span.split_once("::") {
+            Some((p, i)) => (p, Some(i)),
+            None => (span, None),
+        };
+        let looks_like_path = !path.contains(' ')
+            && (ROOTS.iter().any(|r| path.starts_with(r))
+                || matches!(path, "SECURITY.md" | "Cargo.toml" | "deny.toml"));
+        if !looks_like_path {
+            continue;
+        }
+        cited += 1;
+        let p = repo().join(path);
+        if !p.exists() {
+            problems.push(format!("`{span}`: {path} does not exist"));
+            continue;
+        }
+        if let Some(item) = item {
+            let body = std::fs::read_to_string(&p).unwrap_or_default();
+            let defined = ["fn", "const", "struct", "enum"]
+                .iter()
+                .any(|kw| body.contains(&format!("{kw} {item}")));
+            if !defined {
+                problems.push(format!(
+                    "`{span}`: {path} defines no fn/const/struct/enum named {item}"
+                ));
+            }
+        }
+    }
+    // Links: a relative one resolves from docs/, and an absolute one into this
+    // repository's main branch names a path that must exist here.
+    const BLOB: &str = "https://github.com/NormB/sipnab/blob/main/";
+    for chunk in doc.split("](").skip(1) {
+        let target = chunk.split(')').next().unwrap_or("");
+        let target = target.split('#').next().unwrap_or("");
+        let resolved = if let Some(path) = target.strip_prefix(BLOB) {
+            repo().join(path)
+        } else if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
+            continue;
+        } else {
+            repo().join("docs").join(target)
+        };
+        cited += 1;
+        if !resolved.exists() {
+            problems.push(format!("link ({target}) names nothing in this repository"));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "{DOC} cites paths or items that do not exist:\n  {}",
+        problems.join("\n  ")
+    );
+    assert!(
+        cited >= 25,
+        "{DOC} cites only {cited} repository paths; every mitigation must cite \
+         the code that implements it, so a count this low means citations were \
+         dropped or the extractor stopped matching"
+    );
+
+    let row = sheet()
+        .lines()
+        .find(|l| l.starts_with("| `know_secure_design`"))
+        .expect("the sheet has a `know_secure_design` row")
+        .to_string();
+    assert!(
+        row.contains(DOC),
+        "`know_secure_design` must cite {DOC}, not a file that holds no threat \
+         model: {row}"
+    );
+    assert!(
+        !row.contains("threat model in [`SECURITY.md`]"),
+        "the row still claims SECURITY.md holds the threat model: {row}"
+    );
+    assert!(
+        read("SECURITY.md").contains(DOC),
+        "SECURITY.md must point a reader at {DOC}"
+    );
+}

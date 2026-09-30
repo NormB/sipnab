@@ -1109,6 +1109,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     ("install", &["README.md", "CONTRIBUTING.md"]),
+    // cargo-audit's flags, not sipnab's. CONTRIBUTING's Dependencies section
+    // quotes the exact `cargo audit` lines ci.yml runs — `--ignore` for the
+    // accepted rsa advisory, `--file` for the separate fuzz lockfile — so a
+    // contributor reproduces the gate rather than an approximation of it.
+    // dependency_policy_doc_test holds those lines equal to ci.yml's.
+    ("file", &["CONTRIBUTING.md"]),
+    ("ignore", &["CONTRIBUTING.md"]),
     // docker run flags (install docs)
     (
         "net",
@@ -3795,7 +3802,8 @@ fn no_documentation_table_repeats_a_row() {
     // 249 -> 257: the four SIP server guides (opensips, opensips-sipnab,
     // kamailio, kamailio-sipnab) under docs/ and their four generated site
     // pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 257;
+    // 257 -> 258: docs/threat-model.md (wiki only, no site page).
+    const EXPECTED_MARKDOWN_FILES: usize = 258;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4258,7 +4266,9 @@ fn no_documentation_table_repeats_a_row() {
     // generated site page.
     // 1020 -> 1021 by the "Back out sipnab's actions" capability in
     // docs/design/surface-capability-matrix.md, which has no site page.
-    const EXPECTED_TABLES: usize = 1021;
+    // 1021 -> 1032: docs/threat-model.md, one table per trust boundary (nine)
+    // plus the asset table and the boundary overview.
+    const EXPECTED_TABLES: usize = 1032;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

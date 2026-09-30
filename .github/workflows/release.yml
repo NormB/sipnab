@@ -833,7 +833,7 @@ jobs:
     timeout-minutes: 45
     name: Create Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # id-token + attestations power the sigstore provenance step below;
     # contents must be restated because a job-level block replaces the
@@ -1069,7 +1069,7 @@ jobs:
     timeout-minutes: 45
     name: Bump Homebrew tap
     needs: release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

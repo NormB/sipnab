@@ -97,7 +97,7 @@ documented test requirements are all met.
 
 | Criterion | Answer | Evidence |
 |---|---|---|
-| `know_secure_design` | Met | Privilege drop, chroot, and an explicitly documented threat model in [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) |
+| `know_secure_design` | Met | Privilege drop, chroot, and a threat model and security assessment in [`docs/threat-model.md`](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md): assets, trust boundaries, threats with the code that mitigates each, and residual risks. It also answers OpenSSF Baseline SA-03.01. [`SECURITY.md`](https://github.com/NormB/sipnab/blob/main/SECURITY.md) holds the reporting scope, not the assessment |
 | `know_common_errors` | Met | The in-scope list names parser crashes, key-material leakage, privilege-drop escapes, authentication bypass and command injection |
 | `crypto_published` | Met | TLS through `rustls`, no bespoke protocol |
 | `crypto_floss` | Met | `rustls`, `ring`, `aes`, `hmac`, `sha2` |
