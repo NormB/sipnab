@@ -90,6 +90,20 @@ entry that carries them.
   as `nobody` by default, so a `root:root` `0755` directory refused them with
   nothing saying so.
   [An output file sipnab cannot create](docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
+- **The media tools now find a call on a media-relay host.** A relay sees the
+  RTP and its own control traffic, never the SIP, so its dialog store is empty
+  while its streams carry the Call-ID the relay named. `rtp_stats`,
+  `media_diagnostics`, `explain_attribution` and `export_audio` looked the
+  Call-ID up among the dialogs first, so on such a host every call was "not
+  found"; `GET /v1/dialogs/{call_id}/audio` answered 404 the same way. They now
+  answer from the streams when no dialog is held. The MCP answers carry
+  `dialog_seen: false` and a `dialog_absent` object whose `reason` and `note`
+  are the ones `reconcile_orphans` uses, and the REST route sends a
+  `Sipnab-Dialog-Seen` header. A Call-ID that neither a dialog nor any stream
+  carries is still refused, and the message now names both searches: `no SIP
+  dialog and no RTP stream associated with call_id '…' in this capture`. The
+  SIP-only tools still need the dialog. See
+  [`rtp_stats`](docs/mcp-tools.md#rtp_stats).
 - **A HEP listener or uprobe capture no longer grows memory with every
   packet.** Each packet's source label (`capture_id@address`, `uprobe:comm/pid`)
   was built fresh and stored again, so the table of source names grew with the
