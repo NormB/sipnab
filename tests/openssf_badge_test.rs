@@ -291,7 +291,8 @@ fn the_badge_is_registered_and_wired_consistently() {
 }
 
 /// The same project also holds the OpenSSF Baseline badge: level 1 achieved
-/// 2026-09-30 (bestpractices.dev project JSON, `achieved_baseline_1_at`). The
+/// 2026-09-30 02:03 UTC and level 2 at 11:55 UTC the same day
+/// (bestpractices.dev project JSON, `achieved_baseline_2_at`). The
 /// README carries the badge image; the home page carries a text link for the
 /// same `img-src 'self'` reason as the Best Practices badge above.
 #[test]
@@ -306,9 +307,15 @@ fn the_baseline_badge_is_wired_in_readme_and_homepage() {
          issues it: {markup}"
     );
 
+    assert!(
+        sheet().contains("OpenSSF Baseline level 2"),
+        "the answer sheet must record the Baseline level the project holds"
+    );
+
     let homepage = read("website/templates/index.html");
     assert!(
-        homepage.contains("OpenSSF Baseline — Level 1"),
+        homepage.contains("OpenSSF Baseline — Level 2")
+            && !homepage.contains("OpenSSF Baseline — Level 1"),
         "the home page must name the Baseline level the project holds, in a \
          text link beside the Best Practices one"
     );

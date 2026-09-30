@@ -61,6 +61,44 @@ AEAD only). Captures that rely on these algorithms are weaker than modern
 alternatives, and seeing them in a capture is itself a finding worth
 reporting to the system operator.
 
+## Secrets and credentials
+
+The workflows use three stored secrets. Each is a GitHub Actions repository
+secret: encrypted by GitHub, readable only by the jobs that name it, never
+passed to workflows triggered from a fork, and visible or changeable only by a
+repository admin (today, the maintainer listed in
+[MAINTAINERS.md](MAINTAINERS.md)).
+
+| Secret | Used by | What it can do |
+|---|---|---|
+| `HOMEBREW_TAP_TOKEN` | `release.yml`, the `tap` job | Push the formula bump to the Homebrew tap repository |
+| `CODECOV_TOKEN` | `quality.yml`, the coverage upload | Upload coverage reports to Codecov |
+| `CLOUDFLARE_API_TOKEN` | `pages.yml`, the `csp` job | Update the site's Content-Security-Policy hashes at Cloudflare |
+
+Each token reaches only the one job and the one service it serves. The
+maintainer rotates a token when anyone who could read it loses access, after
+any suspected exposure, and at least once a year. crates.io publishing stores no token at
+all: the `crates-io` job in `release.yml` uses crates.io trusted publishing,
+exchanging the job's short-lived OpenID Connect identity for an upload token
+that crates.io revokes when the job ends.
+
+## Code scanning
+
+`main` carries no open code-scanning alerts. CodeQL analyzes every pull
+request and push, and the `Code scanning has no open alerts` job in `ci.yml`
+fails while any alert is open. The required `CI success` check depends on it,
+so a change that introduces an alert does not merge. The maintainer may dismiss
+an alert that is a false positive or does not apply, and every dismissal
+records a reason in GitHub's code-scanning history.
+
+## Accepted advisories in VEX form
+
+[`vex/sipnab.openvex.json`](vex/sipnab.openvex.json) publishes, in OpenVEX
+form, each advisory the dependency scanners report that does not affect
+sipnab, with the reason. [`deny.toml`](deny.toml) and
+[`osv-scanner.toml`](osv-scanner.toml) configure the same exceptions with the
+same reasons, and a test holds all three to one list.
+
 ## Credit
 
 Reporters who follow responsible disclosure will be credited in the release notes unless they request otherwise.

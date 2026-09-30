@@ -768,3 +768,41 @@ fn codeql_analyze_does_not_bundle_a_database_nobody_reads() {
         uploading.join("\n")
     );
 }
+
+/// OpenSSF Baseline AC-04.02: a job gets only the permissions it needs.
+///
+/// A workflow-level `permissions:` block applies to EVERY job in the file, so
+/// a write scope there reaches jobs that never use it: `pages.yml` granted
+/// `pages: write` and `id-token: write` to its build and csp jobs as well as
+/// to deploy, and `cert-expiry.yml` granted `issues: write` the same way.
+/// Write scopes belong on the job that needs them; the workflow level may
+/// only read.
+#[test]
+fn no_workflow_level_permissions_block_grants_a_write_scope() {
+    let mut offenders = Vec::new();
+    for (name, body) in workflows() {
+        let mut inside = false;
+        for line in body.lines() {
+            if line.starts_with("permissions:") {
+                inside = true;
+                if line.contains("write") {
+                    offenders.push(format!("{name}: {line}"));
+                }
+                continue;
+            }
+            if inside {
+                if !line.starts_with(' ') && !line.trim().is_empty() {
+                    inside = false;
+                } else if !line.trim_start().starts_with('#') && line.contains("write") {
+                    offenders.push(format!("{name}: {}", line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "workflow-level permissions grant write to every job in the file; move \
+         each write scope into the job that uses it:\n  {}",
+        offenders.join("\n  ")
+    );
+}

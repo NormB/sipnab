@@ -38,12 +38,16 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
   expiry:
     name: Certificates have time left
     runs-on: ubuntu-latest
+    # issues: write is this job's own grant, not the workflow's (OpenSSF
+    # Baseline AC-04.02): it opens the expiry issue.
+    permissions:
+      contents: read
+      issues: write
     # Four network round trips and a file comparison. A bound at all is the
     # point: a job that hangs on an unreachable host would sit for six hours
     # and report nothing, which is the same silence this whole workflow exists

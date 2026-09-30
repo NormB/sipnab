@@ -48,5 +48,6 @@ packaging
 scripts
 src
 tests
+vex
 website
 yang

@@ -4277,7 +4277,9 @@ fn no_documentation_table_repeats_a_row() {
     // plus the asset table and the boundary overview.
     // 1032 -> 1036: the MCP tool-bundle table, the [mcp] config table, and
     // their website copies.
-    const EXPECTED_TABLES: usize = 1036;
+    // 1036 -> 1037: SECURITY.md's secrets table. Measured: with HEAD's
+    // SECURITY.md the count is 1036.
+    const EXPECTED_TABLES: usize = 1037;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

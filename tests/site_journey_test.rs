@@ -5466,7 +5466,7 @@ fn packaging_scripts_reference_existing_paths() {
         //
         // So every top-level directory must appear in one list or the other,
         // and a new one fails until someone decides which.
-        const ROOTS: [&str; 19] = [
+        const ROOTS: [&str; 20] = [
             "bpf/",
             "build_script/",
             "clients/",
@@ -5487,6 +5487,7 @@ fn packaging_scripts_reference_existing_paths() {
             ".config/",
             // The committed YANG module; pages.yml copies it into the site.
             "yang/",
+            "vex/",
         ];
         // Directories deliberately not treated as path roots, each with the
         // reason a match inside them would be a false positive.

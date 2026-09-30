@@ -1189,7 +1189,9 @@ fn root_community_file_links_resolve() {
     // 52 -> 52: SECURITY.md gains a link to docs/threat-model.md, and
     // MAINTAINERS.md loses one to CONTRIBUTING.md's CLA section, which pointed
     // at a caveat to drop once `license/cla` was required (it now is).
-    const EXPECTED_COMMUNITY_LINKS: usize = 52;
+    // 52 -> 53: SECURITY.md's secrets section links MAINTAINERS.md. Measured:
+    // with HEAD's SECURITY.md the count is 52.
+    const EXPECTED_COMMUNITY_LINKS: usize = 53;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
