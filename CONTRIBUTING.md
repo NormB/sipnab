@@ -488,6 +488,87 @@ test: add pcap round-trip tests for IPv6
 5. Update documentation if you add or change CLI flags or config keys.
 6. Describe the "why" in the PR body, not just the "what".
 
+## Code review
+
+A reviewer reads every change to `main` before it merges. This section says
+who reviews it, how, what the review checks, and what a change needs before it
+can merge. Where a setting or a file enforces a rule rather than a person, the
+rule names it.
+
+### Who reviews
+
+The maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) reviews every pull
+request. [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns the whole tree
+(`*  @NormB`), so GitHub requests that review automatically when a pull request
+opens.
+
+sipnab has one maintainer today, so nobody else can review changes the
+maintainer writes. Those changes go through the same pull request, the same
+checklist and the same required checks as a contribution from anyone, and the
+maintainer reviews the diff before merging. Branch protection on `main` therefore requires zero approving
+reviews: requiring one would block every change the only maintainer makes.
+When a second maintainer joins (see
+[Getting commit access](MAINTAINERS.md#getting-commit-access)), the
+requirement becomes one approving review from someone other than the author.
+
+### How a review works
+
+- **Through a pull request only.** Branch protection on `main` requires a pull
+  request and applies to administrators too, so nobody pushes to `main`
+  directly. `tests/branch_protection_drift_test.rs` fails if that setting and
+  this documentation disagree.
+- **Against the checklist.** The reviewer works through the checklist in
+  [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) and
+  the points below.
+- **In the pull request's conversation.** Questions and requested changes go
+  in review comments. Branch protection requires every conversation to be
+  resolved before the pull request merges. A new push dismisses an earlier
+  approval, so an approval always covers the code that merges.
+
+### What the reviewer checks
+
+- **Correctness, with tests.** The change does what its description says, and
+  it comes with a test that fails without the change and passes with it.
+- **Documentation.** The change updates the docs for any new or changed flag,
+  config key or behavior, as [Documentation](#documentation) describes.
+- **Security impact.** The reviewer asks which trust boundary in the
+  [threat model](docs/threat-model.md) the change touches, such as capture
+  input, HEP senders, API clients or plugins, and whether it weakens the
+  checks listed there. A change that moves a boundary updates that page.
+- **Dependencies.** A new or updated crate meets the rules in
+  [Dependencies](#dependencies). `cargo deny check` enforces some of them, and
+  the reviewer checks the rest.
+- **No secrets and no private names.** Nothing in the diff is a token, a
+  password, or a private hostname, address or path. The repository has
+  GitHub secret scanning with push protection turned on, and
+  `tests/private_identity_test.rs` enforces the rules in
+  [Never publish a machine, an account, or a network](#never-publish-a-machine-an-account-or-a-network).
+- **Public claims match the code.** Anything the change says in the README,
+  the site or the docs is true of the code as merged.
+- **A changelog entry.** A user-visible change adds an entry under
+  `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
+- **The contributor agreement.** Everyone who committed to the branch has
+  signed the [CLA](#contributor-license-agreement).
+
+### What a change needs before it can merge
+
+A pull request is acceptable when all of these hold:
+
+1. **The required checks are green.** Branch protection on `main` requires
+   `CI success` and `license/cla`, and requires the branch to be up to date
+   with `main` before it merges. `CI success` passes only when every CI job it
+   depends on passes. `license/cla` passes when everyone who committed to the
+   branch has signed the CLA.
+2. **Every commit carries a signature.** Branch protection on `main` requires signed
+   commits, so GitHub refuses a merge that contains an unsigned or unverified
+   one.
+3. **No review conversation stays open.** Branch protection blocks the merge
+   until someone marks each one resolved.
+4. **The reviewer agrees** that the change meets the pull request template
+   checklist and the points under
+   [What the reviewer checks](#what-the-reviewer-checks). The template checklist is where the contributor says so; the reviewer
+   confirms it.
+
 ## Reporting Bugs
 
 Open a GitHub issue with:

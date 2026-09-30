@@ -4547,7 +4547,14 @@ fn no_documentation_table_repeats_a_row() {
     // section). Neither page has a site mirror, so each costs one.
     // 1038 -> 1041: docs/assurance-case.md (the principles table and the CWE
     // Top 25 table) and the Silver table in docs/design/openssf-badge-answers.md.
-    const EXPECTED_TABLES: usize = 1040;
+    // 1038 -> 1039: the Gold-level table in
+    // docs/design/openssf-badge-answers.md (code_review_standards,
+    // require_2FA, secure_2FA). Measured: with HEAD's copy of that file the
+    // count is 1038, and no other changed file adds a table.
+    // Combined PR (upgrade docs + assurance case + code review/2FA): 1038 on
+    // main -> 1044 measured, the six tables the three commits' comments above
+    // attribute (2 + 3 + 1).
+    const EXPECTED_TABLES: usize = 1044;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -76,6 +76,29 @@ reviewing that record, and records every grant, with its scope, in the table
 at the top of MAINTAINERS.md in the same change that grants it. The maintainer
 removes access the same way when it is no longer needed.
 
+Once a second maintainer joins, every pull request needs one approving
+review from a maintainer other than its author, as
+[CONTRIBUTING.md](CONTRIBUTING.md#code-review) describes.
+
+**Two-factor authentication is mandatory.** Two-factor authentication (2FA)
+means that signing in takes a second proof of identity on top of the password.
+Anyone who holds write or admin access to this repository, or access to any of
+the project's credentials, must have two-factor authentication turned on for
+each of those accounts.
+The credentials are the crates.io account, the Homebrew tap repository, the
+Cloudflare account that serves sipnab.com, and the security@sipnab.com mailbox
+that receives private vulnerability reports by email. The maintainer reads reports
+filed through GitHub's private vulnerability reporting while signed in to a
+GitHub account with admin access here, so the rule for GitHub accounts covers
+them.
+
+The second factor must be an authenticator app that shows a time-based
+one-time code (TOTP), or a hardware security key or passkey. SMS is not
+accepted, because anyone who takes over the phone number receives the text
+message. The maintainer confirms that 2FA is on before granting access, and
+removes the access if 2FA is later turned off. This rule does not rely on
+GitHub's own 2FA requirement, which applies only to some accounts.
+
 ## Succession
 
 There is none, and that is worth stating plainly. If this project matters to your
