@@ -27,16 +27,14 @@ use std::time::{Duration, Instant};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
-/// Ask the OS for a free port, then release it.
-///
-/// `--metrics 127.0.0.1:0` would let sipnab pick, but the port it chose is only
-/// in its log, and racing a log parse is how this test would go flaky.
-fn free_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-    let p = l.local_addr().expect("read it back").port();
-    drop(l);
-    p
-}
+#[path = "support/headless_metrics.rs"]
+mod headless_metrics;
+use headless_metrics::{HeadlessMetrics, metrics_addr};
+
+/// How long a freshly spawned run may take to report its metrics address. A
+/// cold CI runner spawning a freshly linked binary is slower than a warm
+/// laptop, and the wait ends the moment the line arrives.
+const SPAWN_BUDGET: Duration = Duration::from_secs(30);
 
 fn sipnab_bin() -> std::path::PathBuf {
     let mut p = std::env::current_exe().expect("test binary path");
@@ -57,23 +55,10 @@ fn sipnab_bin() -> std::path::PathBuf {
 /// how a collector deployment runs.
 #[test]
 fn metrics_binds_and_answers_in_headless_mode() {
-    let hep = free_port();
-    let metrics = free_port();
-    let addr = format!("127.0.0.1:{metrics}");
-
-    let mut child = Command::new(sipnab_bin())
-        .args([
-            "-N",
-            "--hep-listen",
-            &format!("127.0.0.1:{hep}"),
-            "--metrics",
-            &addr,
-            "--quiet",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab");
+    let run =
+        HeadlessMetrics::spawn(&sipnab_bin(), &[], SPAWN_BUDGET).unwrap_or_else(|e| panic!("{e}"));
+    let addr = run.addr.clone();
+    let mut child = run.child;
 
     let mut body = String::new();
     for _ in 0..60 {
@@ -181,38 +166,26 @@ fn a_non_loopback_bind_without_auth_is_still_refused_headless() {
 /// # Side effects
 /// Spawns the compiled `sipnab` binary against a HEP listener and kills it.
 fn scrape_with(extra: &[&str]) -> String {
-    let hep = free_port();
-    let metrics = free_port();
-    let addr = format!("127.0.0.1:{metrics}");
-
-    let mut args = vec![
-        "-N".to_string(),
-        "--hep-listen".to_string(),
-        format!("127.0.0.1:{hep}"),
-        "--metrics".to_string(),
-        addr.clone(),
-        "--quiet".to_string(),
-        "--no-config".to_string(),
-    ];
-    args.extend(extra.iter().map(|s| (*s).to_string()));
+    let mut args = vec!["--no-config"];
+    args.extend_from_slice(extra);
 
     // stderr is KEPT, not discarded. This loop used to give up after six
     // seconds and assert "nothing answered on <addr>", which is the same
     // message whether sipnab was slow to bind, exited immediately on a bad
-    // argument, or lost the race for an ephemeral port that `free_port` had
-    // already released. On 2026-09-10 it failed exactly that way on a macOS
-    // runner and the log said nothing more than the port number.
-    let mut child = Command::new(sipnab_bin())
-        .args(&args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab");
+    // argument, or lost the race for an ephemeral port a helper had already
+    // released. On 2026-09-10 it failed exactly that way on a macOS runner
+    // and the log said nothing more than the port number. The port is now
+    // the kernel's choice and sipnab's from the start, so that last cause is
+    // gone rather than merely reported.
+    let mut run = HeadlessMetrics::spawn(&sipnab_bin(), &args, SPAWN_BUDGET)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let addr = run.addr.clone();
 
     // Thirty seconds, not six. A cold CI runner spawning a freshly linked
     // binary is slower than a warm laptop by more than the old budget
     // allowed, and the loop exits the moment the endpoint answers, so a
     // generous ceiling costs nothing when things work.
+    let child = &mut run.child;
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut body = String::new();
     let mut died: Option<ExitStatus> = None;
@@ -242,19 +215,31 @@ fn scrape_with(extra: &[&str]) -> String {
             }
         }
     }
-    let _ = terminate(&mut child);
-    let stderr = child
-        .stderr
-        .take()
-        .map(|mut e| {
-            use std::io::Read;
-            let mut buf = String::new();
-            let _ = e.read_to_string(&mut buf);
-            buf
-        })
-        .unwrap_or_default();
+    let _ = terminate(child);
+    let stderr = run.stderr();
     assert!(!body.is_empty(), "{}", scrape_failure(&addr, died, &stderr));
     body
+}
+
+/// The harness reads the metrics address from the run's own startup line, and
+/// from nothing else.
+#[test]
+fn the_metrics_address_is_read_from_its_startup_line() {
+    assert_eq!(
+        metrics_addr(
+            "2026-10-01T09:05:36.820883Z  INFO sipnab::output::prometheus_server: \
+             Prometheus metrics server listening on 127.0.0.1:34711"
+        ),
+        Some("127.0.0.1:34711".parse().expect("literal"))
+    );
+    assert_eq!(
+        metrics_addr("ERROR Failed to bind metrics server on 127.0.0.1:34711: in use"),
+        None
+    );
+    assert_eq!(
+        metrics_addr("Prometheus metrics server listening on 127.0.0.1:x"),
+        None
+    );
 }
 
 /// Why a scrape came back empty, in words rather than a port number.

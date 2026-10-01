@@ -18,6 +18,9 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
+#[cfg(feature = "metrics")]
+#[path = "support/headless_metrics.rs"]
+mod headless_metrics;
 /// The `api_max_rows` and `api_rate_limit_per_peer` probes drive a real
 /// `--api` listener, which is what this harness spawns and reaps.
 #[cfg(feature = "api")]
@@ -2424,33 +2427,17 @@ fn probe_metrics_max_conn() -> (String, String) {
     /// Mirrors the `set_read_timeout` in `src/output/prometheus_server.rs`.
     const METRICS_HANDLER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    /// Bind an ephemeral port and release it, so the probe knows the number.
-    fn free_port() -> u16 {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        let p = l.local_addr().expect("read it back").port();
-        drop(l);
-        p
-    }
-
     fn second_scrape_verdict(extra: &[&str]) -> String {
-        let hep = free_port();
-        let metrics = free_port();
-        let addr = format!("127.0.0.1:{metrics}");
-        let mut args = vec![
-            "-N".to_string(),
-            "--hep-listen".to_string(),
-            format!("127.0.0.1:{hep}"),
-            "--metrics".to_string(),
-            addr.clone(),
-            "--quiet".to_string(),
-        ];
-        args.extend(extra.iter().map(|s| (*s).to_string()));
-        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
-            .args(&args)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn sipnab");
+        // Both listeners on ports the kernel chose, never on a number picked
+        // here and released first (see `support/headless_metrics.rs`).
+        let run = headless_metrics::HeadlessMetrics::spawn(
+            std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")),
+            extra,
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let addr = run.addr.clone();
+        let mut child = run.child;
 
         // Wait until the server actually SERVES, not merely until a connect
         // succeeds. A bare connect takes a permit and its handler holds it for

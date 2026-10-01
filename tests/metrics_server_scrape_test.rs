@@ -11,7 +11,7 @@
 #![cfg(feature = "metrics")]
 
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,14 +21,13 @@ use sipnab::output::prometheus_server::start_metrics_server;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
-/// A free loopback address: bind to port 0, read the assignment, release it.
+/// Where every server here is bound: loopback, port 0, so the kernel chooses
+/// and the address the server reports back is the one to scrape.
 ///
-/// # Returns
-/// An address the metrics server can claim.
-fn free_addr() -> SocketAddr {
-    let l = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-    l.local_addr().expect("local addr")
-}
+/// Never a port picked here and released for the server to bind again: in
+/// that gap a parallel test can take it, and the server then fails with
+/// "Address already in use" (PORT-RACE-HEP).
+const EPHEMERAL: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 /// Issue one raw HTTP/1.1 request and read the response to EOF.
 ///
@@ -110,9 +109,8 @@ fn standalone_scrape_publishes_wired_counters() {
     let packet = Packet::new(chrono::Utc::now(), vec![0x00; 14], 14, 14, None, 1);
     let _ = processor.process(&packet);
 
-    let addr = free_addr();
-    let _handle = start_metrics_server(
-        addr,
+    let (addr, _handle) = start_metrics_server(
+        EPHEMERAL,
         answered_call(),
         Arc::new(RwLock::new(StreamStore::new(100))),
         None,
@@ -173,9 +171,8 @@ fn standalone_scrape_publishes_the_undecodable_series() {
     let packet = Packet::new(chrono::Utc::now(), vec![0x00; 64], 64, 64, None, 147);
     let _ = processor.process(&packet);
 
-    let addr = free_addr();
-    let _handle = start_metrics_server(
-        addr,
+    let (addr, _handle) = start_metrics_server(
+        EPHEMERAL,
         answered_call(),
         Arc::new(RwLock::new(StreamStore::new(100))),
         None,

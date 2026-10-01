@@ -626,6 +626,44 @@ fn the_worker_starts_before_anything_that_could_stop_an_exec() {
     }
 }
 
+/// The address a HEP listener's startup line names, if `line` is that line.
+///
+/// The run is started on `127.0.0.1:0`, so this line is the only place the
+/// port the kernel chose is written down.
+#[cfg(feature = "hep")]
+fn hep_listener_addr(line: &str) -> Option<std::net::SocketAddr> {
+    line.split("HEP listener started on ")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The listener's own log line is read for its address, and nothing else is.
+#[cfg(feature = "hep")]
+#[test]
+fn the_hep_listener_address_is_read_from_its_startup_line() {
+    assert_eq!(
+        hep_listener_addr(
+            "2026-10-01T09:03:51.760321Z  INFO sipnab::capture::hep: HEP listener started on 127.0.0.1:49372"
+        ),
+        Some("127.0.0.1:49372".parse().expect("literal"))
+    );
+    assert_eq!(
+        hep_listener_addr("INFO HEP listener started on 127.0.0.1:5061 (tcp)"),
+        Some("127.0.0.1:5061".parse().expect("literal"))
+    );
+    assert_eq!(
+        hep_listener_addr("INFO HEP allowlist active: 1 CIDR range(s)"),
+        None
+    );
+    assert_eq!(
+        hep_listener_addr("HEP listener started on 127.0.0.1:0x"),
+        None
+    );
+}
+
 /// Reads whatever `child` writes on stderr into a channel, line by line.
 ///
 /// Gated with its only caller: without `hep` it is dead code, and the feature
@@ -661,11 +699,6 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
     let (listener, scanner_port) = scanner();
-    let hep_port = {
-        let s = UdpSocket::bind("127.0.0.1:0").expect("pick a port");
-        s.local_addr().expect("addr").port()
-    };
-    let bind = format!("127.0.0.1:{hep_port}");
     let home = tempfile::tempdir().expect("tempdir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     // Start the run holding two stray descriptors WITHOUT close-on-exec, the
@@ -695,8 +728,12 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         command
             .args([
                 "-N",
+                // Port 0: the kernel chooses, and the port is the run's from the
+                // moment it exists. A port picked here and released before the
+                // run bound it could be taken by a parallel test in between
+                // ("Address already in use", PORT-RACE-HEP).
                 "--hep-listen",
-                &bind,
+                "127.0.0.1:0",
                 "--hep-parse",
                 "--hep-allow-kill",
                 "-K",
@@ -834,14 +871,12 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         );
     }
 
-    // Wait for the HEP listener, then deliver a request from the -K target.
-    within(test_timeout(30), || {
-        let needle = format!("0100007F:{hep_port:04X}");
-        std::fs::read_to_string("/proc/net/udp")
-            .ok()
-            .filter(|t| t.lines().any(|l| l.contains(&needle)))
-    })
-    .expect("the HEP listener binds");
+    // Wait for the HEP listener to say where it bound, then deliver a request
+    // from the -K target there.
+    let started = wait_for("the HEP listener's bound address", &|l| {
+        hep_listener_addr(l).is_some()
+    });
+    let bind = hep_listener_addr(&started).expect("the line just matched");
     let send_options = |n: u32| {
         let sip = format!(
             "OPTIONS sip:probe@127.0.0.1 SIP/2.0\r\n\
@@ -870,7 +905,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         );
         UdpSocket::bind("127.0.0.1:0")
             .expect("sender")
-            .send_to(&hep, &bind)
+            .send_to(&hep, bind)
             .expect("send HEP");
     };
     send_options(1);
