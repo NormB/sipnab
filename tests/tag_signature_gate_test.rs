@@ -88,6 +88,9 @@ fn check(f: &Fixture, tag: &str) -> (bool, String) {
         Command::new("git")
             .current_dir(&f.root)
             .args(["rev-parse", tag])
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
             .output()
             .expect("rev-parse")
             .stdout,
@@ -97,6 +100,12 @@ fn check(f: &Fixture, tag: &str) -> (bool, String) {
         .arg(script())
         .arg(sha.trim())
         .current_dir(&f.root)
+        // A commit hook exports GIT_DIR and GIT_INDEX_FILE for the repository
+        // being committed; inherited, they point every git call here at that
+        // repository instead of the fixture.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
         .env("SIPNAB_ALLOWED_SIGNERS", &f.allowed)
         .output()
         .expect("script runs");

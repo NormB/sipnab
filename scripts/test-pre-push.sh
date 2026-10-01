@@ -194,6 +194,9 @@ ensure_repo_shape() {
 	mkdir -p "$CRATE/scripts"
 	[ -f "$CRATE/scripts/code-scanning-clean.py" ] \
 		|| printf 'raise SystemExit(0)\n' >"$CRATE/scripts/code-scanning-clean.py"
+	# The tag gate's first check is the signature rule itself, copied rather
+	# than stubbed so these scenarios exercise the script the hook ships with.
+	cp "$REPO_ROOT/scripts/tag-signature-check.sh" "$CRATE/scripts/"
 	mkdir -p "$CRATE/tests"
 	for target in release_delivery_test tui_e2e_test; do
 		[ -f "$CRATE/tests/$target.rs" ] && continue
@@ -571,7 +574,63 @@ EOF
 	&& git add -A \
 	&& git commit -qm fixture ) >/dev/null 2>&1
 TAGGED=$( cd "$CRATE" && git rev-parse HEAD )
-REFLINE="refs/tags/v9.9.9 $TAGGED refs/tags/v9.9.9 0000000000000000000000000000000000000000"
+
+# A v* tag must also be signed by a key in .github/allowed_signers, and that
+# gate runs first. The fixture trusts one throwaway key, so the CI scenarios
+# push a tag that passes it, and the signature scenarios below push the tags it
+# must refuse. tag.gpgSign is forced off for the unsigned ones: a machine whose
+# global config signs every tag would otherwise sign them with its own key.
+ssh-keygen -q -t ed25519 -N "" -C trusted -f "$TMP/trusted" </dev/null
+ssh-keygen -q -t ed25519 -N "" -C untrusted -f "$TMP/untrusted" </dev/null
+mkdir -p "$CRATE/.github"
+printf 't@example.com namespaces="git" %s\n' "$(cat "$TMP/trusted.pub")" >"$CRATE/.github/allowed_signers"
+sign_tag() { # $1 = tag name, $2 = key
+	( cd "$CRATE" && git -c gpg.format=ssh -c "user.signingkey=$2.pub" tag -s -m release "$1" ) >/dev/null 2>&1
+}
+sign_tag v9.9.9 "$TMP/trusted"
+sign_tag v9.9.6 "$TMP/untrusted"
+( cd "$CRATE" \
+	&& git -c tag.gpgSign=false tag -a -m release v9.9.7 \
+	&& git -c tag.gpgSign=false tag v9.9.8 ) >/dev/null 2>&1
+tag_ref() { # $1 = tag name -> the pre-push stdin line pushing it
+	printf 'refs/tags/%s %s refs/tags/%s 0000000000000000000000000000000000000000' \
+		"$1" "$( cd "$CRATE" && git rev-parse "$1" )" "$1"
+}
+for t in v9.9.9 v9.9.6 v9.9.7; do
+	if [ "$( cd "$CRATE" && git cat-file -t "$t" 2>/dev/null )" != tag ]; then
+		bad "fixture: $t is not an annotated tag, so the tag scenarios cannot run"
+	fi
+done
+REFLINE=$(tag_ref v9.9.9)
+
+# SIGNATURE: each unsigned or untrusted shape is blocked by the signature gate,
+# named, before CI is consulted. gh reports green so only the signature can
+# block.
+make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"success\",\"name\":\"CI\"}]"
+for case in "v9.9.8|is a lightweight tag|a lightweight tag" \
+	"v9.9.7|is not signed|an unsigned annotated tag" \
+	"v9.9.6|is not a trusted signer|a tag signed by an untrusted key"; do
+	t=${case%%|*}; rest=${case#*|}; why=${rest%%|*}; what=${rest#*|}
+	if PATH="$STUB_BIN:$PATH" run_hook "" "$(tag_ref "$t")"; then
+		bad "signature gate ALLOWED $what"
+		sed 's/^/    /' "$TMP/out.log"
+	elif ! blocked_for "Push blocked: tag" || ! blocked_for "$why"; then
+		bad "signature gate blocks $what: blocked, but not by that gate"
+		sed 's/^/    /' "$TMP/out.log"
+	elif blocked_for "checking CI"; then
+		bad "signature gate blocks $what, but only after asking CI"
+	else
+		ok "signature gate blocks $what"
+	fi
+done
+
+# A tag signed by the trusted key passes the signature gate and says whose key.
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE" && blocked_for 'Good "git" signature for t@example.com'; then
+	ok "signature gate passes a tag signed by a trusted key and names the signer"
+else
+	bad "signature gate did not pass a tag signed by a trusted key"
+	sed 's/^/    /' "$TMP/out.log"
+fi
 
 # GREEN: every run for the commit completed successfully -> allowed.
 make_gh "[{\"headSha\":\"$TAGGED\",\"status\":\"completed\",\"conclusion\":\"success\",\"name\":\"CI\"}]"
