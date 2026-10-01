@@ -429,6 +429,214 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
     }
 }
 
+/// The property behind the test above, checked where it is decided: this
+/// process must never hold a descriptor on a fake binary, not even briefly.
+///
+/// The test above only sees a descriptor that a sibling child still holds
+/// when the binary runs. A helper that opens the file here just to create it,
+/// then has a child write it, closes its descriptor well before that, so the
+/// run succeeds and the defect hides (that mutant survived 400 iterations).
+///
+/// Here probe children list their own descriptors -- copies of this process's
+/// table at the instant they were created -- and report any that names a file
+/// in the fake binaries' directory, so a catch depends only on a probe being
+/// created inside the window. Probes are made with `clone(CLONE_VM)`, the way
+/// `posix_spawn` makes the children that hit this in practice. Without a copy
+/// of the address space they come about fifty times as often as `fork`
+/// children did (12,000 to 16,000 a second against about 270, measured on
+/// thor-02);
+/// forked probes missed that mutant in 2 runs of 5, these caught it in 20 of
+/// 20. Linux only: `clone` and `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+#[test]
+fn this_process_never_holds_a_fake_binary_open() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("binary dir");
+    let reports_path = tmp.path().join("held");
+    let reports = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&reports_path)
+        .expect("reports file");
+    let mut prefix = elsewhere.as_os_str().as_bytes().to_vec();
+    prefix.push(b'/');
+    let probe = Arc::new(Probe {
+        prefix,
+        report_fd: reports.as_raw_fd(),
+    });
+    let lowest_free = std::fs::File::open("/dev/null").expect("open /dev/null");
+    assert!(
+        lowest_free.as_raw_fd() < SCANNED_FDS / 2,
+        "descriptor {} is already in use here; a probe scanning {SCANNED_FDS} \
+         could miss one",
+        lowest_free.as_raw_fd()
+    );
+    drop(lowest_free);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let probes = Arc::new(AtomicU64::new(0));
+    let probers: Vec<_> = (0..PROBERS)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            let probes = Arc::clone(&probes);
+            let probe = Arc::clone(&probe);
+            std::thread::spawn(move || {
+                let mut stack = vec![0_u8; 256 * 1024];
+                while !stop.load(Ordering::Relaxed) {
+                    run_probe(&probe, &mut stack);
+                    probes.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for i in 0..CREATED {
+        fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
+    }
+    stop.store(true, Ordering::Relaxed);
+    for prober in probers {
+        prober.join().expect("prober thread");
+    }
+    drop(reports);
+    let probes = probes.load(Ordering::Relaxed);
+    assert!(
+        probes >= CREATED as u64,
+        "only {probes} probes ran while {CREATED} fake binaries were made: the \
+         check never had a chance"
+    );
+    let held = std::fs::read_to_string(&reports_path).expect("reports");
+    assert!(
+        held.is_empty(),
+        "a child created while fake_binary ran inherited a descriptor on a fake \
+         binary ({probes} probes): {held}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+const PROBERS: usize = 4;
+#[cfg(target_os = "linux")]
+const CREATED: usize = 400;
+/// Descriptors a probe looks at. One opened in this process takes the lowest
+/// free number, so this only has to exceed how many are open at once; the
+/// test checks that it does.
+#[cfg(target_os = "linux")]
+const SCANNED_FDS: i32 = 256;
+
+/// What a probe child needs, built before any probe exists.
+#[cfg(target_os = "linux")]
+struct Probe {
+    prefix: Vec<u8>,
+    report_fd: i32,
+}
+
+/// Create one probe child and wait for it.
+#[cfg(target_os = "linux")]
+fn run_probe(probe: &Probe, stack: &mut [u8]) {
+    extern "C" fn child(arg: *mut libc::c_void) -> libc::c_int {
+        // SAFETY: `arg` is the `&Probe` passed below, alive until the parent's
+        // wait returns, which is after this child has exited.
+        let probe = unsafe { &*arg.cast::<Probe>() };
+        report_held_descriptors(&probe.prefix, probe.report_fd);
+        0
+    }
+    spawn_and_wait_in_this_address_space(child, std::ptr::from_ref(probe).cast_mut().cast(), stack);
+}
+
+/// Run `child(arg)` in a new process that shares this address space but has
+/// its own copy of the descriptor table, and wait for it to exit.
+///
+/// `child` must make only async-signal-safe calls on its own stack and read
+/// nothing `arg` does not keep alive; `stack` is its stack, untouched by this
+/// process until the wait has returned.
+#[cfg(target_os = "linux")]
+fn spawn_and_wait_in_this_address_space(
+    child: extern "C" fn(*mut libc::c_void) -> libc::c_int,
+    arg: *mut libc::c_void,
+    stack: &mut [u8],
+) {
+    // The stack grows down: hand clone the 16-byte-aligned top.
+    let top = (stack.as_mut_ptr() as usize + stack.len()) & !15;
+    // SAFETY: CLONE_VM without CLONE_FILES gives the child a copy of the
+    // descriptor table and this address space, the way posix_spawn does. The
+    // caller's contract above keeps the child off anything but its own stack
+    // and `arg`, and this function waits for it before either can go away.
+    let pid = unsafe {
+        libc::clone(
+            child,
+            top as *mut libc::c_void,
+            libc::CLONE_VM | libc::SIGCHLD,
+            arg,
+        )
+    };
+    assert!(pid > 0, "clone failed: {}", std::io::Error::last_os_error());
+    let mut status = 0;
+    // SAFETY: waits for the child created above.
+    let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert_eq!(waited, pid, "{}", std::io::Error::last_os_error());
+}
+
+/// In a probe child: write the path of every descriptor that names a file
+/// under `prefix`, one per line, to `report_fd`. Async-signal-safe: raw
+/// fcntl(2), readlink(2) and write(2) on stack buffers, no allocation.
+#[cfg(target_os = "linux")]
+fn report_held_descriptors(prefix: &[u8], report_fd: i32) {
+    const FD_DIR: &[u8] = b"/proc/self/fd/";
+    for fd in 0..SCANNED_FDS {
+        // Cheap filter first: only a regular file can be a fake binary.
+        // SAFETY: `libc::stat` is plain integers, for which all-zero is valid.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `stat` is a live stack value fstat(2) fills in.
+        let failed = unsafe { libc::fstat(fd, &mut stat) } < 0;
+        if failed || stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        let mut link = [0_u8; 32];
+        link[..FD_DIR.len()].copy_from_slice(FD_DIR);
+        let mut digits = [0_u8; 10];
+        let mut n = fd.unsigned_abs();
+        let mut len = 0;
+        loop {
+            digits[len] = b'0' + (n % 10) as u8;
+            len += 1;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        for k in 0..len {
+            link[FD_DIR.len() + k] = digits[len - 1 - k];
+        }
+        // `link` is zero-filled, so it is NUL-terminated after the digits.
+        let mut target = [0_u8; 4096];
+        // SAFETY: both buffers are live stack arrays of the stated sizes.
+        let got = unsafe {
+            libc::readlink(
+                link.as_ptr().cast(),
+                target.as_mut_ptr().cast(),
+                target.len(),
+            )
+        };
+        let Ok(got) = usize::try_from(got) else {
+            continue;
+        };
+        let target = &target[..got];
+        if target.starts_with(prefix) {
+            // SAFETY: writes from live buffers to a descriptor this child
+            // inherited open.
+            unsafe {
+                libc::write(report_fd, target.as_ptr().cast(), target.len());
+                libc::write(report_fd, b"\n".as_ptr().cast(), 1);
+            }
+        }
+    }
+}
+
 /// One binary that cannot start is that binary's failure. It must not abort
 /// the pool (a Python traceback instead of results), and the rest still run.
 #[test]
