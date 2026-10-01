@@ -1132,7 +1132,10 @@ fn wiki_intra_docs_links_resolve() {
     // 1275 -> 1280 with the proxy guides' audio calls: opensips.md and
     // kamailio.md each link their sipnab page and rtpengine-relay.md (+2 each),
     // and opensips-sipnab.md's "Tested on" links its own Kamailio section (+1).
-    const EXPECTED_WIKI_LINKS: usize = 1280;
+    // 1280 -> 1279: fail2ban-sipnab.md no longer links fail2ban.md's install
+    // step, from the paragraph about the shipped jail's broken iptables action,
+    // which the jail fix removed. Measured on the older base: 1275 -> 1274.
+    const EXPECTED_WIKI_LINKS: usize = 1279;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

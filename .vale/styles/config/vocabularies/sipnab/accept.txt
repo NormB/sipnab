@@ -774,3 +774,4 @@ zeroizes
 zeroizing
 zsh
 nftables
+iptables

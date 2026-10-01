@@ -510,4 +510,77 @@ mod tests {
             }
         }
     }
+
+    /// The value of `key` among the shipped jail's ACTIVE settings: comment
+    /// lines are skipped, so a setting shown only as a commented alternative
+    /// is not one.
+    fn shipped_jail_setting(key: &str) -> Option<String> {
+        include_str!("../../contrib/fail2ban/sipnab-jail.conf")
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#') && !l.starts_with(';'))
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .map(|(_, v)| v.trim().to_string())
+    }
+
+    /// The SHIPPED jail bans with nftables and reads the file it names.
+    ///
+    /// Measured on clean Debian 13 and Ubuntu 24.04 (GUIDE-F2B, 2026-10-01),
+    /// the jail as shipped banned nobody on either. Its `iptables-allports`
+    /// action needs the `iptables` command, which installing fail2ban on
+    /// Debian 13 leaves out: fail2ban listed the address as banned while the
+    /// ban action failed with `returned 127`, and the scanner's traffic still
+    /// got through. And with no `backend`, Ubuntu's packaged default
+    /// (`backend = systemd`) made the jail read the journal and ignore
+    /// `logpath`, so it never saw a line sipnab wrote.
+    #[test]
+    fn the_shipped_jail_bans_with_nftables_and_reads_its_log_file() {
+        assert_eq!(
+            shipped_jail_setting("action").as_deref(),
+            Some(r#"nftables[type=allports, name=sipnab, protocol="udp,tcp"]"#),
+            "the shipped jail must ban with nftables on every port, UDP and TCP"
+        );
+        assert_eq!(
+            shipped_jail_setting("backend").as_deref(),
+            Some("auto"),
+            "without backend = auto, a distribution default of systemd makes \
+             the jail read the journal and never the log sipnab writes"
+        );
+    }
+
+    /// The shipped jail waits for five detections before it bans.
+    ///
+    /// One was the old setting. A single scanner_detected line is how a busy
+    /// trunk can look, and `maxretry = 1` turned any one of them into an
+    /// hour's ban of every port (Norm, 2026-10-01: 5).
+    #[test]
+    fn the_shipped_jail_bans_after_five_detections() {
+        assert_eq!(
+            shipped_jail_setting("maxretry").as_deref(),
+            Some("5"),
+            "the shipped jail should ban after five detections inside findtime"
+        );
+    }
+
+    /// The legacy-iptables action is offered, and only as a comment.
+    #[test]
+    fn the_shipped_jail_offers_iptables_only_as_a_comment() {
+        let conf = include_str!("../../contrib/fail2ban/sipnab-jail.conf");
+        let mentions: Vec<&str> = conf
+            .lines()
+            .filter(|l| l.contains("iptables-allports"))
+            .collect();
+        assert!(
+            !mentions.is_empty(),
+            "the shipped jail should show the iptables-allports alternative \
+             for hosts without nftables"
+        );
+        for l in mentions {
+            assert!(
+                l.trim_start().starts_with('#'),
+                "iptables-allports must appear only in a comment, found: {l}"
+            );
+        }
+    }
 }

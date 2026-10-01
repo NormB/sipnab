@@ -1407,7 +1407,13 @@ maxretry = 5
 # An hour, not a day. Long enough to shed a scan, short enough that a wrong
 # ban of your own carrier heals without an engineer.
 bantime = 3600
-action = iptables-allports
+# Read logpath whatever the distribution's default backend is: Ubuntu 24.04's
+# is systemd, which reads the journal and never this file.
+backend = auto
+# Ban on every port, UDP and TCP, with nftables, as Debian 13's fail2ban does.
+action = nftables[type=allports, name=sipnab, protocol="udp,tcp"]
+# On a host that bans with legacy iptables instead, use:
+# action = iptables-allports[name=sipnab, protocol=all]
 ```
 
 Verify the filter against a real log file before enabling the jail, and check the ban list afterwards — `fail2ban-regex` reports what it would have matched without banning anything:
