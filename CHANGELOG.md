@@ -10,6 +10,23 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The OpenSIPS and Kamailio guides' test calls now carry audio.** They used
+  SIPp's `uac` scenario, which sends SDP and no RTP, so sipnab never had media
+  to show. The calls now play SIPp's G.711 sample (`uac_pcap`) to a callee that
+  echoes it, and the guides and their sipnab pages ran again on Debian 13 and
+  Ubuntu 24.04 with the audio checked on the wire. The runs moved the pages:
+  - The sipnab pages say what the report shows under the call: four RTP
+    streams, 236 `PCMA` and 10 `telephone-event` packets each way.
+  - They quote the `100` each proxy actually sends (`100 Giving it a try`,
+    `100 trying -- your call is important to us`), not `100 Trying`.
+  - Their troubleshooting item quotes what sipnab prints when it sees the
+    call's audio but not its SIP: `No SIP signaling found, but ...`.
+  - With both proxies on one machine, they say that the two calls' audio,
+    sent from the same ports with the same SSRC, shows as one stream per
+    direction.
+
 ### Security
 
 - **The site-test tooling no longer pulls in a vulnerable `basic-ftp`.**

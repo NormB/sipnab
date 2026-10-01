@@ -13,20 +13,21 @@ OpenSIPS](opensips-sipnab.md) adds sipnab. If you use Kamailio instead, see
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, on clean
+Every block on this page ran as written, in order, on 2026-10-01, on clean
 x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13 (kernel
-6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, the source build ran on a
-machine with nothing installed, and the 4.0 packages on a machine already
-running Kamailio. [OpenSIPS and Kamailio on one
-machine](#opensips-and-kamailio-on-one-machine) and the uninstall ran on both.
-On Debian 13, causing each fault under [When something does not
-work](#when-something-does-not-work) produced the message it quotes.
+6.12.63) and Ubuntu 24.04 (kernel 6.8.0). On each, the source build ran on a
+machine with nothing installed, and the 4.0 packages on the same machine after
+its uninstall removed the source build, with Kamailio already running on 5062.
+[OpenSIPS and Kamailio on one machine](#opensips-and-kamailio-on-one-machine)
+and the uninstall ran on both. Every test call carried audio both ways, counted
+on the wire, and causing each fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes, on both.
 
 | Software | Version or commit |
 |---|---|
 | OpenSIPS, from packages | 4.0.2, the current stable release, from the OpenSIPS project's own package repository |
 | OpenSIPS, from source | [`f46ef9337b`](https://github.com/OpenSIPS/opensips/commit/f46ef9337b), master, 4.1.0-dev |
-| SIPp (for the test call) | the distribution's `sip-tester` |
+| SIPp (for the test call) | the distribution's `sip-tester`: 3.7.3 on Debian 13, 3.7.2 on Ubuntu 24.04 |
 
 The examples use `192.0.2.10` as the machine's address. Replace it with yours
 everywhere it appears.
@@ -231,26 +232,35 @@ anything starts.
 
 ## 3. Place a test call
 
-SIPp plays both ends: a callee on this machine, and a caller that dials through
-OpenSIPS. SIPp's built-in caller ignores the `Record-Route` header, so its
-`BYE` would miss the proxy and draw `404 Not here`. The two route `sed` lines
-make it honor the route set, the way a real phone does. The callee writes what
-it receives to `uas.msg`:
+SIPp plays both ends: a callee on this machine that echoes audio back, and a
+caller that dials through OpenSIPS and plays a recorded G.711 sample, so the
+call carries real audio both ways. SIPp's built-in caller ignores the
+`Record-Route` header, so its `BYE` would miss the proxy and draw
+`404 Not here`. The two route `sed` lines make it honor the route set, the way
+a real phone does. The callee writes what it receives to `uas.msg`:
 
 ```bash
 # Run all of these, in order.
 sudo apt-get install -y sip-tester
-mkdir -p ~/sipp && cd ~/sipp
-sipp -sd uac > uac_rr.xml
-sed -i 's|<recv response="200" rtd="true">|<recv response="200" rtd="true" rrs="true">|' uac_rr.xml
+mkdir -p ~/sipp/pcap && cd ~/sipp
+ln -sf /usr/share/sip-tester/*.pcap pcap/
+sipp -sd uac_pcap > uac_rr.xml
+sed -i 's|<recv response="200" rtd="true" crlf="true">|<recv response="200" rtd="true" crlf="true" rrs="true">|' uac_rr.xml
 sed -i -E 's#^( *)(ACK|BYE) sip:\[service\]@\[remote_ip\]:\[remote_port\] SIP/2.0#\1\2 [next_url] SIP/2.0\n\1[routes]#' uac_rr.xml
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -trace_msg -message_file uas.msg -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -trace_msg -message_file uas.msg -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 awk '/INVITE sip:/{f=1} f' uas.msg | grep -m1 -i '^Record-Route:'
 ```
 
-At the end SIPp's statistics screen shows `Successful call` at 1, and the last
-line prints the `Record-Route` OpenSIPS added.
+The caller needs `sudo` because it plays the audio sample through a raw socket.
+It sends about 7 seconds of audio, then a short DTMF clip, and hangs up. At the
+end SIPp's statistics screen shows `Successful call` at 1, and the last line
+prints the `Record-Route` OpenSIPS added.
+
+OpenSIPS carries the signaling only. The audio goes straight between the two
+ends, at the addresses and ports their SDP names, so this proxy never touches
+it. [Run sipnab beside OpenSIPS](opensips-sipnab.md) shows both directions of
+it, and [rtpengine](rtpengine-relay.md) puts a media relay in its path.
 
 ## 4. Operate it
 
@@ -336,4 +346,4 @@ sipnab both ports with `--portrange 5060-5062`.
 - **`opensips-cli` says `no command 'get_statistics' in module 'mi'`.** That
   is the OpenSIPS 3 name. OpenSIPS 4 calls it `statistics:get`.
 - **The test call's `BYE` gets `404 Not here`.** The caller ignored the route
-  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac`.
+  set. Use the edited `uac_rr.xml`, not SIPp's built-in `uac_pcap`.

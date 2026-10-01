@@ -11,13 +11,15 @@ the packages or built from source.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
-sipnab 0.5.193 from its release package, on the Debian 13 (kernel 6.12.63) and
-Ubuntu 24.04.5 (kernel 6.8.0) machines that [the OpenSIPS guide](opensips.md)
-had set up, with OpenSIPS from source and from the packages, and with
-Kamailio beside it. On Debian 13, causing the fault under
-[When something does not work](#when-something-does-not-work) produced the
-message it quotes. The examples use `192.0.2.10` as the machine's address.
+Every block on this page ran as written, in order, on 2026-10-01, with sipnab
+0.5.198 from its release package, on the Debian 13 (kernel 6.12.63) and Ubuntu
+24.04 (kernel 6.8.0) machines that [the OpenSIPS guide](opensips.md) had set
+up: step 2 with OpenSIPS from source, and [With Kamailio on the same
+machine](#with-kamailio-on-the-same-machine) with the OpenSIPS packages. The
+test calls carried audio, and the terminal interface showed each call on one
+row. On both, causing the fault under [When something does not
+work](#when-something-does-not-work) produced the message it quotes. The
+examples use `192.0.2.10` as the machine's address.
 
 ## 1. Install sipnab
 
@@ -47,19 +49,24 @@ While it runs, place a test call from a second terminal, as in
 ```bash
 # Run all of these, in order.
 cd ~/sipp
-sipp -sn uas -i 127.0.0.1 -p 5070 -m 1 -bg
-sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -m 1 -d 1000 -timeout 20s
+sipp -sn uas -i 127.0.0.1 -p 5070 -rtp_echo -m 1 -bg
+sudo sipp -sf uac_rr.xml 192.0.2.10:5060 -i 192.0.2.10 -p 5080 -s echo -m 1 -timeout 90s
 ```
 
 sipnab prints every message OpenSIPS relays twice, once on each leg: the
 caller's `INVITE` to OpenSIPS at `192.0.2.10:5060`, then OpenSIPS's copy of it
 to the callee at `127.0.0.1:5070`, and the same for the replies and the `BYE`.
-OpenSIPS's own `100 Trying` goes to the caller alone. When the 30 seconds are
-up, the report lists the call once, as `Completed`, with 13 messages from both
-legs.
+OpenSIPS's own `100 Giving it a try` goes to the caller alone. When the 30
+seconds are up, the report lists the call once, as `Completed`, with 13
+messages from both legs. Below it, an `RTP Streams:` table holds the call's
+audio, which goes straight between the caller and the callee and never through
+OpenSIPS: the caller's 236 `PCMA` packets and 10 `telephone-event` (DTMF)
+packets, and the same again coming back from the callee's echo, four streams in
+all.
 
 For the same view in a terminal interface, which updates as calls happen, run
-`sudo sipnab -d any` without `-N` and without `--duration`.
+`sudo sipnab -d any` without `-N` and without `--duration`. It lists the call on
+one row, `Completed`, with the same 13 messages.
 
 ## With Kamailio on the same machine
 
@@ -71,10 +78,14 @@ sipnab both ports:
 sudo sipnab -N -d any --duration 30 --report --portrange 5060-5062
 ```
 
-A call through each proxy then appears in the report, one row per call.
+A call through each proxy then appears in the report, one row per call. The
+two test calls send their audio from the same ports with the same RTP SSRC, so
+the `RTP Streams:` table counts both calls' audio as one stream per direction
+and codec: 472 `PCMA` packets each way, not two streams of 236 for each call.
 
 ## When something does not work
 
-- **sipnab reports `No SIP traffic found`.** OpenSIPS listens on a port
-  outside 5060-5061, the range sipnab watches by default. Give sipnab
-  OpenSIPS's ports with `--portrange`.
+- **sipnab reports `No SIP signaling found, but ... RTP packets across ...
+  stream(s) were parsed`.** It saw the call's audio, which uses other ports,
+  but none of its SIP: OpenSIPS listens on a port outside 5060-5061, the range
+  sipnab watches by default. Give sipnab OpenSIPS's ports with `--portrange`.
