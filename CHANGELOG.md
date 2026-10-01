@@ -45,6 +45,15 @@ entry that carries them.
 
 ### Security
 
+- **The raw `--kill-scanner` send sockets are opened close-on-exec.** They are
+  opened while sipnab still has `CAP_NET_RAW` and held until the scanner-kill
+  worker process starts. They were opened without close-on-exec, so any
+  program sipnab or a library in it started during that time inherited a raw
+  send socket. Now they are closed at exec. The worker still gets its copies.
+  A new log line, `scanner-kill: this process closed its copies of the send
+  descriptors handed to worker process <pid>`, is written once the capturing
+  process has closed its own copies, and names each socket by inode.
+
 - **The REST API refuses a web page that rebinds its name to your server
   (DNS rebinding, CWE-352).** A keyless API on loopback served any request
   that reached it. A page at `http://evil.example:8080/` could point
