@@ -1343,7 +1343,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/opensips.md",
             "docs/kamailio.md",
             "website/content/docs/kamailio.md",
+            "docs/fail2ban.md",
+            "website/content/docs/fail2ban.md",
+            "docs/fail2ban-sipnab.md",
+            "website/content/docs/fail2ban-sipnab.md",
         ],
+    ),
+    // fail2ban-client's, on `fail2ban-client get <jail> banip --with-time`,
+    // which shows when each ban started and when it ends.
+    (
+        "with-time",
+        &["docs/fail2ban.md", "website/content/docs/fail2ban.md"],
     ),
     // gpg's, reading the Kamailio project's signing key so the reader can
     // compare its fingerprint, and converting it for apt's keyring.
@@ -4124,7 +4134,9 @@ fn no_documentation_table_repeats_a_row() {
     // 259 -> 260: ROADMAP.md.
     // 260 -> 264: the two rtpproxy guides (rtpproxy-relay, rtpproxy-sipnab)
     // under docs/ and their two generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 264;
+    // 264 -> 268: the two fail2ban guides (fail2ban, fail2ban-sipnab) under
+    // docs/ and their two generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 268;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4618,7 +4630,12 @@ fn no_documentation_table_repeats_a_row() {
     // 1046 -> 1052 with the rtpproxy guides: docs/rtpproxy-relay.md's three
     // tables (the parts, the versions, the two relays' ports) and their site
     // copies; docs/rtpproxy-sipnab.md has none.
-    const EXPECTED_TABLES: usize = 1052;
+    // 1052 -> 1058: the fail2ban guides. docs/fail2ban.md has two tables (the
+    // versions it was tested on, and the operate commands) and
+    // docs/fail2ban-sipnab.md one (the operate commands); their site mirrors
+    // carry the same three. Attributed by counting separator rows per added
+    // file: 2, 1, 2, 1.
+    const EXPECTED_TABLES: usize = 1058;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

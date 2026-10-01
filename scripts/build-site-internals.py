@@ -250,6 +250,8 @@ DOCS_TO_SITE = {
     "opensips-sipnab.md": "opensips-sipnab.md",
     "kamailio.md": "kamailio.md",
     "kamailio-sipnab.md": "kamailio-sipnab.md",
+    "fail2ban.md": "fail2ban.md",
+    "fail2ban-sipnab.md": "fail2ban-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
 }

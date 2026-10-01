@@ -603,6 +603,28 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Install sipnab on the Kamailio machine and watch a call through the proxy "
         "as one call, from both its legs, with or without OpenSIPS beside it.",
     ),
+    # The fail2ban guides (GUIDE-F2B, 2026-10-01). 56-57 were the next free
+    # weights; the rtpproxy guides took 54-55.
+    (
+        "docs/fail2ban.md",
+        "fail2ban.md",
+        "Ban SIP scanners with fail2ban",
+        "Ban SIP scanners with fail2ban",
+        56,
+        "Have OpenSIPS log scanners and wrong passwords, and fail2ban ban them "
+        "with nftables, while a phone keeps registering and calling. No sipnab "
+        "involved.",
+    ),
+    (
+        "docs/fail2ban-sipnab.md",
+        "fail2ban-sipnab.md",
+        "Feed fail2ban from sipnab",
+        "Feed fail2ban from sipnab",
+        57,
+        "Run sipnab's scanner and registration-flood detectors as a service and "
+        "have fail2ban ban what they find, with the filter and jail that ship "
+        "with sipnab.",
+    ),
 ]
 
 BANNER = (

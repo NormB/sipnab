@@ -102,6 +102,11 @@ Each answers "how do I …?" and assumes you already know what you want.
   sources in the kernel before they reach your SIP server. No sipnab involved.
 - **[Let sipnab see and control TFPS](tfps-sipnab.md)**: what TFPS blocks and
   why, and ban or unban on request, locally or over SSH.
+- **[Ban SIP scanners with fail2ban](fail2ban.md)**: OpenSIPS logs scanners
+  and wrong passwords, and fail2ban bans them with an nftables rule. No sipnab
+  involved.
+- **[Feed fail2ban from sipnab](fail2ban-sipnab.md)**: sipnab's scanner and
+  registration-flood detections, banned by fail2ban.
 - **[Add rtpengine to your voice stack](rtpengine-relay.md)**: anchor
   every call's media on an rtpengine relay, from OpenSIPS or Kamailio. No
   sipnab involved.
