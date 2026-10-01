@@ -200,32 +200,74 @@ fn a_failing_binary_fails_the_run_and_the_others_still_run() {
     );
 }
 
+/// Overlap is asserted directly, not inferred from elapsed time: each binary
+/// waits at a barrier until all three have started, which only a pool running
+/// them side by side can satisfy, at any host load. The test used to time
+/// three `sleep 1` binaries against a 2500 ms bound, and a loaded host alone
+/// pushed that past the bound with the pool working correctly (3 of 15 runs
+/// with the one-minute load average between 63 and 129).
 #[test]
 fn binaries_run_side_by_side_up_to_the_job_limit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let spool = tmp.path().join("spool");
     std::fs::create_dir(&spool).expect("spool");
+    let started = tmp.path().join("started");
     for n in 0..3 {
         let bin = fake_binary(
             tmp.path(),
-            &format!("sleeper{n}"),
-            "sleep 1; echo 'test result: ok. 1 passed; 0 failed'",
+            &format!("meeter{n}"),
+            &format!(
+                "mark='{marks}'\n\
+                 echo start >>\"$mark\"\n\
+                 end=$(( $(date +%s) + 30 ))\n\
+                 while [ \"$(grep -c start \"$mark\")\" -lt 3 ]; do\n\
+                 \x20 if [ \"$(date +%s)\" -ge \"$end\" ]; then\n\
+                 \x20   echo \"met $(grep -c start \"$mark\") of 3 within 30 s\"\n\
+                 \x20   echo 'test result: FAILED. 0 passed; 1 failed'; exit 1\n\
+                 \x20 fi\n\
+                 \x20 sleep 0.05\n\
+                 done\n\
+                 echo 'met 3 of 3'\n\
+                 echo 'test result: ok. 1 passed; 0 failed'",
+                marks = started.display()
+            ),
         );
         record(&spool, tmp.path(), &bin, &[], &[]);
     }
-    let (out, parallel) = run_spool(&spool, 3, &tmp.path().join("d1.json"));
-    assert!(out.status.success(), "{}", text(&out));
-    assert!(
-        parallel < Duration::from_millis(2500),
-        "three 1 s binaries with 3 jobs took {parallel:?}: they did not overlap"
+    let (out, _) = run_spool(&spool, 3, &tmp.path().join("d1.json"));
+    let all = text(&out);
+    assert_eq!(
+        all.matches("met 3 of 3").count(),
+        3,
+        "with 3 jobs, each of three binaries must see all three running at \
+         once:\n{all}"
     );
-    // POSITIVE CONTROL: with one job the same three are serial, so the
-    // timing above measures the pool and not a fast machine.
-    let (out, serial) = run_spool(&spool, 1, &tmp.path().join("d2.json"));
+    assert!(out.status.success(), "{all}");
+
+    // POSITIVE CONTROL: with one job the pool must not overlap them. Each
+    // binary brackets its run with markers; one job means strictly
+    // start/end pairs, whatever the load.
+    let serial_spool = tmp.path().join("serial-spool");
+    std::fs::create_dir(&serial_spool).expect("serial spool");
+    let order = tmp.path().join("order");
+    for n in 0..3 {
+        let bin = fake_binary(
+            tmp.path(),
+            &format!("bracket{n}"),
+            &format!(
+                "echo start >>'{o}'; sleep 0.2; echo end >>'{o}'; \
+                 echo 'test result: ok. 1 passed; 0 failed'",
+                o = order.display()
+            ),
+        );
+        record(&serial_spool, tmp.path(), &bin, &[], &[]);
+    }
+    let (out, _) = run_spool(&serial_spool, 1, &tmp.path().join("d2.json"));
     assert!(out.status.success(), "{}", text(&out));
-    assert!(
-        serial >= Duration::from_secs(3),
-        "one job ran three 1 s binaries in {serial:?}: they overlapped anyway"
+    assert_eq!(
+        std::fs::read_to_string(&order).expect("order file"),
+        "start\nend\nstart\nend\nstart\nend\n",
+        "one job ran binaries that overlapped"
     );
 }
 
