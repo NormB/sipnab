@@ -5804,7 +5804,16 @@ fn packaging_scripts_reference_existing_paths() {
     // and the shared coverage scope's comment (which names
     // `scripts/coverage.sh`). Attributed by measurement to that file as a
     // whole: with HEAD's quality.yml swapped back in, the scan reads 134.
-    const EXPECTED_REFERENCES: usize = 137;
+    // 134 -> 143: nine, from reproducible builds. Seven in the new
+    // `.github/workflows/reproducible.yml` (its `paths:` filter and the step
+    // that runs `scripts/reproducible-build.sh`); net two in
+    // `.github/workflows/release.yml`, whose build steps now run
+    // `scripts/reproducible-build.sh` in place of `scripts/split-debuginfo.sh`
+    // and whose eBPF install names `bpf/rust-toolchain.toml`. Attributed by
+    // measurement: without reproducible.yml the scan reads 136, and with
+    // HEAD's release.yml swapped back in it reads 141.
+    // 137 -> 146 with reproducible builds (+9, as measured on its older base).
+    const EXPECTED_REFERENCES: usize = 146;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

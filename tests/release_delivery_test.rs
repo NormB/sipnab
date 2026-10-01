@@ -341,11 +341,19 @@ fn an_unreleased_section_exists_only_when_something_is_unreleased() {
     let Some(n) = commits_since_newest_tag() else {
         return;
     };
+    // The commit being made counts too. The pre-commit hook runs this with
+    // HEAD still AT the tag and the new work in the index, so the first
+    // commit after a release, the one that opens [Unreleased], was refused
+    // for describing work it was itself carrying. In CI the index is clean
+    // and this adds nothing.
+    let staged =
+        git(&["diff", "--cached", "--name-only", "HEAD"]).is_some_and(|names| !names.is_empty());
     assert!(
-        n > 0,
+        n > 0 || staged,
         "CHANGELOG.md carries an [Unreleased] section while HEAD is exactly at \
-         the newest tag. Either the section is stale from the last release or \
-         the tag was moved; both make the section describe nothing."
+         the newest tag and nothing is staged. Either the section is stale from \
+         the last release or the tag was moved; both make the section describe \
+         nothing."
     );
 }
 

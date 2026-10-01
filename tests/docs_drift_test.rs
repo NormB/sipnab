@@ -61,6 +61,24 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // `cargo build --locked` and rustc's `--remap-path-prefix`, named by the
+    // release page's "Reproducible builds" section: how the release build
+    // holds its lockfile and keeps builder paths out of the binary. Cargo's
+    // and rustc's flags, not sipnab's.
+    (
+        "locked",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "remap-path-prefix",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `scripts/split-debuginfo.sh --cargo-config <target>` and
     // `--rustflags <target>`, named by the release page's "Symbol files"
     // section: the modes that print the flags the release build needs.

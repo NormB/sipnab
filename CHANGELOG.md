@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Added
 
+- **The Linux release binary is reproducible.** Building a release's tag
+  gives the same bytes as the published `sipnab` binary, given the same
+  toolchain. Two builds of one commit used to differ: the embedded eBPF
+  programs carried the build directory and the builder's `$CARGO_HOME`, and
+  their compiler was whatever `nightly` meant that day. The paths are now
+  remapped and the eBPF nightly is pinned to a date. A weekly job builds twice
+  in two directories and fails on any difference, and
+  [Rebuild a release and compare it](docs/install.md#rebuild-a-release-and-compare-it)
+  shows how to check a download yourself.
 - **How to upgrade.** [docs/install.md](docs/install.md#upgrade-sipnab) now gives
   the upgrade command for every install route (install script, tarball, `.deb`,
   `.rpm` with `rpm -U`, Homebrew, cargo, source, Docker), says what survives an

@@ -68,7 +68,7 @@ The implications that surprise people: **`tls` and `audio` do not pull in
 `--features full` therefore says nothing about whether `--features tls` alone
 compiles, which is exactly why CI has a feature matrix.
 
-## The fifteen workflows
+## The sixteen workflows
 
 | Workflow | Trigger | What it does |
 |---|---|---|
@@ -87,6 +87,7 @@ compiles, which is exactly why CI has a feature matrix.
 | `self-hosted-smoke.yml` | manual (`workflow_dispatch`) | Proves the self-hosted runner can build sipnab before any production job runs on it. Fires on no automatic event, so no PR can execute on the box. |
 | `osv-scanner.yml` | push to main, PR, weekly cron (Wednesdays 05:41 UTC) + manual | Vulnerability matching against osv.dev for EVERY lockfile, not just the crate graph. Not redundant with `cargo audit`: that reads Cargo.lock and RustSec only, so advisories against the Actions pins, the Dockerfiles or the fuzz workspace are invisible to it. It also queries a service rather than keeping a local advisory clone, so it does not share the stale-cache failure that broke every `cargo audit` for a day on 2026-08-09. |
 | `bench.yml` | daily cron (03:29 UTC) + manual | 4-core offline reconstruction against the baseline in [`bench/baseline.json`](https://github.com/NormB/sipnab/blob/main/bench/baseline.json), failing below 80% of it. Exists because a 40% regression shipped in four releases with every test green. Nightly and wide-banded on purpose: the reference host also serves CI, so a per-push wall-clock gate would measure contention. |
+| `reproducible.yml` | weekly cron (Thursdays 04:37 UTC), manual, and PRs touching the build's inputs | Builds the aarch64 gnu release binary twice from one commit, in two directories with two `$CARGO_HOME`s, on the self-hosted runner, and fails unless the stripped binaries and symbol files are identical. See [Reproducible builds](#reproducible-builds). |
 
 ### ThreadSanitizer
 
@@ -834,8 +835,9 @@ There is **no `rust-toolchain.toml` governing the crate**, so your local
 `rustup default` is whatever you last set — nothing in the repo corrects it.
 
 [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) is the one
-exception, and it selects `nightly` rather than the pin above: the kernel half
-needs `-Z build-std`. It sits inside `bpf/` so it governs that directory alone
+exception, and it selects a dated nightly rather than the pin above: the kernel
+half needs `-Z build-std`. Dated, not `nightly`, because the release binary
+embeds the object it builds (see [Reproducible builds](#reproducible-builds)). It sits inside `bpf/` so it governs that directory alone
 and cannot reach a host build.
 
 This is not
@@ -1138,9 +1140,11 @@ be true of both, and the figure describes the Linux run.
 
 The release strips every binary it publishes, so a crash report from a user
 carries frame addresses and a build ID, not function names. The symbols that resolve
-those addresses exist only in the compile that produced the binary. A rebuild
-later is not byte-identical, so its symbols describe a different binary. The
-release therefore publishes them with the binary, one symbol file per build:
+those addresses come from the compile that produced the binary. A rebuild of
+the tag reproduces them only with the release's exact toolchain (see
+[Reproducible builds](#reproducible-builds)), which is tens of minutes and a
+pinned container away from anyone reading a crash report. The release
+therefore publishes them with the binary, one symbol file per build:
 `sipnab-<version>-<target><suffix>.debug` for each Linux build, `-noaudio`
 builds included since their binaries ship in the `-noaudio` packages, and
 `sipnab-<version>-<target>.dSYM.zip` for each macOS build.
@@ -1179,10 +1183,11 @@ binary match the linker-stripped build byte for byte.
 anywhere replaces `build.rustflags` entirely. `ci.yml` sets
 `RUSTFLAGS: -Dwarnings` for the whole workflow, so the first CI run passed the
 flags as `--config`, built both legs without them, and both splits refused
-binaries with no line tables. Every build step therefore runs
-`RUSTFLAGS="${RUSTFLAGS:-} $(bash scripts/split-debuginfo.sh --rustflags <target>)"`,
-which keeps whatever was already set. The `cross` step also passes the same
-flags as `--config` (from `--cargo-config`), because whether `cross` forwards
+binaries with no line tables. Both release build steps therefore build through
+`scripts/reproducible-build.sh build`, which appends
+`$(bash scripts/split-debuginfo.sh --rustflags <target>)` to `RUSTFLAGS` and
+keeps whatever was already set. The `cross` build also passes the same flags as
+`--config` (from `--cargo-config`), because whether `cross` forwards
 `RUSTFLAGS` into its container is its choice. The build and the split read one
 rule, the flag list in the script. The script uses `llvm-objcopy` from the `llvm-tools` `rustup`
 component, which the workflow installs: the host's GNU `objcopy` cannot read an
@@ -1222,6 +1227,101 @@ frame as `sipnab+0x…`. The number after `+` is the address inside the file, th
 form `addr2line`, `llvm-symbolizer` and `atos` take.
 [Send us a crash report](@/docs/troubleshooting.md#send-us-a-crash-report) is the
 user's side of it.
+
+### Reproducible builds
+
+The same commit builds to the same bytes. OpenSSF Silver's `build_repeatable`
+criterion, a MUST at that level, asks exactly that: that the project can
+repeat the build of a release from its sources and get a bit-for-bit
+identical result. The release builds through
+[`scripts/reproducible-build.sh`](https://github.com/NormB/sipnab/blob/main/scripts/reproducible-build.sh), and
+`reproducible.yml` builds twice through the same script and compares.
+
+**What varied, measured.** Before this, two release builds of one commit
+(aarch64-unknown-linux-gnu, `full,bpf`, the same toolchain, on the same
+host), differing only in the directory each clone sat in, gave two
+different stripped binaries: sha256 `8ef34f72…` and `7a7f8491…`, 593 bytes
+apart, with different GNU build IDs. After the four fixes below, the same two
+builds, the second also with its own empty `$CARGO_HOME`, gave one stripped
+binary (`fe3ce06a…`) and one symbol file (`de8a58da…`), build ID `ea4467f7…`
+in both. The causes:
+
+1. **Absolute paths in the eBPF object.** `build.rs` embeds the kernel
+   programs, which keep their debug info because the loader needs the BTF.
+   The BTF named the checkout (`…/bpf/src/main.rs`), `$CARGO_HOME` and the
+   `rust-src` of the nightly by absolute path, and the nested eBPF build set its
+   own `CARGO_ENCODED_RUSTFLAGS`, so nothing from the outer build reached it.
+   `build.rs` now forwards the outer build's `--remap-path-prefix` flags and
+   remaps the directory of that nightly to `/rustc-sysroot`
+   ([`build_script/bpf_flags.rs`](https://github.com/NormB/sipnab/blob/main/build_script/bpf_flags.rs)).
+2. **`$CARGO_HOME` in the binary and in the DWARF.** Panic locations in
+   registry crates name `$CARGO_HOME/registry/src/…`, 784 times in the
+   stripped aarch64 binary. Every C object from `ring` and `mimalloc` names it
+   in its DWARF too. The DWARF does not ship, but the GNU build ID is a hash
+   the linker takes over the whole output, DWARF included, and
+   `.gnu_debuglink` carries the CRC of the symbol file. The script remaps
+   `$CARGO_HOME` to `/cargo` and the checkout to `/sipnab`, for rustc through
+   `RUSTFLAGS` and for the C compiler through `-ffile-prefix-map` in `CFLAGS`,
+   both from one list in the script.
+3. **A path hash in the eBPF object's symbols.** With the paths remapped, the
+   objects still differed in every mangled symbol of the kernel crate:
+   `_RNvCs4NQPM85LhFw_10sipnab_bpf15try_tcp_sendmsg` in one,
+   `_RNvCsh7SSX6Ne1ig_…` in the other. Cargo hashes a path dependency outside
+   the workspace root into `-C metadata` by its ABSOLUTE path, and
+   [`bpf/Cargo.toml`](https://github.com/NormB/sipnab/blob/main/bpf/Cargo.toml) reached `crates/sipnab-bpf-types` as `../crates/…`. It
+   now reaches it through the symlink [`bpf/sipnab-bpf-types`](https://github.com/NormB/sipnab/blob/main/bpf/sipnab-bpf-types), inside its own
+   workspace root and excluded from that workspace, so cargo hashes the
+   relative path.
+4. **The time of the build.** With the first three fixed, 28 bytes still
+   differed: the 20 of the build ID, and `11:45:13` against `12:07:23`.
+   mimalloc's `options.c` prints `__DATE__` and `__TIME__`. GCC takes both
+   from `SOURCE_DATE_EPOCH` when the environment sets it, and the script
+   sets it to the time of the commit.
+
+Two more inputs needed pinning rather than fixing, because they move with time
+rather than with the builder. The eBPF nightly was `rustup toolchain install
+nightly`, a different compiler every day. [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml)
+now names a dated nightly, `build.rs` runs that channel, and the release
+installs it with `rustup toolchain install` in `bpf/`. And the build runs
+with `--locked`, so a lockfile that no longer matches the manifests fails the
+build instead of being re-resolved.
+
+Checked and not a cause: sipnab's Rust code embeds no build time, and its own
+`file!()` paths are relative to the workspace. It does embed the commit hash and, on a
+tagged commit, the tag (`sipnab --version`), which are the same for every
+build of one commit when the build runs in a git checkout of it. A source
+tarball without `.git` embeds neither, and so builds a different binary.
+
+**What a rebuild must hold fixed besides the source.** Rust 1.98.1, the
+eBPF nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names, bpf-linker 0.11.0 (pinned by
+sha256 in `release.yml`), and the linker, C compiler and C runtime objects.
+For the gnu targets those come from the `rust:1-bookworm` image `release.yml`
+pins by digest. The aarch64 gnu leg also installs `gcc-aarch64-linux-gnu`
+from Debian's bookworm archive, which a Debian point release can move, so
+rebuilding an older aarch64 gnu release needs the cross compiler version its
+release log shows. The musl legs build in the `cross` images pinned by digest
+in `docker/cross/`, and the release installs `cross` itself from git, unpinned. The
+macOS legs build on `macos-latest`, whose Xcode moves.
+
+**What the check proves, and does not.** `reproducible.yml` runs weekly and on
+pull requests that touch the build's inputs (the manifests and lock files,
+`build.rs` and `build_script/`, `bpf/`, both scripts, the release workflow).
+On the aarch64 self-hosted runner it runs
+`bash scripts/reproducible-build.sh check aarch64-unknown-linux-gnu full,bpf <dir>`:
+two clean clones of the commit in two directories, the second with its own
+`$CARGO_HOME`, each built with the script's `build`, each split with the same
+stem, and the stripped binaries and symbol files compared byte for byte. On a
+difference it prints both hashes, the first differing offsets and the strings
+that differ, and fails. It proves independence from the directory and from
+`$CARGO_HOME` for the gnu build with the eBPF object in it. It does not vary
+the `rustup` home (the remap of the toolchain's own directory covers it, unmeasured), the host, or the
+container, and it does not build the musl or macOS legs.
+
+**Reproducing a published binary.** [Rebuild a release and compare it](@/docs/install.md#rebuild-a-release-and-compare-it)
+is the user's side. The symbol file name is part of the binary
+(`.gnu_debuglink` names it), so the split must use the release's stem,
+`sipnab-<version>-<target>`, for the stripped binary to match the published
+one.
 
 ### The changelog
 

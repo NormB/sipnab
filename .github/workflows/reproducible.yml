@@ -1,0 +1,106 @@
+name: Reproducible build
+
+# Builds the release binary twice from the same commit, in two different
+# directories with two different CARGO_HOMEs, and fails if the two differ by a
+# single byte. OpenSSF Silver `build_repeatable` (a MUST at that level) asks
+# that the project can repeat a release build and get the same bytes; this is
+# where that stays true rather than being true once.
+#
+# The build is scripts/reproducible-build.sh `check`, which builds each copy
+# with the script's `build`, the entry point release.yml's build steps use, so
+# this proves the release's own build command and not a neighbor of it.
+#
+# Weekly, and on pull requests that touch what the build reads beyond the
+# source: the manifests and lockfiles, build.rs and its helpers, the eBPF
+# crate and its pinned nightly, the two scripts, and the release workflow. A
+# change to src/ that breaks reproducibility (a build timestamp, say) is
+# caught by the weekly run. Two full LTO builds are tens of minutes, which is
+# why this is not on every push.
+on:
+  schedule:
+    # Thursdays 04:37 UTC: clear of fuzz.yml (Mon), sanitizers.yml and
+    # codeql.yml (Tue) and osv-scanner.yml (Wed), and after bench.yml's daily
+    # 03:29 run on the same host, whose 45-minute bound ends by 04:14, so the
+    # throughput baseline never measures this build.
+    - cron: '37 4 * * 4'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'build_script/**'
+      - 'bpf/**'
+      - 'crates/sipnab-bpf-types/**'
+      - 'scripts/reproducible-build.sh'
+      - 'scripts/split-debuginfo.sh'
+      - '.github/workflows/reproducible.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducible-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reproducible:
+    name: Reproducible build (aarch64-unknown-linux-gnu, full,bpf)
+    # The aarch64 self-hosted runners: two LTO release builds are the heavy,
+    # repeatable kind of job they exist for, and they already carry the eBPF
+    # toolchain's bpf-linker. Safe on pull_request for the reason ci.yml's
+    # feature matrix is: the repository requires approval before an external
+    # contributor's workflow runs (fork-pr-contributor-approval =
+    # all_external_contributors).
+    runs-on: [self-hosted, thor-02]
+    # Two full builds, each 10-23 minutes measured on thor-02 under load on
+    # 2026-09-30, plus a fresh CARGO_HOME's crate fetch for the second.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      # The release's strict mode: a missing eBPF toolchain fails instead of
+      # embedding the empty placeholder, which would compare equal and prove
+      # nothing about the object the release ships.
+      SIPNAB_BPF_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it:
+          # wiki-sync and release pass the token explicitly via GH_TOKEN.
+          persist-credentials: false
+
+      - name: Install system deps
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev
+
+      # llvm-tools carries the llvm-objcopy the symbol split uses.
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+        with:
+          components: llvm-tools
+
+      # The dated nightly bpf/rust-toolchain.toml pins, installed the way
+      # release.yml installs it.
+      - name: Install the pinned eBPF nightly
+        run: (cd bpf && rustup toolchain install --profile minimal && rustc --version) && bpf-linker --version
+
+      - name: Build twice and compare
+        env:
+          WORK: ${{ runner.temp }}/reproducible
+        run: bash scripts/reproducible-build.sh check aarch64-unknown-linux-gnu full,bpf "$WORK"
+
+      # `check` keeps its two trees on failure for a local investigation. On a
+      # runner that is gigabytes left behind on a real machine, and the
+      # evidence is already in the log above.
+      - name: Remove the build trees
+        if: always()
+        env:
+          WORK: ${{ runner.temp }}/reproducible
+        run: rm -rf "$WORK"

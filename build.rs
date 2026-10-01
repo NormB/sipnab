@@ -8,6 +8,10 @@ use std::process::Command;
 #[path = "build_script/git_triggers.rs"]
 mod git_triggers;
 
+#[cfg(all(feature = "bpf", target_os = "linux"))]
+#[path = "build_script/bpf_flags.rs"]
+mod bpf_flags;
+
 fn main() {
     // Re-run when HEAD moves so the embedded commit hash stays in sync with the
     // working tree. Watching `.git/HEAD` alone misses commits on the *current*
@@ -102,6 +106,8 @@ fn build_bpf() {
 
     println!("cargo:rerun-if-changed=bpf/src");
     println!("cargo:rerun-if-changed=bpf/Cargo.toml");
+    println!("cargo:rerun-if-changed=bpf/Cargo.lock");
+    println!("cargo:rerun-if-changed=bpf/rust-toolchain.toml");
     println!("cargo:rerun-if-changed=crates/sipnab-bpf-types/src");
 
     let out_dir = std::path::PathBuf::from(
@@ -155,8 +161,9 @@ fn build_bpf() {
             !required,
             "SIPNAB_BPF_REQUIRED=1 and the eBPF kernel programs cannot be built: \
              {reason}. A published binary must not advertise `bpf` in --version \
-             and then refuse at runtime. Install a nightly toolchain \
-             (`rustup toolchain install nightly`) and bpf-linker, matched to the \
+             and then refuse at runtime. Install the nightly toolchain \
+             bpf/rust-toolchain.toml pins (`cd bpf && rustup toolchain install`) \
+             and bpf-linker, matched to the \
              LLVM installed on this host (0.9.13 pairs with LLVM 19; 0.11 wants \
              LLVM 23.1)."
         );
@@ -164,7 +171,8 @@ fn build_bpf() {
             "cargo:warning={reason}, so the `bpf` feature is compiled WITHOUT its \
              kernel programs. sipnab builds and every other backend works; \
              --uprobe-backend bpf will refuse at runtime rather than capture \
-             nothing. Install a nightly toolchain and bpf-linker (0.9.13 pairs \
+             nothing. Install the nightly bpf/rust-toolchain.toml pins \
+             (`cd bpf && rustup toolchain install`) and bpf-linker (0.9.13 pairs \
              with LLVM 19; 0.11 wants LLVM 23.1), or set SIPNAB_BPF_REQUIRED=1 to \
              turn this into a build failure."
         );
@@ -183,14 +191,37 @@ fn build_bpf() {
         return;
     }
 
+    // The dated nightly `bpf/rust-toolchain.toml` names, never a bare
+    // `nightly`: the object is embedded in the binary, so the compiler that
+    // builds it is part of what a reproducible release pins.
+    let Some(channel) = std::fs::read_to_string("bpf/rust-toolchain.toml")
+        .ok()
+        .and_then(|t| bpf_flags::toolchain_channel(&t))
+    else {
+        degrade_or_die("bpf/rust-toolchain.toml is missing or names no [toolchain] channel");
+        return;
+    };
+    // Where that nightly's `rust-src` lives, so its paths can be remapped out
+    // of the object. `None` when the toolchain is absent, which the build
+    // below then reports through the same degrade-or-die rule.
+    let sysroot = Command::new("rustup")
+        .args(["run", &channel, "rustc", "--print", "sysroot"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let outer_flags = std::env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+
     let spawned = Command::new("rustup")
         .args([
             "run",
-            "nightly",
+            &channel,
             "cargo",
             "build",
             "--manifest-path",
             "bpf/Cargo.toml",
+            "--locked",
             "-Z",
             "build-std=core",
             "--bins",
@@ -200,10 +231,11 @@ fn build_bpf() {
         ])
         .arg("--target-dir")
         .arg(&target_dir)
-        // Debug info carries the BTF the loader needs to describe its maps.
+        // The loader's BTF flags, plus the outer build's path remaps: see
+        // `build_script/bpf_flags.rs`.
         .env(
             "CARGO_ENCODED_RUSTFLAGS",
-            format!("--cfg=bpf_target_arch=\"{arch}\"\x1f-Cdebuginfo=2\x1f-Clink-arg=--btf"),
+            bpf_flags::inner_rustflags(&arch, &outer_flags, sysroot.as_deref()),
         )
         // The outer build's wrappers point at the stable toolchain; the inner
         // one must use nightly's own.

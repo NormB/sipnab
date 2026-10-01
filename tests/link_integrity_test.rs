@@ -1111,7 +1111,17 @@ fn wiki_intra_docs_links_resolve() {
     // --mcp-allowed-host row links the network-listeners table.
     // 1222 -> 1226 with the API Host allowlist: the four new relative links in
     // its docs (rest-api.md, cli-reference.md, auth.md, threat-model.md).
-    const EXPECTED_WIKI_LINKS: usize = 1226;
+    // 1194 -> 1199: five, from reproducible builds. install.md's "Rebuild a
+    // release and compare it" links build-ci-release.md#reproducible-builds;
+    // build-ci-release.md links its own new section from the workflow table,
+    // the toolchain section and "Symbol files", and links
+    // install.md#rebuild-a-release-and-compare-it. Attributed by measurement:
+    // with HEAD's install.md the count is 1198, with HEAD's
+    // build-ci-release.md 1195.
+    // 1222 -> 1227 with reproducible builds: the five new relative links in
+    // build-ci-release.md and install.md (measured: +5, as on the older base).
+    // 1226 -> 1231 with reproducible builds (+5, as measured on each base).
+    const EXPECTED_WIKI_LINKS: usize = 1231;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
