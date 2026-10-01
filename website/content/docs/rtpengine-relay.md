@@ -34,17 +34,21 @@ rtpengine has a machine to itself.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, on
+Every block on this page ran as written, in order, on 2026-10-01, on
 clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
-(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). On each, it ran:
+(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0). Each test call played
+SIPp's G.711 sample, and a capture on the machine counted the audio going
+through rtpengine both ways. On each, it ran:
 
 - With OpenSIPS built from source on a machine with nothing installed.
-- With the OpenSIPS 4.0 packages.
-- [With Kamailio](#with-kamailio), and beside OpenSIPS on one machine.
-- [On its own machine](#put-rtpengine-on-its-own-machine), on two machines.
+- [With Kamailio](#with-kamailio), and beside the OpenSIPS 4.0 packages on
+  one machine.
+- [On its own machine](#put-rtpengine-on-its-own-machine): on 2026-10-01
+  with the relay's control address moved to the machine's own address, and
+  on 2026-09-28 on two machines.
 
-On Debian 13, causing each fault under [When something does not
-work](#when-something-does-not-work) produced what it describes. The commands
+On Debian 13, on 2026-09-28, causing each fault under [When something does
+not work](#when-something-does-not-work) produced what it describes. The commands
 pin the components to the versions below. Newer commits may behave differently,
 and pinning them keeps the guide describing what you get.
 

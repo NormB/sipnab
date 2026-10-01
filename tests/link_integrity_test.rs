@@ -1135,7 +1135,10 @@ fn wiki_intra_docs_links_resolve() {
     // 1280 -> 1279: fail2ban-sipnab.md no longer links fail2ban.md's install
     // step, from the paragraph about the shipped jail's broken iptables action,
     // which the jail fix removed. Measured on the older base: 1275 -> 1274.
-    const EXPECTED_WIKI_LINKS: usize = 1279;
+    // 1279 -> 1281: the rtpengine guide audit. docs/rtpengine.md links
+    // rtpengine-relay.md twice more: the unit name beside the restart, and the
+    // rtpengine 26.3 reconnect note under the Homer destination (+2).
+    const EXPECTED_WIKI_LINKS: usize = 1281;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

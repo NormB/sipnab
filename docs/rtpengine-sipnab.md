@@ -36,13 +36,19 @@ call.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-09-28, with
-sipnab 0.5.194 from its release package, on clean x86_64 virtual machines with 2 cores and 3 GB of memory, Debian 13
-(kernel 6.12.63) and Ubuntu 24.04.5 (kernel 6.8.0): the relay beside OpenSIPS, from source and from the packages, and beside
-Kamailio, and on its own machine with the proxy on another.
-On Debian 13, causing each fault under
+Every block on this page ran as written, in order, on 2026-10-01, with
+sipnab 0.5.198 from its release package, on clean x86_64 virtual machines
+with 2 cores and 3 GB of memory, Debian 13 (kernel 6.12.63) and Ubuntu
+24.04.5 (kernel 6.8.0): the relay beside OpenSIPS built from source, beside
+Kamailio, and beside the OpenSIPS 4.0 packages with Kamailio on 5062. Each
+test call played SIPp's G.711 sample and DTMF through rtpengine. Step 5's
+blocks ran with the relay's control address moved to the machine's own
+address, and on 2026-09-28 they also ran with the relay on a machine of its
+own and the proxy on another. On both systems, causing the first, third and
+fourth faults under
 [When something does not work](#when-something-does-not-work) produced what
-it describes.
+they describe, and the second item's cause, a call up before sipnab started
+with no mirror and no `--rtpengine-control`, left its streams unnamed.
 
 The examples use `192.0.2.10` for the machine that runs the SIP proxy and
 `192.0.2.20` for the relay's own machine. Replace them with yours.
@@ -116,6 +122,10 @@ Call-ID                                                      Streams
 1-36802@192.0.2.10                                           4
 ```
 
+Two of the four streams carry PCMA, the codec the caller offered, and two
+carry PCMU. SIPp's callee answers with PCMU only, so rtpengine converts the
+audio from one codec to the other between the two sides of the call.
+
 Run the same call without `--rtpengine-control` and the four streams land
 under `Orphaned Streams` instead, with no call to name them.
 
@@ -139,13 +149,15 @@ sudo sipnab -N -d any --rtpengine-control 127.0.0.1:2223 --relay-stats-call "$CA
   | grep -E 'Relay statistics|codec|ingress SSRCs.0.packets'
 ```
 
-The first line names the relay, the call and the moment sipnab asked. Each
-side of the call shows its codec and the packets rtpengine has received on it
-so far.
+After SIPp's two `Background mode` lines, sipnab's first line names the
+relay, the call and the moment sipnab asked. Each side of the call shows its
+codec, `PCMA/8000` on the caller's side and `PCMU/8000` on the callee's, and
+the packets rtpengine has received on it so far.
 
 Asking the relay needs a live capture, so the command also captures for one
-second. That capture sees no SIP and ends with `No SIP traffic found`. The
-relay's counters above it are the answer.
+second. That capture sees no SIP and ends with `No SIP signaling found`,
+followed by a count of the RTP packets it parsed. The relay's counters above
+it are the answer.
 
 ## 5. rtpengine on its own machine
 
@@ -229,8 +241,10 @@ protocol has no authentication, and only your SIP proxy should reach it.
   Nothing listens at the `--rtpengine-control` address. Give it the
   `listen-ng` value from the `[rtpengine]` section.
 - **rtpengine logs `Connection error from Homer at 127.0.0.1:9060: Connection
-  refused`.** Nothing was listening at the `homer` address. rtpengine loses
-  the copies it sent while nothing listened, so sipnab cannot name those
-  calls. Start sipnab's HEP listener before the calls you want named. With
-  the rtpengine this guide builds, rtpengine mirrors the next call again
-  without a restart.
+  refused`, or `Write error to Homer at 127.0.0.1:9060: Connection
+  refused`.** Nothing was listening at the `homer` address. The first message
+  comes when a listener that was there goes away; after that, each call
+  rtpengine tries to mirror logs the second. rtpengine loses the copies it
+  sent while nothing listened, so sipnab cannot name those calls. Start
+  sipnab's HEP listener before the calls you want named. With the rtpengine
+  this guide builds, rtpengine mirrors the next call again without a restart.

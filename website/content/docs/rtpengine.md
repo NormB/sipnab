@@ -233,8 +233,13 @@ homer-enable-ng = true
 Then restart it:
 
 ```sh
-sudo systemctl restart rtpengine
+sudo systemctl restart ngcp-rtpengine-daemon
 ```
+
+That is the unit name when you build rtpengine's packages from its own source
+tree, as [Add rtpengine to your voice stack](@/docs/rtpengine-relay.md) does. Debian's
+and Ubuntu's own `rtpengine-daemon` package names the unit `rtpengine`
+instead.
 
 `homer-id` becomes the per-node key when you correlate several nodes, so give
 each relay a distinct one.
@@ -283,13 +288,17 @@ older build, turn it off for a relay capture.
 ### The destination has to accept the traffic
 
 rtpengine CONNECTS its Homer socket, so a destination that answers with ICMP
-port-unreachable makes it give up and log this:
+port-unreachable makes it drop the socket and log this:
 
 ```text
 ERR: [core] Connection error from Homer at 192.0.2.1:9060: Connection refused
 ```
 
-After that it sends nothing, which looks exactly like the feature not working.
+rtpengine loses the copy it was sending, which looks exactly like the feature
+not working. rtpengine 26.3 (the build
+[Add rtpengine to your voice stack](@/docs/rtpengine-relay.md) makes) reconnects at
+the next call, and while nothing listens it logs `Write error to Homer at
+192.0.2.1:9060: Connection refused` for each call it tries to mirror.
 Pointing `--homer` at an address nobody listens on is therefore not a way to
 "just put it on the wire" — something has to absorb it.
 
