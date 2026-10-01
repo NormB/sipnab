@@ -137,6 +137,63 @@ fn worth_keeping(dirty_lines: usize, commits_ahead: usize) -> bool {
     dirty_lines > 0 || commits_ahead > 0
 }
 
+/// How long a clean worktree must sit untouched before it counts as abandoned.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+/// Abandoned means nothing worth keeping AND nobody has touched it for a day.
+fn is_abandoned(dirty_lines: usize, commits_ahead: usize, idle: std::time::Duration) -> bool {
+    !worth_keeping(dirty_lines, commits_ahead) && idle >= ABANDONED_AFTER
+}
+
+/// Time since anyone last moved this worktree's HEAD or index, from the mtimes
+/// of those files in its own git directory. Unreadable reads as "just touched",
+/// so a probe that fails never reports a worktree for removal.
+fn idle_for(path: &str) -> std::time::Duration {
+    let git_dir = worktree_git(path)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let newest = git_dir.and_then(|dir| {
+        ["HEAD", "index"]
+            .iter()
+            .filter_map(|f| {
+                std::fs::metadata(Path::new(&dir).join(f))
+                    .ok()?
+                    .modified()
+                    .ok()
+            })
+            .max()
+    });
+    newest
+        .and_then(|t| t.elapsed().ok())
+        .unwrap_or(std::time::Duration::ZERO)
+}
+
+/// A clean worktree created minutes ago is someone's work starting, not waste.
+///
+/// `git worktree add` leaves a checkout with nothing uncommitted and nothing
+/// unmerged, so until its first edit the gate called it abandoned and failed
+/// every other checkout's hook: seen 2026-10-01 for a worktree another session
+/// had created seconds before. Only a clean worktree idle for a day is reported.
+#[test]
+fn a_clean_worktree_is_abandoned_only_once_it_has_sat_idle() {
+    let hour = std::time::Duration::from_secs(3600);
+    assert!(
+        !is_abandoned(0, 0, hour),
+        "a clean worktree touched an hour ago is in use"
+    );
+    assert!(
+        is_abandoned(0, 0, 25 * hour),
+        "a clean worktree idle for over a day is abandoned"
+    );
+    assert!(
+        !is_abandoned(3, 0, 1000 * hour) && !is_abandoned(0, 1, 1000 * hour),
+        "work worth keeping is never abandoned, however old"
+    );
+}
+
 /// The probe must scrub the hook's variables, or it reports the wrong repo.
 #[test]
 fn the_worktree_probe_scrubs_the_hooks_git_environment() {
@@ -193,19 +250,32 @@ fn a_worktree_is_kept_for_uncommitted_or_unmerged_work_and_dropped_for_neither()
 fn reportable_worktrees(listing: &str, running_in: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen_main = false;
-    for line in listing.lines() {
-        let Some(path) = line.strip_prefix("worktree ") else {
-            continue;
-        };
+    // Each entry is a block that starts with its `worktree` line. A `locked`
+    // line anywhere in the block means the worktree is in use (see
+    // `a_locked_worktree_is_in_use_and_never_reported`).
+    let mut entry: Option<(&str, bool)> = None;
+    let mut finish = |entry: Option<(&str, bool)>, out: &mut Vec<String>| {
+        let Some((path, locked)) = entry else { return };
         if !seen_main {
             seen_main = true;
-            continue; // the main checkout, which git refuses to remove
+            return; // the main checkout, which git refuses to remove
         }
-        if Path::new(path) == running_in {
-            continue; // the checkout we are running in
+        if locked || Path::new(path) == running_in {
+            return; // in use, or the checkout we are running in
         }
         out.push(path.to_string());
+    };
+    for line in listing.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            finish(entry.take(), &mut out);
+            entry = Some((path, false));
+        } else if (line == "locked" || line.starts_with("locked "))
+            && let Some((_, locked)) = entry.as_mut()
+        {
+            *locked = true;
+        }
     }
+    finish(entry, &mut out);
     out
 }
 
@@ -250,6 +320,45 @@ branch refs/heads/running
             "/srv/checkouts/sipnab-feature".to_string(),
             "/srv/checkouts/sipnab-running".to_string(),
         ]
+    );
+}
+
+/// A LOCKED worktree is in use, and git itself refuses to remove it.
+///
+/// Agent tools lock a worktree for as long as their process runs (`git worktree
+/// lock`, recorded as a `locked` line in the porcelain listing). Until the agent
+/// commits, it holds nothing uncommitted and nothing unmerged, so the gate
+/// called a live worktree abandoned and failed every other checkout's hook. The
+/// fix it named, `git worktree remove --force`, is refused for a locked
+/// worktree: the same "demands output its fixer will never produce" defect the
+/// main-checkout exclusion below answers. An unlocked clean one is still
+/// reported.
+#[test]
+fn a_locked_worktree_is_in_use_and_never_reported() {
+    let listing = "\
+worktree /srv/checkouts/sipnab
+HEAD 1111111111111111111111111111111111111111
+branch refs/heads/main
+
+worktree /srv/checkouts/sipnab-agent
+HEAD 2222222222222222222222222222222222222222
+branch refs/heads/agent
+locked claude agent agent-1 (pid 42 start 7)
+
+worktree /srv/checkouts/sipnab-bare-lock
+HEAD 3333333333333333333333333333333333333333
+branch refs/heads/bare
+locked
+
+worktree /srv/checkouts/sipnab-idle
+HEAD 4444444444444444444444444444444444444444
+branch refs/heads/idle
+";
+    assert_eq!(
+        reportable_worktrees(listing, Path::new("/nowhere")),
+        vec!["/srv/checkouts/sipnab-idle".to_string()],
+        "both locked worktrees (with and without a reason) are in use; the \
+         unlocked idle one is still reportable"
     );
 }
 
@@ -331,13 +440,14 @@ fn no_worktree_is_abandoned_with_nothing_worth_keeping() {
                     .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
                     .unwrap_or(1)
             });
-        if !worth_keeping(dirty_lines, commits_ahead) {
+        if is_abandoned(dirty_lines, commits_ahead, idle_for(path)) {
             abandoned.push(path.to_string());
         }
     }
     assert!(
         abandoned.is_empty(),
-        "these worktrees hold no uncommitted work and are pure disk cost \
+        "these worktrees hold no uncommitted work, have sat untouched for a \
+         day, and are pure disk cost \
          ({} of them): {abandoned:?}\n\
          Remove with `git worktree remove --force <path>`, or \
          `scripts/clean-stale.py --apply`.",

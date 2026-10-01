@@ -2227,8 +2227,10 @@ fn log_resumed(received: &Received, bind_addr: &str) {
 ///
 /// Binds and polls a TCP socket; spawns a thread per accepted connection;
 /// forwards packets to `tx`; logs startup, limit, drop and idle events.
+#[expect(clippy::too_many_arguments)]
 fn capture_hep_stream(
     bind_addr: &str,
+    source: HepSocketSource,
     config: &CaptureConfig,
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
@@ -2238,13 +2240,22 @@ fn capture_hep_stream(
 ) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-    let listener = match std::net::TcpListener::bind(bind_addr)
-        .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
-        .and_then(|l| {
-            l.set_nonblocking(true)
-                .context("Failed to put the HEP listener into non-blocking mode")?;
-            Ok(l)
-        }) {
+    let bound = match source {
+        HepSocketSource::Address => std::net::TcpListener::bind(bind_addr)
+            .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'")),
+        #[cfg(test)]
+        HepSocketSource::Tcp(l) => Ok(l),
+        #[cfg(test)]
+        HepSocketSource::Udp(_) => Err(anyhow::anyhow!(
+            "a UDP socket was handed to the {} listener",
+            opts.transport
+        )),
+    };
+    let listener = match bound.and_then(|l| {
+        l.set_nonblocking(true)
+            .context("Failed to put the HEP listener into non-blocking mode")?;
+        Ok(l)
+    }) {
         Ok(l) => l,
         Err(e) => {
             if let Some(ready) = ready_tx {
@@ -2498,6 +2509,80 @@ pub fn capture_hep(
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    serve_hep(
+        bind_addr,
+        HepSocketSource::Address,
+        config,
+        tx,
+        opts,
+        ready_tx,
+    )
+}
+
+/// Where the listener's socket comes from.
+///
+/// An operator's listener always binds its address. A test hands in a socket
+/// it already holds: binding a port, reading the number, closing it and
+/// asking the listener to bind the number again leaves a gap in which any
+/// parallel test can take the port, and CI's coverage run lost that race
+/// ("Address already in use", PORT-RACE-HEP).
+enum HepSocketSource {
+    /// Bind the listen address given alongside.
+    Address,
+    /// A TCP listener the caller already bound (TCP and TLS transports).
+    #[cfg(test)]
+    Tcp(std::net::TcpListener),
+    /// A UDP socket the caller already bound (UDP transport).
+    #[cfg(test)]
+    Udp(UdpSocket),
+}
+
+/// [`capture_hep`] on a socket the caller already bound, so the port is never
+/// released between choosing it and serving it. The bind policy and every
+/// log line see the socket's own address.
+///
+/// # Errors
+///
+/// As [`capture_hep`], plus a socket whose address cannot be read or whose
+/// kind does not match `opts.transport`.
+#[cfg(test)]
+fn capture_hep_on(
+    socket: HepSocketSource,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    opts: &HepListenerOpts<'_>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let addr = match &socket {
+        HepSocketSource::Address => Err(anyhow::anyhow!("capture_hep_on needs a bound socket")),
+        HepSocketSource::Tcp(l) => l.local_addr().context("read the listener's address"),
+        HepSocketSource::Udp(u) => u.local_addr().context("read the socket's address"),
+    };
+    let addr = match addr {
+        Ok(a) => a.to_string(),
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
+    serve_hep(&addr, socket, config, tx, opts, ready_tx)
+}
+
+/// The body of [`capture_hep`], with the socket's source made explicit.
+///
+/// # Errors
+///
+/// As [`capture_hep`].
+fn serve_hep(
+    bind_addr: &str,
+    source: HepSocketSource,
+    config: &CaptureConfig,
+    tx: PacketTx,
+    opts: &HepListenerOpts<'_>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
     // Fail closed on an unguarded non-loopback bind before touching the
     // socket (SN-01, D18): a routable HEP listener must be constrained by a
     // shared secret or a source allowlist. Ahead of the transport split
@@ -2570,9 +2655,9 @@ pub fn capture_hep(
     }
 
     match opts.transport {
-        HepTransport::Udp => capture_hep_udp(bind_addr, config, tx, opts, roster, ready_tx),
+        HepTransport::Udp => capture_hep_udp(bind_addr, source, config, tx, opts, roster, ready_tx),
         HepTransport::Tcp | HepTransport::Tls => {
-            capture_hep_stream(bind_addr, config, tx, opts, roster, tls, ready_tx)
+            capture_hep_stream(bind_addr, source, config, tx, opts, roster, tls, ready_tx)
         }
     }
 }
@@ -2596,15 +2681,24 @@ pub fn capture_hep(
 /// channel backpressure.
 fn capture_hep_udp(
     bind_addr: &str,
+    source: HepSocketSource,
     config: &CaptureConfig,
     tx: PacketTx,
     opts: &HepListenerOpts<'_>,
     roster: HepRoster,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    let socket = match UdpSocket::bind(bind_addr)
-        .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
-    {
+    let bound = match source {
+        HepSocketSource::Address => UdpSocket::bind(bind_addr)
+            .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'")),
+        #[cfg(test)]
+        HepSocketSource::Udp(u) => Ok(u),
+        #[cfg(test)]
+        HepSocketSource::Tcp(_) => Err(anyhow::anyhow!(
+            "a TCP listener was handed to the UDP listener"
+        )),
+    };
+    let socket = match bound {
         Ok(s) => s,
         Err(e) => {
             if let Some(ready) = ready_tx {
@@ -4390,13 +4484,17 @@ mod tests {
         let stranger = tempfile::tempdir().expect("tempdir");
         let (_, other_cert, other_key) = test_chain(stranger.path());
 
-        let bind = free_tcp_port();
+        // One socket for both collectors: the port stays bound from the first
+        // collector's start to the second's, so no parallel test can take it
+        // in between. Connections that arrive between them wait in its
+        // accept queue for the second.
+        let (held, bind) = loopback_tcp_listener();
         let first = CaptureConfig {
             duration: Some(Duration::from_secs(2)),
             ..CaptureConfig::default()
         };
         let (_rx1, done1) = start_listener(
-            &bind,
+            HepSocketSource::Tcp(held.try_clone().expect("a second handle on the port")),
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
@@ -4414,9 +4512,9 @@ mod tests {
         )
         .expect("the trusted collector's handshake");
         send_one(&sender).expect("the first packet crosses the trusted session");
-        // Its port is bound again below, so the first collector must be gone:
-        // a result thrown away here turned a slow exit into a bind failure
-        // that named nothing.
+        // The second collector serves the same socket, so the first must be
+        // gone: two collectors accepting from one queue would split the
+        // connections between them.
         let first_exit = done1.recv_timeout(MUST_ARRIVE);
         assert!(
             matches!(first_exit, Ok(Ok(()))),
@@ -4428,7 +4526,7 @@ mod tests {
             ..CaptureConfig::default()
         };
         let (_rx2, _done2) = start_listener(
-            &bind,
+            HepSocketSource::Tcp(held),
             HepTransport::Tls,
             Some((other_cert, other_key)),
             vec![],
@@ -4629,14 +4727,14 @@ mod tests {
     fn a_tls_listener_and_sender_carry_a_packet_end_to_end() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ca, cert, key) = test_chain(dir.path());
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
         let (rx, done) = start_listener(
-            &bind,
+            socket,
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
@@ -4687,13 +4785,13 @@ mod tests {
         let stranger = tempfile::tempdir().expect("tempdir");
         let (other_ca, _, _) = test_chain(stranger.path());
 
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             duration: Some(Duration::from_secs(5)),
             ..CaptureConfig::default()
         };
         let (_rx, _done) = start_listener(
-            &bind,
+            socket,
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
@@ -4783,74 +4881,28 @@ mod tests {
             .expect("group-readable is how a key reaches a service account");
     }
 
-    /// A port handed to a listener must be one no other test's `bind(0)` can
-    /// be given. The kernel allocates `bind(0)` from its ephemeral range, and
-    /// in a run of thousands of parallel tests a port released there is soon
-    /// reused: `a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure`
-    /// binds one port twice, two seconds apart, and failed in CI's coverage
-    /// run with "the listener must report a successful bind".
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_test_listener_port_is_outside_the_kernels_ephemeral_range() {
-        let range = std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
-            .expect("the kernel publishes its ephemeral range");
-        let low: u16 = range
-            .split_whitespace()
-            .next()
-            .and_then(|n| n.parse().ok())
-            .expect("the range starts with a port number");
-        let mut handed_out = std::collections::HashSet::new();
-        for _ in 0..32 {
-            let bind = free_tcp_port();
-            assert!(
-                handed_out.insert(bind.clone()),
-                "{bind} handed out twice in one process"
-            );
-            let port: u16 = bind
-                .rsplit(':')
-                .next()
-                .and_then(|p| p.parse().ok())
-                .expect("host:port");
-            assert!(
-                port < low,
-                "{bind} is inside the ephemeral range starting at {low}: any bind(0) may take it"
-            );
-            std::net::TcpListener::bind(&bind).expect("the port handed out is free");
-        }
-    }
-
-    /// Reserve a free loopback TCP port and give it back as `host:port`.
+    /// A loopback TCP listener on a port the kernel chose, and its address.
     ///
-    /// Chosen BELOW the kernel's ephemeral range, never by `bind(0)`: a port
-    /// `bind(0)` hands out is one every other parallel test's `bind(0)` can be
-    /// handed the moment it is released, and a caller that binds it twice (a
-    /// collector restarted on the same address) leaves it free for seconds.
-    /// A counter keeps parallel tests in this process on different ports.
-    fn free_tcp_port() -> String {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static NEXT: AtomicU32 = AtomicU32::new(0);
-        const FLOOR: u32 = 20_000;
-        let span = u32::from(ephemeral_range_start())
-            .saturating_sub(FLOOR)
-            .max(1);
-        let start = std::process::id() % span;
-        for _ in 0..span {
-            let port = FLOOR + (start + NEXT.fetch_add(1, Ordering::Relaxed)) % span;
-            let addr = format!("127.0.0.1:{port}");
-            if std::net::TcpListener::bind(&addr).is_ok() {
-                return addr;
-            }
-        }
-        panic!("no free loopback port below the ephemeral range");
+    /// The socket stays bound until the listener under test takes it over, so
+    /// no parallel test can be given the port in between.
+    fn loopback_tcp_listener() -> (std::net::TcpListener, String) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let addr = l.local_addr().expect("local_addr").to_string();
+        (l, addr)
     }
 
-    /// Where the kernel starts handing out `bind(0)` ports: Linux publishes
-    /// it; elsewhere, the IANA dynamic range's start, which macOS uses.
-    fn ephemeral_range_start() -> u16 {
-        std::fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range")
-            .ok()
-            .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse().ok()))
-            .unwrap_or(49_152)
+    /// [`loopback_tcp_listener`], ready to hand to [`start_listener`].
+    fn loopback_tcp() -> (HepSocketSource, String) {
+        let (l, addr) = loopback_tcp_listener();
+        (HepSocketSource::Tcp(l), addr)
+    }
+
+    /// A loopback UDP socket on a port the kernel chose, and its address,
+    /// ready to hand to [`start_listener`] or [`capture_hep_on`].
+    fn loopback_udp() -> (HepSocketSource, String) {
+        let u = UdpSocket::bind("127.0.0.1:0").expect("bind a loopback port");
+        let addr = u.local_addr().expect("local_addr").to_string();
+        (HepSocketSource::Udp(u), addr)
     }
 
     /// A HEP v3 packet with `body` as its payload and `capture_id` stamped on
@@ -4868,13 +4920,114 @@ mod tests {
         )
     }
 
-    /// Start a real listener on `bind` and hand back the pipeline it feeds.
+    // ── The test harness's port reservation (PORT-RACE-HEP) ─────────────
+    //
+    // CI's Coverage job on b7aa8344 failed
+    // `a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure`
+    // with "Failed to bind HEP listener on '127.0.0.1:24447': Address already
+    // in use". The harness reserved a port by binding it, read the number,
+    // DROPPED the socket, and asked the listener to bind the number again; in
+    // that gap any parallel test could take it. Each test below puts a
+    // parallel test's bind INTO the gap, so the race is not left to timing.
+
+    /// A TCP listener the harness starts is still the one serving its port
+    /// when another test tries to bind that port first.
+    #[test]
+    fn a_tcp_test_listener_keeps_its_port_from_a_parallel_bind() {
+        use std::io::Write;
+        let (socket, bind) = loopback_tcp();
+        // What a parallel test does in the gap. It may only fail.
+        let _intruder = std::net::TcpListener::bind(&bind);
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
+        let mut agent = std::net::TcpStream::connect(&bind).expect("agent connects");
+        agent
+            .write_all(&hep3_from(1, None, b"MINE"))
+            .expect("write");
+        assert_eq!(drain_payloads(&rx, 1), vec![b"MINE".to_vec()]);
+    }
+
+    /// A UDP listener the harness starts is still the one serving its port
+    /// when another test tries to bind that port first.
+    #[test]
+    fn a_udp_test_listener_keeps_its_port_from_a_parallel_bind() {
+        let (socket, bind) = loopback_udp();
+        // What a parallel test does in the gap. It may only fail.
+        let _intruder = UdpSocket::bind(&bind);
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(socket, HepTransport::Udp, None, vec![], None, config);
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        sender
+            .send_to(&hep3_from(1, None, b"MINE"), &bind)
+            .expect("send");
+        assert_eq!(drain_payloads(&rx, 1), vec![b"MINE".to_vec()]);
+    }
+
+    /// A collector replaced on the same address — the shape of the test that
+    /// failed — keeps the port between the first collector's exit and the
+    /// second one's start.
+    #[test]
+    fn a_replaced_test_collector_keeps_its_port_from_a_parallel_bind() {
+        use std::io::Write;
+        let (held, bind) = loopback_tcp_listener();
+        let first = CaptureConfig {
+            duration: Some(Duration::from_millis(300)),
+            ..CaptureConfig::default()
+        };
+        let (_rx1, done1) = start_listener(
+            HepSocketSource::Tcp(held.try_clone().expect("a second handle on the port")),
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            first,
+        );
+        let first_exit = done1.recv_timeout(MUST_ARRIVE);
+        assert!(
+            matches!(first_exit, Ok(Ok(()))),
+            "the first collector must have exited: {first_exit:?}"
+        );
+        // What a parallel test does between the two collectors.
+        let _intruder = std::net::TcpListener::bind(&bind);
+        let second = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx2, _done2) = start_listener(
+            HepSocketSource::Tcp(held),
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            second,
+        );
+        let mut agent = std::net::TcpStream::connect(&bind).expect("agent connects");
+        agent
+            .write_all(&hep3_from(1, None, b"MINE"))
+            .expect("write");
+        assert_eq!(drain_payloads(&rx2, 1), vec![b"MINE".to_vec()]);
+    }
+
+    /// Start a real listener on `socket` and hand back the pipeline it feeds.
+    ///
+    /// The socket is one the test already bound (see [`loopback_tcp`] and
+    /// [`loopback_udp`]): handing the listener a port NUMBER instead leaves the
+    /// port free between the test choosing it and the listener binding it.
     ///
     /// Every field the caller does not care about takes the value the CLI
     /// defaults would give it, so a test that says "TCP, no auth" is reading
     /// the same listener an operator gets.
     fn start_listener(
-        bind: &str,
+        socket: HepSocketSource,
         transport: HepTransport,
         tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
         allowlist: Vec<CidrRange>,
@@ -4888,7 +5041,6 @@ mod tests {
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (done_tx, done_rx) = mpsc::channel();
-        let bind_thread = bind.to_string();
         std::thread::spawn(move || {
             let opts = HepListenerOpts {
                 allowlist: &allowlist,
@@ -4903,13 +5055,13 @@ mod tests {
                 tls_key: tls.as_ref().map(|(_, k)| k.as_path()),
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.map_err(|e| format!("{e:#}")));
         });
         let ready = ready_rx.recv_timeout(MUST_ARRIVE);
         assert!(
             matches!(ready, Ok(Ok(()))),
-            "the listener must report a successful bind on {bind}: {ready:?}"
+            "the listener must report a successful start: {ready:?}"
         );
         (rx, done_rx)
     }
@@ -4934,13 +5086,13 @@ mod tests {
     /// would each fail here while a single-packet test passed.
     #[test]
     fn a_tcp_listener_delivers_every_packet_a_real_sender_writes() {
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(3),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
-        let (rx, done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let (rx, done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
 
         let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
         let sender = HepSender::for_destination(
@@ -4982,13 +5134,13 @@ mod tests {
     #[test]
     fn a_tcp_listener_serves_several_agents_at_once() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(4),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
-        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
 
         let mut a = std::net::TcpStream::connect(&bind).expect("first agent connects");
         let mut b = std::net::TcpStream::connect(&bind).expect("second agent connects");
@@ -5022,13 +5174,13 @@ mod tests {
     #[test]
     fn a_packet_split_across_two_writes_is_reassembled() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
-        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
 
         let pkt = hep3_from(5, None, b"INVITE sip:split@example SIP/2.0\r\n\r\n");
         let cut = 4; // mid-magic: even the header is not whole yet
@@ -5060,13 +5212,13 @@ mod tests {
     #[test]
     fn a_packet_whose_body_is_still_arriving_is_held_until_it_lands() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
-        let (rx, _done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
         let body = b"INVITE sip:body-split@example SIP/2.0\r\n\r\n";
         let pkt = hep3_from(5, None, body);
         // Past the six-octet header, so `total` is readable and larger than
@@ -5095,13 +5247,13 @@ mod tests {
     #[test]
     fn a_peer_that_disconnects_mid_packet_does_not_take_the_listener_with_it() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
-        let (rx, done) = start_listener(&bind, HepTransport::Tcp, None, vec![], None, config);
+        let (rx, done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
 
         {
             let truncated = hep3_from(9, None, b"INVITE sip:gone@example SIP/2.0\r\n\r\n");
@@ -5131,14 +5283,14 @@ mod tests {
     #[test]
     fn a_tcp_peer_without_the_secret_is_dropped() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(20)),
             ..CaptureConfig::default()
         };
         let (rx, done) = start_listener(
-            &bind,
+            socket,
             HepTransport::Tcp,
             None,
             vec![],
@@ -5172,7 +5324,7 @@ mod tests {
     #[test]
     fn a_tcp_peer_outside_the_allowlist_is_refused_before_it_can_speak() {
         use std::io::Write;
-        let bind = free_tcp_port();
+        let (socket, bind) = loopback_tcp();
         // Not `count: Some(1)`: serve_hep_stream counts every packet it reads
         // off the connection toward --count, dropped ones included, so a
         // one-packet budget ends the reader thread the moment the allowlist
@@ -5185,7 +5337,7 @@ mod tests {
             ..CaptureConfig::default()
         };
         let (rx, _done) = start_listener(
-            &bind,
+            socket,
             HepTransport::Tcp,
             None,
             vec![CidrRange::parse("10.0.0.0/8").expect("cidr")],
@@ -7440,12 +7592,9 @@ mod tests {
     #[test]
     fn count_limit_counts_received_not_only_forwarded() {
         use std::sync::mpsc;
-        // Reserve an ephemeral loopback port, then hand it to the listener so
-        // the test knows where to send without scraping logs.
-        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve port");
-        let port = probe.local_addr().expect("local_addr").port();
-        drop(probe);
-        let bind = format!("127.0.0.1:{port}");
+        // A socket bound here and handed to the listener, so the test knows
+        // where to send without scraping logs and the port is never free.
+        let (socket, bind) = loopback_udp();
 
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let config = CaptureConfig {
@@ -7457,7 +7606,6 @@ mod tests {
         };
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (done_tx, done_rx) = mpsc::channel();
-        let bind_thread = bind.clone();
         std::thread::spawn(move || {
             // Allowlist excludes 127.0.0.1, so every received datagram is
             // dropped before it can be forwarded — yet it must still count.
@@ -7475,7 +7623,7 @@ mod tests {
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());
         });
 
@@ -7816,15 +7964,13 @@ mod tests {
     /// is how every surface that already holds the meter reaches it.
     #[test]
     fn a_listener_hangs_its_roster_on_the_capture_meter() {
-        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve a port");
-        let bind = probe.local_addr().expect("local_addr").to_string();
-        drop(probe);
+        let (socket, bind) = loopback_udp();
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(8)),
             ..CaptureConfig::default()
         };
-        let (rx, done) = start_listener(&bind, HepTransport::Udp, None, Vec::new(), None, config);
+        let (rx, done) = start_listener(socket, HepTransport::Udp, None, Vec::new(), None, config);
         let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
         for id in [7u32, 9] {
             sender
@@ -7861,12 +8007,9 @@ mod tests {
     fn hep_ordinals_for(capture_ids: &[u32]) -> Vec<(String, Option<u64>)> {
         use std::sync::mpsc;
 
-        // Reserve an ephemeral loopback port, then hand it to the listener so
-        // the test knows where to send without scraping logs.
-        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve port");
-        let port = probe.local_addr().expect("local_addr").port();
-        drop(probe);
-        let bind = format!("127.0.0.1:{port}");
+        // A socket bound here and handed to the listener, so the test knows
+        // where to send without scraping logs and the port is never free.
+        let (socket, bind) = loopback_udp();
 
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let config = CaptureConfig {
@@ -7878,7 +8021,6 @@ mod tests {
         };
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (done_tx, done_rx) = mpsc::channel();
-        let bind_thread = bind.clone();
         std::thread::spawn(move || {
             let opts = HepListenerOpts {
                 allowlist: &[],
@@ -7893,7 +8035,7 @@ mod tests {
                 tls_key: None,
                 silence_warn_after: HEP_IDLE_WARN_AFTER,
             };
-            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let r = capture_hep_on(socket, &config, tx, &opts, Some(ready_tx));
             let _ = done_tx.send(r.is_ok());
         });
 
