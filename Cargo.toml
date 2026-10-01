@@ -60,6 +60,7 @@ include = [
   "/LICENSE-MIT",
   "/LICENSES/**",
   "/CHANGELOG.md",
+  "/contrib/fail2ban/sipnab-jail.conf",
   "/contrib/fail2ban/sipnab-scanner.conf",
   "/contrib/observability/prometheus/rules/sipnab-alerts.yml",
   "/contrib/prometheus/sipnab-alerts.yml",

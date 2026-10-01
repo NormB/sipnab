@@ -27,6 +27,26 @@ entry that carries them.
     sent from the same ports with the same SSRC, shows as one stream per
     direction.
 
+### Fixed
+
+- **The shipped fail2ban jail banned nobody on Debian 13 or Ubuntu 24.04.**
+  `contrib/fail2ban/sipnab-jail.conf` banned with `iptables-allports`, and
+  installing fail2ban on Debian 13 brings nftables, not the `iptables`
+  command: fail2ban listed the scanner as banned, the ban action failed with
+  `returned 127`, and the scanner's traffic still got through. On Ubuntu
+  24.04 the jail named no `backend`, so the distribution's `backend = systemd`
+  made it read the journal and never `/var/log/sipnab.log`. The jail now sets
+  `backend = auto` and bans with `nftables[type=allports]` on UDP and TCP, and
+  shows the iptables action in a comment for hosts that still ban with
+  iptables. It also bans after 5 detections within `findtime`, not 1. A test
+  pins all three settings, and
+  [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/) now
+  installs the jail as shipped, shows four detections not banning and the
+  fifth banning, and has a tested section for the iptables action. The jail
+  in [Detect SIP scanners and auto-block via
+  fail2ban](https://sipnab.com/docs/cookbook/#10-detect-sip-scanners-and-auto-block-via-fail2ban)
+  bans with nftables too.
+
 ### Security
 
 - **The site-test tooling no longer pulls in a vulnerable `basic-ftp`.**
