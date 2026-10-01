@@ -110,7 +110,18 @@ impl RawKillSocket {
         use std::os::fd::FromRawFd;
         // SAFETY: raw syscall; the returned fd is immediately adopted by an
         // OwnedFd so it is closed exactly once on drop.
-        let fd = unsafe { libc::socket(domain, libc::SOCK_RAW, libc::IPPROTO_RAW) };
+        //
+        // Close-on-exec from creation: this socket is held from the
+        // privileged window until the worker is spawned, and without the flag
+        // any program started in that time inherits a raw send capability.
+        // The worker gets its copy by dup2 at a fixed slot, which clears it.
+        let fd = unsafe {
+            libc::socket(
+                domain,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_RAW,
+            )
+        };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -1685,6 +1696,20 @@ pub fn spawn_scanner_kill_worker(
     // holds no kill-path send socket. `tests/scanner_kill_process_test.rs`
     // checks it by inode against `/proc/self/fd`.
     drop(descriptors);
+    // Said AFTER the close, never before: the worker reports ready from its
+    // own process as soon as it has exec'd, which can be before this line
+    // runs, so its ready line is no evidence that this process has let go.
+    // This one is, and it names the sockets so a reader can check.
+    tracing::info!(
+        "scanner-kill: this process closed its copies of the send descriptors \
+         handed to worker process {} [{}]",
+        child.id(),
+        handed_over
+            .iter()
+            .map(|h| format!("{} socket:[{}]", h.kind, h.inode))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
 
     let (Some(requests), Some(responses)) = (child.stdin.take(), child.stdout.take()) else {
         let _ = child.kill();
@@ -2657,6 +2682,46 @@ mod tests {
             "the cap is per destination, so a different destination must keep \
              its own budget"
         );
+    }
+
+    /// The raw sockets are close-on-exec from the moment they exist.
+    ///
+    /// They are opened in the privileged window and held until the worker is
+    /// spawned. A socket without close-on-exec in that time is inherited by
+    /// any program this process, or a library thread in it, starts: a raw
+    /// send capability handed to a process nobody chose. The worker gets its
+    /// copies by `dup2` at its fixed slots, which is unaffected. Requires
+    /// `CAP_NET_RAW`; skipped when unprivileged. Run under sudo to exercise it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_sockets_are_opened_close_on_exec() {
+        use std::os::fd::AsRawFd;
+        let raw = match RawKillSocket::open(&live_permit()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping close-on-exec test: raw socket unavailable ({e})");
+                return;
+            }
+        };
+        let (v4, v6) = raw.into_fds();
+        let opened: Vec<_> = v4.into_iter().chain(v6).collect();
+        assert!(!opened.is_empty(), "open succeeded with no socket");
+        for fd in &opened {
+            // The kernel's own report of the descriptor's flags, in octal.
+            let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd()))
+                .expect("fdinfo of an open descriptor");
+            let flags = info
+                .lines()
+                .find_map(|l| l.strip_prefix("flags:"))
+                .and_then(|f| i64::from_str_radix(f.trim(), 8).ok())
+                .unwrap_or_else(|| panic!("no flags in fdinfo: {info}"));
+            assert_ne!(
+                flags & i64::from(libc::O_CLOEXEC),
+                0,
+                "raw socket {} is inheritable across exec",
+                fd.as_raw_fd()
+            );
+        }
     }
 
     /// Source-spoofed raw send: the datagram must arrive at the listener with

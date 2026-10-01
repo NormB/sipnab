@@ -799,6 +799,29 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() {
         environment.contains("SIPNAB_LOG"),
         "the worker's log filter must still cross: {environment}"
     );
+    // The worker reports ready from its own process as soon as it has
+    // exec'd, which can be before the run has closed its copies: the two
+    // processes race, and under load the worker wins. So the run says when
+    // it has closed them, naming the sockets, and only then is its
+    // descriptor table the evidence. Sampling at the worker's line instead
+    // read a table the run had not finished with.
+    let closed = wait_for("the run's hand-over line", &|l| {
+        l.contains(&format!(
+            "closed its copies of the send descriptors handed to worker process {worker}"
+        ))
+    });
+    let mut closed_inodes: Vec<u64> = closed
+        .split("socket:[")
+        .skip(1)
+        .filter_map(|s| s.split(']').next()?.parse().ok())
+        .collect();
+    closed_inodes.sort_unstable();
+    let mut held_inodes = inodes.clone();
+    held_inodes.sort_unstable();
+    assert_eq!(
+        closed_inodes, held_inodes,
+        "the run must have closed exactly the sockets the worker holds: {closed}"
+    );
     let parent_fds: Vec<String> = std::fs::read_dir(format!("/proc/{parent}/fd"))
         .expect("the run's descriptors are readable to its own user")
         .filter_map(|e| std::fs::read_link(e.ok()?.path()).ok())
