@@ -240,6 +240,8 @@ DOCS_TO_SITE = {
     "tfps-sipnab.md": "tfps-sipnab.md",
     "rtpengine-relay.md": "rtpengine-relay.md",
     "rtpengine-sipnab.md": "rtpengine-sipnab.md",
+    "rtpproxy-relay.md": "rtpproxy-relay.md",
+    "rtpproxy-sipnab.md": "rtpproxy-sipnab.md",
     "homer.md": "homer.md",
     "homer-sipnab.md": "homer-sipnab.md",
     "prometheus.md": "prometheus.md",

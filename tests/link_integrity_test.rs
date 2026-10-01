@@ -1121,7 +1121,11 @@ fn wiki_intra_docs_links_resolve() {
     // 1222 -> 1227 with reproducible builds: the five new relative links in
     // build-ci-release.md and install.md (measured: +5, as on the older base).
     // 1226 -> 1231 with reproducible builds (+5, as measured on each base).
-    const EXPECTED_WIKI_LINKS: usize = 1231;
+    // 1231 -> 1263 with the rtpproxy guides, attributed per file against HEAD:
+    // docs/rtpproxy-relay.md +23, docs/rtpproxy-sipnab.md +5, docs/README.md
+    // +2 for their index entries, docs/opensips.md +1 and docs/kamailio.md +1
+    // for their rows in the "other voice-stack guides" lists.
+    const EXPECTED_WIKI_LINKS: usize = 1263;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2337,7 +2341,8 @@ fn every_docs_page_is_linked_from_the_index() {
     // and docs/kamailio-sipnab.md.
     // 69 -> 70: docs/threat-model.md.
     // 70 -> 71: docs/assurance-case.md.
-    const EXPECTED_DOCS_PAGES: usize = 71;
+    // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
+    const EXPECTED_DOCS_PAGES: usize = 73;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

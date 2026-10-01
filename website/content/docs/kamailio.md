@@ -265,6 +265,7 @@ The other guides use OpenSIPS. Each has a section that says what changes with
 Kamailio:
 
 - [rtpengine](@/docs/rtpengine-relay.md#with-kamailio): Kamailio's `rtpengine` module.
+- [rtpproxy](@/docs/rtpproxy-relay.md#with-kamailio): Kamailio's `rtpproxy` module.
 - [Homer](@/docs/homer.md#with-kamailio): Kamailio's `siptrace` module sends HEP.
 - [Prometheus](@/docs/prometheus.md#with-kamailio): Kamailio's `xhttp_prom` module.
 - [TFPS](@/docs/tfps.md): nothing changes. TFPS needs nothing from the SIP server.

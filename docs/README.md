@@ -107,6 +107,11 @@ Each answers "how do I …?" and assumes you already know what you want.
   sipnab involved.
 - **[Let sipnab name rtpengine's media](rtpengine-sipnab.md)**: tie the media
   on a relay to its call, from the relay's control plane or by asking it.
+- **[Add rtpproxy to your voice stack](rtpproxy-relay.md)**: anchor every
+  call's media on an rtpproxy relay instead, from OpenSIPS or Kamailio. No
+  sipnab involved.
+- **[Let sipnab name rtpproxy's media](rtpproxy-sipnab.md)**: tie the media
+  on an rtpproxy relay to its call, from the relay's control traffic.
 - **[Add Homer to your voice stack](homer.md)**: a searchable history
   of every call, sent by OpenSIPS or Kamailio over HEP. No sipnab involved.
 - **[Connect sipnab to Homer](homer-sipnab.md)**: sipnab as a second HEP

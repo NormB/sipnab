@@ -23,6 +23,17 @@ entry that carries them.
 
 ### Added
 
+- **Two voice-stack guides for rtpproxy.** [Add rtpproxy to your voice
+  stack](https://sipnab.com/docs/rtpproxy-relay/) installs rtpproxy 3.2.0 from
+  the project's own packages, has OpenSIPS or Kamailio anchor every call's media
+  on it, and proves it with a test call whose audio rtpproxy's own counters
+  show it relaying, with no sipnab involved. [Let sipnab name rtpproxy's
+  media](https://sipnab.com/docs/rtpproxy-sipnab/) has sipnab name the media on
+  the relay from rtpproxy's control traffic with `--rtpproxy-control`, beside
+  the SIP proxy and on the relay's own machine, where no SIP passes. Every
+  command ran as written on clean Debian 13 and Ubuntu 24.04, and the
+  own-machine case on two machines. The home page's media relay tile links
+  both.
 - **The Linux release binary is reproducible.** Building a release's tag
   gives the same bytes as the published `sipnab` binary, given the same
   toolchain. Two builds of one commit used to differ: the embedded eBPF
