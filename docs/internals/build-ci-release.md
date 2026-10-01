@@ -511,14 +511,15 @@ minutes rather than a hosted queue, and the hook no longer repeats it on every
 push. The script still runs it by hand, and pre-push keeps the reduced
 combinations.
 
-[`pre-push`](../../.githooks/pre-push) adds twelve hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds thirteen hard gates that `cargo test`
 does not cover: `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets
 -D warnings`, `cargo doc` with `RUSTDOCFLAGS=-D warnings`, `cd fuzz &&
 cargo check`, the release-delivery tests, a check of the reduced feature
 combinations `tls`, `api` and `wasm`, the full fifteen-combination matrix with
 CI's flags, a non-Linux compile of the whole tree, a YANG validation of the
-`sipnab-diagnosis` module, a `zola build` of the website, and the two prose
-linters — Vale and codespell.
+`sipnab-diagnosis` module, a `zola build` of the website, the two prose
+linters — Vale and codespell — and, for a `v*` tag, a check that a trusted key
+signed the tag.
 
 The YANG gate, [`scripts/check-yang.py`](../../scripts/check-yang.py), exists
 because a test generates the module under `yang/`: [`tests/yang_module_test.rs`](../../tests/yang_module_test.rs)
@@ -684,7 +685,7 @@ because a hand-kept list cannot catch a *new* corpus binary, which is the one
 thing this gate exists for. The first draft did hand-keep the list, and it went
 stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the twelve hard gates. Each of those fails in
+**When it runs.** Last, after the thirteen hard gates. Each of those fails in
 seconds, and spending a minute on the corpus only to hear that the tree does not
 compile wastes the minute. The gate then reaches one of five states — a run, or
 one of the four reasons not to run — and each prints its own line:
@@ -985,6 +986,16 @@ refuses a `v*` tag whose commit has a failed run, has runs still in flight, or
 has no runs at all. It skips with a warning when `gh` is unavailable rather than
 blocking — forcing `SKIP_FMT_HOOK=1` would switch off every other gate too, which
 turns one missing optional tool into running no checks at all.
+
+Before the CI check, the same hook refuses a `v*` tag that is not signed by a
+trusted key. [`scripts/tag-signature-check.sh`](../../scripts/tag-signature-check.sh)
+passes only an annotated tag with a good SSH signature from a key listed in
+[`.github/allowed_signers`](../../.github/allowed_signers). It refuses a
+lightweight tag, an unsigned tag and a tag signed by any other key, and says
+which.
+Signing needs `tag.gpgSign true` with SSH signing configured, so `git tag -a`
+signs. The trusted keys live in the repository, so the check answers the same
+on every machine, and adding a signer is a reviewed change.
 
 It exists because the manual version failed once already. The 0.5.61 release
 commit went red in `Features (tls)`, and the only thing between that and a

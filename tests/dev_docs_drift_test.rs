@@ -806,7 +806,9 @@ fn linked_code_targets_exist() {
     // `bpf/Cargo.toml`, `bpf/sipnab-bpf-types` and `bpf/rust-toolchain.toml`
     // twice. Attributed by measurement: with HEAD's page the count is 473.
     // 474 -> 480 with reproducible builds (+6, as measured on its older base).
-    const EXPECTED_CODE_LINKS: usize = 480;
+    // 480 -> 482: build-ci-release.md's signed-tag gate paragraph links
+    // scripts/tag-signature-check.sh and .github/allowed_signers.
+    const EXPECTED_CODE_LINKS: usize = 482;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

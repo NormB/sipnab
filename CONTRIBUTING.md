@@ -154,7 +154,7 @@ Because gate 2 runs the whole suite, **every commit takes minutes**, and gate 5
 means adding a test obliges you to update the count in
 `website/templates/index.html` in the same commit.
 
-**`pre-push`** adds twelve hard gates, all of which mirror CI exactly and any of
+**`pre-push`** adds thirteen hard gates, all of which mirror CI exactly and any of
 which blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -169,6 +169,7 @@ which blocks the push:
 | `python3 scripts/check-yang.py` | The `sipnab-diagnosis` YANG module is generated from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951) export every door writes. `NOT CHECKED` where neither tool is installed; CI installs both and fails without them. |
 | `vale docs/ website/content/ README.md SUPPORT.md MAINTAINERS.md` | Prose style is invisible to every cargo command. Turned main red on 2026-08-03. |
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
+| `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag is published under the maintainer's name. The tag must be annotated and carry a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
 
 CI's full feature matrix (every combination `.github/workflows/ci.yml` lists,
 with its `RUSTFLAGS=-Dwarnings`) is not in the hook: the Features job builds it

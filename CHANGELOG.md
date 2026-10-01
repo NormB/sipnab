@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **Release tags are signed, and an unsigned tag cannot be pushed.** The
+  `pre-push` gate now refuses a `v*` tag unless it is an annotated tag with a
+  good SSH signature from a key in `.github/allowed_signers`. Tags v0.5.176 to
+  v0.5.197 went out unsigned because `tag.gpgSign` was not set; every existing
+  `v*` tag has been re-signed with the maintainer's key, pointing at the same
+  commit as before.
+
 ## [0.5.198] - 2026-09-30
 
 ### Added
