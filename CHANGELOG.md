@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **The site-test tooling no longer pulls in a vulnerable `basic-ftp`.**
+  CVE-2026-102990 (GHSA-c475-qrg2-pj4r, high: a quadratic-time denial of service
+  in its directory-listing parser) affects every `basic-ftp` before 6.2.1, and
+  `e2e/package-lock.json` resolved 5.3.1 through the Lighthouse runner's proxy
+  agent. An `overrides` entry in `e2e/package.json` now resolves 6.2.1. Nothing
+  here ships to a user: `e2e/` is build-time only.
+
 ## [0.5.199] - 2026-10-01
 
 ### Added
