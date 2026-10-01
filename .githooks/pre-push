@@ -554,6 +554,7 @@ fi
 # stdin is the only place a pre-push hook learns what is being pushed. git
 # always provides it; the loop simply finds nothing when a caller does not.
 tag_commits=""
+tag_objects=""
 while read -r _local_ref local_sha remote_ref _remote_sha; do
 	case "$remote_ref" in
 	refs/tags/v*) ;;
@@ -567,7 +568,21 @@ while read -r _local_ref local_sha remote_ref _remote_sha; do
 	commit=$(git rev-list -n 1 "$local_sha" 2>/dev/null || echo "")
 	if [ -n "$commit" ]; then
 		tag_commits="$tag_commits $commit"
+		tag_objects="$tag_objects $local_sha"
 	fi
+done
+
+# -- Hard gate: a v* tag must be signed by a trusted key ----------------------
+# A tag is what this machine publishes under the maintainer's name. v0.5.176 to
+# v0.5.197 went out annotated but unsigned (tag.gpgSign was never set) and
+# nothing noticed. scripts/tag-signature-check.sh is the rule; the trusted keys
+# are committed in .github/allowed_signers.
+for tag_obj in $tag_objects; do
+	if ! sig=$(bash scripts/tag-signature-check.sh "$tag_obj"); then
+		printf '%bPush blocked:%b %s\n' "$RED" "$NC" "$sig"
+		exit 1
+	fi
+	printf '  %s\n' "$sig"
 done
 
 for commit in $tag_commits; do
