@@ -10961,6 +10961,12 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
             "@/docs/tfps-sipnab.md",
         ),
         (
+            "Firewall bans",
+            "@/docs/fail2ban.md",
+            "Use fail2ban",
+            "@/docs/fail2ban-sipnab.md",
+        ),
+        (
             "Call records",
             "@/docs/vcon-server.md",
             "Use a vCon server",

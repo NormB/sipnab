@@ -10,6 +10,22 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Two voice-stack guides for fail2ban.** [Ban SIP scanners with
+  fail2ban](https://sipnab.com/docs/fail2ban/) has OpenSIPS log scanners and
+  wrong passwords, and fail2ban ban them with nftables, while a phone keeps
+  registering and calling. No sipnab involved. [Feed fail2ban from
+  sipnab](https://sipnab.com/docs/fail2ban-sipnab/) runs sipnab's scanner and
+  registration-flood detectors as a service and has fail2ban ban what they
+  find, with `contrib/fail2ban`'s filter and jail. It says what
+  `--kill-scanner` sends back to a scanner (a `200 OK` from the SIP server's
+  address), and that the contrib jail as shipped bans nobody on either system
+  tested: on Debian 13 its `iptables-allports` action fails for want of
+  `iptables`, and on Ubuntu 24.04 it reads the journal instead of its log
+  file. The page's `.local` override fixes both. Every block ran as written on
+  clean Debian 13 and Ubuntu 24.04.
+
 ### Security
 
 - **Release tags are signed, and an unsigned tag cannot be pushed.** The

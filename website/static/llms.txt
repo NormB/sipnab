@@ -57,6 +57,8 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Run sipnab beside OpenSIPS](https://sipnab.com/docs/opensips-sipnab/): Install sipnab on the OpenSIPS machine and watch a call through the proxy as one call, from both its legs, with or without Kamailio beside it.
 - [Use Kamailio as your voice stack's SIP server](https://sipnab.com/docs/kamailio/): Install Kamailio 6.1 from the Kamailio project's packages, set it up as a proxy that stays in each call's path, place a test call, operate it, and run it beside OpenSIPS. No sipnab involved.
 - [Run sipnab beside Kamailio](https://sipnab.com/docs/kamailio-sipnab/): Install sipnab on the Kamailio machine and watch a call through the proxy as one call, from both its legs, with or without OpenSIPS beside it.
+- [Ban SIP scanners with fail2ban](https://sipnab.com/docs/fail2ban/): Have OpenSIPS log scanners and wrong passwords, and fail2ban ban them with nftables, while a phone keeps registering and calling. No sipnab involved.
+- [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/): Run sipnab's scanner and registration-flood detectors as a service and have fail2ban ban what they find, with the filter and jail that ship with sipnab.
 
 ## Internals
 
