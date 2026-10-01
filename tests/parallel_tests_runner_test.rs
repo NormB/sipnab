@@ -407,8 +407,14 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
         })
         .collect();
 
+    // Bounded by time, so a loaded host costs seconds rather than minutes
+    // (400 fixed iterations once took over 3 minutes at load average 100).
+    // `this_process_never_holds_a_fake_binary_open` is the exhaustive check;
+    // this one keeps the symptom itself, the 126, under test.
+    let started = Instant::now();
     let mut failure = None;
-    for i in 0..400 {
+    let mut i = 0;
+    while i < MIN_RUNS || (i < MAX_RUNS && started.elapsed() < RUN_BUDGET) {
         let bin = fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
         let out = recorder(&spool, &target, tmp.path(), &bin, &[], &[]);
         if out.status.code() != Some(3) {
@@ -419,6 +425,7 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
             ));
             break;
         }
+        i += 1;
     }
     stop.store(true, Ordering::Relaxed);
     for forker in forkers {
@@ -428,6 +435,13 @@ fn a_fake_binary_runs_while_other_threads_are_forking() {
         panic!("{failure}");
     }
 }
+
+/// Fake binaries run at least, whatever the time.
+const MIN_RUNS: usize = 10;
+/// Fake binaries run at most, however fast the host.
+const MAX_RUNS: usize = 400;
+/// Past this, stop starting fake binaries once `MIN_RUNS` have run.
+const RUN_BUDGET: Duration = Duration::from_secs(2);
 
 /// The property behind the test above, checked where it is decided: this
 /// process must never hold a descriptor on a fake binary, not even briefly.
