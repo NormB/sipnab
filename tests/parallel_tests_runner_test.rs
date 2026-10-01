@@ -18,7 +18,6 @@
 
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -32,10 +31,39 @@ fn script(name: &str) -> PathBuf {
 }
 
 /// An executable shell script standing in for a test binary.
+///
+/// A child process writes it, never this one. This process runs its tests on
+/// many threads, and any of them may fork (every `Command` does); a child
+/// forked while this process held the file open for writing would carry that
+/// descriptor until its own `exec`, and executing the file meanwhile fails
+/// with ETXTBSY -- the recorder's `exec` exits 126 instead of the binary's
+/// own status. Under host load that gap is long enough to hit
+/// (`a_fake_binary_runs_while_other_threads_are_forking`).
 fn fake_binary(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::io::Write;
+    use std::process::Stdio;
+
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake binary");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut writer = Command::new("sh")
+        .arg("-c")
+        .arg("cat >\"$1\" && chmod 755 \"$1\"")
+        .arg("sh")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("start the fake binary's writer");
+    writer
+        .stdin
+        .take()
+        .expect("writer stdin")
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .expect("write fake binary");
+    let status = writer.wait().expect("wait for the fake binary's writer");
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
     path
 }
 
@@ -293,6 +321,70 @@ fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() {
         0,
         "a doctest must not be recorded: its file is deleted before the pool runs"
     );
+}
+
+/// A fake binary must run the moment `fake_binary` returns, however busy the
+/// other test threads are. Linux refuses to execute a file that any process
+/// still has open for writing (ETXTBSY), and the recorder's `exec` then
+/// answers 126 instead of the binary's own status. A child forked by another
+/// thread inherits every descriptor this process has open at that instant and
+/// keeps it until its own `exec`; under host load that gap stretches. Here the
+/// sibling children pause between fork and exec on purpose, so a writable
+/// descriptor to the fake binary, if this process ever holds one, is caught.
+#[test]
+fn a_fake_binary_runs_while_other_threads_are_forking() {
+    use std::os::unix::process::CommandExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let target = tmp.path().join("target");
+    let spool = target.join("spool");
+    std::fs::create_dir_all(&spool).expect("spool");
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("binary dir");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let forkers: Vec<_> = (0..16)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let mut child = Command::new("true");
+                    // SAFETY: the hook only sleeps (nanosleep), which is
+                    // async-signal-safe; it allocates nothing and takes no lock.
+                    unsafe {
+                        child.pre_exec(|| {
+                            std::thread::sleep(Duration::from_millis(30));
+                            Ok(())
+                        });
+                    }
+                    let _ = child.status();
+                }
+            })
+        })
+        .collect();
+
+    let mut failure = None;
+    for i in 0..400 {
+        let bin = fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
+        let out = recorder(&spool, &target, tmp.path(), &bin, &[], &[]);
+        if out.status.code() != Some(3) {
+            failure = Some(format!(
+                "fake binary {i} exited {:?}, not its own 3: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+            break;
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for forker in forkers {
+        forker.join().expect("forker thread");
+    }
+    if let Some(failure) = failure {
+        panic!("{failure}");
+    }
 }
 
 /// One binary that cannot start is that binary's failure. It must not abort
