@@ -18,7 +18,6 @@
 
 #![cfg(unix)]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -32,10 +31,39 @@ fn script(name: &str) -> PathBuf {
 }
 
 /// An executable shell script standing in for a test binary.
+///
+/// A child process writes it, never this one. This process runs its tests on
+/// many threads, and any of them may fork (every `Command` does); a child
+/// forked while this process held the file open for writing would carry that
+/// descriptor until its own `exec`, and executing the file meanwhile fails
+/// with ETXTBSY -- the recorder's `exec` exits 126 instead of the binary's
+/// own status. Under host load that gap is long enough to hit
+/// (`a_fake_binary_runs_while_other_threads_are_forking`).
 fn fake_binary(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::io::Write;
+    use std::process::Stdio;
+
     let path = dir.join(name);
-    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake binary");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut writer = Command::new("sh")
+        .arg("-c")
+        .arg("cat >\"$1\" && chmod 755 \"$1\"")
+        .arg("sh")
+        .arg(&path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .expect("start the fake binary's writer");
+    writer
+        .stdin
+        .take()
+        .expect("writer stdin")
+        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+        .expect("write fake binary");
+    let status = writer.wait().expect("wait for the fake binary's writer");
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
     path
 }
 
@@ -172,32 +200,74 @@ fn a_failing_binary_fails_the_run_and_the_others_still_run() {
     );
 }
 
+/// Overlap is asserted directly, not inferred from elapsed time: each binary
+/// waits at a barrier until all three have started, which only a pool running
+/// them side by side can satisfy, at any host load. The test used to time
+/// three `sleep 1` binaries against a 2500 ms bound, and a loaded host alone
+/// pushed that past the bound with the pool working correctly (3 of 15 runs
+/// with the one-minute load average between 63 and 129).
 #[test]
 fn binaries_run_side_by_side_up_to_the_job_limit() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let spool = tmp.path().join("spool");
     std::fs::create_dir(&spool).expect("spool");
+    let started = tmp.path().join("started");
     for n in 0..3 {
         let bin = fake_binary(
             tmp.path(),
-            &format!("sleeper{n}"),
-            "sleep 1; echo 'test result: ok. 1 passed; 0 failed'",
+            &format!("meeter{n}"),
+            &format!(
+                "mark='{marks}'\n\
+                 echo start >>\"$mark\"\n\
+                 end=$(( $(date +%s) + 30 ))\n\
+                 while [ \"$(grep -c start \"$mark\")\" -lt 3 ]; do\n\
+                 \x20 if [ \"$(date +%s)\" -ge \"$end\" ]; then\n\
+                 \x20   echo \"met $(grep -c start \"$mark\") of 3 within 30 s\"\n\
+                 \x20   echo 'test result: FAILED. 0 passed; 1 failed'; exit 1\n\
+                 \x20 fi\n\
+                 \x20 sleep 0.05\n\
+                 done\n\
+                 echo 'met 3 of 3'\n\
+                 echo 'test result: ok. 1 passed; 0 failed'",
+                marks = started.display()
+            ),
         );
         record(&spool, tmp.path(), &bin, &[], &[]);
     }
-    let (out, parallel) = run_spool(&spool, 3, &tmp.path().join("d1.json"));
-    assert!(out.status.success(), "{}", text(&out));
-    assert!(
-        parallel < Duration::from_millis(2500),
-        "three 1 s binaries with 3 jobs took {parallel:?}: they did not overlap"
+    let (out, _) = run_spool(&spool, 3, &tmp.path().join("d1.json"));
+    let all = text(&out);
+    assert_eq!(
+        all.matches("met 3 of 3").count(),
+        3,
+        "with 3 jobs, each of three binaries must see all three running at \
+         once:\n{all}"
     );
-    // POSITIVE CONTROL: with one job the same three are serial, so the
-    // timing above measures the pool and not a fast machine.
-    let (out, serial) = run_spool(&spool, 1, &tmp.path().join("d2.json"));
+    assert!(out.status.success(), "{all}");
+
+    // POSITIVE CONTROL: with one job the pool must not overlap them. Each
+    // binary brackets its run with markers; one job means strictly
+    // start/end pairs, whatever the load.
+    let serial_spool = tmp.path().join("serial-spool");
+    std::fs::create_dir(&serial_spool).expect("serial spool");
+    let order = tmp.path().join("order");
+    for n in 0..3 {
+        let bin = fake_binary(
+            tmp.path(),
+            &format!("bracket{n}"),
+            &format!(
+                "echo start >>'{o}'; sleep 0.2; echo end >>'{o}'; \
+                 echo 'test result: ok. 1 passed; 0 failed'",
+                o = order.display()
+            ),
+        );
+        record(&serial_spool, tmp.path(), &bin, &[], &[]);
+    }
+    let (out, _) = run_spool(&serial_spool, 1, &tmp.path().join("d2.json"));
     assert!(out.status.success(), "{}", text(&out));
-    assert!(
-        serial >= Duration::from_secs(3),
-        "one job ran three 1 s binaries in {serial:?}: they overlapped anyway"
+    assert_eq!(
+        std::fs::read_to_string(&order).expect("order file"),
+        "start\nend\nstart\nend\nstart\nend\n",
+        "one job ran binaries that overlapped"
     );
 }
 
@@ -293,6 +363,292 @@ fn a_binary_outside_the_target_dir_runs_at_once_and_is_not_recorded() {
         0,
         "a doctest must not be recorded: its file is deleted before the pool runs"
     );
+}
+
+/// A fake binary must run the moment `fake_binary` returns, however busy the
+/// other test threads are. Linux refuses to execute a file that any process
+/// still has open for writing (ETXTBSY), and the recorder's `exec` then
+/// answers 126 instead of the binary's own status. A child forked by another
+/// thread inherits every descriptor this process has open at that instant and
+/// keeps it until its own `exec`; under host load that gap stretches. Here the
+/// sibling children pause between fork and exec on purpose, so a writable
+/// descriptor to the fake binary, if this process ever holds one, is caught.
+#[test]
+fn a_fake_binary_runs_while_other_threads_are_forking() {
+    use std::os::unix::process::CommandExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let target = tmp.path().join("target");
+    let spool = target.join("spool");
+    std::fs::create_dir_all(&spool).expect("spool");
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("binary dir");
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let forkers: Vec<_> = (0..16)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let mut child = Command::new("true");
+                    // SAFETY: the hook only sleeps (nanosleep), which is
+                    // async-signal-safe; it allocates nothing and takes no lock.
+                    unsafe {
+                        child.pre_exec(|| {
+                            std::thread::sleep(Duration::from_millis(30));
+                            Ok(())
+                        });
+                    }
+                    let _ = child.status();
+                }
+            })
+        })
+        .collect();
+
+    // Bounded by time, so a loaded host costs seconds rather than minutes
+    // (400 fixed iterations once took over 3 minutes at load average 100).
+    // `this_process_never_holds_a_fake_binary_open` is the exhaustive check;
+    // this one keeps the symptom itself, the 126, under test.
+    let started = Instant::now();
+    let mut failure = None;
+    let mut i = 0;
+    while i < MIN_RUNS || (i < MAX_RUNS && started.elapsed() < RUN_BUDGET) {
+        let bin = fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
+        let out = recorder(&spool, &target, tmp.path(), &bin, &[], &[]);
+        if out.status.code() != Some(3) {
+            failure = Some(format!(
+                "fake binary {i} exited {:?}, not its own 3: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            ));
+            break;
+        }
+        i += 1;
+    }
+    stop.store(true, Ordering::Relaxed);
+    for forker in forkers {
+        forker.join().expect("forker thread");
+    }
+    if let Some(failure) = failure {
+        panic!("{failure}");
+    }
+}
+
+/// Fake binaries run at least, whatever the time.
+const MIN_RUNS: usize = 10;
+/// Fake binaries run at most, however fast the host.
+const MAX_RUNS: usize = 400;
+/// Past this, stop starting fake binaries once `MIN_RUNS` have run.
+const RUN_BUDGET: Duration = Duration::from_secs(2);
+
+/// The property behind the test above, checked where it is decided: this
+/// process must never hold a descriptor on a fake binary, not even briefly.
+///
+/// The test above only sees a descriptor that a sibling child still holds
+/// when the binary runs. A helper that opens the file here just to create it,
+/// then has a child write it, closes its descriptor well before that, so the
+/// run succeeds and the defect hides (that mutant survived 400 iterations).
+///
+/// Here probe children list their own descriptors -- copies of this process's
+/// table at the instant they were created -- and report any that names a file
+/// in the fake binaries' directory, so a catch depends only on a probe being
+/// created inside the window. Probes are made with `clone(CLONE_VM)`, the way
+/// `posix_spawn` makes the children that hit this in practice. Without a copy
+/// of the address space they come about fifty times as often as `fork`
+/// children did (12,000 to 16,000 a second against about 270, measured on
+/// thor-02);
+/// forked probes missed that mutant in 2 runs of 5, these caught it in 20 of
+/// 20. Linux only: `clone` and `/proc/self/fd`.
+#[cfg(target_os = "linux")]
+#[test]
+fn this_process_never_holds_a_fake_binary_open() {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).expect("binary dir");
+    let reports_path = tmp.path().join("held");
+    let reports = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&reports_path)
+        .expect("reports file");
+    let mut prefix = elsewhere.as_os_str().as_bytes().to_vec();
+    prefix.push(b'/');
+    let probe = Arc::new(Probe {
+        prefix,
+        report_fd: reports.as_raw_fd(),
+    });
+    let lowest_free = std::fs::File::open("/dev/null").expect("open /dev/null");
+    assert!(
+        lowest_free.as_raw_fd() < SCANNED_FDS / 2,
+        "descriptor {} is already in use here; a probe scanning {SCANNED_FDS} \
+         could miss one",
+        lowest_free.as_raw_fd()
+    );
+    drop(lowest_free);
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let probes = Arc::new(AtomicU64::new(0));
+    let probers: Vec<_> = (0..PROBERS)
+        .map(|_| {
+            let stop = Arc::clone(&stop);
+            let probes = Arc::clone(&probes);
+            let probe = Arc::clone(&probe);
+            std::thread::spawn(move || {
+                let mut stack = vec![0_u8; 256 * 1024];
+                while !stop.load(Ordering::Relaxed) {
+                    run_probe(&probe, &mut stack);
+                    probes.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+
+    for i in 0..CREATED {
+        fake_binary(&elsewhere, &format!("bin{i}"), "exit 3");
+    }
+    stop.store(true, Ordering::Relaxed);
+    for prober in probers {
+        prober.join().expect("prober thread");
+    }
+    drop(reports);
+    let probes = probes.load(Ordering::Relaxed);
+    assert!(
+        probes >= CREATED as u64,
+        "only {probes} probes ran while {CREATED} fake binaries were made: the \
+         check never had a chance"
+    );
+    let held = std::fs::read_to_string(&reports_path).expect("reports");
+    assert!(
+        held.is_empty(),
+        "a child created while fake_binary ran inherited a descriptor on a fake \
+         binary ({probes} probes): {held}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+const PROBERS: usize = 4;
+#[cfg(target_os = "linux")]
+const CREATED: usize = 400;
+/// Descriptors a probe looks at. One opened in this process takes the lowest
+/// free number, so this only has to exceed how many are open at once; the
+/// test checks that it does.
+#[cfg(target_os = "linux")]
+const SCANNED_FDS: i32 = 256;
+
+/// What a probe child needs, built before any probe exists.
+#[cfg(target_os = "linux")]
+struct Probe {
+    prefix: Vec<u8>,
+    report_fd: i32,
+}
+
+/// Create one probe child and wait for it.
+#[cfg(target_os = "linux")]
+fn run_probe(probe: &Probe, stack: &mut [u8]) {
+    extern "C" fn child(arg: *mut libc::c_void) -> libc::c_int {
+        // SAFETY: `arg` is the `&Probe` passed below, alive until the parent's
+        // wait returns, which is after this child has exited.
+        let probe = unsafe { &*arg.cast::<Probe>() };
+        report_held_descriptors(&probe.prefix, probe.report_fd);
+        0
+    }
+    spawn_and_wait_in_this_address_space(child, std::ptr::from_ref(probe).cast_mut().cast(), stack);
+}
+
+/// Run `child(arg)` in a new process that shares this address space but has
+/// its own copy of the descriptor table, and wait for it to exit.
+///
+/// `child` must make only async-signal-safe calls on its own stack and read
+/// nothing `arg` does not keep alive; `stack` is its stack, untouched by this
+/// process until the wait has returned.
+#[cfg(target_os = "linux")]
+fn spawn_and_wait_in_this_address_space(
+    child: extern "C" fn(*mut libc::c_void) -> libc::c_int,
+    arg: *mut libc::c_void,
+    stack: &mut [u8],
+) {
+    // The stack grows down: hand clone the 16-byte-aligned top.
+    let top = (stack.as_mut_ptr() as usize + stack.len()) & !15;
+    // SAFETY: CLONE_VM without CLONE_FILES gives the child a copy of the
+    // descriptor table and this address space, the way posix_spawn does. The
+    // caller's contract above keeps the child off anything but its own stack
+    // and `arg`, and this function waits for it before either can go away.
+    let pid = unsafe {
+        libc::clone(
+            child,
+            top as *mut libc::c_void,
+            libc::CLONE_VM | libc::SIGCHLD,
+            arg,
+        )
+    };
+    assert!(pid > 0, "clone failed: {}", std::io::Error::last_os_error());
+    let mut status = 0;
+    // SAFETY: waits for the child created above.
+    let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+    assert_eq!(waited, pid, "{}", std::io::Error::last_os_error());
+}
+
+/// In a probe child: write the path of every descriptor that names a file
+/// under `prefix`, one per line, to `report_fd`. Async-signal-safe: raw
+/// fcntl(2), readlink(2) and write(2) on stack buffers, no allocation.
+#[cfg(target_os = "linux")]
+fn report_held_descriptors(prefix: &[u8], report_fd: i32) {
+    const FD_DIR: &[u8] = b"/proc/self/fd/";
+    for fd in 0..SCANNED_FDS {
+        // Cheap filter first: only a regular file can be a fake binary.
+        // SAFETY: `libc::stat` is plain integers, for which all-zero is valid.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: `stat` is a live stack value fstat(2) fills in.
+        let failed = unsafe { libc::fstat(fd, &mut stat) } < 0;
+        if failed || stat.st_mode & libc::S_IFMT != libc::S_IFREG {
+            continue;
+        }
+        let mut link = [0_u8; 32];
+        link[..FD_DIR.len()].copy_from_slice(FD_DIR);
+        let mut digits = [0_u8; 10];
+        let mut n = fd.unsigned_abs();
+        let mut len = 0;
+        loop {
+            digits[len] = b'0' + (n % 10) as u8;
+            len += 1;
+            n /= 10;
+            if n == 0 {
+                break;
+            }
+        }
+        for k in 0..len {
+            link[FD_DIR.len() + k] = digits[len - 1 - k];
+        }
+        // `link` is zero-filled, so it is NUL-terminated after the digits.
+        let mut target = [0_u8; 4096];
+        // SAFETY: both buffers are live stack arrays of the stated sizes.
+        let got = unsafe {
+            libc::readlink(
+                link.as_ptr().cast(),
+                target.as_mut_ptr().cast(),
+                target.len(),
+            )
+        };
+        let Ok(got) = usize::try_from(got) else {
+            continue;
+        };
+        let target = &target[..got];
+        if target.starts_with(prefix) {
+            // SAFETY: writes from live buffers to a descriptor this child
+            // inherited open.
+            unsafe {
+                libc::write(report_fd, target.as_ptr().cast(), target.len());
+                libc::write(report_fd, b"\n".as_ptr().cast(), 1);
+            }
+        }
+    }
 }
 
 /// One binary that cannot start is that binary's failure. It must not abort
