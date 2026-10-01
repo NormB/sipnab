@@ -306,6 +306,7 @@ module package beside `opensips`:
 | Guide | Modules it loads | With the packages, also install |
 |---|---|---|
 | [rtpengine](rtpengine-relay.md) | `rtpengine`, `rtp_relay`, `dialog` | nothing: they come with `opensips` |
+| [rtpproxy](rtpproxy-relay.md) | `rtpproxy`, `dialog` | nothing: they come with `opensips` |
 | [Homer](homer.md) | `proto_hep`, `tracer` | nothing: they come with `opensips` |
 | [Prometheus](prometheus.md) | `httpd`, `prometheus` | `opensips-http-modules`, `opensips-prometheus-module` |
 | [Add a vCon server](vcon-server.md) | `siprec`, `b2b_entities`, `uac_auth` | `opensips-siprec-module`, `opensips-auth-modules` |

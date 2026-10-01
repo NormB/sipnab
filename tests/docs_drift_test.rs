@@ -1263,6 +1263,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/rtpproxy-relay.md",
+            "website/content/docs/rtpproxy-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",
@@ -1281,6 +1283,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/rtpproxy-relay.md",
+            "website/content/docs/rtpproxy-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",
@@ -1299,6 +1303,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps-sipnab.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/rtpproxy-relay.md",
+            "website/content/docs/rtpproxy-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",
@@ -1327,6 +1333,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/tfps.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/rtpproxy-relay.md",
+            "website/content/docs/rtpproxy-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",
@@ -1368,6 +1376,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/vcon-server.md",
             "docs/rtpengine-relay.md",
             "website/content/docs/rtpengine-relay.md",
+            "docs/rtpproxy-relay.md",
+            "website/content/docs/rtpproxy-relay.md",
             "docs/homer.md",
             "website/content/docs/homer.md",
             "docs/prometheus.md",
@@ -4112,7 +4122,9 @@ fn no_documentation_table_repeats_a_row() {
     // 257 -> 258: docs/threat-model.md (wiki only, no site page).
     // 258 -> 259: docs/assurance-case.md (wiki only, no site page).
     // 259 -> 260: ROADMAP.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 260;
+    // 260 -> 264: the two rtpproxy guides (rtpproxy-relay, rtpproxy-sipnab)
+    // under docs/ and their two generated site pages.
+    const EXPECTED_MARKDOWN_FILES: usize = 264;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4603,7 +4615,10 @@ fn no_documentation_table_repeats_a_row() {
     // against HEAD, 20 -> 21 tables in each.
     // 1044 -> 1046 with the API Host allowlist: the [api] config table and
     // its site copy.
-    const EXPECTED_TABLES: usize = 1046;
+    // 1046 -> 1052 with the rtpproxy guides: docs/rtpproxy-relay.md's three
+    // tables (the parts, the versions, the two relays' ports) and their site
+    // copies; docs/rtpproxy-sipnab.md has none.
+    const EXPECTED_TABLES: usize = 1052;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

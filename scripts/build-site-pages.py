@@ -503,6 +503,28 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "mirrored control plane or by asking it, with the relay on the same "
         "machine as the SIP proxy or its own.",
     ),
+    # The rtpproxy guides (2026-09-30), beside rtpengine's: 54 and 55 were the
+    # next free weights.
+    (
+        "docs/rtpproxy-relay.md",
+        "rtpproxy-relay.md",
+        "Add rtpproxy to your voice stack",
+        "Add rtpproxy to your voice stack",
+        54,
+        "Install rtpproxy from the project's own packages, have OpenSIPS or "
+        "Kamailio anchor every call's media on it, prove it with a test call, "
+        "and operate it. No sipnab involved.",
+    ),
+    (
+        "docs/rtpproxy-sipnab.md",
+        "rtpproxy-sipnab.md",
+        "Let sipnab name rtpproxy's media",
+        "Let sipnab name rtpproxy's media",
+        55,
+        "Have sipnab name the media on an rtpproxy relay from the relay's "
+        "control traffic, with the relay on the same machine as the SIP proxy "
+        "or its own.",
+    ),
     (
         "docs/homer.md",
         "homer.md",

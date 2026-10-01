@@ -10910,8 +10910,8 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() {
 
 /// The rtpengine tile is headed "Media relay", and each relay on it gets the
 /// SIP proxy tile's pair of links: use it, then run sipnab beside it (Norm,
-/// 2026-09-28). rtpproxy joins the tile with its own pair once its guides are
-/// verified; until then only rtpengine's pair is here.
+/// 2026-09-28). rtpproxy joined the tile with its own pair once its guides
+/// were verified (2026-09-30).
 #[test]
 fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
     let page = read("website/templates/index.html");
@@ -10926,6 +10926,8 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
     for (href, text) in [
         ("@/docs/rtpengine-relay.md", "Use rtpengine"),
         ("@/docs/rtpengine-sipnab.md", "Run sipnab beside it"),
+        ("@/docs/rtpproxy-relay.md", "Use rtpproxy"),
+        ("@/docs/rtpproxy-sipnab.md", "Run sipnab beside it"),
     ] {
         let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
         assert!(tile.contains(&link), "missing {link}:\n{tile}");
