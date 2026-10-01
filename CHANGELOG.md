@@ -8,6 +8,25 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The rtpengine guides now say what a real call through rtpengine shows.**
+  Every block of [Add rtpengine to your voice
+  stack](https://sipnab.com/docs/rtpengine-relay/) and [Let sipnab name
+  rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/) ran again on
+  clean Debian 13 and Ubuntu 24.04 with calls whose audio crossed the relay,
+  each claim checked against what the machines printed. Corrected: step 4's
+  capture ends with `No SIP signaling found`, not `No SIP traffic found`; the
+  four streams of step 3 are two PCMA and two PCMU, because rtpengine
+  converts between codecs for SIPp's PCMU-only callee; and with nothing
+  listening at the `homer` address, rtpengine logs `Write error to Homer` for
+  each call, not only `Connection error from Homer`. The [rtpengine
+  reference](https://sipnab.com/docs/rtpengine/) restarted a unit named
+  `rtpengine`, which a relay packaged from rtpengine's source tree does not
+  have: it is `ngcp-rtpengine-daemon` there.
+
 ## [0.5.200] - 2026-10-01
 
 ### Changed
