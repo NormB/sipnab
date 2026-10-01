@@ -48,28 +48,55 @@ fn append_one_byte(path: &Path) -> String {
     format!("printf x >> {}", path.display())
 }
 
-/// Number of bytes in `path` once it has stopped growing, i.e. once every
-/// spawned child has run. Waits for three consecutive quiet samples so a
-/// still-forking engine cannot be mistaken for a finished one, and caps the
-/// wait so a hung child fails the test rather than the suite.
+/// Number of bytes in `path` once every command spawned so far has run.
+///
+/// `fire` returns only after `spawn`, and `spawn` only after the child has
+/// exec'd `sh`, so every command the engine started is, from then on, an `sh`
+/// child of this process that stays alive until its write is done (and is a
+/// zombie after that: the engine reaps only on its next `fire`). The count is
+/// therefore final once this process has no living `sh` child. It used to be
+/// read once the file had stopped growing for 300 ms, which on a loaded host
+/// is not evidence: a child can take longer than that to reach its write, and
+/// the count came back short (0 of 10, 9 of 10).
+///
+/// Children of tests running alongside only lengthen the wait. Capped so a
+/// hung child fails the test rather than the suite.
 fn settled_spawn_count(path: &Path) -> u64 {
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut last = u64::MAX;
-    let mut quiet = 0;
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
-        let now = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        if now == last {
-            quiet += 1;
-            if quiet == 3 {
-                return now;
-            }
-        } else {
-            quiet = 0;
-            last = now;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let living = living_sh_children();
+        if living == 0 {
+            return std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         }
+        assert!(
+            Instant::now() < deadline,
+            "{living} spawned command(s) still running after 60s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
     }
-    panic!("spawn count never settled within 20s (last={last})");
+}
+
+/// How many `sh` children of this process have not exited, read from `ps`
+/// (Linux and macOS both take these options).
+fn living_sh_children() -> usize {
+    let me = std::process::id().to_string();
+    let out = std::process::Command::new("ps")
+        .args(["-A", "-o", "ppid=", "-o", "stat=", "-o", "comm="])
+        .output()
+        .expect("run ps");
+    assert!(out.status.success(), "ps failed: {out:?}");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|line| {
+            let mut fields = line.split_whitespace();
+            let (Some(ppid), Some(stat), Some(comm)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return false;
+            };
+            ppid == me && !stat.starts_with('Z') && comm.rsplit('/').next() == Some("sh")
+        })
+        .count()
 }
 
 /// A temp file that exists and is empty, plus the command that appends to it.
@@ -78,6 +105,29 @@ fn spawn_probe() -> (tempfile::NamedTempFile, String) {
     file.flush().expect("flush");
     let cmd = append_one_byte(file.path());
     (file, cmd)
+}
+
+/// The count is taken once the commands have RUN, however slowly they start.
+///
+/// On a loaded host a child can take longer than any fixed quiet interval to
+/// reach its first write; a count read off a file that merely stopped growing
+/// then reports 0 spawns for commands that ran a moment later. A command that
+/// sleeps before writing stands in for that host.
+#[test]
+fn a_command_that_is_slow_to_run_is_still_counted() {
+    let file = tempfile::NamedTempFile::new().expect("create tempfile");
+    let cmd = format!("sleep 1; {}", append_one_byte(file.path()));
+
+    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let mut engine = AlertEngine::new(vec![rule], Some(cmd));
+    engine.fire("scanner", peer(1), "slow", at(0));
+
+    let spawned = settled_spawn_count(file.path());
+    assert_eq!(
+        spawned, 1,
+        "one fired alert ran its command once; the count must wait for it, not \
+         report {spawned}"
+    );
 }
 
 /// A detector that names many distinct peers must not spawn a process per
