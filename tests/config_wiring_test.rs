@@ -3318,3 +3318,107 @@ fn active_idle_window_precedence_is_flag_then_key_then_default() {
         "--active-idle-window must outrank the key it shadows"
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  [capture] hep_parse and bpf_filter (issue #343)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// The loopback deployment from issue #343, from a config file alone.
+///
+/// A proxy mirrors its traffic as HEP to a loopback port, and every reader
+/// sniffs `lo` instead of binding that port. The capture therefore holds BOTH
+/// the HEP copy (here on UDP/9063) and whatever plain SIP crosses `lo` (here on
+/// 5060). `-E` unwraps the first; the positional filter `udp dst port 9063`
+/// drops the second. Each half is asserted in both directions, so a key that
+/// parsed and did nothing fails here.
+#[test]
+#[cfg(all(feature = "native", feature = "hep"))]
+fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
+    use chrono::Utc;
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+
+    const PLAIN: &str = "plain-on-lo";
+    const CARRIED: &str = "hep-carried";
+    let mut frames = pcap_build::sip_call_frames(PLAIN, "plain1", "alice", "bob");
+    let ep = HepEndpoint {
+        src_addr: "10.3.0.1".parse().unwrap(),
+        dst_addr: "10.4.0.1".parse().unwrap(),
+        src_port: 5060,
+        dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    for msg in pcap_build::sip_call(CARRIED, "hep1", "carol", "dave") {
+        let hep = build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, msg.as_bytes());
+        frames.push(pcap_build::udp_frame(
+            [127, 0, 0, 1],
+            [127, 0, 0, 1],
+            40000,
+            9063,
+            &hep,
+        ));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pcap = dir.path().join("lo.pcap");
+    pcap_build::write_pcap(&pcap, &frames);
+    let pcap = pcap.to_str().unwrap().to_string();
+
+    let probe = |extra: &[&str]| -> (String, String) {
+        let mut args: Vec<String> = [
+            "-N",
+            "-I",
+            &pcap,
+            "--json-dialogs",
+            "--portrange",
+            "1-65535",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        args.extend(extra.iter().map(|s| (*s).to_string()));
+        let (out, err, code) = run_owned(&args);
+        assert_eq!(code, 0, "the run must exit cleanly ({extra:?}):\n{err}");
+        (out, err)
+    };
+
+    let (out, _) = probe(&["--no-config"]);
+    assert!(
+        out.contains(PLAIN) && !out.contains(CARRIED),
+        "with neither key the HEP copy stays wrapped -- the state the key \
+         exists to change:\n{out}"
+    );
+
+    let hep_only = write_config(&dir, "[capture]\nhep_parse = true\n");
+    let (out, _) = probe(&["--config", hep_only.to_str().unwrap()]);
+    assert!(
+        out.contains(PLAIN) && out.contains(CARRIED),
+        "[capture] hep_parse = true must unwrap the HEP copy, as -E does:\n{out}"
+    );
+
+    let both = write_config(
+        &dir,
+        "[capture]\nhep_parse = true\nbpf_filter = \"udp dst port 9063\"\n",
+    );
+    let cfg = both.to_str().unwrap();
+    let (out, err) = probe(&["--config", cfg]);
+    assert!(
+        out.contains(CARRIED) && !out.contains(PLAIN),
+        "[capture] bpf_filter must drop the plain SIP beside the HEP copy:\n{out}"
+    );
+    assert!(
+        err.contains("[capture] bpf_filter") && err.contains("udp dst port 9063"),
+        "a capture FILE narrowed by the config must say so, or a file whose \
+         calls sit outside the filter reads as an empty one:\n{err}"
+    );
+
+    // The positional filter replaces the key: pointed at the plain SIP, the
+    // HEP copy is the half that disappears.
+    let (out, err) = probe(&["--config", cfg, "udp", "port", "5060"]);
+    assert!(
+        out.contains(PLAIN) && !out.contains(CARRIED),
+        "the positional capture filter must outrank [capture] bpf_filter:\n{out}"
+    );
+    assert!(
+        !err.contains("[capture] bpf_filter"),
+        "the key was replaced, so it must not be reported as applied:\n{err}"
+    );
+}

@@ -105,6 +105,8 @@ Packet capture defaults.
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). The flag has no negative form, so either source turns it on; `--no-config` runs without it. Feature: `hep` |
+| `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. A positional filter or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
 [capture]
@@ -116,6 +118,18 @@ buffer = 16
 buffer_budget_mb = 64
 no_rtp = false
 promisc = true
+```
+
+The loopback HEP deployment, from the file alone — a proxy mirrors HEP to
+UDP/9063 on `lo`, and any number of readers sniff it at once:
+
+```toml
+[capture]
+device = "lo"
+portrange = "1-65535"
+ws_ports = "1-65535"
+hep_parse = true
+bpf_filter = "udp dst port 9063"
 ```
 
 ### [display]

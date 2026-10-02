@@ -418,7 +418,9 @@ pub struct Cli {
     pub config_args: ConfigArgs,
 
     // ── Positional ──
-    /// BPF display filter expression (trailing positional arguments).
+    /// BPF capture filter expression (trailing positional arguments), handed
+    /// to libpcap as typed. Not the display filter (`--filter`). Config:
+    /// `[capture] bpf_filter`.
     #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]
     pub bpf_filter: Vec<String>,
 }
@@ -3674,7 +3676,8 @@ pub struct HepArgs {
     #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
     pub hep_senders: bool,
 
-    /// Parse incoming HEP packets (enable HEP decoding).
+    /// Parse incoming HEP packets (enable HEP decoding). Config:
+    /// `[capture] hep_parse`.
     #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,
 
@@ -4609,6 +4612,17 @@ impl Cli {
             .map_or(crate::capture::reassembly::DEFAULT_MAX_TCP_BUFFER, |v| {
                 v as usize
             })
+    }
+
+    /// Whether HEP-encapsulated SIP in the capture is unwrapped: `-E` /
+    /// `--hep-parse`, or `[capture] hep_parse = true`.
+    ///
+    /// Either source turns it on. The flag has no negative form, so a file
+    /// that sets the key cannot be overridden off from the command line;
+    /// `--no-config` runs without it.
+    #[must_use]
+    pub fn hep_parse(&self, config: &crate::config::Config) -> bool {
+        self.hep_args.hep_parse || config.capture.hep_parse.unwrap_or(false)
     }
 
     /// SIP-over-WebSocket port set: `--ws-portrange`, else
@@ -9348,6 +9362,33 @@ mod tests {
                 "the file's refusal must name the key: {err}"
             );
         }
+    }
+
+    /// `-E` / `--hep-parse` or `[capture] hep_parse = true` turns HEP
+    /// unwrapping on (issue #343). The flag has no negative form, so the file
+    /// cannot be overridden off from the command line, only on; an explicit
+    /// `false` in the file is the default, not a veto over the flag.
+    #[test]
+    fn hep_parse_resolves_from_the_flag_or_the_config_key() {
+        let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        let flagged = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "-E"]);
+        let unset = crate::config::Config::default();
+        let mut on = crate::config::Config::default();
+        on.capture.hep_parse = Some(true);
+        let mut off = crate::config::Config::default();
+        off.capture.hep_parse = Some(false);
+
+        assert!(!bare.hep_parse(&unset), "neither source: off");
+        assert!(!bare.hep_parse(&off), "an explicit false in the file: off");
+        assert!(
+            bare.hep_parse(&on),
+            "[capture] hep_parse = true must reach the resolver"
+        );
+        assert!(flagged.hep_parse(&unset), "-E alone: on");
+        assert!(
+            flagged.hep_parse(&off),
+            "-E must not be vetoed by the file's false"
+        );
     }
 
     /// `--ws-portrange` resolves over `[capture] ws_ports` over the shipped
