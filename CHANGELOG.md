@@ -10,6 +10,19 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`[capture] hep_parse` and `[capture] bpf_filter` config keys.** The two
+  options of the loopback HEP setup that had no key can now live in
+  `sipnab.toml`, so a bare `sipnab` reads a proxy's HEP mirror on `lo`.
+  `hep_parse = true` does what `-E` does. `bpf_filter` is the capture filter
+  the trailing positional argument sets, and that argument or `--bpf-file`
+  replaces it. A capture file read through a filter from the config says so
+  on stderr, so a file whose calls fall outside it does not read as empty.
+  Requested by Giovanni Maruzzelli
+  ([@gmaruzz](https://github.com/gmaruzz)) in
+  [#343](https://github.com/NormB/sipnab/issues/343).
+
 ### Fixed
 
 - **The rtpengine guides now say what a real call through rtpengine shows.**

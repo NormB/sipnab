@@ -776,6 +776,10 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         None => true,
     };
 
+    if let Some(msg) = config_filter_file_notice(cli, config, is_live) {
+        tracing::warn!("{msg}");
+    }
+
     // The fact no mechanism can fix (F4): a composite's two members timestamp
     // their packets from two clocks. Said once at startup rather than beside
     // each suspect figure, because the affected figures are exactly the ones
@@ -2101,7 +2105,7 @@ pub fn launch(
 
     // 16d. Validate --hep-parse requires hep feature
     #[cfg(not(feature = "hep"))]
-    if cli.hep_args.hep_parse {
+    if cli.hep_parse(config) {
         tracing::error!("HEP support requires --features hep");
         capture::stop_and_join(handle, rx);
         crate::capture::archive::release_run_and_exit(2);
@@ -3522,7 +3526,8 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         .or(config.capture.buffer_budget_mb)
         .unwrap_or(64);
 
-    // BPF filter: --bpf-file takes precedence, then positional args
+    // BPF filter: --bpf-file takes precedence, then positional args, then
+    // `[capture] bpf_filter`.
     let bpf_filter = if let Some(ref bpf_file) = cli.capture_args.bpf_file {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
@@ -3535,7 +3540,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
     } else if !cli.bpf_filter.is_empty() {
         Some(cli.bpf_filter.join(" "))
     } else {
-        None
+        config.capture.bpf_filter.clone()
     };
 
     let count = cli.capture_args.count;
@@ -3918,6 +3923,26 @@ fn tunnel_omission_notice(tunnel_ports: &[u16]) -> Option<String> {
          means capturing every packet on the port. If this link carries \
          tunneled signaling, add --capture-tunnels \
          (defaults to {TUNNEL_PORTS_DEFAULT_LIST}) and size the buffer for it."
+    ))
+}
+
+/// The sentence a `[capture] bpf_filter` owes the operator when it narrows a
+/// capture FILE, or `None` when it does not apply or the run is live.
+///
+/// The key is written for a live deployment (issue #343: sniff `lo`, keep only
+/// the HEP port). The same file then filters every `-I old.pcap` too, and a
+/// file whose calls sit outside that filter reads as "No SIP traffic found"
+/// with nothing on the command line to explain it.
+fn config_filter_file_notice(cli: &Cli, config: &Config, is_live: bool) -> Option<String> {
+    let filter = config.capture.bpf_filter.as_deref()?;
+    if is_live || cli.capture_args.bpf_file.is_some() || !cli.bpf_filter.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Capture filter from [capture] bpf_filter applied to the capture file: \
+         {filter}. Packets it does not match are not read. Pass --no-config, or \
+         a filter of your own after the options, to read the file with a \
+         different one."
     ))
 }
 
@@ -4785,6 +4810,47 @@ mod tests {
         let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp and port 5060"));
         // `dir` cleans itself up on drop; no manual remove to race on.
+    }
+
+    /// `[capture] bpf_filter` is the capture filter when the command line names
+    /// none, and both command-line forms replace it (issue #343). Precedence is
+    /// `--bpf-file`, then the positional filter, then the key.
+    #[test]
+    fn build_capture_config_bpf_filter_key_is_the_lowest_source() {
+        let mut config = Config::default();
+        config.capture.bpf_filter = Some("udp dst port 9063".to_string());
+
+        let cc = build_capture_config(&base_cli(), &config).unwrap();
+        assert_eq!(
+            cc.bpf_filter.as_deref(),
+            Some("udp dst port 9063"),
+            "[capture] bpf_filter must reach the capture when no flag names one"
+        );
+        assert!(
+            !cc.bpf_filter_generated,
+            "the operator wrote it, so it must not be reported as generated"
+        );
+
+        let mut cli = base_cli();
+        cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
+        let cc = build_capture_config(&cli, &config).unwrap();
+        assert_eq!(
+            cc.bpf_filter.as_deref(),
+            Some("udp port 5060"),
+            "the positional filter must outrank the key"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bpf");
+        std::fs::write(&path, "tcp port 5061\n").unwrap();
+        let mut cli = base_cli();
+        cli.capture_args.bpf_file = Some(path.to_string_lossy().into_owned());
+        let cc = build_capture_config(&cli, &config).unwrap();
+        assert_eq!(
+            cc.bpf_filter.as_deref(),
+            Some("tcp port 5061"),
+            "--bpf-file must outrank the key"
+        );
     }
 
     /// Config-file snaplen/buffer values apply when the CLI leaves them unset.
@@ -6628,6 +6694,53 @@ mod tests {
     }
 
     // ── The notices ────────────────────────────────────────────────────
+
+    /// A `[capture] bpf_filter` that reaches a capture FILE is named, with the
+    /// way out; one the command line replaced, or one on a live capture where
+    /// it is the point, says nothing (issue #343).
+    #[test]
+    fn config_filter_on_a_file_says_where_it_came_from() {
+        let config = |f: Option<&str>| {
+            let mut c = Config::default();
+            c.capture.bpf_filter = f.map(str::to_string);
+            c
+        };
+        let file =
+            config_filter_file_notice(&base_cli(), &config(Some("udp dst port 9063")), false)
+                .expect("a file run filtered by the config must say so");
+        assert!(
+            file.contains("[capture] bpf_filter") && file.contains("udp dst port 9063"),
+            "the notice must name the key and quote the filter: {file}"
+        );
+        assert!(
+            file.contains("--no-config"),
+            "the notice must name the way to read the whole file: {file}"
+        );
+        assert_eq!(
+            config_filter_file_notice(&base_cli(), &config(Some("udp")), true),
+            None,
+            "a live capture is what the key is for"
+        );
+        assert_eq!(
+            config_filter_file_notice(&base_cli(), &config(None), false),
+            None,
+            "no key, nothing to say"
+        );
+        let mut cli = base_cli();
+        cli.bpf_filter = vec!["udp".to_string()];
+        assert_eq!(
+            config_filter_file_notice(&cli, &config(Some("tcp")), false),
+            None,
+            "the positional filter replaced the key, so the key did nothing"
+        );
+        let mut cli = base_cli();
+        cli.capture_args.bpf_file = Some("f.bpf".to_string());
+        assert_eq!(
+            config_filter_file_notice(&cli, &config(Some("tcp")), false),
+            None,
+            "--bpf-file replaced the key, so the key did nothing"
+        );
+    }
 
     /// The default path SAYS it does not cover UDP-tunneled SIP, and names
     /// the flag that does. A silent omission recreates the bug one level up.

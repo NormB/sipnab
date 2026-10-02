@@ -114,6 +114,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "buffer_budget_mb",
             "no_rtp",
             "promisc",
+            "hep_parse",
+            "bpf_filter",
         ]
         .as_slice(),
     );
@@ -598,6 +600,15 @@ pub struct CaptureConfig {
     /// Put the interface into promiscuous mode (default true). `--no-promisc`
     /// overrides this to false.
     pub promisc: Option<bool>,
+    /// Unwrap HEP-encapsulated SIP found in the capture (default false), as
+    /// `-E` / `--hep-parse` does. The flag has no negative form, so either
+    /// source turns it on; `--no-config` is the way to run without it.
+    pub hep_parse: Option<bool>,
+    /// Capture (BPF) filter, as the trailing positional filter on the command
+    /// line takes. Not the display DSL — that is `[filter] expression`. A
+    /// positional filter or `--bpf-file` replaces it, and while it is set no
+    /// filter is generated from `portrange`.
+    pub bpf_filter: Option<String>,
 }
 
 /// Display configuration.

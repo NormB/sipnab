@@ -2810,7 +2810,7 @@ impl BatchRunner {
         // --fail2ban would otherwise read the empty file as an all-clear.
         if cli.output_args.fail2ban
             && !cli.security_args.hep_allow_kill
-            && (cli.hep_args.hep_listen.is_some() || cli.hep_args.hep_parse)
+            && (cli.hep_args.hep_listen.is_some() || cli.hep_parse(config))
         {
             tracing::warn!(
                 "--fail2ban writes nothing for detections carried by HEP: the inner \
@@ -3690,7 +3690,7 @@ impl BatchRunner {
             for pp in &parsed_packets {
                 // --hep-parse: try to unwrap HEP-encapsulated packets
                 #[cfg(feature = "hep")]
-                let hep_unwrapped = match cli.hep_args.hep_parse.then(|| unwrap_hep(pp)).flatten() {
+                let hep_unwrapped = match cli.hep_parse(&config).then(|| unwrap_hep(pp)).flatten() {
                     Some(Ok(inner)) => Some(inner),
                     // A HEP datagram whose transport no rule names: counted by
                     // its number, as `--hep-listen` counts it, and not read as
