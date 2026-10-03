@@ -13547,7 +13547,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--split-keep` | `<N>` | -- | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
 | `--replay` | -- | off | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | Use pcapng format for output files. [pcapng Metadata](#pcapng-metadata) covers the metadata sipnab writes into pcapng output |
-| `<BPF_FILTER>...` | positional | -- | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Config: `[capture] bpf_filter` |
+| `<BPF_FILTER>...` | positional | -- | BPF capture filter expression (trailing positional args), handed to libpcap as typed. Not the display filter (`--filter`). Replaces the filter sipnab would otherwise generate from `--portrange`. `--bpf-file` takes precedence, and either one replaces `[capture] bpf_filter`. The filter applies to `-I` capture files as well as live capture. When `[capture] bpf_filter` filters a file run, sipnab prints a warning naming the key, so a file whose calls fall outside the filter does not look empty. Unlike `sngrep` and `sipgrep`, sipnab takes no match expression here; match SIP text with `-e`. A filter typed here that does not compile says so, and sipnab refuses a lone argument that names an existing file, naming the `-I` it was missing. Config: `[capture] bpf_filter` |
 
 > **The auto-generated filter looks through VLAN, QinQ, PPPoE and MPLS.**
 > With no filter of your own on a live capture, sipnab builds one from
@@ -13688,6 +13688,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 - `sudo sipnab -N -d eth0 --count 5000 --seccomp log && auditctl -s` — record the calls a LIVE capture makes, bounded by `--count` so the log cannot run away, then check where the records went. A connected audit daemon has them in `ausearch -m SECCOMP`. A pid of 0 means they are in `dmesg`
 - `sipnab -N -I capture.pcap --rtp --report` — analyze the media too when your config file sets `[capture] no_rtp = true`
 - `sipnab -N -I capture.pcap --no-rtp --rtp --report` — the last of the pair wins, so this run analyzes RTP
+- `sipnab -N -I capture.pcap -e INVITE udp port 5060` — the `sngrep` habit `sngrep INVITE udp port 5060`, written for sipnab: the match expression goes after `-e` and the words after the options are the capture filter
 
 - `sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000` — record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
 - `sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse` — live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (the CLI matcher -x)
@@ -13955,7 +13956,7 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-reverse-dns` — make no DNS queries when your config file sets `[names] reverse_dns = true`
-- `sipnab -N -I capture.pcap --reverse-dns --no-reverse-dns` — the last of the pair wins, so no lookups are made
+- `sipnab -N -I capture.pcap --reverse-dns --no-reverse-dns` — the last of the pair wins, so sipnab makes no lookups
 - `sipnab -N -I capture.pcap --no-resolve` — show raw addresses when your config file turns names on, through `[names] enabled`, a hosts file or `[names.manual]`
 - `sipnab -N -I capture.pcap --resolve --no-resolve` — the last of the pair wins, so addresses print as addresses
 
@@ -14305,7 +14306,7 @@ report a healthy network in the middle of an outage.
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration), alert on it, and send the kill response back to the scanner (the CLI matcher `-J`/`-j`). Config: `[security] kill_scanner` |
-| `--no-kill-scanner` | -- | off | Do not answer scanners even when `[security] kill_scanner = true`, so a config file that arms the response can be disarmed for one run. The last of `--kill-scanner` / `--no-kill-scanner` typed wins. Config: `[security] kill_scanner` |
+| `--no-kill-scanner` | -- | off | Do not answer scanners even when `[security] kill_scanner = true`, so you can disarm, for one run, a response that a config file arms. The last of `--kill-scanner` / `--no-kill-scanner` typed wins. Config: `[security] kill_scanner` |
 | `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection. **Refused without it**: `--kill-scanner` (or `[security] kill_scanner = true`) builds the detector that reads this pattern, so given alone it would feed nothing and the run would report no scanners — which is what a clean capture looks like. sipnab does not arm the detector for you, because on a live capture `--kill-scanner` also arms the response path |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699). Config: `[security] kill_response` |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
@@ -14369,7 +14370,7 @@ report a healthy network in the middle of an outage.
 - `sipnab -N -I capture.pcap --no-fraud-detect --report` — skip fraud detection for one run when your config file sets `[security] fraud_detect = true`
 - `sipnab -N -I capture.pcap --fraud-detect --no-fraud-detect --report` — the last of the pair wins, so no fraud detector runs
 - `sipnab -N -I capture.pcap --no-kill-scanner --report` — analyze without arming the scanner response that your config file's `[security] kill_scanner = true` would arm
-- `sipnab -N -I capture.pcap --kill-scanner --no-kill-scanner --report` — the last of the pair wins, so no response is armed
+- `sipnab -N -I capture.pcap --kill-scanner --no-kill-scanner --report` — the last of the pair wins, so sipnab arms no response
 
 - `sudo sipnab -d eth0 --kill-scanner --kill-ua 'friendly-scanner' --kill-response 486 --kill-spoof auto` — detect SIP scanners (plus a custom UA pattern) and reply 486 with the victim's spoofed source
 - `sudo sipnab -d eth0 --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw` — targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
@@ -14821,7 +14822,7 @@ CoreAudio the moment anything touches it.
 
 **Examples**
 - `sipnab -N -I capture.pcap --priv-drop --report` — drop privileges as usual when your config file sets `[privilege] no_priv_drop = true`
-- `sipnab -N -I capture.pcap --no-priv-drop --priv-drop --report` — the last of the pair wins, so privileges are dropped
+- `sipnab -N -I capture.pcap --no-priv-drop --priv-drop --report` — the last of the pair wins, so sipnab drops privileges
 
 - `sudo sipnab -d eth0 --user sipnab` — live capture that drops root to the sipnab service user once the capture device is open
 - `sudo sipnab -d eth0 --user nobody --chroot /var/empty` — long-running monitor that drops to nobody and confines itself to an empty chroot

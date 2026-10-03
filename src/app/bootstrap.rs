@@ -379,6 +379,14 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    // `sipnab call.pcap`, typed the sngrep way, would read the file name as a
+    // capture filter. Refused before any capture opens, naming the fix.
+    if let Some(msg) =
+        crate::capture::bpf_filter::forgot_input_flag(&cli.bpf_filter, std::path::Path::exists)
+    {
+        return Err(PlanError::arg(msg));
+    }
+
     // An `[actions]` entry naming nothing sipnab knows is refused here, before
     // anything runs, rather than read as "nothing enabled".
     cli.action_policy(config).map_err(PlanError::arg)?;
@@ -3537,7 +3545,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         .unwrap_or(64);
 
     // BPF filter: --bpf-file takes precedence, then positional args, then
-    // `[capture] bpf_filter`.
+    // `[capture] bpf_filter`. Only the positional form gets the
+    // match-expression hint on a compile failure.
+    let bpf_filter_positional = cli.capture_args.bpf_file.is_none() && !cli.bpf_filter.is_empty();
     let bpf_filter = if let Some(ref bpf_file) = cli.capture_args.bpf_file {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
@@ -3578,6 +3588,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         // Operator-supplied or absent here; the live default is generated later
         // (see the auto_bpf_filter block), which is where this flips to true.
         bpf_filter_generated: false,
+        bpf_filter_positional,
         count,
         duration,
         replay: cli.capture_args.replay,
@@ -4886,6 +4897,40 @@ mod tests {
             cc.bpf_filter.as_deref(),
             Some("tcp port 5061"),
             "--bpf-file must outrank the key"
+        );
+    }
+
+    /// Only a filter typed after the options is marked positional: it alone
+    /// gets the match-expression hint when it fails to compile.
+    #[test]
+    fn only_the_positional_filter_is_marked_positional() {
+        let mut cli = base_cli();
+        cli.bpf_filter = vec!["INVITE".to_string()];
+        assert!(
+            build_capture_config(&cli, &Config::default())
+                .unwrap()
+                .bpf_filter_positional
+        );
+
+        let mut config = Config::default();
+        config.capture.bpf_filter = Some("udp".to_string());
+        assert!(
+            !build_capture_config(&base_cli(), &config)
+                .unwrap()
+                .bpf_filter_positional
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f.bpf");
+        std::fs::write(&f, "udp\n").unwrap();
+        let mut cli = base_cli();
+        cli.capture_args.bpf_file = Some(f.to_string_lossy().into_owned());
+        cli.bpf_filter = vec!["tcp".to_string()];
+        assert!(
+            !build_capture_config(&cli, &Config::default())
+                .unwrap()
+                .bpf_filter_positional,
+            "--bpf-file wins, so the positional words are not the filter"
         );
     }
 

@@ -206,7 +206,11 @@ pub fn capture_file(
     if let Some(ref bpf) = config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
-        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        let err = anyhow::Error::new(e).context(format!(
+            "Failed to compile BPF filter: {bpf}{}",
+            crate::capture::bpf_filter::positional_filter_hint(config.bpf_filter_positional)
+                .map_or_else(String::new, |h| format!(". {h}"))
+        ));
         if let Some(ready) = ready_tx {
             let _ = ready.send(Err(format!("{err:#}")));
         }
@@ -630,7 +634,7 @@ fn read_member(
             tracing::warn!("{line}");
             return Ok(true);
         }
-        let err = filter_failure(bpf, path, e);
+        let err = filter_failure(bpf, path, e, config.bpf_filter_positional);
         state.tally.skipped += 1;
         state.tally.lost = true;
         if let Some(ready) = ready_tx.take() {
@@ -746,10 +750,17 @@ pub(crate) fn undecodable_filter_skip(
 /// question an operator has when a forty-file set stops ("which of them?") had
 /// no answer in the error itself. Two constructors are two wordings to keep in
 /// step; one is one.
-pub(crate) fn filter_failure(bpf: &str, path: &Path, e: pcap::Error) -> anyhow::Error {
+pub(crate) fn filter_failure(
+    bpf: &str,
+    path: &Path,
+    e: pcap::Error,
+    positional: bool,
+) -> anyhow::Error {
     anyhow::Error::new(e).context(format!(
-        "Failed to compile BPF filter '{bpf}' against '{}'",
-        crate::capture::archive::source_name(path)
+        "Failed to compile BPF filter '{bpf}' against '{}'{}",
+        crate::capture::archive::source_name(path),
+        crate::capture::bpf_filter::positional_filter_hint(positional)
+            .map_or_else(String::new, |h| format!(". {h}"))
     ))
 }
 

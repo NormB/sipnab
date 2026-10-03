@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 300, TUI 25, REST 41, MCP 70.
+Totals: CLI 308, TUI 25, REST 41, MCP 70.
 
-## CLI flags (300)
+## CLI flags (308)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -206,12 +206,18 @@ Totals: CLI 300, TUI 25, REST 41, MCP 70.
 - `--nat-issues`
 - `--no-cli-print`
 - `--no-config`
+- `--no-delta-time`
 - `--no-dialog`
 - `--no-final-response-timeout`
+- `--no-fraud-detect`
+- `--no-hep-parse`
+- `--no-kill-scanner`
 - `--no-password-prompt`
 - `--no-priv-drop`
 - `--no-promisc`
 - `--no-reassembly`
+- `--no-resolve`
+- `--no-reverse-dns`
 - `--no-rotate`
 - `--no-rtp`
 - `--no-tui`
@@ -230,6 +236,7 @@ Totals: CLI 300, TUI 25, REST 41, MCP 70.
 - `--plugin`
 - `--portrange`
 - `--print-yang-module`
+- `--priv-drop`
 - `--problems`
 - `--proto-number`
 - `--quality-interval`
@@ -259,6 +266,7 @@ Totals: CLI 300, TUI 25, REST 41, MCP 70.
 - `--reverse-dns`
 - `--revert-actions`
 - `--rotate`
+- `--rtp`
 - `--rtpengine-control`
 - `--rtpproxy-control`
 - `--rtt-bad-ms`

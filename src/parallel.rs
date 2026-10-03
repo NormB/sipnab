@@ -1145,7 +1145,12 @@ fn shard_set(
             // so both readers refuse with the same sentence, and so the sentence
             // NAMES the file: the operator's first question about a forty-file
             // set is which of the forty.
-            return Err(crate::capture::file::filter_failure(bpf, path, e));
+            return Err(crate::capture::file::filter_failure(
+                bpf,
+                path,
+                e,
+                capture_config.bpf_filter_positional,
+            ));
         }
         tracing::info!(
             "Reading from '{}'",
@@ -1577,7 +1582,12 @@ fn read_one_file(
         {
             return FileOutcome::Undecodable(line);
         }
-        return FileOutcome::FilterFailed(crate::capture::file::filter_failure(bpf, path, e));
+        return FileOutcome::FilterFailed(crate::capture::file::filter_failure(
+            bpf,
+            path,
+            e,
+            capture_config.bpf_filter_positional,
+        ));
     }
     let mut sink = QueueSink { file, tx, runway };
     // No `--count` budget: a set read in parallel never has one. See

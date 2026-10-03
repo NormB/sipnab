@@ -20,6 +20,14 @@ entry that carries them.
   `--no-reverse-dns` and `--no-resolve`. `--no-resolve` turns name display off
   whatever else would turn it on, including `--names` files and
   `[names.manual]`.
+- **A match expression or a file name typed where sipnab expects a capture
+  filter now gets an error that says what to type.** `sngrep` and `sipgrep`
+  take a match expression before the capture filter; sipnab takes only the
+  filter, and matches SIP text with `-e`. `sipnab -I call.pcap INVITE` used to
+  fail with libpcap's own syntax error; it now says to use `-e '<pattern>'`.
+  `sipnab call.pcap`, which sngrep accepts, read the file name as a capture
+  filter; it is now refused before any capture opens, naming the
+  `sipnab -I call.pcap` it meant.
 
 ### Fixed
 
