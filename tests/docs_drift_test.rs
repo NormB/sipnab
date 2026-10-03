@@ -351,6 +351,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/walkthroughs.md",
         ],
     ),
+    // `--lib` is cargo's: `SIPNAB_SETTINGS_APPLY=1 cargo test --features full
+    // --lib settings` is the one command that rewrites the reference rows the
+    // settings table owns, so the add-a-flag walkthrough names it.
+    (
+        "lib",
+        &[
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
+        ],
+    ),
     // pyang's. `pyang --check-update-from` is the check that holds a new
     // revision of the YANG module to the published one (RFC 7950 section 11),
     // and the contributing guide, the build page and the contributor

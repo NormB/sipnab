@@ -342,6 +342,9 @@ pub mod pipeline;
 pub mod sandbox;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod seccomp;
+#[doc(hidden)]
+#[cfg(feature = "native")]
+pub mod settings;
 pub mod stun;
 #[cfg(test)]
 pub mod test_material;

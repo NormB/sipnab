@@ -808,7 +808,9 @@ fn linked_code_targets_exist() {
     // 474 -> 480 with reproducible builds (+6, as measured on its older base).
     // 480 -> 482: build-ci-release.md's signed-tag gate paragraph links
     // scripts/tag-signature-check.sh and .github/allowed_signers.
-    const EXPECTED_CODE_LINKS: usize = 482;
+    // 482 -> 483: the add-a-flag walkthrough links src/settings.rs, the table
+    // that pairs every flag with its config key.
+    const EXPECTED_CODE_LINKS: usize = 483;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

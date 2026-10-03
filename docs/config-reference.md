@@ -91,14 +91,14 @@ Packet capture defaults.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `device` | string | -- | Default network interface |
+| `device` | string | -- | Default network interface. `--device` overrides it |
 | `node_name` | string | hostname | Name this box reports as, in `capture_identity.node` on every MCP and REST answer. Lets an agent querying several servers tell WHICH one saw a given fact. `--node-name` overrides it, so a deployed config can name the box while a one-off command relabels it. The default puts the hostname on the wire. Clipped to 64 characters |
 | `portrange` | string | `"5060-5061"` | SIP **signaling** port range; media is never gated by it. sipnab skips any SIP message with both ports outside the range, and a skipped message reaches no count, no dialog and no output — so this key decides how much of a capture you analyze at all. Widen it (`"1-65535"`) unless you know every port in play. `--portrange` overrides it |
 | `ws_ports` | string | `"80, 443, 8080, 8443"` | Ports carrying SIP-over-WebSocket ([RFC 7118](https://www.rfc-editor.org/rfc/rfc7118)), as one inclusive `"START-END"` range in the same grammar as `portrange`. The shipped set is the browser's view of the web, not a deployment's: Kamailio, OpenSIPS and Janus each default to WSS outside it, and behind a reverse proxy sipnab sees whichever port the proxy forwards to — on such a capture the entire WebRTC signaling leg stays invisible. A range **replaces** the shipped set, exactly as `portrange` replaces the default signaling ports. sipnab counts the SIP-over-WebSocket it declines to unwrap and names the ports it arrived on. `--ws-portrange` overrides it |
-| `snaplen` | integer | `65535` | Snapshot length in bytes |
-| `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device) |
+| `snaplen` | integer | `65535` | Snapshot length in bytes. `--capture-profile` overrides it; `--snaplen` overrides it |
+| `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). `--buffer` overrides it |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
-| `no_rtp` | boolean | `false` | Disable RTP capture by default |
+| `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` also turns it on |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). The flag has no negative form, so either source turns it on; `--no-config` runs without it. Feature: `hep` |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. A positional filter or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
@@ -133,9 +133,9 @@ Output and TUI display settings.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"` |
-| `payload_limit` | integer | -- | Maximum payload bytes to display |
-| `delta_time` | boolean | `false` | Show delta time between messages by default |
+| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. `--color` overrides it |
+| `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
+| `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` also turns it on |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout back to your sipnabrc, so it persists across sessions |
 
@@ -154,9 +154,9 @@ Default filter presets applied at startup.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `from` | string | -- | Default From header filter (regex) |
-| `to` | string | -- | Default To header filter (regex) |
-| `expression` | string | -- | Default filter DSL expression |
+| `from` | string | -- | Default From header filter (regex). `--from` overrides it |
+| `to` | string | -- | Default To header filter (regex). `--to` overrides it |
+| `expression` | string | -- | Default filter DSL expression. `--filter` overrides it |
 
 ```toml
 [filter]
@@ -188,11 +188,11 @@ Security detection defaults.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `kill_scanner` | boolean | `false` | Enable scanner detection |
-| `kill_response` | integer | `200` | SIP response code for scanner reports (100-699) |
-| `fraud_detect` | boolean | `false` | Enable fraud detection heuristics |
-| `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"` |
-| `alert_exec` | string | -- | Command to execute on alert |
+| `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` also turns it on |
+| `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
+| `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` also turns it on |
+| `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"`. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
+| `alert_exec` | string | -- | Command to execute on alert. `--alert-exec` overrides it |
 | `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
 | `reg_flood_window_secs` | integer | `1` | How much capture time one registration-flood counting window spans, in seconds. `reg_flood_threshold` counts failures per window, so this decides how concentrated a credential-guessing run has to be: one refusal every two seconds never puts two inside the default one-second window. Range 1-3600. sipnab refuses `0`, which would reset the count on every packet, and anything past an hour, where the count is a daily tally rather than a rate, and names the key. `--reg-flood-window` overrides it |
 | `reg_flood_transaction_timeout_ms` | integer | `32000` | How long a credentialed REGISTER stays open to the `401`/`407` that answers it, in milliseconds. The default is [RFC 3261 Timer F](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.2.2), 64 times T1 at the [default T1 of 500 ms](https://www.rfc-editor.org/rfc/rfc3261#section-17.1.1.1). sipnab never counts a challenge that arrives later as a failure. Set it to 64 times your network's T1, or to your registrar-side proxy's final-response timer when that is longer (see [Registration-flood timers](troubleshooting.md#registration-flood-timers)). Range 1000-600000. Below one second every challenge arrives after its transaction ends and the detector counts nothing, so sipnab refuses the value and names the key. `--reg-flood-transaction-timeout` overrides it |
@@ -315,7 +315,7 @@ know stops it at startup, rather than sipnab reading it as "nothing enabled".
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tfps` | list of strings | `[]` | Surfaces that may ask TFPS to ban and unban, and back a ban out: `POST /v1/tfps/ban`, `/unban` and `/v1/actions/revert` over REST; `tfps_ban`, `tfps_unban` and `actions_revert` over MCP. A REST caller also needs a token minted with `--token-scope actions`, and so does an MCP client over HTTP |
+| `tfps` | list of strings | `[]` | Surfaces that may ask TFPS to ban and unban, and back a ban out: `POST /v1/tfps/ban`, `/unban` and `/v1/actions/revert` over REST; `tfps_ban`, `tfps_unban` and `actions_revert` over MCP. A REST caller also needs a token minted with `--token-scope actions`, and so does an MCP client over HTTP. `--allow-action` adds to it |
 
 Enabling anything needs the [actions journal](#journal): sipnab refuses to
 start without a directory it can use for it.
@@ -406,12 +406,14 @@ itself.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from a sender-report echo carried in a receiver report, which anchors on the capture point and so reads as a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured |
+| `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from a sender-report echo carried in a receiver report, which anchors on the capture point and so reads as a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured. `--one-way-delay` overrides it |
 | `codec_ie` | table | -- | Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has no published value for, written as a `[media.codec_ie]` sub-table of `"CODEC" = <Ie>` pairs. sipnab knows G.711, G.729 and Opus; every other codec -- G.722, G.726, iLBC, AMR, EVS -- falls to a placeholder and scores identically to a stream whose codec was never identified. A declared codec comes back as `mos_grounding = "operator_declared"` rather than as published, so a figure from this file is never presented as an ITU-T citation, and a codec nobody declared still says its MOS is a placeholder. Keys match case-insensitively. Values must sit in `0.0` to just under `95.0`: at 95 the E-model's loss term vanishes, and above it more packet loss would RAISE the score, so sipnab fails validation on such a value and names the codec |
+| `listening_context` | string | `"monotic"` | How the far end listens, for wideband (AMR-WB) MOS: `"monotic"` (a handset or one-ear headset, ITU-T G.113 Table IV.1) or `"diotic"` (a stereo headset or speakerphone, Table IV.3). At 6.6 kbit/s the two differ by about 0.59 MOS, and a capture cannot tell which one was in use, so you declare it. Every wideband score names the context sipnab read it in. sipnab ignores any other value and keeps `"monotic"` |
 
 ```toml
 [media]
 one_way_delay_ms = 45.0
+listening_context = "diotic"   # the far end uses a stereo headset or speakerphone
 
 # Impairment factors for codecs sipnab has no published value for.
 [media.codec_ie]
@@ -471,12 +473,12 @@ Resource limits to prevent unbounded memory growth.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `dialog_limit` | integer | `100000` | Maximum tracked dialogs |
-| `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key |
-| `max_streams` | integer | `50000` | Maximum RTP streams |
-| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
+| `dialog_limit` | integer | `100000` | Maximum tracked dialogs. `--limit` overrides it |
+| `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key. `--mcp-max-rows` overrides it |
+| `max_streams` | integer | `50000` | Maximum RTP streams. `--max-streams` overrides it |
+| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `--max-reassembly` overrides it |
 | `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
-| `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |
+| `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. `--hep-rate-limit` overrides it |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
@@ -577,9 +579,9 @@ Privilege separation settings (Linux only).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `user` | string | `"nobody"` | User to drop privileges to after opening capture devices |
-| `no_priv_drop` | boolean | `false` | Disable privilege dropping |
-| `chroot` | string | -- | Chroot directory after initialization |
+| `user` | string | `"nobody"` | User to drop privileges to after opening capture devices. `--user` overrides it |
+| `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` also turns it on |
+| `chroot` | string | -- | Chroot directory after initialization. `--chroot` overrides it |
 
 ```toml
 [privilege]
@@ -594,9 +596,9 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | boolean | `false` | Start with name resolution on (offline sources) |
-| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
-| `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
+| `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` also turns it on |
+| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` also turns it on |
+| `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload. `--names` adds to it |
 | `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
 | `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
