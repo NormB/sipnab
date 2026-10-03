@@ -34,6 +34,61 @@
     <p class="hero-actions-note">&ldquo;Try a sample capture&rdquo; runs in your browser: it parses the file on your own machine, uploads nothing and installs nothing.</p>
   </div>
 
+  {# The system map: what sipnab reads, what it works out, and where you read
+     the answer, above the animation so a visitor sees the whole tool before
+     the one surface sngrep users already know. Plain HTML lists, no script
+     and no image: an AI agent or a screen reader gets every item as text, it
+     renders with scripting off, and it needs no CSP re-pin. The arrows are
+     decorative and hidden from assistive technology; the column headings
+     carry the direction in words. Every flag named here is one the CLI
+     defines (homepage_claim_truth_test). #}
+  <figure class="sysmap" id="how-it-fits" aria-labelledby="sysmap-title">
+    <h2 class="sysmap-title" id="sysmap-title">How sipnab fits together</h2>
+    <div class="sysmap-grid">
+      <section class="sysmap-col sysmap-in" aria-labelledby="sysmap-in-h">
+        <h3 id="sysmap-in-h">What it reads</h3>
+        <ul>
+          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">A live network interface</a> <code>-d eth0</code></li>
+          <li><a href="{{ get_url(path='@/docs/cli.md') }}#capture">pcap and pcapng files, folders, archives</a> <code>-I</code></li>
+          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP copies from OpenSIPS, Kamailio, rtpengine</a> <code>-L</code> <code>-E</code></li>
+          <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or eBPF</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
+          <li><a href="{{ get_url(path='@/docs/encapsulations.md') }}">VLAN, MPLS, GTP-U, VXLAN, WebSocket</a> <code>--capture-tunnels</code></li>
+          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relays: rtpengine, rtpproxy</a> <code>--rtpengine-control</code></li>
+        </ul>
+      </section>
+      <span class="sysmap-arrow" aria-hidden="true"></span>
+      <section class="sysmap-col sysmap-core" aria-labelledby="sysmap-core-h">
+        <h3 id="sysmap-core-h">What it works out</h3>
+        <ol class="sysmap-stack">
+          <li><span><strong>Unwrap</strong> link layers, tunnels, IP fragments, TCP streams, TLS</span></li>
+          <li><span><strong>Parse</strong> SIP, SDP, RTP, RTCP, STUN</span></li>
+          <li><span><strong>Track</strong> each dialog, the legs of one call, every media stream</span></li>
+          <li><span><strong>Judge</strong> audio quality (MOS), call-setup problems, attacks, RFC conformance</span></li>
+        </ol>
+        <p class="sysmap-note">One binary. No database, no server to run.</p>
+      </section>
+      <span class="sysmap-arrow" aria-hidden="true"></span>
+      <section class="sysmap-col sysmap-out" aria-labelledby="sysmap-out-h">
+        <h3 id="sysmap-out-h">Where you read it</h3>
+        <ul>
+          <li><a href="{{ get_url(path='@/docs/tui.md') }}">A terminal UI, like sngrep</a> <code>sipnab</code></li>
+          <li><a href="{{ get_url(path='@/docs/output-formats.md') }}">Text, JSON and reports for scripts</a> <code>-N</code> <code>--json</code></li>
+          <li><a href="{{ get_url(path='@/docs/api.md') }}">A REST API</a> <code>--api</code></li>
+          <li><a href="{{ get_url(path='@/docs/mcp.md') }}">An MCP server for AI agents</a> <code>--mcp</code></li>
+          <li><a href="{{ get_url(path='@/docs/prometheus-sipnab.md') }}">Prometheus metrics</a> <code>--metrics</code></li>
+          <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP to Homer</a> <code>-H</code></li>
+          <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">vCon records</a> <code>--export-vcon</code></li>
+        </ul>
+        <h3 class="sysmap-subhead" id="sysmap-act-h">What it can act on</h3>
+        <ul aria-labelledby="sysmap-act-h">
+          <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Alerts and fail2ban</a> <code>--alert</code> <code>--fail2ban</code></li>
+          <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">TFPS bans, journaled and revertible</a> <code>--allow-action</code></li>
+        </ul>
+      </section>
+    </div>
+    <figcaption class="sysmap-caption">The terminal UI, the scripts&rsquo; output, the REST API and the MCP server all read the same dialog and stream records, so each gives the same answer about the same call. <a href="{{ get_url(path='@/docs/internals/_index.md') }}">How it works inside &rarr;</a></figcaption>
+  </figure>
+
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
     <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
@@ -510,7 +565,7 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 70 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the thirteen that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 10687 automated tests. Under 18 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 10693 automated tests. Under 18 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -551,7 +606,7 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="10687" data-suffix="">10687</span>
+        <span class="arch-stat" data-count="10693" data-suffix="">10693</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>
