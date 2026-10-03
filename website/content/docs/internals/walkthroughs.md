@@ -39,8 +39,17 @@ nothing enforces a new thing until you have watched it fail.
 2. Wire it wherever it takes effect — usually
    [`plan()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs), so the flag becomes part of
    `RunPlan` rather than at the point of use.
-3. Give it a config fallback in [`config.rs`](https://github.com/NormB/sipnab/blob/main/src/config.rs) if its peers
-   have one.
+3. Give it a row in [`settings.rs`](https://github.com/NormB/sipnab/blob/main/src/settings.rs): the
+   `[section] key` it shares with the config file and how the two combine
+   (`Merge::Override`, `Either`, `Union` or `Off`), or why it has no key
+   (`Action`, `Input`, `Secret`, `PerRun`). A standing setting gets a key, added
+   to [`config.rs`](https://github.com/NormB/sipnab/blob/main/src/config.rs) beside its peers.
+   → `settings::tests::every_flag_has_exactly_one_row` **fails immediately**
+   with `not classified: zzz-gate-probe`. Once the row names a key, the two
+   reference gates in the same module demand that `docs/cli-reference.md` says
+   `Config: [section] key` and that `docs/config-reference.md` names the flag;
+   `SIPNAB_SETTINGS_APPLY=1 cargo test --features full --lib settings` writes
+   both, then `python3 scripts/build-site-pages.py` carries them to the site.
    → [`config_wiring_test`](https://github.com/NormB/sipnab/blob/main/tests/config_wiring_test.rs) catches a config
    key that is never read.
 4. Add a test that references the flag by name — any test, anywhere under
@@ -54,6 +63,13 @@ nothing enforces a new thing until you have watched it fail.
 6. Add a default-value case to
    [`cli_defaults_test`](https://github.com/NormB/sipnab/blob/main/tests/cli_defaults_test.rs). **(unenforced —
    that test does not enumerate the CLI, so a missing case passes silently.)**
+
+A config key with no flag goes in `settings.rs`'s `FILE_ONLY` list with its
+reason. Verified 2026-10-03: a throwaway `zzz-gate-probe` flag failed
+`every_flag_has_exactly_one_row`, and a throwaway `[capture] zzz_probe_key`
+failed `every_config_key_is_named_once` (`unclassified key`) and
+`every_config_key_has_a_row_naming_its_flags` (`no row in
+docs/config-reference.md`).
 
 Verified: adding a throwaway `#[arg(long = "zzz-gate-probe")]` failed
 `flag_coverage_test` and `doc_example_coverage_test`, while `docs_drift_test`,

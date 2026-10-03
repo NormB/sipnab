@@ -281,7 +281,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
 
 /// Accessor for the process-wide [`KNOWN_KEYS`] table; used only by
 /// unknown-key detection.
-fn known_keys() -> &'static HashMap<&'static str, &'static [&'static str]> {
+pub(crate) fn known_keys() -> &'static HashMap<&'static str, &'static [&'static str]> {
     &KNOWN_KEYS
 }
 

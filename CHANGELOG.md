@@ -8,6 +8,22 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The CLI and config references now say which flag and which key set the
+  same thing, for every pair.** 36 flag rows in the [CLI
+  reference](https://sipnab.com/docs/cli/) lacked the `Config: [section] key`
+  note their key needed, among them `--device`, `--portrange`, `--snaplen`,
+  `--limit` (`[limits] dialog_limit`) and `--no-promisc` (`[capture] promisc`).
+  28 key rows in the [config reference](https://sipnab.com/docs/config/) never
+  named their flag, and `[media] listening_context` had no row at all. Each key
+  row now also says how its flag combines with it: the flag overrides it, also
+  turns it on, adds to it, or forces it off. A new table in the source pairs
+  every flag with its key, and tests hold both references to it, so the two
+  cannot drift apart again.
+
 ## [0.5.201] - 2026-10-02
 
 ### Added
