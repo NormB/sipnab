@@ -419,8 +419,8 @@ pub struct Cli {
 
     // ── Positional ──
     /// BPF capture filter expression (trailing positional arguments), handed
-    /// to libpcap as typed. Not the display filter (`--filter`). Config:
-    /// `[capture] bpf_filter`.
+    /// to libpcap as typed. Not the display filter (`--filter`). Replaces
+    /// `[capture] bpf_filter`; applies to `-I` files as well as live capture.
     #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]
     pub bpf_filter: Vec<String>,
 }
@@ -723,7 +723,9 @@ pub struct CaptureArgs {
     #[arg(help_heading = "Capture", short = 'p', long = "no-promisc")]
     pub no_promisc: bool,
 
-    /// Read BPF filter from a file.
+    /// Read the BPF capture filter from a file. Takes precedence over the
+    /// positional filter and replaces `[capture] bpf_filter`; applies to `-I`
+    /// files as well as live capture.
     #[arg(help_heading = "Capture", long, value_name = "FILE")]
     pub bpf_file: Option<String>,
 
@@ -3677,7 +3679,8 @@ pub struct HepArgs {
     pub hep_senders: bool,
 
     /// Parse incoming HEP packets (enable HEP decoding). Config:
-    /// `[capture] hep_parse`.
+    /// `[capture] hep_parse`; there is no "off" form, so a file that sets it is
+    /// undone only by `--no-config`.
     #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,
 
