@@ -1071,6 +1071,14 @@ input:focus-visible,
   }
 }
 
+.sysmap-section {
+  padding: 0 1.5rem;
+}
+
+.hero-shot-section {
+  padding: 0 0 3rem;
+}
+
 .sysmap-caption {
   margin: 1rem auto 0;
   max-width: 760px;
@@ -1078,7 +1086,13 @@ input:focus-visible,
   font-size: 0.85rem;
   color: $text-dim;
 
-  a { color: $link; }
+  // Underlined, not told apart by color alone (WCAG 1.4.1, axe
+  // link-in-text-block): the caption is running text.
+  a {
+    color: $link;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
 }
 
 @media (max-width: 900px) {

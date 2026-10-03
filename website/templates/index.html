@@ -34,6 +34,12 @@
     <p class="hero-actions-note">&ldquo;Try a sample capture&rdquo; runs in your browser: it parses the file on your own machine, uploads nothing and installs nothing.</p>
   </div>
 
+</section>
+
+<!-- System map: what sipnab reads, works out and serves. Its own section,
+     outside .hero, so the hero's gradient is sized by the hero copy alone and
+     the tint behind the tagline's links stays as it was. -->
+<section class="sysmap-section">
   {# The system map: what sipnab reads, what it works out, and where you read
      the answer, above the animation so a visitor sees the whole tool before
      the one surface sngrep users already know. Plain HTML lists, no script
@@ -88,7 +94,10 @@
     </div>
     <figcaption class="sysmap-caption">The terminal UI, the scripts&rsquo; output, the REST API and the MCP server all read the same dialog and stream records, so each gives the same answer about the same call. <a href="{{ get_url(path='@/docs/internals/_index.md') }}">How it works inside &rarr;</a></figcaption>
   </figure>
+</section>
 
+<!-- The animation, below the map -->
+<section class="hero-shot-section">
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
     <img id="hero-shot" src="{{ get_url(path='demos/hero-static.webp') }}?v=2" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads" class="hero-screenshot">
