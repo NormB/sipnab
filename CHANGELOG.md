@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **Every yes/no setting can now be turned off from the command line.** A
+  config file that switched one on used to leave `--no-config` as the only way
+  to turn it off for a run. Eight new flags fix that, each the opposite of an
+  existing one, and the last of a pair typed wins: `--no-hep-parse`, `--rtp`,
+  `--no-delta-time`, `--priv-drop`, `--no-fraud-detect`, `--no-kill-scanner`,
+  `--no-reverse-dns` and `--no-resolve`. `--no-resolve` turns name display off
+  whatever else would turn it on, including `--names` files and
+  `[names.manual]`.
+
 ### Fixed
 
 - **A closed stderr no longer crashes a finished run with exit 101.**

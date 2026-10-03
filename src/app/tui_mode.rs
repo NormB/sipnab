@@ -363,21 +363,20 @@ impl LiveDetectors {
             .iter()
             .filter_map(|s| crate::security::scanner_kill::KillTarget::parse(s).ok())
             .collect();
-        let scanner =
-            if cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false) {
-                let custom = cli
-                    .security_args
-                    .kill_ua
-                    .as_deref()
-                    .map(|s| vec![s.to_string()])
-                    .unwrap_or_default();
-                Some(crate::security::ScannerDetector::with_thresholds(
-                    &custom,
-                    cli.scanner_thresholds(config),
-                ))
-            } else {
-                None
-            };
+        let scanner = if cli.kill_scanner(config) {
+            let custom = cli
+                .security_args
+                .kill_ua
+                .as_deref()
+                .map(|s| vec![s.to_string()])
+                .unwrap_or_default();
+            Some(crate::security::ScannerDetector::with_thresholds(
+                &custom,
+                cli.scanner_thresholds(config),
+            ))
+        } else {
+            None
+        };
         let fraud = crate::app::batch::build_fraud_detector(cli, config);
         let digest = cli
             .security_args
@@ -549,7 +548,7 @@ pub fn run_tui_mode(
     // live capture), handed to the App so `B`'s Enter can re-apply the filter.
     let reconfigure_control = launched.reconfigure_control;
     let reconfigure_outcomes = launched.reconfigure_outcomes;
-    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.no_rtp(&config);
 
     // The operator's action trail, opened before any thread this function
     // spawns and before the terminal is taken. A path that cannot be opened

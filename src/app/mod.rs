@@ -80,13 +80,8 @@ pub fn build_resolver(
     use crate::names::{NameMode, NameResolver};
 
     let cfg = &config.names;
-    let reverse = cli.name_args.reverse_dns || cfg.reverse_dns.unwrap_or(false);
-    let resolve = cli.name_args.resolve
-        || reverse
-        || cfg.enabled.unwrap_or(false)
-        || !cli.name_args.names.is_empty()
-        || cfg.hosts_file.is_some()
-        || cfg.manual.as_ref().is_some_and(|m| !m.is_empty());
+    let reverse = cli.reverse_dns(config);
+    let resolve = cli.resolve_names(config);
 
     let resolver = Arc::new(NameResolver::with_limits(
         reverse,

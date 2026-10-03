@@ -110,10 +110,10 @@ Packet capture defaults.
 | `snaplen` | integer | `65535` | Snapshot length in bytes. `--capture-profile` overrides it; `--snaplen` overrides it |
 | `buffer` | integer | `64` | Kernel capture buffer size in MiB (per device). `--buffer` overrides it |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
-| `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` also turns it on |
+| `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
-| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). The flag has no negative form, so either source turns it on; `--no-config` runs without it. Feature: `hep` |
-| `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. A positional filter or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
 [capture]
@@ -147,7 +147,7 @@ Output and TUI display settings.
 |-----|------|---------|-------------|
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. `--color` overrides it |
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
-| `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` also turns it on |
+| `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 | `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
@@ -200,9 +200,9 @@ Security detection defaults.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` also turns it on |
+| `kill_scanner` | boolean | `false` | Enable scanner detection. `--kill-scanner` turns it on. `--no-kill-scanner` forces it off |
 | `kill_response` | integer | `200` | SIP response code for scanner reports (100-699). `--kill-response` overrides it |
-| `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` also turns it on |
+| `fraud_detect` | boolean | `false` | Enable fraud detection heuristics. `--fraud-detect` turns it on. `--no-fraud-detect` forces it off |
 | `alert` | array of strings | `[]` | Alert channels: `"syslog"`, `"json"`, `"exec"`. `--alert` overrides it; `--alert-json` also turns it on; `--syslog` also turns it on |
 | `alert_exec` | string | -- | Command to execute on alert. `--alert-exec` overrides it |
 | `reg_flood_threshold` | integer | `50` | Challenged failures from one source inside one `reg_flood_window_secs` window before `--reg-flood` reports a flood: REGISTERs that carried credentials and drew a `401` or `407` on the same transaction. The default is a carrier-registrar figure: it never sees the ten-a-second brute force a small PBX gets. Counted in capture time, so a file replays as the traffic it recorded. `--reg-flood-threshold` overrides it. `0` fails validation and names the key |
@@ -654,7 +654,7 @@ Privilege separation settings (Linux only).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `user` | string | `"nobody"` | User to drop privileges to after opening capture devices. `--user` overrides it |
-| `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` also turns it on |
+| `no_priv_drop` | boolean | `false` | Disable privilege dropping. `--no-priv-drop` turns it on. `--priv-drop` forces it off |
 | `chroot` | string | -- | Chroot directory after initialization. `--chroot` overrides it |
 
 ```toml
@@ -670,8 +670,8 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` also turns it on |
-| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` also turns it on |
+| `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` turns it on. `--no-resolve` forces it off |
+| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` turns it on. `--no-reverse-dns` forces it off |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload. `--names` adds to it |
 | `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, in the file this run loaded, preserving the rest of it. With no file loaded they go to the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`); when the settings came from `/etc/sipnab/sipnab.toml` they are not written and the status line says so when the session opens |
 | `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |

@@ -158,7 +158,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("count", Link::PerRun),
     (
         "delta-time",
-        Link::Key("display", "delta_time", Merge::Either),
+        Link::Key("display", "delta_time", Merge::Override),
     ),
     ("device", Link::Key("capture", "device", Merge::Override)),
     ("dialog-track", Link::Pending),
@@ -200,7 +200,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     (
         "fraud-detect",
-        Link::Key("security", "fraud_detect", Merge::Either),
+        Link::Key("security", "fraud_detect", Merge::Override),
     ),
     (
         "fraud-sequential-calls",
@@ -250,7 +250,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("hep-listen-transport", Link::Pending),
     (
         "hep-parse",
-        Link::Key("capture", "hep_parse", Merge::Either),
+        Link::Key("capture", "hep_parse", Merge::Override),
     ),
     (
         "hep-rate-limit",
@@ -304,7 +304,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     (
         "kill-scanner",
-        Link::Key("security", "kill_scanner", Merge::Either),
+        Link::Key("security", "kill_scanner", Merge::Override),
     ),
     ("kill-spoof", Link::Pending),
     ("kill-target", Link::Pending),
@@ -451,20 +451,41 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("nat-issues", Link::PerRun),
     ("no-cli-print", Link::PerRun),
     ("no-config", Link::PerRun),
+    (
+        "no-delta-time",
+        Link::Key("display", "delta_time", Merge::Off),
+    ),
     ("no-dialog", Link::Pending),
     (
         "no-final-response-timeout",
         Link::Key("diagnosis", "no_final_response_secs", Merge::Override),
     ),
+    (
+        "no-fraud-detect",
+        Link::Key("security", "fraud_detect", Merge::Off),
+    ),
+    (
+        "no-hep-parse",
+        Link::Key("capture", "hep_parse", Merge::Off),
+    ),
+    (
+        "no-kill-scanner",
+        Link::Key("security", "kill_scanner", Merge::Off),
+    ),
     ("no-password-prompt", Link::Pending),
     (
         "no-priv-drop",
-        Link::Key("privilege", "no_priv_drop", Merge::Either),
+        Link::Key("privilege", "no_priv_drop", Merge::Override),
     ),
     ("no-promisc", Link::Key("capture", "promisc", Merge::Off)),
     ("no-reassembly", Link::Pending),
+    ("no-resolve", Link::Key("names", "enabled", Merge::Off)),
+    (
+        "no-reverse-dns",
+        Link::Key("names", "reverse_dns", Merge::Off),
+    ),
     ("no-rotate", Link::Pending),
-    ("no-rtp", Link::Key("capture", "no_rtp", Merge::Either)),
+    ("no-rtp", Link::Key("capture", "no_rtp", Merge::Override)),
     ("no-tui", Link::PerRun),
     (
         "node-name",
@@ -496,6 +517,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("capture", "portrange", Merge::Override),
     ),
     ("print-yang-module", Link::Action),
+    (
+        "priv-drop",
+        Link::Key("privilege", "no_priv_drop", Merge::Off),
+    ),
     ("problems", Link::PerRun),
     ("proto-number", Link::Pending),
     (
@@ -539,14 +564,15 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("relay-stats-list", Link::PerRun),
     ("replay", Link::PerRun),
     ("report", Link::PerRun),
-    ("resolve", Link::Key("names", "enabled", Merge::Either)),
+    ("resolve", Link::Key("names", "enabled", Merge::Override)),
     ("retain-audio", Link::Pending),
-    ("revert-actions", Link::Action),
     (
         "reverse-dns",
-        Link::Key("names", "reverse_dns", Merge::Either),
+        Link::Key("names", "reverse_dns", Merge::Override),
     ),
+    ("revert-actions", Link::Action),
     ("rotate", Link::Pending),
+    ("rtp", Link::Key("capture", "no_rtp", Merge::Off)),
     ("rtpengine-control", Link::Pending),
     ("rtpproxy-control", Link::Pending),
     (
@@ -1090,16 +1116,22 @@ mod tests {
                 if seen.insert(sk.clone())
                     && let Some(fs) = flags_of.get(&sk)
                 {
-                    let named = fs.iter().any(|(f, _)| {
-                        let spelled = if f.starts_with('<') {
-                            (*f).to_string()
-                        } else {
-                            format!("--{f}")
-                        };
-                        line.contains(&format!("`{spelled}`"))
-                    });
-                    if !named {
-                        line = append_to_row(&line, &flag_sentence(fs));
+                    // Every flag that sets the key is named; a row naming one
+                    // of them still owes a sentence for each of the others.
+                    let missing: Vec<(&str, Merge)> = fs
+                        .iter()
+                        .copied()
+                        .filter(|(f, _)| {
+                            let spelled = if f.starts_with('<') {
+                                (*f).to_string()
+                            } else {
+                                format!("--{f}")
+                            };
+                            !line.contains(&format!("`{spelled}`"))
+                        })
+                        .collect();
+                    if !missing.is_empty() {
+                        line = append_to_row(&line, &flag_sentence(&missing));
                     }
                 }
             }
@@ -1307,6 +1339,33 @@ mod tests {
         assert_eq!(out, md);
     }
 
+    /// A row naming one of a key's flags still gets a sentence for each flag
+    /// it does not name: here the switch's off flag.
+    #[test]
+    fn the_config_fixer_names_each_flag_a_row_lacks() {
+        let t = [
+            (
+                "kill-scanner",
+                Link::Key("security", "kill_scanner", Merge::Override),
+            ),
+            (
+                "no-kill-scanner",
+                Link::Key("security", "kill_scanner", Merge::Off),
+            ),
+        ];
+        let md = "### [security]\n\n| `kill_scanner` | bool | false | Answer scanners. `--kill-scanner` overrides it |\n";
+        let (out, errors) =
+            fix_config_reference_with(md, &t, &keyset(&[("security", "kill_scanner")]));
+        assert!(errors.is_empty(), "{errors:?}");
+        assert!(
+            out.contains("`--kill-scanner` overrides it. `--no-kill-scanner` forces it off |"),
+            "{out}"
+        );
+        let (again, _) =
+            fix_config_reference_with(&out, &t, &keyset(&[("security", "kill_scanner")]));
+        assert_eq!(again, out, "a row naming every flag is left alone");
+    }
+
     #[test]
     fn the_config_fixer_reports_a_key_with_no_row() {
         let md = cfg_md("| `device` | string | -- | Interface. `--device` overrides it |");
@@ -1418,6 +1477,125 @@ mod tests {
         assert_eq!(
             gated, listed,
             "FEATURE_GATED must list exactly the feature-gated flags in src/cli.rs"
+        );
+    }
+
+    /// A switch a file can turn on and no flag can turn off is the defect the
+    /// `--no-X` flags removed. `Either` survives only where both sources add
+    /// to a list on purpose: `--syslog` and `--alert-json` each add an alert
+    /// channel to `[security] alert`, and neither is a switch.
+    #[test]
+    fn no_switch_is_one_way() {
+        let either: Vec<&str> = FLAGS
+            .iter()
+            .filter(|(_, l)| matches!(l, Link::Key(_, _, Merge::Either)))
+            .map(|(f, _)| *f)
+            .collect();
+        assert_eq!(
+            either,
+            vec!["alert-json", "syslog"],
+            "a one-way switch needs its off flag"
+        );
+    }
+
+    /// Every switch's off flag forces the same key off.
+    #[test]
+    fn every_off_flag_forces_its_key_off() {
+        for (off, key) in [
+            ("no-hep-parse", ("capture", "hep_parse")),
+            ("rtp", ("capture", "no_rtp")),
+            ("no-delta-time", ("display", "delta_time")),
+            ("priv-drop", ("privilege", "no_priv_drop")),
+            ("no-fraud-detect", ("security", "fraud_detect")),
+            ("no-kill-scanner", ("security", "kill_scanner")),
+            ("no-reverse-dns", ("names", "reverse_dns")),
+            ("no-resolve", ("names", "enabled")),
+        ] {
+            let row = FLAGS.iter().find(|(f, _)| *f == off).map(|(_, l)| *l);
+            assert_eq!(row, Some(Link::Key(key.0, key.1, Merge::Off)), "--{off}");
+        }
+    }
+
+    /// Where a switch's key is read outside its resolver in `src/cli.rs`, as
+    /// `(file, line)`. Each of those was a `flag || key` that no off flag could
+    /// undo; the resolvers are the one place a switch is decided.
+    fn inline_switch_reads(files: &[(String, String)]) -> Vec<String> {
+        let keys = [
+            "capture.hep_parse",
+            "capture.no_rtp",
+            "display.delta_time",
+            "privilege.no_priv_drop",
+            "security.fraud_detect",
+            "security.kill_scanner",
+            "names.reverse_dns",
+            "names.enabled",
+        ];
+        let mut hits = Vec::new();
+        for (path, text) in files {
+            if path.ends_with("src/cli.rs")
+                || path.ends_with("src/config.rs")
+                || path.ends_with("src/settings.rs")
+            {
+                continue;
+            }
+            for (i, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                if keys.iter().any(|k| {
+                    code.contains(&format!("{k}.unwrap_or("))
+                        || code.contains(&format!(
+                            "cfg.{}.unwrap_or(",
+                            k.split('.').nth(1).unwrap_or("")
+                        ))
+                }) {
+                    hits.push(format!("{path}:{}", i + 1));
+                }
+            }
+        }
+        hits
+    }
+
+    fn rust_sources() -> Vec<(String, String)> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs")
+                    && let Ok(t) = std::fs::read_to_string(&p)
+                {
+                    out.push((p.display().to_string(), t));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out
+    }
+
+    #[test]
+    fn no_switch_is_decided_outside_its_resolver() {
+        let hits = inline_switch_reads(&rust_sources());
+        assert!(
+            hits.is_empty(),
+            "switch keys read inline instead of through their Cli resolver: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn the_inline_read_scan_reports_a_flag_or_key_merge() {
+        let files = vec![(
+            "src/app/x.rs".to_string(),
+            "let k = cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);\n\
+             let r = cli.name_args.resolve || cfg.enabled.unwrap_or(false);\n\
+             // config.security.kill_scanner.unwrap_or(false) in a comment\n"
+                .to_string(),
+        )];
+        assert_eq!(
+            inline_switch_reads(&files),
+            vec!["src/app/x.rs:1", "src/app/x.rs:2"]
         );
     }
 

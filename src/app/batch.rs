@@ -844,7 +844,7 @@ fn spawn_relay_stats_poller(
 /// used to be constructed as `FraudDetector::new(None)`, so it shipped with
 /// its own constants and one whole detection unreachable.
 pub(crate) fn build_fraud_detector(cli: &Cli, config: &Config) -> Option<FraudDetector> {
-    if !(cli.security_args.fraud_detect || config.security.fraud_detect.unwrap_or(false)) {
+    if !(cli.fraud_detect(config)) {
         return None;
     }
     // Already refused by `Cli::validate` and `SecurityConfig::validate`, so
@@ -1107,7 +1107,7 @@ pub fn run_cores_file(
         tracing::error!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
     }
-    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.no_rtp(config);
     let pcfg = parallel_config(cli, config, portrange, no_rtp);
     match crate::parallel::run_offline_parallel_file(paths, capture_config, pcfg) {
         Ok(r) => {
@@ -2346,7 +2346,7 @@ pub fn run(
     kill_worker: Option<ScannerKillHandle>,
 ) {
     let portrange = policy.portrange;
-    let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.no_rtp(config);
     // 17p. Offline multi-core reconstruction (`--cores N`, N>1). Shard parsed
     // packets by host pair across N workers with thread-local stores, merge, and
     // report — covers dialog + RTP-stream reconstruction and `--report`/`--json`.
@@ -2669,7 +2669,7 @@ impl BatchRunner {
             .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default())
             .with_leg_correlation_window_ms(cli.leg_correlation_window_ms(config)),
         ));
-        let no_rtp = cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false);
+        let no_rtp = cli.no_rtp(config);
         let stream_store: Arc<RwLock<StreamStore>> = Arc::new(RwLock::new(
             build_live_stream_store(&cli, config, &batch.relay.snapshot),
         ));
@@ -2727,8 +2727,7 @@ impl BatchRunner {
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
         // 17a. Initialize security detectors
-        let kill_scanner_active =
-            cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+        let kill_scanner_active = cli.kill_scanner(config);
 
         // Targeted-kill directives (-K). Already validated in Cli::validate();
         // reparse here and skip (loudly) any that somehow fail so a bad entry
