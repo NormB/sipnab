@@ -466,9 +466,12 @@ pub(in crate::tui) fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
 pub(in crate::tui) fn save_columns(app: &mut App) {
     app.call_list.column_selector_open = false;
     let cols = app.call_list.visible_column_names();
-    let Some(path) = app.column_config_path.clone() else {
-        app.set_status_error("Cannot save columns: no config path");
-        return;
+    let path = match app.column_config_path.clone() {
+        Ok(path) => path,
+        Err(why) => {
+            app.set_status_error(format!("Columns {why}"));
+            return;
+        }
     };
     match crate::config::write_display_columns_file(&path, &cols) {
         Ok(()) => app.status_error = Some(format!("Saved columns to {}", path.display())),
@@ -688,9 +691,32 @@ mod tests {
             app.status_error
                 .as_deref()
                 .unwrap_or("")
-                .contains("no config path"),
+                .contains("Columns not saved: no config file for this session"),
             "got: {:?}",
             app.status_error
+        );
+    }
+
+    /// A refused save target (the run loaded /etc/sipnab/sipnab.toml) reaches
+    /// the status line word for word, and nothing is written.
+    #[test]
+    fn a_refused_save_says_why_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_test();
+        app.set_column_save_target(Err(format!(
+            "not saved: the settings in use come from {}",
+            crate::config::SYSTEM_CONFIG_PATH
+        )));
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Columns not saved: the settings in use come from /etc/sipnab/sipnab.toml")
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            0,
+            "nothing written"
         );
     }
 

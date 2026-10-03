@@ -76,7 +76,11 @@ fn bpf_status_text(capture_config: &CaptureConfig) -> String {
 /// Delegates to `crate::app::build_resolver` (reads `/etc/hosts` and mapping
 /// files) and additionally preloads the default persistence file when it
 /// exists; load failures are ignored.
-fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
+fn build_name_setup(
+    cli: &Cli,
+    config: &Config,
+    config_save: &Result<std::path::PathBuf, String>,
+) -> crate::tui::NameSetup {
     let cfg = &config.names;
     let (resolver, mode) = crate::app::build_resolver(cli, config);
 
@@ -85,11 +89,14 @@ fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
     if let Some(p) = &save_path {
         let _ = resolver.load_manual_file(p);
     }
-    // Opt-in: also persist `N`-dialog edits into the user's sipnabrc.
-    let config_path = if cfg.persist_to_config.unwrap_or(false) {
-        crate::config::default_user_config_path()
-    } else {
-        None
+    // Opt-in: also persist `N`-dialog edits into the config file this run
+    // loaded -- the same target, and the same refusal, as the F10 save.
+    let (config_path, persist_refused) = match (cfg.persist_to_config.unwrap_or(false), config_save)
+    {
+        (false, _) => (None, None),
+        (true, Ok(path)) => (Some(path.clone()), None),
+        // Kept for the status line: a TUI run logs only errors.
+        (true, Err(why)) => (None, Some(why.clone())),
     };
 
     crate::tui::NameSetup {
@@ -97,6 +104,7 @@ fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
         mode,
         save_path,
         config_path,
+        persist_refused,
     }
 }
 
@@ -518,6 +526,7 @@ pub(crate) fn tui_notes(
 pub fn run_tui_mode(
     cli: Cli,
     config: Config,
+    config_source: Option<std::path::PathBuf>,
     capture_config: CaptureConfig,
     mut launched: crate::app::bootstrap::Launched,
     policy: CapturePolicy,
@@ -841,7 +850,13 @@ pub fn run_tui_mode(
     // Build resolved theme and keymap from config
     let theme = crate::tui::Theme::from_config(&config.theme);
     let keymap = crate::tui::Keymap::from_config(&config.keybindings);
-    let name_setup = build_name_setup(&cli, &config);
+    let config_save = crate::config::save_target(
+        config_source.as_deref(),
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .as_deref(),
+    );
+    let name_setup = build_name_setup(&cli, &config, &config_save);
 
     // From/To column default: CLI flag wins, then the [display] from_to config
     // value (warned + ignored if invalid), else the built-in Default.
@@ -860,6 +875,7 @@ pub fn run_tui_mode(
             theme,
             keymap,
             capture_meter: tui_capture_meter,
+            config_save: crate::tui::ConfigSave(config_save),
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,
@@ -1716,29 +1732,56 @@ mod tests {
 
     // ── Name setup ────────────────────────────────────────────────────────
 
-    /// `[names] persist_to_config` decides whether in-TUI `N`-dialog edits are
-    /// also written back to the user's sipnabrc.
-    ///
-    /// Both directions are asserted against the same source of truth
-    /// `build_name_setup` uses, so the test cannot pass by accident in an
-    /// environment where no user config path can be derived at all.
-    #[test]
-    fn persist_to_config_decides_whether_name_edits_reach_the_users_sipnabrc() {
-        let cli = cli_from(&[]);
+    fn saving_to(p: &str) -> Result<std::path::PathBuf, String> {
+        Ok(std::path::PathBuf::from(p))
+    }
 
-        let off = super::build_name_setup(&cli, &Config::default());
+    /// `[names] persist_to_config` off: name edits never reach a config file,
+    /// whatever file the run loaded.
+    #[test]
+    fn name_edits_stay_out_of_the_config_unless_asked() {
+        let off = super::build_name_setup(
+            &cli_from(&[]),
+            &Config::default(),
+            &saving_to("/home/u/.sipnabrc"),
+        );
         assert_eq!(
             off.config_path, None,
-            "the default must not write the user's config file"
+            "the default must not write the config file"
         );
+    }
 
+    /// On: name edits go to the file the run LOADED, here `~/.sipnabrc`. They
+    /// used to go to `~/.config/sipnab/sipnab.toml` always, which then shadowed
+    /// the `~/.sipnabrc` they came from on every later run.
+    #[test]
+    fn name_edits_go_to_the_file_the_run_loaded() {
         let mut config = Config::default();
         config.names.persist_to_config = Some(true);
-        let on = super::build_name_setup(&cli, &config);
+        let on = super::build_name_setup(&cli_from(&[]), &config, &saving_to("/home/u/.sipnabrc"));
         assert_eq!(
             on.config_path,
-            crate::config::default_user_config_path(),
-            "opting in must target the user's sipnabrc"
+            Some(std::path::PathBuf::from("/home/u/.sipnabrc"))
+        );
+        assert_eq!(on.persist_refused, None);
+    }
+
+    /// On, but the run may not save (it loaded /etc/sipnab/sipnab.toml): no
+    /// config path, rather than a guessed one.
+    #[test]
+    fn name_edits_are_not_persisted_where_saving_is_refused() {
+        let mut config = Config::default();
+        config.names.persist_to_config = Some(true);
+        let refused = super::build_name_setup(
+            &cli_from(&[]),
+            &config,
+            &Err("not saved: the settings in use come from /etc/sipnab/sipnab.toml".into()),
+        );
+        assert_eq!(refused.config_path, None);
+        assert_eq!(
+            refused.persist_refused.as_deref(),
+            Some("not saved: the settings in use come from /etc/sipnab/sipnab.toml"),
+            "the refusal is kept for the status line: a TUI run logs only errors"
         );
     }
 
@@ -1746,7 +1789,7 @@ mod tests {
     /// XDG one — the `N` dialog has nowhere to save otherwise.
     #[test]
     fn the_name_setup_carries_the_default_persistence_path() {
-        let setup = super::build_name_setup(&cli_from(&[]), &Config::default());
+        let setup = super::build_name_setup(&cli_from(&[]), &Config::default(), &saving_to("/x"));
         assert_eq!(setup.save_path, super::default_names_path());
         if let Some(p) = setup.save_path {
             assert!(

@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Fixed
 
+- **Saving from the terminal UI no longer hides your `~/.sipnabrc`.** The F10
+  column selector's `s`, and name edits under `[names] persist_to_config`,
+  always wrote `~/.config/sipnab/sipnab.toml`. That file comes before
+  `~/.sipnabrc` in the search order, so after one saved layout every later run
+  loaded the new file and ignored every other setting in `~/.sipnabrc`; under
+  `--config` or `$SIPNAB_CONFIG` the save went to a file the run never read.
+  Both saves now write the file the run loaded, keeping its comments and other
+  settings. With no file loaded they create `~/.config/sipnab/sipnab.toml` as
+  before. When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses
+  the save and says why on the status line, because a file of your own would
+  hide every setting in it.
+
 - **The CLI and config references now say which flag and which key set the
   same thing, for every pair.** 36 flag rows in the [CLI
   reference](https://sipnab.com/docs/cli/) lacked the `Config: [section] key`

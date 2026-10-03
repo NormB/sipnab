@@ -233,6 +233,7 @@ fn main() {
             sipnab::app::tui_mode::run_tui_mode(
                 cli,
                 loaded.config,
+                loaded.source,
                 plan.capture_config,
                 launched,
                 plan.policy,

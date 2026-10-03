@@ -242,6 +242,10 @@ pub struct NameSetup {
     /// When `Some`, `N`-dialog edits are ALSO written into the `[names.manual]`
     /// table of this sipnabrc (opt-in via `[names] persist_to_config`).
     pub config_path: Option<PathBuf>,
+    /// Why `[names] persist_to_config` could not be honored this run, for the
+    /// status line when the session opens. A TUI run logs only errors, so a
+    /// warning on stderr would never be seen.
+    pub persist_refused: Option<String>,
 }
 
 impl Default for NameSetup {
@@ -253,6 +257,7 @@ impl Default for NameSetup {
             mode: NameMode::Off,
             save_path: None,
             config_path: None,
+            persist_refused: None,
         }
     }
 }
@@ -370,6 +375,24 @@ pub struct TuiOptions {
     /// The capture channel's meter, where a HEP listener hangs its sender
     /// roster for the HEP senders view. `None` on a session with no capture.
     pub capture_meter: Option<crate::capture::channel::CaptureMeter>,
+    /// Where a save from the session writes (the F10 column layout), or the
+    /// sentence explaining why it may not: [`crate::config::save_target`] over
+    /// the file this run loaded.
+    pub config_save: ConfigSave,
+}
+
+/// Where a session's saves write, or why it may not save.
+///
+/// Its default refuses: a session built without being told which file the run
+/// loaded must not guess one, because a guessed file can shadow the real one
+/// on the next run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigSave(pub Result<std::path::PathBuf, String>);
+
+impl Default for ConfigSave {
+    fn default() -> Self {
+        Self(Err("not saved: no config file for this session".to_string()))
+    }
 }
 
 impl TuiOptions {
@@ -416,8 +439,12 @@ impl TuiOptions {
         app.set_name_mode(self.name_setup.mode);
         app.set_names_save_path(self.name_setup.save_path);
         app.set_names_config_path(self.name_setup.config_path);
+        if let Some(why) = self.name_setup.persist_refused {
+            app.status_error = Some(format!("Name edits {why}"));
+        }
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
+        app.set_column_save_target(self.config_save.0);
         app.tfps_access = self.tfps_access;
         app.alert_engine = self.alert_engine;
         app.armed_detections = self.armed_detections;

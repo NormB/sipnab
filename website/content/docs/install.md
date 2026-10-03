@@ -1156,17 +1156,17 @@ cargo uninstall sipnab
 ```
 
 **No run creates a configuration file on its own, so there is usually nothing
-to clean up.** sipnab reads `~/.config/sipnab/sipnab.toml` and
-`/etc/sipnab/sipnab.toml` if they exist, and it reads the credential files
+to clean up.** sipnab reads the first configuration file it finds: the one
+named by `--config`, then `$SIPNAB_CONFIG`, `~/.config/sipnab/sipnab.toml`,
+`~/.sipnabrc` and `/etc/sipnab/sipnab.toml`. It reads the credential files
 named by `--hep-auth-file`, `--mcp-token-file` and `--mcp-signing-key-file`. It
 writes none of those on its own — you do, if you want them.
 
 Two TUI actions are the exception, and both need you to ask for them:
 `s` in the F10 column selector saves the layout to `[display] visible_columns`,
 and, with `[names] persist_to_config = true`, the `N` naming dialog saves
-mappings to `[names.manual]`. Either writes `~/.config/sipnab/sipnab.toml`,
-creating the file and its directory when they are absent, and leaves the rest
-of the file intact. The `N` dialog also keeps a mapping file at
+mappings to `[names.manual]`. Either writes into the config file the run loaded, whichever of the five it was, and leaves the rest of the file, comments included, intact. With no file loaded it creates `~/.config/sipnab/sipnab.toml` and its directory. When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses the save
+and says so on the status line, because a file of your own would hide every setting in it: copy that file to `~/.config/sipnab/sipnab.toml` first. The `N` dialog also keeps a mapping file at
 `~/.config/sipnab/hosts` whatever the config says. Remove what you find there:
 
 ```bash
