@@ -662,6 +662,17 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("keybindings", "column_selector", FileOnly::Tui),
 ];
 
+/// Flags the CLI defines only when a cargo feature is compiled in, as
+/// `(flag, feature)`. A build without the feature has no such flag, and its
+/// [`FLAGS`] row is then not a phantom.
+pub const FEATURE_GATED: &[(&str, &str)] = &[("plugin", "plugins")];
+
+/// Whether `feature` is compiled into this build. Only the features
+/// [`FEATURE_GATED`] names need an answer.
+pub fn feature_enabled(feature: &str) -> bool {
+    feature == "plugins" && cfg!(feature = "plugins")
+}
+
 /// How many [`FLAGS`] rows are [`Link::Pending`]. Lower it when a pending flag
 /// gets its key; it may never rise.
 pub const PENDING_FLAGS: usize = 103;
@@ -773,7 +784,17 @@ mod tests {
 
     #[test]
     fn every_flag_has_exactly_one_row() {
-        let errors = flag_errors(&cli_names(), FLAGS);
+        let compiled_out: Vec<&str> = FEATURE_GATED
+            .iter()
+            .filter(|(_, feature)| !feature_enabled(feature))
+            .map(|(flag, _)| *flag)
+            .collect();
+        let table: Vec<(&str, Link)> = FLAGS
+            .iter()
+            .copied()
+            .filter(|(f, _)| !compiled_out.contains(f))
+            .collect();
+        let errors = flag_errors(&cli_names(), &table);
         assert!(
             errors.is_empty(),
             "src/settings.rs FLAGS ({}):\n{}",
@@ -1313,6 +1334,68 @@ mod tests {
             let (twice, _) = fix(&once);
             assert_eq!(once, twice, "{rel}: a second pass of the fixer changed it");
         }
+    }
+
+    /// Each feature-gated flag is in the CLI exactly when its feature is
+    /// compiled in. CI's feature matrix runs this both ways.
+    #[test]
+    fn a_feature_gated_flag_exists_exactly_when_its_feature_is_on() {
+        let cli = cli_names();
+        for (flag, feature) in FEATURE_GATED {
+            assert_eq!(
+                cli.contains(*flag),
+                feature_enabled(feature),
+                "--{flag} and feature {feature:?} disagree in this build"
+            );
+        }
+    }
+
+    /// FEATURE_GATED names every `#[cfg(feature = ...)]` argument in cli.rs,
+    /// so a newly gated flag cannot pass the gate in one build and fail it in
+    /// another.
+    #[test]
+    fn the_feature_gated_list_matches_cli_rs() {
+        let src = read("src/cli.rs");
+        let lines: Vec<&str> = src.lines().map(str::trim).collect();
+        let mut gated = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(feature) = line
+                .strip_prefix("#[cfg(feature = \"")
+                .and_then(|r| r.strip_suffix("\")]"))
+            else {
+                continue;
+            };
+            let Some(arg) = lines[i + 1..].iter().find(|l| !l.starts_with("///")) else {
+                continue;
+            };
+            if !arg.starts_with("#[arg(") {
+                continue;
+            }
+            // `long = "x"`, or a bare `long` that takes the field's name.
+            let long = arg
+                .split("long = \"")
+                .nth(1)
+                .and_then(|r| r.split('"').next())
+                .map_or_else(
+                    || {
+                        lines[i + 1..]
+                            .iter()
+                            .find_map(|l| l.strip_prefix("pub ").and_then(|r| r.split(':').next()))
+                            .unwrap_or("?")
+                            .replace('_', "-")
+                    },
+                    ToString::to_string,
+                );
+            gated.push((long, feature.to_string()));
+        }
+        let listed: Vec<(String, String)> = FEATURE_GATED
+            .iter()
+            .map(|(f, x)| ((*f).to_string(), (*x).to_string()))
+            .collect();
+        assert_eq!(
+            gated, listed,
+            "FEATURE_GATED must list exactly the feature-gated flags in src/cli.rs"
+        );
     }
 
     #[test]
