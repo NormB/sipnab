@@ -250,10 +250,22 @@ syntax, e.g.,
 .B SIPNAB_CONFIG
 Path to configuration file. Overridden by
 .BR \-f .
-.SH FILES
 .TP
-.I ~/.config/sipnab/sipnab.toml
-Per-user configuration file.
+.B XDG_CONFIG_HOME
+Directory holding the per-user configuration file
+.IR $XDG_CONFIG_HOME/sipnab/sipnab.toml .
+Unset, empty or relative means
+.IR ~/.config .
+.SH FILES
+sipnab reads the first of these that exists, after
+.B \-\-config
+and
+.BR SIPNAB_CONFIG ,
+and names any later one it did not read.
+.TP
+.I $XDG_CONFIG_HOME/sipnab/sipnab.toml
+Per-user configuration file, by default
+.IR ~/.config/sipnab/sipnab.toml .
 .TP
 .I ~/.sipnabrc
 Alternate per-user configuration file.

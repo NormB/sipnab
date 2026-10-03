@@ -526,7 +526,7 @@ pub(crate) fn tui_notes(
 pub fn run_tui_mode(
     cli: Cli,
     config: Config,
-    config_source: Option<std::path::PathBuf>,
+    origin: crate::config::ConfigOrigin,
     capture_config: CaptureConfig,
     mut launched: crate::app::bootstrap::Launched,
     policy: CapturePolicy,
@@ -851,10 +851,8 @@ pub fn run_tui_mode(
     let theme = crate::tui::Theme::from_config(&config.theme);
     let keymap = crate::tui::Keymap::from_config(&config.keybindings);
     let config_save = crate::config::save_target(
-        config_source.as_deref(),
-        std::env::var_os("HOME")
-            .map(std::path::PathBuf::from)
-            .as_deref(),
+        origin.source.as_deref(),
+        crate::config::default_user_config_path().as_deref(),
     );
     let name_setup = build_name_setup(&cli, &config, &config_save);
 
@@ -876,6 +874,10 @@ pub fn run_tui_mode(
             keymap,
             capture_meter: tui_capture_meter,
             config_save: crate::tui::ConfigSave(config_save),
+            startup_notice: crate::config::config_notice(
+                origin.source.as_deref(),
+                &origin.shadowed,
+            ),
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,

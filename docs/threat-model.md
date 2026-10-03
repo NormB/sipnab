@@ -187,8 +187,9 @@ covers the options.
 ## Configuration files and the command line
 
 sipnab reads a TOML file from `--config`, `$SIPNAB_CONFIG`,
-`~/.config/sipnab/sipnab.toml`, `~/.sipnabrc` or `/etc/sipnab/sipnab.toml`, in
-that order. The file can name commands to run (`alert_exec`), so write access
+`$XDG_CONFIG_HOME/sipnab/sipnab.toml` (by default
+`~/.config/sipnab/sipnab.toml`), `~/.sipnabrc` or `/etc/sipnab/sipnab.toml`,
+the first it finds. The file can name commands to run (`alert_exec`), so write access
 to it amounts to running code as sipnab.
 
 | Threat | Mitigation | Where |

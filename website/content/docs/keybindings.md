@@ -472,7 +472,7 @@ that uses ZipCrypto, which protects nothing.
 | Up / k | Move selection up |
 | Down / j | Move selection down |
 | Space | Toggle column visibility |
-| s | Save the current layout to `[display] visible_columns` in the config file this run loaded, or `~/.config/sipnab/sipnab.toml` when none was (persists across runs). Refused, with a message, when the settings came from `/etc/sipnab/sipnab.toml` |
+| s | Save the current layout to `[display] visible_columns` in the config file this run loaded, or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was (persists across runs). Refused, with a message, when the settings came from `/etc/sipnab/sipnab.toml` |
 | Enter / Esc | Close selector |
 
 ## Timestamp modes
@@ -541,8 +541,8 @@ across runs.
 Mappings can also persist into your **config file**: set
 `[names] persist_to_config = true` and `N`-dialog edits land in the
 `[names.manual]` table of the file this run loaded (`~/.sipnabrc`, a
-`--config` file, whichever it was), or of `~/.config/sipnab/sipnab.toml` when
-none was, leaving comments and other sections intact. When the settings came
+`--config` file, whichever it was), or of the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by
+default `~/.config/sipnab/sipnab.toml`) when none was, leaving comments and other sections intact. When the settings came
 from `/etc/sipnab/sipnab.toml`, edits are not written there and the status line says so when the session opens. You can also pre-declare mappings there by hand:
 
 ```toml

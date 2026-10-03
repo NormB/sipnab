@@ -3316,6 +3316,9 @@ pub fn dump_config(loaded: &LoadedConfig) -> i32 {
     println!();
     if let Some(ref source) = loaded.source {
         println!("# Loaded from: {}", source.display());
+        for p in &loaded.shadowed {
+            println!("# Also present and NOT read: {}", p.display());
+        }
     } else {
         println!("# No config file loaded (defaults only)");
     }

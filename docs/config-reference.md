@@ -31,9 +31,21 @@ sipnab reads configuration from the first file it finds in this order:
 |----------|--------|
 | 1 | `--config <FILE>` (must exist; errors if missing) |
 | 2 | `$SIPNAB_CONFIG` environment variable |
-| 3 | `~/.config/sipnab/sipnab.toml` |
+| 3 | `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, or `~/.config/sipnab/sipnab.toml` when `$XDG_CONFIG_HOME` is unset, empty or not an absolute path |
 | 4 | `~/.sipnabrc` |
 | 5 | `/etc/sipnab/sipnab.toml` |
+
+sipnab reads only that first file. It does not merge a later one into it, so a
+setting in `~/.sipnabrc` does nothing while `~/.config/sipnab/sipnab.toml`
+exists. When more than one of rows 3 to 5 exists, sipnab says which file it
+read and which it did not: a warning on stderr, a line in `--dump-config`
+output, and the status line when the terminal UI opens. A `--config` file or
+`$SIPNAB_CONFIG` is your choice, so it raises no such notice.
+
+```text
+# Loaded from: /home/you/.config/sipnab/sipnab.toml
+# Also present and NOT read: /home/you/.sipnabrc
+```
 
 Use `--no-config` (`-F`) to skip all file loading. Use `--dump-config` (`-D`) to print which file sipnab loaded and the keys it set — see the note under [Full example](#full-example) for what `-D` does and does not show.
 
@@ -137,7 +149,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` also turns it on |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
-| `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or `~/.config/sipnab/sipnab.toml` when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
+| `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`) when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
 [display]
@@ -408,7 +420,7 @@ itself.
 |---|---|---|---|
 | `one_way_delay_ms` | float | -- | One-way network path delay in milliseconds, feeding the delay term of every MOS. The single MOS input no observer can measure from the wire directly: only the endpoints and you have it. A declared value beats an RTCP-reported round trip, because no packet can rewrite a config file; that beats the round trip sipnab derives from a sender-report echo carried in a receiver report, which anchors on the capture point and so reads as a lower bound; with none of the three, sipnab assumes 100 ms and labels the figure `assumed` rather than presenting it as measured. `--one-way-delay` overrides it |
 | `codec_ie` | table | -- | Equipment impairment factors (ITU-T G.107 `Ie`) for codecs sipnab has no published value for, written as a `[media.codec_ie]` sub-table of `"CODEC" = <Ie>` pairs. sipnab knows G.711, G.729 and Opus; every other codec -- G.722, G.726, iLBC, AMR, EVS -- falls to a placeholder and scores identically to a stream whose codec was never identified. A declared codec comes back as `mos_grounding = "operator_declared"` rather than as published, so a figure from this file is never presented as an ITU-T citation, and a codec nobody declared still says its MOS is a placeholder. Keys match case-insensitively. Values must sit in `0.0` to just under `95.0`: at 95 the E-model's loss term vanishes, and above it more packet loss would RAISE the score, so sipnab fails validation on such a value and names the codec |
-| `listening_context` | string | `"monotic"` | How the far end listens, for wideband (AMR-WB) MOS: `"monotic"` (a handset or one-ear headset, ITU-T G.113 Table IV.1) or `"diotic"` (a stereo headset or speakerphone, Table IV.3). At 6.6 kbit/s the two differ by about 0.59 MOS, and a capture cannot tell which one was in use, so you declare it. Every wideband score names the context sipnab read it in. sipnab ignores any other value and keeps `"monotic"` |
+| `listening_context` | string | `"monotic"` | How the far end listens, for wideband (AMR-WB) MOS: `"monotic"` (a handset or one-ear headset, ITU-T G.113 Table IV.1) or `"diotic"` (a stereo headset or speakerphone, Table IV.3). At 6.6 kbit/s the two differ by about 0.59 MOS, and a capture cannot tell which one was in use, so you declare it. Every wideband score names the context sipnab read it in. Case and surrounding spaces do not matter; any other value stops the run with an error naming the key |
 
 ```toml
 [media]
@@ -599,7 +611,7 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 | `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` also turns it on |
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` also turns it on |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload. `--names` adds to it |
-| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, in the file this run loaded, preserving the rest of it. With no file loaded they go to `~/.config/sipnab/sipnab.toml`; when the settings came from `/etc/sipnab/sipnab.toml` they are not written and the status line says so when the session opens |
+| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, in the file this run loaded, preserving the rest of it. With no file loaded they go to the user config file (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default `~/.config/sipnab/sipnab.toml`); when the settings came from `/etc/sipnab/sipnab.toml` they are not written and the status line says so when the session opens |
 | `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 

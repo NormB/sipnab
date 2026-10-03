@@ -42,7 +42,11 @@ fn saving_into_sipnabrc_keeps_its_settings_in_force() {
     let rc = home.path().join(".sipnabrc");
     std::fs::write(&rc, "[capture]\nportrange = \"5060-5099\"\n").unwrap();
 
-    let target = sipnab::config::save_target(Some(&rc), Some(home.path())).unwrap();
+    let target = sipnab::config::save_target(
+        Some(&rc),
+        Some(&home.path().join(".config/sipnab/sipnab.toml")),
+    )
+    .unwrap();
     sipnab::config::write_display_columns_file(&target, &layout()).unwrap();
 
     assert!(
@@ -101,7 +105,11 @@ fn saving_into_an_explicit_config_keeps_its_comments_and_settings() {
     )
     .unwrap();
 
-    let target = sipnab::config::save_target(Some(&cfg), Some(home.path())).unwrap();
+    let target = sipnab::config::save_target(
+        Some(&cfg),
+        Some(&home.path().join(".config/sipnab/sipnab.toml")),
+    )
+    .unwrap();
     assert_eq!(target, cfg);
     sipnab::config::write_display_columns_file(&target, &layout()).unwrap();
 
@@ -120,7 +128,9 @@ fn saving_into_an_explicit_config_keeps_its_comments_and_settings() {
 #[test]
 fn saving_with_no_file_creates_the_user_file() {
     let home = tempfile::tempdir().unwrap();
-    let target = sipnab::config::save_target(None, Some(home.path())).unwrap();
+    let target =
+        sipnab::config::save_target(None, Some(&home.path().join(".config/sipnab/sipnab.toml")))
+            .unwrap();
     sipnab::config::write_display_columns_file(&target, &layout()).unwrap();
     let dump = dump_config(home.path(), &[]);
     assert!(

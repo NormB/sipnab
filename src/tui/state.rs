@@ -379,6 +379,9 @@ pub struct TuiOptions {
     /// sentence explaining why it may not: [`crate::config::save_target`] over
     /// the file this run loaded.
     pub config_save: ConfigSave,
+    /// A notice for the status line when the session opens, about how the
+    /// config was loaded: [`crate::config::config_notice`].
+    pub startup_notice: Option<String>,
 }
 
 /// Where a session's saves write, or why it may not save.
@@ -439,8 +442,18 @@ impl TuiOptions {
         app.set_name_mode(self.name_setup.mode);
         app.set_names_save_path(self.name_setup.save_path);
         app.set_names_config_path(self.name_setup.config_path);
-        if let Some(why) = self.name_setup.persist_refused {
-            app.status_error = Some(format!("Name edits {why}"));
+        // Every startup notice is shown; a later one must not hide an earlier.
+        let notices: Vec<String> = self
+            .startup_notice
+            .into_iter()
+            .chain(
+                self.name_setup
+                    .persist_refused
+                    .map(|why| format!("Name edits {why}")),
+            )
+            .collect();
+        if !notices.is_empty() {
+            app.status_error = Some(notices.join(" | "));
         }
         app.set_action_trail(self.action_trail);
         app.relay_query = self.relay_query;
