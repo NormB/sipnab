@@ -1151,11 +1151,24 @@ mod tests {
             ));
         }
 
+        // The tally is process-global and every test that decodes a frame may
+        // move it, not only the ones serialized on `undecodable_tally`; an
+        // exact `== 2` failed under the full suite with 9. Bracket the read
+        // instead: the collector's figure must lie between the counter just
+        // before and just after it ran. A default (0) cannot, because the
+        // "before" reading already holds the two frames recorded above.
+        let before = crate::capture::undecodable_frames();
         let m = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
-        assert_eq!(
-            m.capture_quality.undecodable_frames, 2,
+        let after = crate::capture::undecodable_frames();
+        assert!(
+            before >= 2,
+            "precondition: the two frames were recorded ({before})"
+        );
+        assert!(
+            (before..=after).contains(&m.capture_quality.undecodable_frames),
             "the standalone collector must read the live capture counters, \
-             not a default: {:?}",
+             not a default: read {} outside {before}..={after}: {:?}",
+            m.capture_quality.undecodable_frames,
             m.capture_quality
         );
         assert_ne!(

@@ -365,7 +365,7 @@ pub struct App {
     names_config_path: Option<PathBuf>,
     /// Where the F10 column selector's `s` (save) action writes
     /// `[display] visible_columns`. `None` in tests / when no home dir exists.
-    column_config_path: Option<PathBuf>,
+    column_config_path: Result<PathBuf, String>,
     /// "Name Address" popup state.
     name_dialog: NameDialogState,
     /// SDP display mode (None / Summary / Full).
@@ -552,7 +552,7 @@ impl App {
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
             names_config_path: None,
-            column_config_path: None,
+            column_config_path: Err("not saved: no config file for this session".to_string()),
             action_trail: None,
             name_dialog: NameDialogState::default(),
             header_form: header_form::HeaderFormMode::default(),
@@ -1956,8 +1956,6 @@ pub fn run_tui_with_pause(
     if let Some(flag) = paused_flag {
         app.paused_flag = flag;
     }
-    // The F10 column selector's `s` saves into the user's sipnabrc.
-    app.set_column_config_path(crate::config::default_user_config_path());
 
     // Dead rebinds (duplicates, or shadowed by a view's built-in key) used
     // to fail silently; warn on stderr and in the status line at startup.
@@ -2111,6 +2109,54 @@ pub(crate) fn count_noun(n: usize, singular: &str, plural: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stores() -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {
+        let app = App::new_test();
+        (Arc::clone(&app.dialog_store), Arc::clone(&app.stream_store))
+    }
+
+    /// The save target a run resolved reaches the session's F10 save.
+    #[test]
+    fn the_resolved_save_target_reaches_the_session() {
+        let (d, s) = stores();
+        let target = std::path::PathBuf::from("/home/u/.sipnabrc");
+        let options = TuiOptions {
+            config_save: ConfigSave(Ok(target.clone())),
+            ..TuiOptions::default()
+        };
+        assert_eq!(options.into_app(d, s).column_config_path, Ok(target));
+    }
+
+    /// A session built without a save target refuses rather than guessing.
+    #[test]
+    fn a_session_with_no_save_target_refuses_to_save() {
+        let (d, s) = stores();
+        let app = TuiOptions::default().into_app(d, s);
+        assert_eq!(
+            app.column_config_path,
+            Err("not saved: no config file for this session".to_string())
+        );
+    }
+
+    /// A refused names persistence is on the status line when the session
+    /// opens: a TUI run logs only errors, so a warning would never be seen.
+    #[test]
+    fn a_refused_name_persistence_is_on_the_status_line_at_start() {
+        let (d, s) = stores();
+        let options = TuiOptions {
+            name_setup: NameSetup {
+                persist_refused: Some(
+                    "not saved: the settings in use come from /etc/sipnab/sipnab.toml".into(),
+                ),
+                ..NameSetup::default()
+            },
+            ..TuiOptions::default()
+        };
+        assert_eq!(
+            options.into_app(d, s).status_error.as_deref(),
+            Some("Name edits not saved: the settings in use come from /etc/sipnab/sipnab.toml")
+        );
+    }
 
     /// One of a thing is singular; zero and many are plural. The screens used
     /// `destination(s)` and `talker(s)`, which make the reader do the grammar.

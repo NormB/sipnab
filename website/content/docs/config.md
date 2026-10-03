@@ -142,7 +142,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` also turns it on |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
-| `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout back to your sipnabrc, so it persists across sessions |
+| `visible_columns` | array of strings | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10; `s` in the column selector writes the layout into the config file this run loaded (or `~/.config/sipnab/sipnab.toml` when none was), so it persists across sessions. sipnab refuses that save when the settings came from `/etc/sipnab/sipnab.toml` |
 
 ```toml
 [display]
@@ -604,7 +604,7 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 | `enabled` | boolean | `false` | Start with name resolution on (offline sources). `--resolve` also turns it on |
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups. `--reverse-dns` also turns it on |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload. `--names` adds to it |
-| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
+| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, in the file this run loaded, preserving the rest of it. With no file loaded they go to `~/.config/sipnab/sipnab.toml`; when the settings came from `/etc/sipnab/sipnab.toml` they are not written and the status line says so when the session opens |
 | `dns_cache_entries` | integer | `4096` | Reverse-DNS results (positive and negative) held at once (default `MAX_DNS_CACHE_ENTRIES`). Past the cap sipnab drops the oldest entry, so a capture touching more hosts than this -- a carrier edge, a peering point, or any long `--reverse-dns` window -- keeps re-looking-up addresses it already resolved. Nothing reports that: a dropped lookup only shows as an address displayed unresolved, so the symptom is names that flicker. The worker queue's depth follows this figure; sipnab derives it rather than taking a second number. `--dns-cache-entries` overrides it |
 | `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 

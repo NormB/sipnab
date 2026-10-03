@@ -2472,13 +2472,47 @@ fn default_config_paths() -> Vec<PathBuf> {
         paths.push(home.join(".sipnabrc"));
     }
 
-    paths.push(PathBuf::from("/etc/sipnab/sipnab.toml"));
+    paths.push(PathBuf::from(SYSTEM_CONFIG_PATH));
     paths
 }
 
 /// Get the user's home directory from `$HOME`, or `None` when unset.
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
+}
+
+/// The system-wide config file, the last place [`Config::load`] looks.
+pub const SYSTEM_CONFIG_PATH: &str = "/etc/sipnab/sipnab.toml";
+
+/// Where a save from the terminal UI writes (the F10 column layout, and name
+/// edits under `[names] persist_to_config`), given the file this run loaded
+/// and `$HOME`.
+///
+/// The file the run loaded, whichever of the search order it was: writing
+/// anywhere else creates a file the NEXT run may load instead. A save used to
+/// go to `~/.config/sipnab/sipnab.toml` always, which sits ahead of
+/// `~/.sipnabrc` in the search order, so one saved layout made every later run
+/// ignore the rest of a `~/.sipnabrc`; and under `--config` or
+/// `$SIPNAB_CONFIG` the save landed in a file the run never read. With no file
+/// loaded, the user file is created.
+///
+/// # Errors
+/// A sentence for the status line when no file may be written: the run loaded
+/// [`SYSTEM_CONFIG_PATH`] (a user file would shadow every setting in it, and a
+/// user should not be editing it in place), or nothing was loaded and `$HOME`
+/// is unset.
+pub fn save_target(loaded: Option<&Path>, home: Option<&Path>) -> Result<PathBuf, String> {
+    match loaded {
+        Some(p) if p == Path::new(SYSTEM_CONFIG_PATH) => Err(format!(
+            "not saved: the settings in use come from {SYSTEM_CONFIG_PATH}, and a \
+             user file would hide every setting in it. Copy it to \
+             ~/.config/sipnab/sipnab.toml to save from the terminal UI"
+        )),
+        Some(p) => Ok(p.to_path_buf()),
+        None => home
+            .map(|h| h.join(".config").join("sipnab").join("sipnab.toml"))
+            .ok_or_else(|| "not saved: no config file was loaded and $HOME is unset".to_string()),
+    }
 }
 
 /// The user's preferred sipnabrc path (`~/.config/sipnab/sipnab.toml`), used as
@@ -4148,5 +4182,62 @@ mod config_preservation_tests {
             .expect("a missing file is created, not an error");
         let written = std::fs::read_to_string(&path).expect("created");
         assert!(written.contains("visible_columns"), "wrote: {written}");
+    }
+}
+
+#[cfg(test)]
+mod save_target_tests {
+    use super::*;
+
+    fn home() -> PathBuf {
+        PathBuf::from("/home/u")
+    }
+
+    #[test]
+    fn a_run_that_loaded_the_xdg_file_saves_into_it() {
+        let f = home().join(".config/sipnab/sipnab.toml");
+        assert_eq!(save_target(Some(&f), Some(&home())), Ok(f));
+    }
+
+    #[test]
+    fn a_run_that_loaded_sipnabrc_saves_into_sipnabrc() {
+        let f = home().join(".sipnabrc");
+        assert_eq!(
+            save_target(Some(&f), Some(&home())),
+            Ok(f),
+            "writing ~/.config/sipnab/sipnab.toml instead creates a file that \
+             shadows ~/.sipnabrc on every later run"
+        );
+    }
+
+    #[test]
+    fn a_run_given_an_explicit_file_saves_into_that_file() {
+        let f = PathBuf::from("/srv/voip/sipnab.toml");
+        assert_eq!(save_target(Some(&f), Some(&home())), Ok(f));
+    }
+
+    #[test]
+    fn a_run_that_loaded_the_system_file_refuses_to_save() {
+        let err = save_target(Some(Path::new(SYSTEM_CONFIG_PATH)), Some(&home()))
+            .expect_err("a user file would shadow every setting in /etc");
+        assert!(err.contains(SYSTEM_CONFIG_PATH), "{err}");
+        assert!(
+            err.contains("~/.config/sipnab/sipnab.toml"),
+            "names where to copy it: {err}"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_file_saves_into_the_user_file() {
+        assert_eq!(
+            save_target(None, Some(&home())),
+            Ok(home().join(".config/sipnab/sipnab.toml"))
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_file_and_no_home_refuses_to_save() {
+        let err = save_target(None, None).expect_err("nowhere to write");
+        assert!(err.contains("$HOME"), "{err}");
     }
 }

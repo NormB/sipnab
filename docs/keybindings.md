@@ -464,7 +464,7 @@ that uses ZipCrypto, which protects nothing.
 | Up / k | Move selection up |
 | Down / j | Move selection down |
 | Space | Toggle column visibility |
-| s | Save the current layout to `[display] visible_columns` in your sipnabrc (persists across runs) |
+| s | Save the current layout to `[display] visible_columns` in the config file this run loaded, or `~/.config/sipnab/sipnab.toml` when none was (persists across runs). Refused, with a message, when the settings came from `/etc/sipnab/sipnab.toml` |
 | Enter / Esc | Close selector |
 
 ## Timestamp modes
@@ -530,10 +530,12 @@ address turns resolution on automatically, and sipnab saves the mapping to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
 
-Mappings can also persist into your **sipnabrc**: set
+Mappings can also persist into your **config file**: set
 `[names] persist_to_config = true` and `N`-dialog edits land in the
-`[names.manual]` table of `~/.config/sipnab/sipnab.toml`, leaving comments and
-other sections intact. You can also pre-declare mappings there by hand:
+`[names.manual]` table of the file this run loaded (`~/.sipnabrc`, a
+`--config` file, whichever it was), or of `~/.config/sipnab/sipnab.toml` when
+none was, leaving comments and other sections intact. When the settings came
+from `/etc/sipnab/sipnab.toml`, edits are not written there and the status line says so when the session opens. You can also pre-declare mappings there by hand:
 
 ```toml
 [names.manual]

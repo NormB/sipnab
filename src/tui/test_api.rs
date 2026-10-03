@@ -259,7 +259,14 @@ impl App {
     /// Where the F10 column selector's save (`s`) action writes
     /// `[display] visible_columns`.
     pub fn set_column_config_path(&mut self, path: Option<PathBuf>) {
-        self.column_config_path = path;
+        self.column_config_path =
+            path.ok_or_else(|| "not saved: no config file for this session".to_string());
+    }
+
+    /// Where the F10 save writes, or why this session may not save: the
+    /// result of [`crate::config::save_target`].
+    pub fn set_column_save_target(&mut self, target: Result<PathBuf, String>) {
+        self.column_config_path = target;
     }
 
     /// Count dialogs visible after applying the active filter.
