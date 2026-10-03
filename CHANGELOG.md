@@ -21,6 +21,23 @@ entry that carries them.
   act on (alerts, fail2ban, TFPS bans). Each item links to its guide and names
   the flag that turns it on. The map is plain HTML, so it reads the same with
   scripting off, to a screen reader and to an AI agent.
+- **sipnab honors `$XDG_CONFIG_HOME`.** The per-user config file is
+  `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, and `~/.config/sipnab/sipnab.toml`
+  only when that variable is unset, empty or not an absolute path, as the XDG
+  Base Directory specification says. Saves from the terminal UI follow it too.
+- **sipnab says when a config file is being ignored.** It reads only the first
+  config file it finds, so a setting in `~/.sipnabrc` did nothing while
+  `~/.config/sipnab/sipnab.toml` existed, without a word. When more than one
+  default location holds a file, sipnab now names the one it read and the ones
+  it did not: on stderr, in `--dump-config` (`# Also present and NOT read:`),
+  and on the status line when the terminal UI opens.
+
+### Changed
+
+- **A misspelled `[media] listening_context` stops the run.** Any value other
+  than `"monotic"` or `"diotic"` (case and surrounding spaces do not matter)
+  used to be ignored, leaving `"monotic"` in force with nothing said; it is now
+  refused at startup with an error naming the key.
 
 ### Fixed
 
@@ -31,8 +48,9 @@ entry that carries them.
   loaded the new file and ignored every other setting in `~/.sipnabrc`; under
   `--config` or `$SIPNAB_CONFIG` the save went to a file the run never read.
   Both saves now write the file the run loaded, keeping its comments and other
-  settings. With no file loaded they create `~/.config/sipnab/sipnab.toml` as
-  before. When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses
+  settings. With no file loaded they create the user config file
+  (`$XDG_CONFIG_HOME/sipnab/sipnab.toml`, by default
+  `~/.config/sipnab/sipnab.toml`) as before. When the settings came from `/etc/sipnab/sipnab.toml`, sipnab refuses
   the save and says why on the status line, because a file of your own would
   hide every setting in it.
 

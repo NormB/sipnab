@@ -2158,6 +2158,39 @@ mod tests {
         );
     }
 
+    /// A config file that hid another is on the status line when the session
+    /// opens, for the same reason as a refused save: TUI runs log only errors.
+    #[test]
+    fn a_shadowed_config_is_on_the_status_line_at_start() {
+        let (d, s) = stores();
+        let options = TuiOptions {
+            startup_notice: Some("Reading A. Also present and NOT read: B.".into()),
+            ..TuiOptions::default()
+        };
+        assert_eq!(
+            options.into_app(d, s).status_error.as_deref(),
+            Some("Reading A. Also present and NOT read: B.")
+        );
+    }
+
+    /// Both notices at once are both shown, not one overwriting the other.
+    #[test]
+    fn two_startup_notices_are_both_on_the_status_line() {
+        let (d, s) = stores();
+        let options = TuiOptions {
+            startup_notice: Some("Reading A. Also present and NOT read: B.".into()),
+            name_setup: NameSetup {
+                persist_refused: Some("not saved: X".into()),
+                ..NameSetup::default()
+            },
+            ..TuiOptions::default()
+        };
+        assert_eq!(
+            options.into_app(d, s).status_error.as_deref(),
+            Some("Reading A. Also present and NOT read: B. | Name edits not saved: X")
+        );
+    }
+
     /// One of a thing is singular; zero and many are plural. The screens used
     /// `destination(s)` and `talker(s)`, which make the reader do the grammar.
     #[test]

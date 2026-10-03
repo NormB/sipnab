@@ -1338,6 +1338,16 @@ impl MediaConfig {
     /// `crate::Error::ConfigInvalid`, naming the codec, when a `codec_ie` value
     /// is not finite or is outside `0.0..95.0`.
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // Refused rather than ignored: a typo used to leave the default in
+        // force with nothing said, so every wideband MOS quietly answered a
+        // question the operator had not asked.
+        if let Some(lc) = &self.listening_context
+            && crate::rtp::emodel_wb::ListeningContext::parse(lc).is_none()
+        {
+            return Err(crate::Error::ConfigInvalid(format!(
+                "[media] listening_context must be \"monotic\" or \"diotic\", got \"{lc}\""
+            )));
+        }
         let Some(table) = &self.codec_ie else {
             return Ok(());
         };
@@ -2071,6 +2081,21 @@ pub struct LoadedConfig {
     pub config: Config,
     /// The file path the config was loaded from, if any.
     pub source: Option<PathBuf>,
+    /// Default-location config files that exist but were not read, because
+    /// an earlier one in the search order was. Empty for `--config`,
+    /// `$SIPNAB_CONFIG` and `--no-config`, which are choices.
+    pub shadowed: Vec<PathBuf>,
+}
+
+/// Where this run's config came from: the file it read, and the default-location
+/// files that exist but were not read. The two halves of [`LoadedConfig`] a
+/// session needs after the [`Config`] itself has been handed on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConfigOrigin {
+    /// The file read, if any.
+    pub source: Option<PathBuf>,
+    /// Files present but not read; see [`LoadedConfig::shadowed`].
+    pub shadowed: Vec<PathBuf>,
 }
 
 impl Config {
@@ -2111,6 +2136,7 @@ impl Config {
             return Ok(LoadedConfig {
                 config: Config::default(),
                 source: None,
+                shadowed: Vec::new(),
             });
         }
 
@@ -2126,6 +2152,7 @@ impl Config {
             return Ok(LoadedConfig {
                 config,
                 source: Some(p),
+                shadowed: Vec::new(),
             });
         }
 
@@ -2137,6 +2164,7 @@ impl Config {
                 return Ok(LoadedConfig {
                     config,
                     source: Some(p),
+                    shadowed: Vec::new(),
                 });
             }
             tracing::debug!(
@@ -2147,20 +2175,24 @@ impl Config {
 
         // 3-5. Default locations
         let candidates = default_config_paths();
-        for p in &candidates {
-            if p.exists() {
-                let config = Self::load_file(p)?;
-                return Ok(LoadedConfig {
-                    config,
-                    source: Some(p.clone()),
-                });
+        let (used, shadowed) = pick_config(&candidates, Path::exists);
+        if let Some(p) = used {
+            let config = Self::load_file(&p)?;
+            if !shadowed.is_empty() {
+                tracing::warn!("{}", shadowing_note(&p, &shadowed));
             }
+            return Ok(LoadedConfig {
+                config,
+                source: Some(p),
+                shadowed,
+            });
         }
 
         tracing::debug!("No config file found, using defaults");
         Ok(LoadedConfig {
             config: Config::default(),
             source: None,
+            shadowed: Vec::new(),
         })
     }
 
@@ -2460,20 +2492,76 @@ pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(),
     write_sipnabrc_atomic(path, &updated)
 }
 
+/// The user's config file: `$XDG_CONFIG_HOME/sipnab/sipnab.toml`, else
+/// `~/.config/sipnab/sipnab.toml`.
+///
+/// Per the XDG Base Directory specification an empty `$XDG_CONFIG_HOME` counts
+/// as unset and a relative one is invalid and ignored. `None` when neither
+/// location can be named.
+pub fn user_config_file(home: Option<&Path>, xdg: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    let xdg = xdg.map(Path::new).filter(|p| p.is_absolute());
+    match (xdg, home) {
+        (Some(x), _) => Some(x.join("sipnab").join("sipnab.toml")),
+        (None, Some(h)) => Some(h.join(".config").join("sipnab").join("sipnab.toml")),
+        (None, None) => None,
+    }
+}
+
+/// Items 3-5 of the search order, given `$HOME` and `$XDG_CONFIG_HOME`: the
+/// user file, `~/.sipnabrc`, then [`SYSTEM_CONFIG_PATH`]. Pure, so every
+/// combination of the two variables can be tested without touching the
+/// process environment.
+pub fn config_search_paths(home: Option<&Path>, xdg: Option<&std::ffi::OsStr>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = user_config_file(home, xdg).into_iter().collect();
+    if let Some(h) = home {
+        paths.push(h.join(".sipnabrc"));
+    }
+    paths.push(PathBuf::from(SYSTEM_CONFIG_PATH));
+    paths
+}
+
+/// The first of `candidates` that exists, and every later one that ALSO
+/// exists: files that are present and will not be read.
+pub fn pick_config(
+    candidates: &[PathBuf],
+    exists: impl Fn(&Path) -> bool,
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let mut present = candidates.iter().filter(|p| exists(p)).cloned();
+    let used = present.next();
+    (used, present.collect())
+}
+
+/// The startup notice for a load: the [`shadowing_note`] when it read one
+/// default file and others were present, else `None`.
+pub fn config_notice(source: Option<&Path>, shadowed: &[PathBuf]) -> Option<String> {
+    match source {
+        Some(used) if !shadowed.is_empty() => Some(shadowing_note(used, shadowed)),
+        _ => None,
+    }
+}
+
+/// The sentence a run owes the operator when more than one default config file
+/// exists: only the first is read, which is otherwise easy to miss when a
+/// setting in the second "does nothing".
+pub fn shadowing_note(used: &Path, ignored: &[PathBuf]) -> String {
+    let list: Vec<String> = ignored.iter().map(|p| p.display().to_string()).collect();
+    format!(
+        "Reading {}. Also present and NOT read: {}. sipnab reads only the first \
+         config file it finds; merge them or remove the ones you do not want.",
+        used.display(),
+        list.join(", ")
+    )
+}
+
 /// Return the default config file search paths (items 3-5 of the search
 /// order): the two `$HOME`-relative locations (omitted when `$HOME` is
 /// unset), then `/etc/sipnab/sipnab.toml`. Reads `$HOME`; does not probe
 /// the filesystem.
 fn default_config_paths() -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-
-    if let Some(home) = home_dir() {
-        paths.push(home.join(".config").join("sipnab").join("sipnab.toml"));
-        paths.push(home.join(".sipnabrc"));
-    }
-
-    paths.push(PathBuf::from(SYSTEM_CONFIG_PATH));
-    paths
+    config_search_paths(
+        home_dir().as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+    )
 }
 
 /// Get the user's home directory from `$HOME`, or `None` when unset.
@@ -2486,7 +2574,7 @@ pub const SYSTEM_CONFIG_PATH: &str = "/etc/sipnab/sipnab.toml";
 
 /// Where a save from the terminal UI writes (the F10 column layout, and name
 /// edits under `[names] persist_to_config`), given the file this run loaded
-/// and `$HOME`.
+/// and the user config file ([`default_user_config_path`]).
 ///
 /// The file the run loaded, whichever of the search order it was: writing
 /// anywhere else creates a file the NEXT run may load instead. A save used to
@@ -2501,7 +2589,7 @@ pub const SYSTEM_CONFIG_PATH: &str = "/etc/sipnab/sipnab.toml";
 /// [`SYSTEM_CONFIG_PATH`] (a user file would shadow every setting in it, and a
 /// user should not be editing it in place), or nothing was loaded and `$HOME`
 /// is unset.
-pub fn save_target(loaded: Option<&Path>, home: Option<&Path>) -> Result<PathBuf, String> {
+pub fn save_target(loaded: Option<&Path>, user_file: Option<&Path>) -> Result<PathBuf, String> {
     match loaded {
         Some(p) if p == Path::new(SYSTEM_CONFIG_PATH) => Err(format!(
             "not saved: the settings in use come from {SYSTEM_CONFIG_PATH}, and a \
@@ -2509,9 +2597,11 @@ pub fn save_target(loaded: Option<&Path>, home: Option<&Path>) -> Result<PathBuf
              ~/.config/sipnab/sipnab.toml to save from the terminal UI"
         )),
         Some(p) => Ok(p.to_path_buf()),
-        None => home
-            .map(|h| h.join(".config").join("sipnab").join("sipnab.toml"))
-            .ok_or_else(|| "not saved: no config file was loaded and $HOME is unset".to_string()),
+        None => user_file.map(Path::to_path_buf).ok_or_else(|| {
+            "not saved: no config file was loaded, and with $XDG_CONFIG_HOME and $HOME \
+             unset there is no user config file to create"
+                .to_string()
+        }),
     }
 }
 
@@ -2519,7 +2609,10 @@ pub fn save_target(loaded: Option<&Path>, home: Option<&Path>) -> Result<PathBuf
 /// the write target when persisting name mappings into the config.
 /// `None` when `$HOME` is unset.
 pub fn default_user_config_path() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".config").join("sipnab").join("sipnab.toml"))
+    user_config_file(
+        home_dir().as_deref(),
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+    )
 }
 
 /// Write the current manual name mappings into the `[names.manual]` table of the
@@ -4193,17 +4286,21 @@ mod save_target_tests {
         PathBuf::from("/home/u")
     }
 
+    fn user() -> PathBuf {
+        home().join(".config/sipnab/sipnab.toml")
+    }
+
     #[test]
     fn a_run_that_loaded_the_xdg_file_saves_into_it() {
         let f = home().join(".config/sipnab/sipnab.toml");
-        assert_eq!(save_target(Some(&f), Some(&home())), Ok(f));
+        assert_eq!(save_target(Some(&f), Some(&user())), Ok(f));
     }
 
     #[test]
     fn a_run_that_loaded_sipnabrc_saves_into_sipnabrc() {
         let f = home().join(".sipnabrc");
         assert_eq!(
-            save_target(Some(&f), Some(&home())),
+            save_target(Some(&f), Some(&user())),
             Ok(f),
             "writing ~/.config/sipnab/sipnab.toml instead creates a file that \
              shadows ~/.sipnabrc on every later run"
@@ -4213,12 +4310,12 @@ mod save_target_tests {
     #[test]
     fn a_run_given_an_explicit_file_saves_into_that_file() {
         let f = PathBuf::from("/srv/voip/sipnab.toml");
-        assert_eq!(save_target(Some(&f), Some(&home())), Ok(f));
+        assert_eq!(save_target(Some(&f), Some(&user())), Ok(f));
     }
 
     #[test]
     fn a_run_that_loaded_the_system_file_refuses_to_save() {
-        let err = save_target(Some(Path::new(SYSTEM_CONFIG_PATH)), Some(&home()))
+        let err = save_target(Some(Path::new(SYSTEM_CONFIG_PATH)), Some(&user()))
             .expect_err("a user file would shadow every setting in /etc");
         assert!(err.contains(SYSTEM_CONFIG_PATH), "{err}");
         assert!(
@@ -4230,7 +4327,7 @@ mod save_target_tests {
     #[test]
     fn a_run_with_no_file_saves_into_the_user_file() {
         assert_eq!(
-            save_target(None, Some(&home())),
+            save_target(None, Some(&user())),
             Ok(home().join(".config/sipnab/sipnab.toml"))
         );
     }
@@ -4239,5 +4336,180 @@ mod save_target_tests {
     fn a_run_with_no_file_and_no_home_refuses_to_save() {
         let err = save_target(None, None).expect_err("nowhere to write");
         assert!(err.contains("$HOME"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod config_locations_tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    fn home() -> PathBuf {
+        PathBuf::from("/home/u")
+    }
+
+    // ── $XDG_CONFIG_HOME ─────────────────────────────────────────────
+
+    #[test]
+    fn xdg_config_home_moves_the_user_file() {
+        let paths = config_search_paths(Some(&home()), Some(OsStr::new("/srv/xdg")));
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/srv/xdg/sipnab/sipnab.toml"),
+                home().join(".sipnabrc"),
+                PathBuf::from(SYSTEM_CONFIG_PATH),
+            ]
+        );
+    }
+
+    #[test]
+    fn without_xdg_config_home_the_user_file_is_under_dot_config() {
+        let paths = config_search_paths(Some(&home()), None);
+        assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+    }
+
+    #[test]
+    fn an_empty_xdg_config_home_counts_as_unset() {
+        // XDG Base Directory spec: "If $XDG_CONFIG_HOME is either not set or
+        // empty, a default equal to $HOME/.config should be used."
+        let paths = config_search_paths(Some(&home()), Some(OsStr::new("")));
+        assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+    }
+
+    #[test]
+    fn a_relative_xdg_config_home_is_ignored() {
+        // The spec: "All paths set in these environment variables must be
+        // absolute. If an implementation encounters a relative path ... it
+        // should consider the path invalid and ignore it."
+        let paths = config_search_paths(Some(&home()), Some(OsStr::new("relative/dir")));
+        assert_eq!(paths[0], home().join(".config/sipnab/sipnab.toml"));
+    }
+
+    #[test]
+    fn with_no_home_and_no_xdg_only_the_system_file_is_searched() {
+        assert_eq!(
+            config_search_paths(None, None),
+            vec![PathBuf::from(SYSTEM_CONFIG_PATH)]
+        );
+    }
+
+    #[test]
+    fn xdg_config_home_without_home_still_names_the_user_file() {
+        let paths = config_search_paths(None, Some(OsStr::new("/srv/xdg")));
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("/srv/xdg/sipnab/sipnab.toml"),
+                PathBuf::from(SYSTEM_CONFIG_PATH)
+            ]
+        );
+    }
+
+    #[test]
+    fn the_user_file_follows_xdg_config_home() {
+        assert_eq!(
+            user_config_file(Some(&home()), Some(OsStr::new("/srv/xdg"))),
+            Some(PathBuf::from("/srv/xdg/sipnab/sipnab.toml"))
+        );
+        assert_eq!(user_config_file(None, None), None);
+    }
+
+    // ── first found, and what it shadows ─────────────────────────────
+
+    #[test]
+    fn the_first_existing_candidate_is_used_and_the_rest_are_reported() {
+        let c = config_search_paths(Some(&home()), None);
+        let (used, shadowed) = pick_config(&c, |p| p != Path::new(SYSTEM_CONFIG_PATH) || true);
+        assert_eq!(used, Some(c[0].clone()));
+        assert_eq!(shadowed, vec![c[1].clone(), c[2].clone()]);
+    }
+
+    #[test]
+    fn a_lone_file_shadows_nothing() {
+        let c = config_search_paths(Some(&home()), None);
+        let rc = c[1].clone();
+        let (used, shadowed) = pick_config(&c, |p| p == rc);
+        assert_eq!(used, Some(rc));
+        assert!(shadowed.is_empty());
+    }
+
+    #[test]
+    fn no_file_uses_nothing_and_shadows_nothing() {
+        let c = config_search_paths(Some(&home()), None);
+        let (used, shadowed) = pick_config(&c, |_| false);
+        assert_eq!(used, None);
+        assert!(shadowed.is_empty());
+    }
+
+    #[test]
+    fn the_shadowing_note_names_the_file_read_and_every_file_ignored() {
+        let note = shadowing_note(
+            Path::new("/home/u/.config/sipnab/sipnab.toml"),
+            &[
+                PathBuf::from("/home/u/.sipnabrc"),
+                PathBuf::from(SYSTEM_CONFIG_PATH),
+            ],
+        );
+        assert_eq!(
+            note,
+            "Reading /home/u/.config/sipnab/sipnab.toml. Also present and NOT read: \
+             /home/u/.sipnabrc, /etc/sipnab/sipnab.toml. sipnab reads only the first \
+             config file it finds; merge them or remove the ones you do not want."
+        );
+    }
+
+    #[test]
+    fn a_shadowed_load_has_a_notice_and_a_clean_one_has_none() {
+        let used = PathBuf::from("/home/u/.config/sipnab/sipnab.toml");
+        let rc = PathBuf::from("/home/u/.sipnabrc");
+        assert_eq!(
+            config_notice(Some(&used), std::slice::from_ref(&rc)),
+            Some(shadowing_note(&used, &[rc]))
+        );
+        assert_eq!(config_notice(Some(&used), &[]), None);
+        assert_eq!(config_notice(None, &[]), None);
+    }
+
+    // ── [media] listening_context ────────────────────────────────────
+
+    fn media(lc: &str) -> MediaConfig {
+        MediaConfig {
+            listening_context: Some(lc.to_string()),
+            ..MediaConfig::default()
+        }
+    }
+
+    #[test]
+    fn both_listening_contexts_are_accepted() {
+        assert!(media("monotic").validate().is_ok());
+        assert!(media("diotic").validate().is_ok());
+        assert!(MediaConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn a_misspelled_listening_context_is_refused_by_name() {
+        let err = media("diotc")
+            .validate()
+            .expect_err("a typo must not silently become monotic");
+        let msg = err.to_string();
+        for want in [
+            "[media] listening_context",
+            "\"diotc\"",
+            "\"monotic\"",
+            "\"diotic\"",
+        ] {
+            assert!(msg.contains(want), "missing {want}: {msg}");
+        }
+    }
+
+    /// Validation and use share one parser, `ListeningContext::parse`, which
+    /// ignores case and surrounding spaces: what loads is what is applied.
+    #[test]
+    fn validation_accepts_exactly_what_the_run_applies() {
+        for spelled in ["Diotic", " monotic ", "DIOTIC"] {
+            assert!(media(spelled).validate().is_ok(), "{spelled:?}");
+            assert!(crate::rtp::emodel_wb::ListeningContext::parse(spelled).is_some());
+        }
     }
 }
