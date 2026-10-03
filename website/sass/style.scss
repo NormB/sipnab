@@ -920,6 +920,204 @@ input:focus-visible,
   font-variant-ligatures: none;
 }
 
+// System map: inputs -> core -> surfaces, between the hero copy and the
+// animation. Columns on wide screens, one stack on phones. Text-aligned left
+// although the hero is centered: lists read down their left edge.
+.sysmap {
+  position: relative;
+  z-index: 1;
+  max-width: 1120px;
+  margin: 3rem auto 0;
+  padding: 0;
+  text-align: left;
+}
+
+.sysmap-title {
+  text-align: center;
+  font-size: 1.35rem;
+  margin: 0 0 1.25rem;
+  color: $text;
+}
+
+.sysmap-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2rem minmax(0, 1.1fr) 2rem minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.sysmap-col {
+  min-width: 0;
+  background: rgba($surface, 0.72);
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 1rem 1.1rem 1.1rem;
+
+  h3 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: $accent;
+    margin: 0 0 0.7rem;
+  }
+
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  li {
+    font-size: 0.88rem;
+    line-height: 1.45;
+    color: $text;
+  }
+
+  li a {
+    color: $text;
+    text-decoration: underline;
+    text-decoration-color: $border-light;
+    text-underline-offset: 3px;
+  }
+
+  li a:hover,
+  li a:focus-visible {
+    color: $link;
+    text-decoration-color: $link;
+  }
+
+  code {
+    font-family: $font-mono;
+    font-size: 0.76rem;
+    color: $code-green;
+    background: $bg;
+    border: 1px solid $border;
+    border-radius: 3px;
+    padding: 0 0.3rem;
+    white-space: nowrap;
+  }
+}
+
+.sysmap-subhead {
+  margin-top: 1.1rem !important;
+}
+
+// The layer cake: each stage feeds the next, top to bottom, so an ordered
+// list whose numbers are the order of processing.
+.sysmap-stack {
+  list-style: none;
+  counter-reset: stage;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+
+  li {
+    counter-increment: stage;
+    display: grid;
+    grid-template-columns: 1.6rem minmax(0, 1fr);
+    gap: 0.5rem;
+    align-items: baseline;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid $border-light;
+    border-radius: 6px;
+    background: $surface-2;
+  }
+
+  li::before {
+    content: counter(stage);
+    font-family: $font-mono;
+    font-size: 0.75rem;
+    color: $bg;
+    background: $accent;
+    border-radius: 50%;
+    width: 1.35rem;
+    height: 1.35rem;
+    line-height: 1.35rem;
+    text-align: center;
+  }
+
+  strong {
+    color: $accent;
+    font-weight: 600;
+    margin-right: 0.25rem;
+  }
+}
+
+.sysmap-note {
+  margin: 0.8rem 0 0;
+  font-size: 0.8rem;
+  color: $text-dim;
+}
+
+// Decorative connectors; the headings carry the direction in words.
+.sysmap-arrow {
+  position: relative;
+  align-self: center;
+  height: 2px;
+  margin: 0 0.25rem;
+  background: $border-light;
+
+  &::after {
+    content: "";
+    position: absolute;
+    right: -1px;
+    top: -4px;
+    border: 5px solid transparent;
+    border-left-color: $border-light;
+    border-right-width: 0;
+  }
+}
+
+.sysmap-section {
+  padding: 0 1.5rem;
+}
+
+.hero-shot-section {
+  padding: 0 0 3rem;
+}
+
+.sysmap-caption {
+  margin: 1rem auto 0;
+  max-width: 760px;
+  text-align: center;
+  font-size: 0.85rem;
+  color: $text-dim;
+
+  // Underlined, not told apart by color alone (WCAG 1.4.1, axe
+  // link-in-text-block): the caption is running text.
+  a {
+    color: $link;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+}
+
+@media (max-width: 900px) {
+  .sysmap-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sysmap-arrow {
+    justify-self: center;
+    width: 2px;
+    height: 1.4rem;
+    margin: 0.25rem 0;
+
+    &::after {
+      right: auto;
+      left: -4px;
+      top: auto;
+      bottom: -1px;
+      border: 5px solid transparent;
+      border-top-color: $border-light;
+      border-bottom-width: 0;
+    }
+  }
+}
+
 .terminal-wrap {
   position: relative;
   z-index: 1;

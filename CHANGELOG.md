@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The homepage shows how sipnab fits together.** Above the terminal
+  animation, a map lays out what sipnab reads (a live interface, capture files,
+  HEP from OpenSIPS, Kamailio and rtpengine, encrypted SIP, tunnels, media
+  relays), the four stages it works through (unwrap, parse, track, judge) and
+  where you read the answer (the terminal UI, script output, the REST API, the
+  MCP server for AI agents, Prometheus, HEP to Homer, vCon), plus what it can
+  act on (alerts, fail2ban, TFPS bans). Each item links to its guide and names
+  the flag that turns it on. The map is plain HTML, so it reads the same with
+  scripting off, to a screen reader and to an AI agent.
+
 ### Fixed
 
 - **Saving from the terminal UI no longer hides your `~/.sipnabrc`.** The F10

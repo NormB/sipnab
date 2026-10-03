@@ -1019,3 +1019,179 @@ fn the_soundness_argument_claim_is_actually_enforced() {
         );
     }
 }
+
+// ── H. The system map ────────────────────────────────────────────────
+
+/// The `<figure class="sysmap">` block, comments stripped.
+fn sysmap() -> String {
+    let page = strip_comments(&homepage());
+    let start = page
+        .find(r#"<figure class="sysmap""#)
+        .expect("the homepage has no system map");
+    let end = page[start..]
+        .find("</figure>")
+        .expect("the system map closes")
+        + start;
+    page[start..end].to_string()
+}
+
+/// Short flags (`-d`, `-I`) named in `<code>` bodies of `html`.
+fn short_flags(html: &str) -> BTreeSet<char> {
+    let code = regex::Regex::new(r"(?s)<code\b[^>]*>(.*?)</code>").expect("regex");
+    let short = regex::Regex::new(r"(?:^|\s)-([A-Za-z])(?:\s|$)").expect("regex");
+    code.captures_iter(html)
+        .flat_map(|c| {
+            short
+                .captures_iter(&c[1])
+                .map(|s| s[1].chars().next().unwrap_or('?'))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The ones `cli` does not define as `short = 'x'`.
+fn undefined_shorts(flags: &BTreeSet<char>, cli: &str) -> Vec<char> {
+    flags
+        .iter()
+        .copied()
+        .filter(|c| !cli.contains(&format!("short = '{c}'")))
+        .collect()
+}
+
+/// Zola's slug for a markdown heading: lowercase, runs of anything that is not
+/// a letter or digit become one `-`, trimmed.
+fn slug(heading: &str) -> String {
+    let mut out = String::new();
+    for ch in heading.to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// `(page, anchor)` pairs whose anchor no heading of `page` produces, for every
+/// `get_url(path='@/X.md') }}#anchor` link in `html`.
+fn broken_anchors(html: &str, page_of: &dyn Fn(&str) -> Option<String>) -> Vec<String> {
+    let link = regex::Regex::new(r"get_url\(path='@/([^']+)'\) \}\}#([a-z0-9-]+)").expect("regex");
+    let mut out = Vec::new();
+    for c in link.captures_iter(html) {
+        let (rel, anchor) = (&c[1], &c[2]);
+        let Some(md) = page_of(rel) else {
+            out.push(format!("{rel}#{anchor}: page missing"));
+            continue;
+        };
+        let found = md
+            .lines()
+            .filter_map(|l| l.strip_prefix('#'))
+            .map(|l| slug(l.trim_start_matches('#').trim()))
+            .any(|s| s == anchor);
+        if !found {
+            out.push(format!("{rel}#{anchor}"));
+        }
+    }
+    out
+}
+
+fn content_page(rel: &str) -> Option<String> {
+    std::fs::read_to_string(repo().join("website/content").join(rel)).ok()
+}
+
+/// Norm, 2026-10-02: the map sits above the visual animation.
+#[test]
+fn the_system_map_sits_above_the_hero_animation() {
+    let page = homepage();
+    let map = page
+        .find(r#"<figure class="sysmap""#)
+        .expect("no system map");
+    let shot = page.find(r#"id="hero-shot""#).expect("no hero animation");
+    assert!(
+        map < shot,
+        "the system map must come before the hero animation"
+    );
+}
+
+/// The three columns and the caption are there, in reading order, so the map
+/// still says inputs, then processing, then outputs with styles off.
+#[test]
+fn the_system_map_reads_inputs_then_core_then_surfaces() {
+    let map = sysmap();
+    let order: Vec<usize> = [
+        "What it reads",
+        "What it works out",
+        "Where you read it",
+        "<figcaption",
+    ]
+    .iter()
+    .map(|h| {
+        map.find(h)
+            .unwrap_or_else(|| panic!("the system map lacks {h:?}"))
+    })
+    .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "out of order: {order:?}"
+    );
+    assert_eq!(
+        map.matches(r#"class="sysmap-stack""#).count(),
+        1,
+        "one processing stack"
+    );
+    assert_eq!(
+        map[map.find(r#"class="sysmap-stack""#).unwrap_or(0)..]
+            .split("</ol>")
+            .next()
+            .unwrap_or("")
+            .matches("<li>")
+            .count(),
+        4,
+        "the stack names four stages: unwrap, parse, track, judge"
+    );
+}
+
+/// Every short flag the map shows is one the CLI defines.
+#[test]
+fn every_short_flag_on_the_system_map_exists() {
+    let flags = short_flags(&sysmap());
+    assert!(
+        flags.len() >= 4,
+        "only {flags:?} found; the scan is not reading the map"
+    );
+    let missing = undefined_shorts(&flags, &read("src/cli.rs"));
+    assert!(
+        missing.is_empty(),
+        "the system map shows -{missing:?}, which src/cli.rs does not define"
+    );
+}
+
+/// Every `#anchor` the map links to is a heading on the page it names.
+#[test]
+fn every_anchor_on_the_system_map_resolves() {
+    let broken = broken_anchors(&sysmap(), &content_page);
+    assert!(
+        broken.is_empty(),
+        "the system map links to anchors that do not exist: {broken:?}"
+    );
+}
+
+#[test]
+fn the_short_flag_check_reports_an_undefined_letter() {
+    let flags = short_flags("<code>-d eth0</code> <code>-Z</code>");
+    assert_eq!(flags, BTreeSet::from(['Z', 'd']));
+    assert_eq!(undefined_shorts(&flags, "short = 'd'"), vec!['Z']);
+}
+
+#[test]
+fn the_anchor_check_reports_a_missing_heading_and_a_missing_page() {
+    let page = |rel: &str| {
+        (rel == "docs/cli.md").then(|| "## Capture\n### TLS / decryption\n".to_string())
+    };
+    let html = "get_url(path='@/docs/cli.md') }}#capture get_url(path='@/docs/cli.md') }}#tls-decryption \
+                get_url(path='@/docs/cli.md') }}#nope get_url(path='@/docs/gone.md') }}#x";
+    assert_eq!(
+        broken_anchors(html, &page),
+        vec!["docs/cli.md#nope", "docs/gone.md#x: page missing"]
+    );
+}
