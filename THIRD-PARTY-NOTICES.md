@@ -307,8 +307,8 @@ Files copied into the repository unmodified from another project's release. None
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.4.1 | Apache-2.0 |
-| rmcp-macros | 3.4.1 | Apache-2.0 |
+| rmcp | 3.5.0 | Apache-2.0 |
+| rmcp-macros | 3.5.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -343,7 +343,7 @@ Files copied into the repository unmodified from another project's release. None
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.1 | MIT OR Apache-2.0 |
+| smallvec | 1.16.2 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -374,7 +374,7 @@ Files copied into the repository unmodified from another project's release. None
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
 | tokio | 1.53.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
-| tokio-rustls | 0.26.4 | MIT OR Apache-2.0 |
+| tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-stream | 0.1.18 | MIT |
 | tokio-util | 0.7.18 | MIT |
 | toml | 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 |
@@ -415,15 +415,15 @@ Files copied into the repository unmodified from another project's release. None
 | wasm-bindgen-macro | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-macro-support | 0.2.117 | MIT OR Apache-2.0 |
 | wasm-bindgen-shared | 0.2.117 | MIT OR Apache-2.0 |
-| wasm-encoder | 0.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasm-encoder | 0.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wasmi | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_collections | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_core | 2.0.0 | MIT/Apache-2.0 |
 | wasmi_ir | 2.0.0 | MIT/Apache-2.0 |
 | wasmparser | 0.228.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wasmparser | 0.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wast | 259.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| wat | 1.259.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wasmparser | 0.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wast | 260.0.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| wat | 1.260.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wezterm-bidi | 0.2.3 | MIT AND Unicode-DFS-2016 |
 | wezterm-blob-leases | 0.1.1 | MIT |
 | wezterm-color-types | 0.3.0 | MIT |
