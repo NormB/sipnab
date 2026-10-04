@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Dependencies move to their latest compatible releases.** `jsonschema`
+  0.57.0 to 0.58.3, a test-only dependency that checks vCon and MCP output
+  against their schemas; `rmcp` 3.5.0,
+  `tokio-rustls` 0.26.6, `smallvec` 1.16.2 and the `wasm-bindgen` family
+  0.2.129; and the fuzzing images' OSS-Fuzz Rust base, the same digest in both
+  so ClusterFuzzLite and OSS-Fuzz build alike. osv.dev lists no advisory
+  against any of the new versions.
+
 ## [0.5.202] - 2026-10-03
 
 ### Added
