@@ -33,12 +33,20 @@ mod markdown;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
-    // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section:
-    // how a client trusts the CA behind `--api-tls-cert`. curl's flag, not
-    // sipnab's.
+    // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section,
+    // the MCP page's "MCP TLS" and the metrics page's "Metrics TLS": how a
+    // client trusts the CA behind `--api-tls-cert`, `--mcp-tls-cert` and
+    // `--metrics-tls-cert`. curl's flag, not sipnab's.
     (
         "cacert",
-        &["docs/rest-api.md", "website/content/docs/api.md"],
+        &[
+            "docs/rest-api.md",
+            "website/content/docs/api.md",
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/prometheus-metrics.md",
+            "website/content/docs/metrics.md",
+        ],
     ),
     // `llvm-symbolizer --obj` and `dwarfdump --uuid`, named by the
     // troubleshooting page's "Send us a crash report", which shows how to
@@ -4645,7 +4653,10 @@ fn no_documentation_table_repeats_a_row() {
     // docs/fail2ban-sipnab.md one (the operate commands); their site mirrors
     // carry the same three. Attributed by counting separator rows per added
     // file: 2, 1, 2, 1.
-    const EXPECTED_TABLES: usize = 1058;
+    // 1058 -> 1062: docs/config-reference.md's new [metrics] and [hep] key
+    // tables, and their two copies in website/content/docs/config.md.
+    // Attributed by counting added separator rows per file: 2, 2.
+    const EXPECTED_TABLES: usize = 1062;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -111,8 +111,11 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("api-revoked-file", Link::Pending),
     ("api-signing-key", Link::Secret),
     ("api-signing-key-file", Link::Pending),
-    ("api-tls-cert", Link::Pending),
-    ("api-tls-key", Link::Pending),
+    (
+        "api-tls-cert",
+        Link::Key("api", "tls_cert", Merge::Override),
+    ),
+    ("api-tls-key", Link::Key("api", "tls_key", Merge::Override)),
     ("api-token-ttl", Link::PerRun),
     ("archive-password", Link::Secret),
     ("archive-password-command", Link::Pending),
@@ -258,9 +261,16 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("hep-send-transport", Link::Pending),
     ("hep-senders", Link::PerRun),
     ("hep-silence-warn", Link::Pending),
-    ("hep-tls-ca", Link::Pending),
-    ("hep-tls-cert", Link::Pending),
-    ("hep-tls-key", Link::Pending),
+    ("hep-tls-ca", Link::Key("hep", "tls_ca", Merge::Override)),
+    (
+        "hep-tls-cert",
+        Link::Key("hep", "tls_cert", Merge::Override),
+    ),
+    (
+        "hep-tls-extra-ca",
+        Link::Key("hep", "tls_extra_ca", Merge::Override),
+    ),
+    ("hep-tls-key", Link::Key("hep", "tls_key", Merge::Override)),
     ("hexdump", Link::PerRun),
     ("ignore-case", Link::PerRun),
     ("input", Link::Input),
@@ -405,6 +415,11 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("mcp-sampling-budget", Link::Pending),
     ("mcp-signing-key", Link::Secret),
     ("mcp-signing-key-file", Link::Pending),
+    (
+        "mcp-tls-cert",
+        Link::Key("mcp", "tls_cert", Merge::Override),
+    ),
+    ("mcp-tls-key", Link::Key("mcp", "tls_key", Merge::Override)),
     ("mcp-token", Link::Secret),
     ("mcp-token-file", Link::Pending),
     ("mcp-token-ttl", Link::PerRun),
@@ -416,6 +431,14 @@ pub const FLAGS: &[(&str, Link)] = &[
     (
         "metrics-max-conn",
         Link::Key("limits", "metrics_max_conn", Merge::Override),
+    ),
+    (
+        "metrics-tls-cert",
+        Link::Key("metrics", "tls_cert", Merge::Override),
+    ),
+    (
+        "metrics-tls-key",
+        Link::Key("metrics", "tls_key", Merge::Override),
     ),
     ("mint-token", Link::Action),
     ("mos-bad", Link::Key("quality", "mos_bad", Merge::Override)),
@@ -675,7 +698,7 @@ pub fn feature_enabled(feature: &str) -> bool {
 
 /// How many [`FLAGS`] rows are [`Link::Pending`]. Lower it when a pending flag
 /// gets its key; it may never rise.
-pub const PENDING_FLAGS: usize = 103;
+pub const PENDING_FLAGS: usize = 98;
 
 #[cfg(test)]
 mod tests {

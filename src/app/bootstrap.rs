@@ -354,9 +354,9 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
         #[cfg(feature = "hep")]
         listen_transport: cli.hep_listen_transport(),
         #[cfg(feature = "hep")]
-        tls_cert: cli.hep_args.hep_tls_cert.clone(),
+        tls_cert: cli.hep_tls_files(config).0,
         #[cfg(feature = "hep")]
-        tls_key: cli.hep_args.hep_tls_key.clone(),
+        tls_key: cli.hep_tls_files(config).1,
         #[cfg(feature = "hep")]
         silence_warn_after: cli.hep_silence_warn_after(),
     })
@@ -2182,15 +2182,9 @@ pub fn launch(
         crate::capture::archive::release_run_and_exit(2);
     }
 
-    // 16g. Validate --api-tls-cert/--api-tls-key consistency
-    if let Some(problem) = crate::cli::api_tls_pair_problem(
-        cli.listener_args.api_tls_cert.as_deref(),
-        cli.listener_args.api_tls_key.as_deref(),
-    ) {
-        tracing::error!("{problem}");
-        capture::stop_and_join(handle, rx);
-        crate::capture::archive::release_run_and_exit(2);
-    }
+    // 16g. --api-tls-cert/--api-tls-key consistency is checked with the
+    // config file, in `load_config` (`Cli::tls_settings_problem`), because
+    // either half may come from `[api] tls_cert` / `tls_key`.
 
     // 17. Disable core dumps if any decryption keys are loaded (D19)
     // `--keylog-fd` counts: the secrets arrive over a pipe instead of from a
@@ -3202,6 +3196,18 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         return Err(PlanError {
             exit_code: 1,
             message: format!("[quality] {msg}"),
+        });
+    }
+
+    // Every listener's TLS files, resolved from the flags and the file
+    // together: a certificate from one and its key from the other is a pair,
+    // and half a pair from either is refused here, before anything listens,
+    // naming the flag and the key. Exit 2, as the flag-only check this
+    // replaced used.
+    if let Some(problem) = cli.tls_settings_problem(&loaded.config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: problem,
         });
     }
 

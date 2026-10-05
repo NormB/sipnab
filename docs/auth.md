@@ -252,7 +252,8 @@ rotated naturally already. Long-TTL tokens are the ones to check.
   `--api-key` and `--mcp-token`, that one secret opens both surfaces. Audience
   binding applies to signed tokens only.
 - Anyone on the path can read a bearer credential sent over plain HTTP. For a non-loopback deployment, serve the REST API over HTTPS with
-  `--api-tls-cert` and `--api-tls-key`, or terminate TLS at a reverse proxy
-  in front of a loopback bind. Passing only one of the two flags stops
-  sipnab at startup rather than serving plain HTTP on a port meant for HTTPS.
-  See [API TLS](rest-api.md#api-tls).
+  `--api-tls-cert` and `--api-tls-key`, and HTTP MCP with `--mcp-tls-cert`
+  and `--mcp-tls-key`, or terminate TLS at a reverse proxy in front of a
+  loopback bind. Passing only one of a pair stops sipnab at startup rather
+  than serving plain HTTP on a port meant for HTTPS. See
+  [API TLS](rest-api.md#api-tls) and [MCP TLS](mcp-deploy.md#mcp-tls).

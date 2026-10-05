@@ -10,7 +10,44 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **MCP over HTTP and the metrics endpoint serve HTTPS themselves.**
+  `--mcp-tls-cert` / `--mcp-tls-key` and `--metrics-tls-cert` /
+  `--metrics-tls-key` take a PEM certificate chain and private key, as
+  `--api-tls-cert` / `--api-tls-key` already did for the REST API. The port
+  then speaks HTTPS only, TLS 1.2 and 1.3, with the bearer token or Basic
+  credential unchanged. Startup refuses, naming the file or flag, one half of
+  a pair, an unreadable file, a file with no certificate or no key, a key
+  other users can read, and a key that is not the certificate's. MCP shares
+  the REST API's accept loop (10-second handshake timeout, 256 handshakes at
+  once), now in `src/tls_listener.rs`. See [MCP TLS](docs/mcp-deploy.md#mcp-tls)
+  and [Metrics TLS](docs/prometheus-metrics.md#metrics-tls).
+- **`--hep-tls-extra-ca` trusts a CA in addition to the host's bundle.** The
+  HEP sender's `--hep-tls-ca` still REPLACES the trust store; the new flag is
+  the separate, explicit way to add a private collector's issuer while the
+  public roots still count. The two cannot be combined, and on a host with no
+  CA bundle the new flag is refused at startup naming `--hep-tls-ca`.
+- **Every TLS flag has a `sipnab.toml` key.** `[api]`, `[mcp]` and `[metrics]`
+  take `tls_cert` and `tls_key`; a new `[hep]` section takes `tls_ca`,
+  `tls_extra_ca`, `tls_cert` and `tls_key`. Each flag replaces its own key, so
+  a certificate on the command line and its key in the file make a pair. The
+  HEP sender's trust is one setting: a `--hep-tls-ca` or `--hep-tls-extra-ca`
+  flag replaces both trust keys. Pending flags in `src/settings.rs` fall from
+  103 to 98.
+
 ### Changed
+
+- **The TLS pairing rules run after the config file is read.** One half of a
+  certificate/key pair, from either the flags or the file, stops the run with
+  exit 2 naming the flag and the key for the missing half; the check covers
+  every listener's keys whether or not the run starts it. The same applies to
+  `--hep-listen-transport tls` with no certificate or key. `--hep-tls-cert`
+  and `--hep-tls-key` no longer require each other on the command line, since
+  the other half may be in `[hep]`; each now requires `--hep-listen-transport`.
+- **The `metrics` feature depends on `rustls`**, for the metrics endpoint's
+  HTTPS. `metrics` is a default feature, so a default build now compiles
+  rustls and ring.
 
 - **Dependencies move to their latest compatible releases.** `jsonschema`
   0.57.0 to 0.58.3, a test-only dependency that checks vCon and MCP output

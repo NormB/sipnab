@@ -48,6 +48,15 @@ pub struct Selection {
     /// `[api] allowed_hosts`). Resolved by the caller with
     /// `cli.api_allowed_hosts(config)`, for the reason `mcp_row_cap` is.
     pub api_allowed_hosts: Vec<String>,
+    /// The REST API's certificate and key, resolved by the caller with
+    /// `cli.api_tls_files(config)` (`--api-tls-cert` / `[api] tls_cert` and
+    /// the key's pair).
+    pub api_tls: (Option<String>, Option<String>),
+    /// MCP over HTTP's certificate and key, `cli.mcp_tls_files(config)`.
+    pub mcp_tls: (Option<String>, Option<String>),
+    /// The metrics endpoint's certificate and key,
+    /// `cli.metrics_tls_files(config)`.
+    pub metrics_tls: (Option<String>, Option<String>),
     /// Ceiling on body/snippet bytes in one MCP response.
     ///
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
@@ -178,6 +187,9 @@ enum Prepared {
         /// URL is a startup error the operator sees, not a metadata document
         /// that quietly never appears.
         resource: Option<crate::mcp::transport::ProtectedResource>,
+        /// The HTTPS configuration from `--mcp-tls-cert` / `--mcp-tls-key`,
+        /// read at prepare time; `None` serves plain HTTP.
+        tls: Option<Arc<rustls::ServerConfig>>,
     },
 }
 
@@ -217,6 +229,7 @@ impl Prepared {
                 auth,
                 extra_allowed_hosts,
                 resource,
+                tls,
             } => {
                 if let Err(e) = crate::mcp::transport::serve_http(
                     *server,
@@ -224,6 +237,7 @@ impl Prepared {
                     auth,
                     extra_allowed_hosts,
                     resource,
+                    tls,
                 )
                 .await
                 {
@@ -412,6 +426,13 @@ pub fn start_servers(
         // The handle is dropped deliberately: the server lives for the rest of
         // the process and nothing joins it. The bound address is already logged
         // by the server, which matters for `--metrics 127.0.0.1:0`.
+        // Read before the server starts, so a missing, mismatched or
+        // world-readable certificate or key stops the run naming the file.
+        let tls = crate::output::prometheus_server::metrics_tls_config(
+            selection.metrics_tls.0.as_deref(),
+            selection.metrics_tls.1.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("metrics TLS: {e:#}"))?;
         let (_bound, _handle) = crate::output::prometheus_server::start_metrics_server(
             bind_addr,
             Arc::clone(dialog_store),
@@ -420,6 +441,7 @@ pub fn start_servers(
             // Cloned, not moved: the API and MCP doors below read the same
             // meter, and one capture has one queue.
             capture_meter.clone(),
+            tls,
             selection.metrics_max_conn,
         )
         .map_err(|e| anyhow::anyhow!("Failed to start metrics server: {e}"))?;
@@ -605,8 +627,8 @@ pub fn start_servers(
         };
         let config = ApiServerConfig {
             max_conn: cli.listener_args.api_max_conn,
-            tls_cert: cli.listener_args.api_tls_cert.clone(),
-            tls_key: cli.listener_args.api_tls_key.clone(),
+            tls_cert: selection.api_tls.0.clone(),
+            tls_key: selection.api_tls.1.clone(),
             allowed_hosts: selection.api_allowed_hosts.clone(),
         };
         // Vet the config and bind NOW, on the caller's thread: a bind failure
@@ -778,12 +800,21 @@ pub fn start_servers(
                     .as_deref()
                     .map(crate::mcp::transport::ProtectedResource::parse)
                     .transpose()?;
+                // Read here for the same reason: a missing, mismatched or
+                // world-readable certificate or key stops the run before
+                // anything listens, rather than being logged from the server
+                // thread while the run goes on without MCP.
+                let tls = crate::mcp::transport::mcp_tls_config(
+                    selection.mcp_tls.0.as_deref(),
+                    selection.mcp_tls.1.as_deref(),
+                )?;
                 prepared.push(Prepared::McpHttp {
                     server: Box::new(new_server()),
                     bind,
                     auth: resolve_mcp_verifier_config(cli),
                     extra_allowed_hosts: cli.mcp_args.mcp_allowed_host.clone(),
                     resource,
+                    tls,
                 });
             }
             #[cfg(not(feature = "mcp-http"))]
@@ -974,6 +1005,9 @@ mod tests {
             mcp_tools: crate::mcp_profile::ToolSelection::Full,
             mcp_output_schemas: false,
             api_allowed_hosts: Vec::new(),
+            api_tls: (None, None),
+            mcp_tls: (None, None),
+            metrics_tls: (None, None),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
             mcp_wait_seconds: 1,

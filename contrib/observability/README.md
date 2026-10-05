@@ -46,8 +46,10 @@ sipnab -N -L 0.0.0.0:9060 --metrics 0.0.0.0:9100 \
 A non-loopback `--metrics` bind without credentials is refused at startup, so
 the command above will not run without `--metrics-auth-file`. Put the same
 `user:pass` in Prometheus's `basic_auth` block. Basic credentials are
-base64-encoded rather than encrypted — terminate TLS upstream if the scrape
-crosses an untrusted network.
+base64-encoded rather than encrypted — if the scrape crosses an untrusted
+network, serve it over HTTPS with `--metrics-tls-cert` and `--metrics-tls-key`
+([Metrics TLS](../../docs/prometheus-metrics.md#metrics-tls)) or terminate TLS
+upstream.
 
 Open <http://localhost:3000> (admin/admin), navigate to the *sipnab*
 folder, open the *sipnab Overview* dashboard.

@@ -1138,7 +1138,10 @@ fn wiki_intra_docs_links_resolve() {
     // 1279 -> 1281: the rtpengine guide audit. docs/rtpengine.md links
     // rtpengine-relay.md twice more: the unit name beside the restart, and the
     // rtpengine 26.3 reconnect note under the Homer destination (+2).
-    const EXPECTED_WIKI_LINKS: usize = 1281;
+    // 1281 -> 1296: listener TLS. Net added links per file, measured from the
+    // diff: config-reference.md +3, mcp-deploy.md +5, cli-reference.md +2,
+    // rest-api.md +2, auth.md +1, examples.md +1, prometheus-metrics.md +1.
+    const EXPECTED_WIKI_LINKS: usize = 1296;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1262,7 +1265,9 @@ fn root_community_file_links_resolve() {
     // 85 -> 112 with ROADMAP.md: 24 relative .md links in it, one more to
     // MAINTAINERS.md from its badge paragraph, and one each from README.md and
     // MAINTAINERS.md to it (+27, the same delta measured on the older base).
-    const EXPECTED_COMMUNITY_LINKS: usize = 112;
+    // 112 -> 114: README.md's TLS bullet links MCP TLS and Metrics TLS beside
+    // API TLS (+2 net, measured from the diff).
+    const EXPECTED_COMMUNITY_LINKS: usize = 114;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

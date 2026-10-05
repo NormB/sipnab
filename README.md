@@ -206,12 +206,18 @@ Next: [REST API and metrics](docs/rest-api.md),
   HTTP without `--mcp-token` or `--mcp-signing-key`, and the metrics endpoint
   without `--metrics-auth`. [Set up authentication](docs/auth.md) covers
   signed tokens, rotation and revocation.
-- **TLS.** The REST API serves HTTPS itself with `--api-tls-cert` and
-  `--api-tls-key` ([API TLS](docs/rest-api.md#api-tls)); this landed after
-  release 0.5.196, which still refuses the two flags. The metrics endpoint and
-  MCP over HTTP have no TLS of their own: keep them on loopback, or put a
-  TLS-terminating reverse proxy in front. HEP can use TLS in both directions
-  (`--hep-listen-transport tls`, `--hep-send-transport tls`).
+- **TLS.** The REST API, MCP over HTTP and the metrics endpoint each serve
+  HTTPS themselves when given a certificate and key: `--api-tls-cert` /
+  `--api-tls-key` ([API TLS](docs/rest-api.md#api-tls)), `--mcp-tls-cert` /
+  `--mcp-tls-key` ([MCP TLS](docs/mcp-deploy.md#mcp-tls)) and
+  `--metrics-tls-cert` / `--metrics-tls-key`
+  ([Metrics TLS](docs/prometheus-metrics.md#metrics-tls)), or the matching
+  `tls_cert` / `tls_key` keys in `sipnab.toml`. The REST API's pair landed
+  after release 0.5.196, which still refuses the two flags; the MCP and
+  metrics pairs landed after release 0.5.202. HEP can use TLS in both
+  directions (`--hep-listen-transport tls`, `--hep-send-transport tls`), and
+  the sender either trusts only a named CA (`--hep-tls-ca`) or adds one to the
+  host's bundle (`--hep-tls-extra-ca`).
 - **Sending.** Capture is passive. The features that send are off until you
   ask for them, for example HEP forwarding (`-H`), reverse DNS
   (`--reverse-dns`), and `--kill-scanner` and `-K`, which on a live interface

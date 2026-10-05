@@ -115,6 +115,7 @@ fn standalone_scrape_publishes_wired_counters() {
         Arc::new(RwLock::new(StreamStore::new(100))),
         None,
         None,
+        None,
         sipnab::output::prometheus_server::DEFAULT_MAX_CONCURRENT_CONNECTIONS,
     )
     .expect("metrics server binds");
@@ -175,6 +176,7 @@ fn standalone_scrape_publishes_the_undecodable_series() {
         EPHEMERAL,
         answered_call(),
         Arc::new(RwLock::new(StreamStore::new(100))),
+        None,
         None,
         None,
         sipnab::output::prometheus_server::DEFAULT_MAX_CONCURRENT_CONNECTIONS,

@@ -464,6 +464,45 @@ mod http {
         }
     }
 
+    /// The HTTPS configuration `--mcp-tls-cert` / `--mcp-tls-key` ask for, or
+    /// `None` for plain HTTP.
+    ///
+    /// Called when the run starts, before anything listens, so a bad file is
+    /// a startup error naming it rather than a line logged from the server
+    /// thread. The files are read by `crate::tls_files::server_config`, the
+    /// reader the REST API, the metrics endpoint and the HEP listener use.
+    ///
+    /// # Errors
+    ///
+    /// Only one of the two flags; an unreadable file; no certificate; no
+    /// private key; a key any other user can read; or a key that is not the
+    /// certificate's. Each names the file or flag at fault.
+    ///
+    /// # Side effects
+    ///
+    /// Reads and stats both files.
+    pub fn mcp_tls_config(
+        cert: Option<&str>,
+        key: Option<&str>,
+    ) -> anyhow::Result<Option<Arc<rustls::ServerConfig>>> {
+        if let Some(problem) = crate::cli::tls_pair_problem(crate::cli::MCP_TLS_FLAGS, cert, key) {
+            anyhow::bail!(problem);
+        }
+        let (Some(cert), Some(key)) = (cert, key) else {
+            return Ok(None);
+        };
+        crate::tls_files::server_config(
+            std::path::Path::new(cert),
+            std::path::Path::new(key),
+            "MCP TLS",
+            crate::tls_listener::HTTP1_ALPN
+                .iter()
+                .map(|p| p.to_vec())
+                .collect(),
+        )
+        .map(Some)
+    }
+
     /// Run an MCP server over Streamable HTTP. Binds the listener inside the
     /// caller's tokio runtime, mounts `/mcp` plus `/health`, applies the
     /// bearer-token guard middleware, and serves until SIGINT/SIGTERM trips
@@ -481,6 +520,9 @@ mod http {
     /// * `resource` — the validated `--mcp-resource-url`, when one was given.
     ///   `Some` mounts the RFC 9728 metadata document and adds
     ///   `resource_metadata` to every challenge; `None` leaves both off.
+    /// * `tls` — from [`mcp_tls_config`]: `Some` serves HTTPS only on `bind`,
+    ///   through the accept loop the REST API uses
+    ///   (`crate::tls_listener::TlsListener`); `None` serves plain HTTP.
     ///
     /// # Errors
     ///
@@ -499,6 +541,7 @@ mod http {
         auth_config: VerifierConfig,
         extra_allowed_hosts: Vec<String>,
         resource: Option<ProtectedResource>,
+        tls: Option<Arc<rustls::ServerConfig>>,
     ) -> anyhow::Result<()> {
         // Refuse non-loopback bind without auth (D18 + 8.2 rule).
         if !bind.ip().is_loopback() && auth_config.is_unconfigured() {
@@ -509,10 +552,11 @@ mod http {
                  SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan."
             );
         }
-        if !bind.ip().is_loopback() {
+        if tls.is_none() && !bind.ip().is_loopback() {
             tracing::warn!(
-                "MCP HTTP bound non-loopback ({bind}) without TLS — terminate \
-                 TLS in nginx and apply a source-IP allowlist there."
+                "MCP HTTP bound non-loopback ({bind}) without TLS — serve HTTPS \
+                 with --mcp-tls-cert/--mcp-tls-key, or terminate TLS in a reverse \
+                 proxy, and apply a source-IP allowlist."
             );
         }
 
@@ -610,18 +654,39 @@ mod http {
 
         let listener = tokio::net::TcpListener::bind(bind).await?;
         let actual = listener.local_addr().unwrap_or(bind);
+        if tls.is_some() {
+            tracing::info!("MCP HTTP serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
+        }
         tracing::info!("MCP HTTP server listening on {actual}");
-        axum::serve(
-            listener,
-            mcp_router.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(async move {
-            // Poll the project-wide shutdown flag.
+        let service = mcp_router.into_make_service_with_connect_info::<SocketAddr>();
+        // Poll the project-wide shutdown flag.
+        let shutdown = async move {
             while !crate::signals::shutdown_requested() {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
-        })
-        .await?;
+        };
+        match tls {
+            None => {
+                axum::serve(listener, service)
+                    .with_graceful_shutdown(shutdown)
+                    .await?;
+            }
+            // `tap_io` with a no-op is how the peer address reaches the
+            // handlers, as in the REST API's `serve_router`.
+            Some(config) => {
+                use axum::serve::ListenerExt as _;
+                let tls_listener = crate::tls_listener::TlsListener::new(
+                    "MCP TLS",
+                    listener,
+                    config,
+                    crate::tls_listener::HANDSHAKE_TIMEOUT,
+                    crate::tls_listener::MAX_HANDSHAKES,
+                )?;
+                axum::serve(tls_listener.tap_io(|_| {}), service)
+                    .with_graceful_shutdown(shutdown)
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -1086,4 +1151,4 @@ mod http {
 #[cfg(feature = "mcp-http")]
 pub(crate) use http::McpAuth;
 #[cfg(feature = "mcp-http")]
-pub use http::{ProtectedResource, serve_http};
+pub use http::{ProtectedResource, mcp_tls_config, serve_http};

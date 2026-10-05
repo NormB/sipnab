@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Server-side TLS material shared by the listeners that terminate TLS
-//! themselves: the HEP listener (`--hep-listen-transport tls`) and the REST
-//! API (`--api-tls-cert` / `--api-tls-key`).
+//! themselves: the HEP listener (`--hep-listen-transport tls`), the REST API
+//! (`--api-tls-cert` / `--api-tls-key`), MCP over HTTP (`--mcp-tls-cert` /
+//! `--mcp-tls-key`) and the metrics endpoint (`--metrics-tls-cert` /
+//! `--metrics-tls-key`).
 //!
 //! One reader for a PEM certificate chain, one for a private key (refusing a
 //! world-readable one), and one builder for a `rustls` server configuration,
-//! so the two listeners cannot drift apart on what they accept. Each caller
-//! names its own surface (`"HEP TLS"`, `"API TLS"`) so an error says which
-//! flags to look at.
+//! so the listeners cannot drift apart on what they accept. Each caller
+//! names its own surface (`"HEP TLS"`, `"API TLS"`, `"MCP TLS"`,
+//! `"metrics TLS"`) so an error says which flags to look at.
 //!
 //! Named `tls_files` rather than `tls` because `tls` is the Cargo feature for
 //! capture-side decryption, which this has nothing to do with.

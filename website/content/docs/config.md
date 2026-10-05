@@ -564,6 +564,8 @@ each bundle holds.
 | `tools` | list of strings | `["full"]` | Bundles (`core`, `signaling`, `captures`, `security`, `media`, `relay`, `tfps`, `server`, `vcon`, `tls`), single tool names, names from `[mcp.bundles]`, or `full`. sipnab refuses to start, naming the entry, when a name is unknown or empty. Names are case-sensitive. `--mcp-tools` replaces the list |
 | `output_schemas` | boolean | `false` | Send each tool's output schema on `tools/list`. MCP makes them optional, and they are more than half of what the tools cost a client. Responses carry the same JSON either way. `--mcp-output-schemas` overrides it |
 | `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
+| `tls_cert` | string | -- | PEM certificate chain MCP over HTTP serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only with `--mcp --mcp-transport http`. See [MCP TLS](@/docs/mcp-deploy.md#mcp-tls). `--mcp-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--mcp-tls-key` overrides it |
 
 ```toml
 [mcp]
@@ -584,10 +586,70 @@ by pointing its own name at `127.0.0.1` (DNS rebinding). See
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
+| `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](@/docs/api.md#api-tls). `--api-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--api-tls-key` overrides it |
 
 ```toml
 [api]
 allowed_hosts = ["sipnab.example.com"]
+tls_cert = "/etc/sipnab/api.pem"
+tls_key = "/etc/sipnab/api.key"
+```
+
+### TLS files in the config file
+
+`[api]`, `[mcp]` and `[metrics]` each take a `tls_cert` and `tls_key`, and
+`[hep]` takes the HEP sender's and listener's TLS files. The listener itself is
+still started on the command line (`--api`, `--mcp --mcp-transport http`,
+`--metrics`, `--hep-send`, `--hep-listen`). The keys say what it serves with
+when it starts.
+
+- Each flag replaces its own key. A certificate from the command line and its
+  key from the file make a pair.
+- Once sipnab combines the flags and the file, a certificate without a key, or
+  a key without a certificate, stops it at startup. The message names the half
+  you set and both the flag and the key that would set the other.
+  This check covers every listener's keys, whether or not this run starts it.
+- A file sipnab cannot read, a file with no certificate or no private key, a
+  key any other user can read, and a key that is not the certificate's each
+  stop sipnab at startup when the listener starts, naming the file.
+
+### [metrics]
+
+How the metrics endpoint serves when `--metrics` starts it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tls_cert` | string | -- | PEM certificate chain the metrics endpoint serves HTTPS with, the server's certificate first. Needs `tls_key`. See [Metrics TLS](@/docs/metrics.md#metrics-tls). `--metrics-tls-cert` overrides it |
+| `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--metrics-tls-key` overrides it |
+
+```toml
+[metrics]
+tls_cert = "/etc/sipnab/metrics.pem"
+tls_key = "/etc/sipnab/metrics.key"
+```
+
+### [hep]
+
+TLS for HEP: the CA the sender (`--hep-send-transport tls`) checks the
+collector's certificate against, and the certificate a TLS listener
+(`--hep-listen-transport tls`) presents.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. `--hep-tls-ca` overrides it |
+| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. `--hep-tls-extra-ca` overrides it |
+| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. `--hep-tls-cert` overrides it |
+| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--hep-tls-key` overrides it |
+
+The sender's trust is one setting. When the command line names
+`--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `tls_ca` and
+`tls_extra_ca`, so a `tls_ca` in the file cannot combine with an
+`--hep-tls-extra-ca` on the command line.
+
+```toml
+[hep]
+tls_extra_ca = "/etc/sipnab/collector-ca.pem"
 ```
 
 ### [privilege]
