@@ -2613,9 +2613,16 @@ impl BatchRunner {
                         capture_meter.attach_hep_export(sender.counters());
                         Some(sender)
                     }
+                    // Fatal, as `--metrics` and `--api` are: `--hep-send` asks
+                    // for forwarding, and a run that cannot forward has not
+                    // done what it was asked. Logging this and carrying on
+                    // exited 0, so `sipnab ... --hep-send x && echo forwarded`
+                    // printed `forwarded` with nothing sent.
                     Err(e) => {
-                        tracing::error!("Failed to create HEP sender: {e}");
-                        None
+                        return Err(crate::app::bootstrap::PlanError {
+                            exit_code: 2,
+                            message: format!("Failed to create HEP sender: {e:#}"),
+                        });
                     }
                 }
             } else {
