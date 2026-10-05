@@ -1951,6 +1951,113 @@ pub struct PipelineOptions {
     /// packets that fail to parse (`--quiet-bad-parse`). The
     /// packet is dropped either way; only the notice is silenced.
     pub quiet_bad_parse: bool,
+    /// `--hep-parse` / `[capture] hep_parse`: unwrap HEP-encapsulated packets
+    /// (a proxy's HEP copy sniffed off an interface or read from a file) and
+    /// read the SIP inside them. Applied by [`apply_hep_parse`] at every
+    /// router's entry: the headless loop, `--cores`, the TUI's capture thread
+    /// and a capture opened inside the TUI.
+    pub hep_parse: bool,
+}
+
+/// What `--hep-parse` leaves of one parsed packet.
+///
+/// The one rule every packet router applies, so a HEP copy reads the same
+/// headless, under `--cores`, and in the TUI. Before it, only the headless
+/// loop unwrapped, and the TUI showed no dialogs for a HEP copy the headless
+/// run decoded in full.
+///
+/// # Returns
+///
+/// * `Some(Cow::Owned(inner))` — `enabled` and `pp` is HEP: the packet it
+///   carried, addressed as the HEP sender reported it.
+/// * `Some(Cow::Borrowed(pp))` — not enabled, or not HEP: `pp` unchanged.
+/// * `None` — HEP whose transport no rule names. Counted by its number, as
+///   `--hep-listen` counts it, and not read as the UDP payload it arrived in;
+///   the caller drops it.
+///
+/// # Side effects
+///
+/// Records the undecodable frame in the capture counters when it returns
+/// `None`.
+pub fn apply_hep_parse(
+    pp: &ParsedPacket,
+    enabled: bool,
+) -> Option<std::borrow::Cow<'_, ParsedPacket>> {
+    if !enabled {
+        return Some(std::borrow::Cow::Borrowed(pp));
+    }
+    #[cfg(feature = "hep")]
+    match unwrap_hep(pp) {
+        Some(Ok(inner)) => return Some(std::borrow::Cow::Owned(inner)),
+        Some(Err(e)) => {
+            crate::capture::record_undecodable(&e, crate::capture::FrameFacts::UNRECORDED);
+            return None;
+        }
+        None => {}
+    }
+    Some(std::borrow::Cow::Borrowed(pp))
+}
+
+/// Unwrap a HEP datagram read off the wire, keeping what the wrapper said.
+///
+/// The inner payload replaces the outer one, which is the point of
+/// `--hep-parse`: HEP-encapsulated SIP becomes SIP the parser can read.
+///
+/// The wrapper's metadata is carried onto the result, and that is not a
+/// nicety. rtpengine mirrors its `ng` control plane as HEP, and the pipeline
+/// recognizes it two ways -- by `pp.hep` when a listener already stripped the
+/// wrapper, or by parsing the wrapper off an intact sniffed datagram. Dropping
+/// the metadata here left neither arm able to fire: the wrapper was gone and
+/// nothing had recorded what it said, so every mirrored control message was
+/// silently discarded and every relay stream stayed unnamed. `--hep-parse` and
+/// relay media-naming were mutually exclusive, and nothing said so.
+///
+/// `correlation_id` matters most: an `ng` REPLY carries no `call-id` at all,
+/// and the correlation id is the only thing naming the call it belongs to.
+///
+/// The transport comes from the wrapper's IP protocol chunk by
+/// `crate::capture::parse::hep_transport`, the rule `--hep-listen` uses, so
+/// one feed reads the same from a socket and from a file (issue #301). It
+/// used to keep the outer datagram's UDP, which named every TLS, WebSocket
+/// and TCP leg UDP.
+///
+/// # Returns
+///
+/// `None` when the packet is not a HEP datagram. `Some(Err)` when it is one
+/// whose IP protocol chunk names no transport, which the caller counts as
+/// NOT DECODED by that number, as `--hep-listen` does.
+#[cfg(feature = "hep")]
+pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error::CaptureError>> {
+    if pp.transport != TransportProto::Udp {
+        return None;
+    }
+    let hep = crate::capture::hep::parse_hep(&pp.payload).ok()?;
+    let Some(transport) = crate::capture::parse::hep_transport(hep.ip_protocol, &hep.payload)
+    else {
+        return Some(Err(crate::error::CaptureError::UnsupportedIpProtocol(
+            hep.ip_protocol,
+        )));
+    };
+    let mut unwrapped = pp.clone();
+    unwrapped.transport = transport;
+    unwrapped.ip_protocol = hep.ip_protocol;
+    unwrapped.payload = hep.payload.into();
+    unwrapped.src_addr = hep.src_addr;
+    unwrapped.dst_addr = hep.dst_addr;
+    unwrapped.src_port = hep.src_port;
+    unwrapped.dst_port = hep.dst_port;
+    unwrapped.hep = Some(crate::capture::packet::HepOrigin {
+        protocol: hep.protocol.to_byte(),
+        correlation_id: hep.correlation_id.clone(),
+    });
+    // The inner addressing was asserted by the HEP sender, not observed on the
+    // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
+    // wrapper is read from a pcap or interface (Wire) and cloned; without this
+    // the inner source inherited Wire and passed the kill/jail origin gate,
+    // leaving --hep-parse the hole kill_response_eligible closes for
+    // --hep-listen.
+    unwrapped.input_origin = crate::capture::parse::InputOrigin::Hep;
+    Some(Ok(unwrapped))
 }
 
 /// Optional media-decryption state threaded through the live pipeline: the SRTP

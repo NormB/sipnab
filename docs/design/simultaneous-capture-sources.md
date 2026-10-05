@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:1747`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1747)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:1796`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1796)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
@@ -151,7 +151,7 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 `extract_sdp_links` ([`src/pipeline.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1717)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2498`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2498)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2610`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2610)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1231`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1231)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1339`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1339)). That function does two things:
 
@@ -432,7 +432,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:4153`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4153)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:4196`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4196)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -496,7 +496,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:4153`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4153)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:4196`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4196)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

@@ -811,3 +811,38 @@ pub fn write_pcapng_multi_iface_cut(path: &Path, frames: &[(u32, Vec<u8>, usize)
     }
     std::fs::write(path, out).expect("write merged pcapng");
 }
+
+/// A call's messages from [`sip_call`], each wrapped in HEP v3 the way a
+/// proxy's HEP copy arrives on `lo`: the INNER packet is the SIP leg
+/// 10.1.0.1:5060 <-> 10.2.0.1:5060, the OUTER datagram is 127.0.0.1:40000 ->
+/// 127.0.0.1:9063 every time. Read without `--hep-parse`, these frames hold
+/// no SIP at all (the payload starts `HEP3`); unwrapped, they are one call.
+#[cfg(feature = "hep")]
+pub fn hep_call_frames(call_id: &str) -> Vec<Vec<u8>> {
+    use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+    let a: std::net::IpAddr = [10, 1, 0, 1].into();
+    let b: std::net::IpAddr = [10, 2, 0, 1].into();
+    sip_call(call_id, "hepcall", "1001", "1002")
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            let (src_addr, dst_addr) = if i % 2 == 0 { (a, b) } else { (b, a) };
+            let ep = HepEndpoint {
+                src_addr,
+                dst_addr,
+                src_port: 5060,
+                dst_port: 5060,
+                transport: sipnab::net::TransportProto::Udp,
+            };
+            let hep = build_hep_v3(
+                &ep,
+                chrono::Utc::now(),
+                HepProtocol::Sip,
+                1,
+                None,
+                msg.as_bytes(),
+            );
+            udp_frame([127, 0, 0, 1], [127, 0, 0, 1], 40000, 9063, &hep)
+        })
+        .collect()
+}

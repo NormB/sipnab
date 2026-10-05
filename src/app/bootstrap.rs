@@ -833,7 +833,9 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         capture_config.bpf_filter_generated = true;
     } else if is_live && let Some(ref filter) = capture_config.bpf_filter {
         // Their expression, unmodified — but say what it cannot see.
-        if let Some(msg) = explicit_filter_encap_notice(filter) {
+        let devices = live_device_names(source.as_ref());
+        let devices: Vec<&str> = devices.iter().map(String::as_str).collect();
+        if let Some(msg) = explicit_filter_encap_notice(filter, &devices) {
             tracing::warn!("{msg}");
         }
         if !tunnel_ports.is_empty() {
@@ -3965,8 +3967,22 @@ fn config_filter_file_notice(cli: &Cli, config: &Config, is_live: bool) -> Optio
 ///
 /// Deliberately narrow: it fires only when the filter has a port term and no
 /// sign of encapsulation handling. A filter with no port term at all is
-/// selecting on something else and gets nothing.
-fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
+/// selecting on something else and gets nothing. Nor does a capture on
+/// loopback only (`lo`, `lo0`): loopback carries no VLAN tag, QinQ, PPPoE or
+/// MPLS, so the sentence would be wrong there. A proxy's HEP copy sniffed on
+/// `lo` with `udp dst port 9063` is the case that showed it.
+///
+/// # Arguments
+///
+/// * `filter` — the operator's expression.
+/// * `devices` — the interfaces this run captures on, from
+///   [`live_device_names`]; empty when unknown, which keeps the notice.
+fn explicit_filter_encap_notice(filter: &str, devices: &[&str]) -> Option<String> {
+    let loopback_only =
+        !devices.is_empty() && devices.iter().all(|d| matches!(d.trim(), "lo" | "lo0"));
+    if loopback_only {
+        return None;
+    }
     let lower = filter.to_ascii_lowercase();
     if !lower.contains("port") {
         return None;
@@ -3986,6 +4002,24 @@ fn explicit_filter_encap_notice(filter: &str) -> Option<String> {
          --capture-tunnels for UDP-tunneled signaling."
             .to_string(),
     )
+}
+
+/// The interfaces a capture source reads, by name: a `-d` device (each entry
+/// of a `--multi-device` list), and the live members of a composite. Empty
+/// for a file, a HEP listener or a uprobe source.
+fn live_device_names(source: Option<&CaptureSource>) -> Vec<String> {
+    match source {
+        Some(CaptureSource::Live { device }) => device
+            .split(',')
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .collect(),
+        Some(CaptureSource::Composite(members)) => members
+            .iter()
+            .flat_map(|m| live_device_names(Some(m)))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The message to log when `-L/--hep-listen` was given on a run that will not
@@ -6771,22 +6805,53 @@ mod tests {
     /// past an encapsulation gets a sentence about it.
     #[test]
     fn explicit_filter_encap_notice_fires_only_on_a_blind_port_filter() {
-        let msg = explicit_filter_encap_notice("udp port 5060")
+        let msg = explicit_filter_encap_notice("udp port 5060", &["eth0"])
             .expect("a bare port filter is encapsulation-blind");
         assert!(msg.contains("not modified"), "got: {msg}");
         assert!(msg.contains("--capture-tunnels"), "got: {msg}");
 
         // Already encapsulation-aware, by qualifier or by raw offset.
-        assert_eq!(explicit_filter_encap_notice("vlan and port 5060"), None);
-        assert_eq!(explicit_filter_encap_notice("pppoes and port 5060"), None);
-        assert_eq!(explicit_filter_encap_notice("mpls and port 5060"), None);
         assert_eq!(
-            explicit_filter_encap_notice("port 5060 or ether[12:2] = 0x8100"),
+            explicit_filter_encap_notice("vlan and port 5060", &["eth0"]),
+            None
+        );
+        assert_eq!(
+            explicit_filter_encap_notice("pppoes and port 5060", &["eth0"]),
+            None
+        );
+        assert_eq!(
+            explicit_filter_encap_notice("mpls and port 5060", &["eth0"]),
+            None
+        );
+        assert_eq!(
+            explicit_filter_encap_notice("port 5060 or ether[12:2] = 0x8100", &["eth0"]),
             None
         );
         // No port term at all: the operator is filtering on something else
         // entirely and this notice would be noise.
-        assert_eq!(explicit_filter_encap_notice("host 192.0.2.1"), None);
+        assert_eq!(
+            explicit_filter_encap_notice("host 192.0.2.1", &["eth0"]),
+            None
+        );
+    }
+
+    /// On a loopback interface the notice would be wrong: `lo` carries no
+    /// VLAN tag, QinQ, PPPoE or MPLS, so a port filter there misses nothing.
+    /// Reported by a user sniffing an OpenSIPS HEP copy on `lo` with
+    /// `udp dst port 9063`. Any non-loopback member, `any`, or an unknown
+    /// device keeps the notice.
+    #[test]
+    fn explicit_filter_encap_notice_is_silent_on_loopback_only() {
+        let filter = "udp dst port 9063";
+        assert_eq!(explicit_filter_encap_notice(filter, &["lo"]), None);
+        assert_eq!(explicit_filter_encap_notice(filter, &["lo0"]), None);
+        assert_eq!(explicit_filter_encap_notice(filter, &["lo", "lo0"]), None);
+        for devices in [&["eth0"][..], &["lo", "eth0"], &["any"], &[]] {
+            assert!(
+                explicit_filter_encap_notice(filter, devices).is_some(),
+                "{devices:?} can carry encapsulated SIP, so the notice stays"
+            );
+        }
     }
 
     // ── media in the default live filter (LIVE-MEDIA-1) ─────────────────

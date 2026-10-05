@@ -628,6 +628,10 @@ fn load_one_capture(
         if parsed.payload.is_empty() {
             continue;
         }
+        // `--hep-parse`, by the rule the capture thread applies.
+        let Some(parsed) = crate::pipeline::apply_hep_parse(&parsed, options.hep_parse) else {
+            continue;
+        };
 
         // Classify via the shared pipeline core, then apply to the app
         // stores (brief per-store write locks, as in live capture).

@@ -38,6 +38,14 @@ entry that carries them.
 
 ### Fixed
 
+- **`-E` / `[capture] hep_parse` works in the TUI and under `--cores`.** Only
+  the single-threaded headless run unwrapped HEP. The TUI showed no dialogs
+  for a proxy's HEP copy sniffed on `lo` (`-d lo -E "udp dst port 9063"`)
+  that `-N` decoded in full, and `-I file --cores N -E` reported no calls. One
+  rule, `pipeline::apply_hep_parse`, now runs on every path: headless,
+  `--cores`, the TUI's capture thread, and a capture opened or re-scanned
+  inside the TUI. Reported by Giovanni Maruzzelli
+  ([@gmaruzz](https://github.com/gmaruzz)).
 - **A `--hep-send` run whose sender cannot start now fails with exit 2.** An
   unreachable or untrusted collector, or a name that does not resolve, used to
   be logged as an error while the run went on and exited 0, so
@@ -59,6 +67,12 @@ entry that carries them.
   `--hep-listen-transport tls` with no certificate or key. `--hep-tls-cert`
   and `--hep-tls-key` no longer require each other on the command line, since
   the other half may be in `[hep]`; each now requires `--hep-listen-transport`.
+- **The port-based BPF filter warning is not printed for a loopback
+  capture.** "Your BPF filter is used as given ..." warns that a port filter
+  misses SIP inside VLAN, QinQ, PPPoE or MPLS. Loopback (`lo`, `lo0`) carries
+  none of those, so on a capture of loopback only the warning was wrong; any
+  other interface, `any`, or a mix keeps it. Reported by Giovanni Maruzzelli
+  ([@gmaruzz](https://github.com/gmaruzz)).
 - **The `metrics` feature depends on `rustls`**, for the metrics endpoint's
   HTTPS. `metrics` is a default feature, so a default build now compiles
   rustls and ring.

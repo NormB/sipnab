@@ -29,7 +29,7 @@ use crate::sip::{self, dialog_store::DialogStore, dsl::FilterExpr, matcher::SipM
 
 #[cfg(feature = "tls")]
 use crate::capture::decrypt::TlsDecryptor;
-#[cfg(any(feature = "hep", feature = "tls", test))]
+#[cfg(any(feature = "tls", test))]
 use crate::capture::parse::TransportProto;
 #[cfg(feature = "tls")]
 use crate::capture::tls;
@@ -672,6 +672,7 @@ fn parallel_config(
         dialog_tracking: cli.dialog_args.dialog_track.unwrap_or_default(),
         no_rtp,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+        hep_parse: cli.hep_parse(config),
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
@@ -3700,27 +3701,15 @@ impl BatchRunner {
                 }
             };
             for pp in &parsed_packets {
-                // --hep-parse: try to unwrap HEP-encapsulated packets
-                #[cfg(feature = "hep")]
-                let hep_unwrapped = match cli.hep_parse(&config).then(|| unwrap_hep(pp)).flatten() {
-                    Some(Ok(inner)) => Some(inner),
-                    // A HEP datagram whose transport no rule names: counted by
-                    // its number, as `--hep-listen` counts it, and not read as
-                    // the UDP payload it arrived in.
-                    Some(Err(e)) => {
-                        crate::capture::record_undecodable(
-                            &e,
-                            crate::capture::FrameFacts::UNRECORDED,
-                        );
-                        continue;
-                    }
-                    None => None,
+                // --hep-parse: unwrap HEP-encapsulated packets, by the rule
+                // every router applies. `None` is a HEP datagram whose
+                // transport no rule names, already counted.
+                let Some(hep_unwrapped) =
+                    crate::pipeline::apply_hep_parse(pp, cli.hep_parse(&config))
+                else {
+                    continue;
                 };
-
-                #[cfg(not(feature = "hep"))]
-                let hep_unwrapped: Option<ParsedPacket> = None;
-
-                let pp = hep_unwrapped.as_ref().unwrap_or(pp);
+                let pp: &ParsedPacket = &hep_unwrapped;
 
                 // Port range filtering only applies to SIP detection — RTP uses
                 // dynamic ports negotiated via SDP and must not be filtered here.
@@ -4631,6 +4620,9 @@ fn process_parsed_packet(
         sip_portrange: Some(portrange),
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+        // The packet loop already applied `--hep-parse` before this packet
+        // reached here; unwrapping SIP a second time would find no HEP.
+        hep_parse: false,
     };
     #[cfg(feature = "tls")]
     let mut decrypt = crate::pipeline::MediaDecrypt {
@@ -5525,68 +5517,6 @@ fn write_stdout(text: &str) -> bool {
             false
         }
     }
-}
-
-/// Unwrap a HEP datagram read off the wire, keeping what the wrapper said.
-///
-/// The inner payload replaces the outer one, which is the point of
-/// `--hep-parse`: HEP-encapsulated SIP becomes SIP the parser can read.
-///
-/// The wrapper's metadata is carried onto the result, and that is not a
-/// nicety. rtpengine mirrors its `ng` control plane as HEP, and the pipeline
-/// recognizes it two ways -- by `pp.hep` when a listener already stripped the
-/// wrapper, or by parsing the wrapper off an intact sniffed datagram. Dropping
-/// the metadata here left neither arm able to fire: the wrapper was gone and
-/// nothing had recorded what it said, so every mirrored control message was
-/// silently discarded and every relay stream stayed unnamed. `--hep-parse` and
-/// relay media-naming were mutually exclusive, and nothing said so.
-///
-/// `correlation_id` matters most: an `ng` REPLY carries no `call-id` at all,
-/// and the correlation id is the only thing naming the call it belongs to.
-///
-/// The transport comes from the wrapper's IP protocol chunk by
-/// [`crate::capture::parse::hep_transport`], the rule `--hep-listen` uses, so
-/// one feed reads the same from a socket and from a file (issue #301). It
-/// used to keep the outer datagram's UDP, which named every TLS, WebSocket
-/// and TCP leg UDP.
-///
-/// # Returns
-///
-/// `None` when the packet is not a HEP datagram. `Some(Err)` when it is one
-/// whose IP protocol chunk names no transport, which the caller counts as
-/// NOT DECODED by that number, as `--hep-listen` does.
-#[cfg(feature = "hep")]
-fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error::CaptureError>> {
-    if pp.transport != TransportProto::Udp {
-        return None;
-    }
-    let hep = crate::capture::hep::parse_hep(&pp.payload).ok()?;
-    let Some(transport) = crate::capture::parse::hep_transport(hep.ip_protocol, &hep.payload)
-    else {
-        return Some(Err(crate::error::CaptureError::UnsupportedIpProtocol(
-            hep.ip_protocol,
-        )));
-    };
-    let mut unwrapped = pp.clone();
-    unwrapped.transport = transport;
-    unwrapped.ip_protocol = hep.ip_protocol;
-    unwrapped.payload = hep.payload.into();
-    unwrapped.src_addr = hep.src_addr;
-    unwrapped.dst_addr = hep.dst_addr;
-    unwrapped.src_port = hep.src_port;
-    unwrapped.dst_port = hep.dst_port;
-    unwrapped.hep = Some(crate::capture::packet::HepOrigin {
-        protocol: hep.protocol.to_byte(),
-        correlation_id: hep.correlation_id.clone(),
-    });
-    // The inner addressing was asserted by the HEP sender, not observed on the
-    // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
-    // wrapper is read from a pcap or interface (Wire) and cloned; without this
-    // the inner source inherited Wire and passed the kill/jail origin gate,
-    // leaving --hep-parse the hole kill_response_eligible closes for
-    // --hep-listen.
-    unwrapped.input_origin = crate::capture::parse::InputOrigin::Hep;
-    Some(Ok(unwrapped))
 }
 
 /// Generate post-capture reports (`--report`, `--call-report`,
@@ -8257,7 +8187,7 @@ mod tests {
     /// `unwrap_hep` for a datagram every test here expects to unwrap.
     #[cfg(feature = "hep")]
     fn unwrapped(pp: &ParsedPacket) -> Option<ParsedPacket> {
-        unwrap_hep(pp).map(|r| r.expect("a transport the HEP rule names"))
+        crate::pipeline::unwrap_hep(pp).map(|r| r.expect("a transport the HEP rule names"))
     }
 
     /// `hep_datagram` with its IP protocol chunk rewritten to `ip_proto`.
@@ -8309,7 +8239,7 @@ mod tests {
     #[test]
     fn unwrapping_hep_with_an_unknown_ip_protocol_is_refused_by_number() {
         let pp = hep_datagram_with_ip_proto(99, b"INVITE sip:b@x SIP/2.0\r\n\r\n");
-        match unwrap_hep(&pp) {
+        match crate::pipeline::unwrap_hep(&pp) {
             Some(Err(crate::error::CaptureError::UnsupportedIpProtocol(99))) => {}
             other => panic!("expected a refusal naming 99, got {other:?}"),
         }
@@ -8467,7 +8397,7 @@ mod tests {
     fn a_packet_that_is_not_hep_is_not_unwrapped() {
         let mut pp = hep_datagram(1, b"x", None);
         pp.payload = bytes::Bytes::from_static(b"not a hep datagram at all");
-        assert!(unwrap_hep(&pp).is_none());
+        assert!(crate::pipeline::unwrap_hep(&pp).is_none());
     }
 
     /// Only UDP is considered.
@@ -8480,7 +8410,7 @@ mod tests {
     fn hep_unwrapping_ignores_non_udp() {
         let mut pp = hep_datagram(1, b"OPTIONS sip:a@b SIP/2.0\r\n\r\n", None);
         pp.transport = TransportProto::Tcp;
-        assert!(unwrap_hep(&pp).is_none());
+        assert!(crate::pipeline::unwrap_hep(&pp).is_none());
     }
 
     /// Unwrapped mirrored ng is still recognizable as control traffic.

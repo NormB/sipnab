@@ -109,7 +109,7 @@ fn run_spaced(
     let ds = Arc::new(RwLock::new(DialogStore::new(64, false)));
     let ss = Arc::new(RwLock::new(StreamStore::new(64)));
     let mut heuristic = RtpHeuristic::new();
-    let opts = tui_pipeline_options(cli, false);
+    let opts = tui_pipeline_options(cli, &sipnab::config::Config::default(), false);
     let mut observed = 0usize;
     let mut error = None;
     for p in packets_every(frames, every_ms) {
