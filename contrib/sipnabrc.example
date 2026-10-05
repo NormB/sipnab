@@ -68,3 +68,30 @@ max_reassembly = 10000
 hep_rate_limit = 50000
 # Audio frames retained per stream for WAV export (TUI mode).
 max_audio_frames = 1500
+
+# -- TLS for the listeners -------------------------------------------------
+# Each listener is still started on the command line (--api, --mcp
+# --mcp-transport http, --metrics, --hep-send / --hep-listen); these keys say
+# what it serves with when it starts. Uncomment a pair to use it. A
+# certificate without its key (or the reverse) stops sipnab at startup, and a
+# flag such as --api-tls-cert replaces its own key.
+
+# [api]
+# tls_cert = "/etc/sipnab/api.pem"
+# tls_key = "/etc/sipnab/api.key"
+
+# [mcp]
+# tls_cert = "/etc/sipnab/mcp.pem"
+# tls_key = "/etc/sipnab/mcp.key"
+
+# [metrics]
+# tls_cert = "/etc/sipnab/metrics.pem"
+# tls_key = "/etc/sipnab/metrics.key"
+
+# [hep]
+# The HEP sender's trust: tls_ca trusts ONLY its file; tls_extra_ca trusts its
+# file in addition to the host's CA bundle. Set one, not both.
+# tls_extra_ca = "/etc/sipnab/collector-ca.pem"
+# What a --hep-listen-transport tls listener presents:
+# tls_cert = "/etc/sipnab/hep.pem"
+# tls_key = "/etc/sipnab/hep.key"

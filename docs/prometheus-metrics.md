@@ -193,4 +193,71 @@ scrape_configs:
     scrape_interval: 15s
 ```
 
-The metrics endpoint is lightweight and suitable for 5–15 second scrape intervals. A sample Grafana dashboard JSON ships in the repo at [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json).
+The metrics endpoint is lightweight and suitable for 5–15 second scrape intervals.
+
+## Metrics TLS
+
+Give sipnab a certificate and its private key, and the standalone metrics
+server (`--metrics`) serves HTTPS instead of plain HTTP on its port:
+
+```bash
+sudo sipnab -N -d eth0 --metrics 0.0.0.0:9090 \
+  --metrics-auth-file /etc/sipnab/metrics.auth \
+  --metrics-tls-cert /etc/sipnab/metrics.pem --metrics-tls-key /etc/sipnab/metrics.key
+```
+
+Check it with curl, trusting the CA that issued the certificate. The
+credential file holds `user:pass`, which is what `curl -u` takes:
+
+```bash
+curl --cacert /etc/sipnab/ca.pem -u "$(cat /etc/sipnab/metrics.auth)" https://capture01.example.net:9090/metrics
+```
+
+- `--metrics-tls-cert` is a PEM certificate chain, the server's own
+  certificate first. `--metrics-tls-key` is its PEM private key
+  (`PRIVATE KEY`, `RSA PRIVATE KEY` or `EC PRIVATE KEY`).
+- The port speaks HTTPS only. A plain-HTTP request to it fails the TLS
+  handshake and is not served.
+- TLS 1.2 and TLS 1.3 only. No client certificates: scrapers authenticate
+  with `--metrics-auth` or `--metrics-auth-file`, as over plain HTTP, and the
+  credential now crosses the network encrypted.
+- `[metrics] tls_cert` and `[metrics] tls_key` in
+  [`sipnab.toml`](config-reference.md#metrics) set the same files. Each flag
+  replaces its own key.
+
+sipnab checks both files at startup and refuses to start, naming the file,
+when you give only one of the pair, when it cannot read either file, when
+the certificate file holds no certificate or the key file no private key,
+when any other user on the host can read the key file (`chmod 600` it, and
+group-readable stays allowed), or when the key does not belong to the
+certificate. A non-loopback bind still needs `--metrics-auth` or
+`--metrics-auth-file`. Without TLS sipnab also warns that the credential
+crosses the network unencrypted, and with TLS it does not.
+
+Each read and each write on a scrape connection, the TLS handshake's
+included, times out after 5 seconds, as on plain HTTP, and the
+`--metrics-max-conn` limit counts HTTPS connections the same way. sipnab closes a connection over that limit without
+a reply, because a plain-text `503` would be unreadable inside TLS.
+
+sipnab reads the certificate once, at startup. To pick up a renewed
+certificate, restart sipnab.
+
+The Prometheus job for an HTTPS endpoint names the scheme, the CA, and the
+Basic credential:
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: sipnab
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/sipnab-ca.pem
+    basic_auth:
+      username: prometheus
+      password_file: /etc/prometheus/sipnab-metrics.password
+    static_configs:
+      - targets: ['capture01.example.net:9090']
+```
+
+The certificate must name the host Prometheus connects to, here
+`capture01.example.net`, in its subject alternative names. A sample Grafana dashboard JSON ships in the repo at [`contrib/grafana/sipnab-dashboard.json`](https://github.com/NormB/sipnab/blob/main/contrib/grafana/sipnab-dashboard.json).

@@ -2672,8 +2672,8 @@ pub struct ListenerArgs {
     /// HTTP Basic auth credentials (`user:pass`) required by the metrics
     /// endpoint. When set, requests must send `Authorization: Basic <base64>`.
     /// Prefer --metrics-auth-file so the secret is not visible in the process
-    /// list. Basic credentials are base64-encoded, not encrypted: terminate
-    /// TLS upstream for non-loopback exposure.
+    /// list. Basic credentials are base64-encoded, not encrypted: serve the
+    /// endpoint over HTTPS (--metrics-tls-cert) for non-loopback exposure.
     #[arg(help_heading = "Network listeners", long, value_name = "USER:PASS")]
     pub metrics_auth: Option<String>,
 
@@ -2682,6 +2682,26 @@ pub struct ListenerArgs {
     /// --metrics-auth when both are set.
     #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
     pub metrics_auth_file: Option<std::path::PathBuf>,
+
+    /// Serve the metrics endpoint over HTTPS with this certificate chain
+    /// (PEM, leaf first). Needs --metrics-tls-key. TLS 1.2 and 1.3.
+    #[arg(
+        help_heading = "Network listeners",
+        long,
+        value_name = "FILE",
+        requires = "metrics"
+    )]
+    pub metrics_tls_cert: Option<String>,
+
+    /// Private key (PEM) for --metrics-tls-cert. Refused when any other user
+    /// can read it: chmod 600.
+    #[arg(
+        help_heading = "Network listeners",
+        long,
+        value_name = "FILE",
+        requires = "metrics"
+    )]
+    pub metrics_tls_key: Option<String>,
 
     /// Enable REST API endpoint (e.g., "0.0.0.0:8080").
     #[arg(help_heading = "Network listeners", long, value_name = "ADDR")]
@@ -2911,6 +2931,25 @@ pub struct McpArgs {
         value_name = "FILE"
     )]
     pub mcp_token_file: Option<String>,
+
+    /// Serve MCP over HTTP with HTTPS, using this certificate chain (PEM,
+    /// leaf first). Needs --mcp-tls-key and --mcp-transport http. TLS 1.2
+    /// and 1.3; ALPN http/1.1.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-tls-cert",
+        value_name = "FILE"
+    )]
+    pub mcp_tls_cert: Option<String>,
+
+    /// Private key (PEM) for --mcp-tls-cert. Refused when any other user can
+    /// read it: chmod 600.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-tls-key",
+        value_name = "FILE"
+    )]
+    pub mcp_tls_key: Option<String>,
 
     /// HMAC signing key for HTTP MCP self-describing bearer tokens
     /// (repeatable). The FIRST key mints; ALL keys are accepted on verify,
@@ -3571,13 +3610,27 @@ pub struct HepArgs {
     )]
     pub hep_tls_ca: Option<std::path::PathBuf>,
 
+    /// Certificate authority (PEM) trusted IN ADDITION to the host's CA bundle
+    /// under `--hep-send-transport tls`: the collector's certificate is
+    /// accepted when the host's bundle or this file issued it. For a private
+    /// collector issuer on a host whose public roots should still count. Use
+    /// --hep-tls-ca instead to trust only the named file.
+    #[arg(
+        help_heading = "HEP",
+        long = "hep-tls-extra-ca",
+        value_name = "FILE",
+        requires = "hep_send_transport",
+        conflicts_with = "hep_tls_ca"
+    )]
+    pub hep_tls_extra_ca: Option<std::path::PathBuf>,
+
     /// Server certificate chain (PEM) a `--hep-listen-transport tls` listener
     /// presents to connecting agents. Leaf first, then any intermediates.
     #[arg(
         help_heading = "HEP",
         long = "hep-tls-cert",
         value_name = "FILE",
-        requires = "hep_tls_key"
+        requires = "hep_listen_transport"
     )]
     pub hep_tls_cert: Option<std::path::PathBuf>,
 
@@ -3587,7 +3640,7 @@ pub struct HepArgs {
         help_heading = "HEP",
         long = "hep-tls-key",
         value_name = "FILE",
-        requires = "hep_tls_cert"
+        requires = "hep_listen_transport"
     )]
     pub hep_tls_key: Option<std::path::PathBuf>,
 
@@ -4236,33 +4289,58 @@ impl FromToModeArg {
     }
 }
 
-/// Why an `--api-tls-cert` / `--api-tls-key` pair is incomplete, or `None`
-/// when both or neither were given.
+/// Why a listener's certificate/key pair is incomplete, or `None` when both
+/// or neither were given.
 ///
-/// One rule for the two places that check it: startup validation, which runs
-/// whether or not this build has the `api` feature, and the API listener
-/// itself, which a library caller reaches without the CLI. Either half alone
-/// is refused rather than ignored, because ignoring it would serve plain HTTP
-/// on a port the operator meant for HTTPS.
+/// One rule for every listener that serves TLS itself (the REST API, MCP over
+/// HTTP, the metrics endpoint), and for the two places each is checked:
+/// startup validation, and the listener itself, which a library caller
+/// reaches without the CLI. Either half alone is refused rather than ignored,
+/// because ignoring it would serve plain HTTP on a port the operator meant
+/// for HTTPS.
 ///
 /// # Arguments
 ///
-/// * `cert` — `--api-tls-cert`, if given.
-/// * `key` — `--api-tls-key`, if given.
+/// * `flags` — the listener's `(certificate flag, key flag)`, as an operator
+///   types them: [`API_TLS_FLAGS`], [`MCP_TLS_FLAGS`] or
+///   [`METRICS_TLS_FLAGS`].
+/// * `cert` — the certificate file, if given.
+/// * `key` — the key file, if given.
 ///
 /// # Returns
 ///
 /// The refusal, naming the file that was given and the flag that was not.
-pub fn api_tls_pair_problem(cert: Option<&str>, key: Option<&str>) -> Option<String> {
+pub fn tls_pair_problem(
+    flags: (&str, &str),
+    cert: Option<&str>,
+    key: Option<&str>,
+) -> Option<String> {
+    let (cert_flag, key_flag) = flags;
     let (given_flag, file, missing) = match (cert, key) {
-        (Some(file), None) => ("--api-tls-cert", file, "--api-tls-key"),
-        (None, Some(file)) => ("--api-tls-key", file, "--api-tls-cert"),
+        (Some(file), None) => (cert_flag, file, key_flag),
+        (None, Some(file)) => (key_flag, file, cert_flag),
         _ => return None,
     };
     Some(format!(
         "{given_flag} {file} was given without {missing}: HTTPS needs both, and \
          sipnab will not serve plain HTTP on a port meant for HTTPS"
     ))
+}
+
+/// The REST API's certificate and key flags, for [`tls_pair_problem`].
+pub const API_TLS_FLAGS: (&str, &str) = ("--api-tls-cert", "--api-tls-key");
+
+/// MCP over HTTP's certificate and key flags, for [`tls_pair_problem`].
+pub const MCP_TLS_FLAGS: (&str, &str) = ("--mcp-tls-cert", "--mcp-tls-key");
+
+/// The metrics endpoint's certificate and key flags, for
+/// [`tls_pair_problem`].
+pub const METRICS_TLS_FLAGS: (&str, &str) = ("--metrics-tls-cert", "--metrics-tls-key");
+
+/// [`tls_pair_problem`] for the REST API's `--api-tls-cert` /
+/// `--api-tls-key`.
+pub fn api_tls_pair_problem(cert: Option<&str>, key: Option<&str>) -> Option<String> {
+    tls_pair_problem(API_TLS_FLAGS, cert, key)
 }
 
 /// `DO, gb,,do` → `["DO", "GB"]`: one rule for the flag and the config key.
@@ -4780,6 +4858,163 @@ impl Cli {
         } else {
             self.listener_args.api_allowed_host.clone()
         }
+    }
+
+    /// The REST API's certificate and key: each flag, else its `[api]` key.
+    ///
+    /// Each half resolves on its own, so a file can hold the key while the
+    /// command line names a renewed certificate. Whether the two make a pair
+    /// is checked on the result by [`Self::tls_settings_problem`].
+    #[must_use]
+    pub fn api_tls_files(
+        &self,
+        config: &crate::config::Config,
+    ) -> (Option<String>, Option<String>) {
+        (
+            self.listener_args
+                .api_tls_cert
+                .clone()
+                .or_else(|| config.api.tls_cert.clone()),
+            self.listener_args
+                .api_tls_key
+                .clone()
+                .or_else(|| config.api.tls_key.clone()),
+        )
+    }
+
+    /// MCP over HTTP's certificate and key: each flag, else its `[mcp]` key.
+    /// See [`Self::api_tls_files`].
+    #[must_use]
+    pub fn mcp_tls_files(
+        &self,
+        config: &crate::config::Config,
+    ) -> (Option<String>, Option<String>) {
+        (
+            self.mcp_args
+                .mcp_tls_cert
+                .clone()
+                .or_else(|| config.mcp.tls_cert.clone()),
+            self.mcp_args
+                .mcp_tls_key
+                .clone()
+                .or_else(|| config.mcp.tls_key.clone()),
+        )
+    }
+
+    /// The metrics endpoint's certificate and key: each flag, else its
+    /// `[metrics]` key. See [`Self::api_tls_files`].
+    #[must_use]
+    pub fn metrics_tls_files(
+        &self,
+        config: &crate::config::Config,
+    ) -> (Option<String>, Option<String>) {
+        (
+            self.listener_args
+                .metrics_tls_cert
+                .clone()
+                .or_else(|| config.metrics.tls_cert.clone()),
+            self.listener_args
+                .metrics_tls_key
+                .clone()
+                .or_else(|| config.metrics.tls_key.clone()),
+        )
+    }
+
+    /// The HEP sender's trust, as `(replace-with CA, add-to-host CA)`.
+    ///
+    /// ONE setting rather than two keys: when the command line names either
+    /// `--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `[hep]
+    /// tls_ca` and `[hep] tls_extra_ca`. Resolved key by key, a file's
+    /// `tls_ca` and a flag's extra CA would make a pair that means "only this
+    /// file" and "the host's roots too" at once.
+    #[must_use]
+    pub fn hep_tls_trust(
+        &self,
+        config: &crate::config::Config,
+    ) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+        if self.hep_args.hep_tls_ca.is_some() || self.hep_args.hep_tls_extra_ca.is_some() {
+            (
+                self.hep_args.hep_tls_ca.clone(),
+                self.hep_args.hep_tls_extra_ca.clone(),
+            )
+        } else {
+            (config.hep.tls_ca.clone(), config.hep.tls_extra_ca.clone())
+        }
+    }
+
+    /// The HEP listener's certificate and key: each flag, else its `[hep]`
+    /// key. See [`Self::api_tls_files`].
+    #[must_use]
+    pub fn hep_tls_files(
+        &self,
+        config: &crate::config::Config,
+    ) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+        (
+            self.hep_args
+                .hep_tls_cert
+                .clone()
+                .or_else(|| config.hep.tls_cert.clone()),
+            self.hep_args
+                .hep_tls_key
+                .clone()
+                .or_else(|| config.hep.tls_key.clone()),
+        )
+    }
+
+    /// Why the resolved TLS settings cannot start this run, or `None`.
+    ///
+    /// Checked on the values after flags and `sipnab.toml` are combined,
+    /// because a pair can be split across the two: either half alone from
+    /// either source is refused, naming the half that was given and both ways
+    /// to give the other. Also refused: `[hep] tls_ca` beside `[hep]
+    /// tls_extra_ca`, and a TLS HEP listener with no certificate or key.
+    ///
+    /// Keys for a listener this run does not start are checked too. A file
+    /// holding half a pair is broken whichever run reads it, and saying so on
+    /// the run that does not need it is earlier than on the one that does.
+    #[must_use]
+    pub fn tls_settings_problem(&self, config: &crate::config::Config) -> Option<String> {
+        fn label(flag: &str, section: &str, key: &str) -> String {
+            format!("{flag} (or [{section}] {key})")
+        }
+        let pairs = [
+            ("api", API_TLS_FLAGS, self.api_tls_files(config)),
+            ("mcp", MCP_TLS_FLAGS, self.mcp_tls_files(config)),
+            ("metrics", METRICS_TLS_FLAGS, self.metrics_tls_files(config)),
+        ];
+        for (section, (cert_flag, key_flag), (cert, key)) in pairs {
+            let cert_label = label(cert_flag, section, "tls_cert");
+            let key_label = label(key_flag, section, "tls_key");
+            if let Some(problem) =
+                tls_pair_problem((&cert_label, &key_label), cert.as_deref(), key.as_deref())
+            {
+                return Some(problem);
+            }
+        }
+        if config.hep.tls_ca.is_some()
+            && config.hep.tls_extra_ca.is_some()
+            && self.hep_args.hep_tls_ca.is_none()
+            && self.hep_args.hep_tls_extra_ca.is_none()
+        {
+            return Some(
+                "[hep] tls_ca and [hep] tls_extra_ca cannot both be set: tls_ca trusts \
+                 only its file, tls_extra_ca trusts its file in addition to the host's \
+                 CA bundle"
+                    .to_string(),
+            );
+        }
+        let (hep_cert, hep_key) = self.hep_tls_files(config);
+        if self.hep_listen_transport() == HepTransport::Tls
+            && (hep_cert.is_none() || hep_key.is_none())
+        {
+            return Some(
+                "--hep-listen-transport tls needs --hep-tls-cert (or [hep] tls_cert) \
+                 and --hep-tls-key (or [hep] tls_key); a TLS server with nothing to \
+                 present cannot complete a handshake"
+                    .to_string(),
+            );
+        }
+        None
     }
 
     /// REST per-peer request rate: `--api-rate-limit-per-peer`, else
@@ -5827,6 +6062,18 @@ impl Cli {
             }
         }
 
+        // The MCP certificate pair configures the HTTP transport's listener.
+        // On stdio there is no listener, so the flags would do nothing while
+        // the operator believes the server is on HTTPS.
+        if (self.mcp_args.mcp_tls_cert.is_some() || self.mcp_args.mcp_tls_key.is_some())
+            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == "http")
+        {
+            return Err(crate::Error::CliValidation(
+                "--mcp-tls-cert/--mcp-tls-key serve MCP over HTTPS and do nothing \
+                 without --mcp --mcp-transport http"
+                    .to_string(),
+            ));
+        }
         // A TLS flag on a plaintext side configures nothing, and the way it
         // fails matters: an operator who believes --hep-tls-ca encrypted the
         // feed gets a clean exit and packets in the clear. Refuse instead, and
@@ -5835,6 +6082,15 @@ impl Cli {
             return Err(crate::Error::CliValidation(
                 "--hep-tls-ca verifies the collector's certificate and does \
                  nothing without --hep-send-transport tls"
+                    .to_string(),
+            ));
+        }
+        if self.hep_args.hep_tls_extra_ca.is_some()
+            && self.hep_send_transport() != HepTransport::Tls
+        {
+            return Err(crate::Error::CliValidation(
+                "--hep-tls-extra-ca adds to the roots the collector's certificate is \
+                 verified against and does nothing without --hep-send-transport tls"
                     .to_string(),
             ));
         }
@@ -5847,19 +6103,9 @@ impl Cli {
                     .to_string(),
             ));
         }
-        // The other direction: a TLS listener with nothing to present cannot
-        // complete a handshake, and the first agent to connect is a bad place
-        // to discover it.
-        if self.hep_listen_transport() == HepTransport::Tls
-            && (self.hep_args.hep_tls_cert.is_none() || self.hep_args.hep_tls_key.is_none())
-        {
-            return Err(crate::Error::CliValidation(
-                "--hep-listen-transport tls needs --hep-tls-cert and \
-                 --hep-tls-key; a TLS server with nothing to present cannot \
-                 complete a handshake"
-                    .to_string(),
-            ));
-        }
+        // The other direction -- a TLS listener with nothing to present -- is
+        // checked once the config file is read, by `tls_settings_problem`:
+        // the certificate and key may come from `[hep] tls_cert` / `tls_key`.
 
         // Fail fast on a malformed --kill-target so a typo can't silently leave
         // an attacker unblocked.
@@ -6231,6 +6477,191 @@ mod tests {
             flagged.api_allowed_hosts(&config),
             vec!["proxy.example".to_string(), "*".to_string()],
             "the flag replaces the config list"
+        );
+    }
+
+    /// Each listener's certificate and key: none by default, then the
+    /// `[section]` keys, then the flags, each flag replacing its own key.
+    #[test]
+    fn listener_tls_files_none_then_config_then_flag() {
+        type Resolve = fn(&Cli, &crate::config::Config) -> (Option<String>, Option<String>);
+        type SetKeys = fn(&mut crate::config::Config, &str, &str);
+        let cases: [(&str, Resolve, SetKeys); 3] = [
+            ("api", Cli::api_tls_files, |c, a, b| {
+                c.api.tls_cert = Some(a.into());
+                c.api.tls_key = Some(b.into());
+            }),
+            ("mcp", Cli::mcp_tls_files, |c, a, b| {
+                c.mcp.tls_cert = Some(a.into());
+                c.mcp.tls_key = Some(b.into());
+            }),
+            ("metrics", Cli::metrics_tls_files, |c, a, b| {
+                c.metrics.tls_cert = Some(a.into());
+                c.metrics.tls_key = Some(b.into());
+            }),
+        ];
+        for (surface, resolve, set) in cases {
+            let mut config = crate::config::Config::default();
+            let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+            assert_eq!(
+                resolve(&plain, &config),
+                (None, None),
+                "{surface}: none by default"
+            );
+            set(&mut config, "file.pem", "file.key");
+            assert_eq!(
+                resolve(&plain, &config),
+                (Some("file.pem".into()), Some("file.key".into())),
+                "{surface}: the keys apply with no flag"
+            );
+            let cert_flag = format!("--{surface}-tls-cert");
+            let mut argv = vec!["sipnab", cert_flag.as_str(), "flag.pem"];
+            match surface {
+                "metrics" => argv.extend(["--metrics", "127.0.0.1:0"]),
+                "mcp" => argv.extend(["--mcp", "--mcp-transport", "http"]),
+                _ => {}
+            }
+            let flagged = Cli::try_parse_from(&argv).expect("parses");
+            assert_eq!(
+                resolve(&flagged, &config),
+                (Some("flag.pem".into()), Some("file.key".into())),
+                "{surface}: the flag replaces its own key and leaves the other"
+            );
+        }
+    }
+
+    /// The HEP sender's trust is ONE setting: a command line naming either
+    /// `--hep-tls-ca` or `--hep-tls-extra-ca` replaces whatever the file says
+    /// about trust, so a file's `tls_ca` cannot combine with a flag's extra
+    /// CA into a contradiction.
+    #[test]
+    fn hep_tls_trust_resolves_as_one_setting() {
+        use std::path::PathBuf;
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert_eq!(plain.hep_tls_trust(&config), (None, None));
+        config.hep.tls_ca = Some(PathBuf::from("file-ca.pem"));
+        assert_eq!(
+            plain.hep_tls_trust(&config),
+            (Some(PathBuf::from("file-ca.pem")), None),
+            "the file's choice applies with no flag"
+        );
+        let extra = Cli::try_parse_from([
+            "sipnab",
+            "-H",
+            "127.0.0.1:9060",
+            "--hep-send-transport",
+            "tls",
+            "--hep-tls-extra-ca",
+            "flag-extra.pem",
+        ])
+        .expect("parses");
+        assert_eq!(
+            extra.hep_tls_trust(&config),
+            (None, Some(PathBuf::from("flag-extra.pem"))),
+            "the flag's choice replaces the file's, both halves"
+        );
+    }
+
+    /// The HEP listener's pair resolves key by key, like the other listeners.
+    #[test]
+    fn hep_tls_listener_files_none_then_config_then_flag() {
+        use std::path::PathBuf;
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        assert_eq!(plain.hep_tls_files(&config), (None, None));
+        config.hep.tls_cert = Some(PathBuf::from("file.pem"));
+        config.hep.tls_key = Some(PathBuf::from("file.key"));
+        let flagged = Cli::try_parse_from([
+            "sipnab",
+            "--hep-listen",
+            "127.0.0.1:9060",
+            "--hep-listen-transport",
+            "tls",
+            "--hep-tls-cert",
+            "flag.pem",
+        ])
+        .expect("parses: the key may come from the file");
+        assert_eq!(
+            flagged.hep_tls_files(&config),
+            (
+                Some(PathBuf::from("flag.pem")),
+                Some(PathBuf::from("file.key"))
+            )
+        );
+    }
+
+    /// The pairing rules run on the RESOLVED values, so a half from the
+    /// command line and a half from the file make a pair, and a half alone
+    /// from either is refused naming both its flag and its key.
+    #[test]
+    fn the_tls_pairing_rules_see_both_sources() {
+        use std::path::PathBuf;
+        let mcp_http = ["sipnab", "--mcp", "--mcp-transport", "http"];
+
+        let mut config = crate::config::Config::default();
+        config.mcp.tls_key = Some("file.key".into());
+        let mut argv = mcp_http.to_vec();
+        argv.extend(["--mcp-tls-cert", "flag.pem"]);
+        let cli = Cli::try_parse_from(&argv).expect("parses");
+        assert_eq!(
+            cli.tls_settings_problem(&config),
+            None,
+            "flag + key make a pair"
+        );
+
+        let mut config = crate::config::Config::default();
+        config.metrics.tls_cert = Some("file.pem".into());
+        let cli = Cli::try_parse_from(["sipnab", "--metrics", "127.0.0.1:0"]).expect("parses");
+        let problem = cli
+            .tls_settings_problem(&config)
+            .expect("a certificate with no key from either source");
+        assert!(
+            problem.contains("[metrics] tls_cert")
+                && problem.contains("--metrics-tls-key")
+                && problem.contains("[metrics] tls_key"),
+            "names the half given and both ways to give the other: {problem}"
+        );
+
+        let mut config = crate::config::Config::default();
+        config.api.tls_key = Some("file.key".into());
+        let cli = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let problem = cli.tls_settings_problem(&config).expect("an API key alone");
+        assert!(problem.contains("--api-tls-cert"), "{problem}");
+
+        let mut config = crate::config::Config::default();
+        config.hep.tls_ca = Some(PathBuf::from("a.pem"));
+        config.hep.tls_extra_ca = Some(PathBuf::from("b.pem"));
+        let problem = cli
+            .tls_settings_problem(&config)
+            .expect("replace and add at once");
+        assert!(
+            problem.contains("[hep] tls_ca") && problem.contains("[hep] tls_extra_ca"),
+            "{problem}"
+        );
+
+        let listener = [
+            "sipnab",
+            "--hep-listen",
+            "127.0.0.1:9060",
+            "--hep-listen-transport",
+            "tls",
+        ];
+        let cli = Cli::try_parse_from(listener).expect("parses");
+        let problem = cli
+            .tls_settings_problem(&crate::config::Config::default())
+            .expect("a TLS listener with nothing to present");
+        assert!(
+            problem.contains("--hep-tls-cert") && problem.contains("[hep] tls_cert"),
+            "{problem}"
+        );
+        let mut config = crate::config::Config::default();
+        config.hep.tls_cert = Some(PathBuf::from("c.pem"));
+        config.hep.tls_key = Some(PathBuf::from("k.pem"));
+        assert_eq!(
+            cli.tls_settings_problem(&config),
+            None,
+            "the file's pair is enough for a TLS listener"
         );
     }
 
@@ -6834,6 +7265,65 @@ mod tests {
         }
     }
 
+    /// `--hep-tls-extra-ca` on a plaintext sender verifies nothing and is
+    /// refused naming the transport that would make it live; with no sender
+    /// at all clap refuses it; beside `--hep-tls-ca` it contradicts it; and on
+    /// a TLS sender it is accepted (the negative control).
+    #[test]
+    fn the_extra_ca_flag_is_refused_where_it_would_do_nothing() {
+        let base = ["sipnab", "-N", "-d", "eth0", "-H", "127.0.0.1:9060"];
+        let mut plaintext = base.to_vec();
+        plaintext.extend([
+            "--hep-send-transport",
+            "tcp",
+            "--hep-tls-extra-ca",
+            "ca.pem",
+        ]);
+        let refusal = Cli::try_parse_from(&plaintext)
+            .expect("clap accepts it; validate must not")
+            .validate()
+            .expect_err("an extra CA verifies nothing on a plaintext sender");
+        assert!(
+            refusal.to_string().contains("--hep-tls-extra-ca")
+                && refusal.to_string().contains("--hep-send-transport tls"),
+            "the refusal names the flag and the transport it needs: {refusal}"
+        );
+
+        assert!(
+            Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--hep-tls-extra-ca", "ca.pem"])
+                .is_err(),
+            "with no sender transport the flag configures nothing"
+        );
+
+        let mut both = base.to_vec();
+        both.extend([
+            "--hep-send-transport",
+            "tls",
+            "--hep-tls-ca",
+            "a.pem",
+            "--hep-tls-extra-ca",
+            "b.pem",
+        ]);
+        let err = Cli::try_parse_from(&both).expect_err("replace and add at once");
+        assert!(
+            err.to_string().contains("--hep-tls-extra-ca")
+                && err.to_string().contains("--hep-tls-ca"),
+            "the conflict names both flags: {err}"
+        );
+
+        let mut tls = base.to_vec();
+        tls.extend([
+            "--hep-send-transport",
+            "tls",
+            "--hep-tls-extra-ca",
+            "ca.pem",
+        ]);
+        Cli::try_parse_from(&tls)
+            .expect("parses")
+            .validate()
+            .expect("an extra CA on a TLS sender is what the flag is for");
+    }
+
     /// `--hep-tls-ca` belongs to the sender and the certificate pair to the
     /// listener; each is refused on the other side's transport.
     #[test]
@@ -6882,7 +7372,9 @@ mod tests {
     }
 
     /// A TLS listener with no certificate cannot serve one, and says so at
-    /// startup rather than at the first connection.
+    /// startup rather than at the first connection. Checked once the config
+    /// file is read (`tls_settings_problem`), because `[hep] tls_cert` and
+    /// `tls_key` can supply the pair; `validate` alone must accept it.
     #[test]
     fn a_tls_hep_listener_without_a_certificate_is_refused() {
         let naked = Cli::try_parse_from([
@@ -6893,11 +7385,13 @@ mod tests {
             "--hep-listen-transport",
             "tls",
         ])
-        .expect("clap accepts it; validate must not");
-        let refusal = naked
+        .expect("clap accepts it");
+        naked
             .validate()
-            .expect_err("a TLS server with no certificate cannot complete a handshake");
-        let text = refusal.to_string();
+            .expect("the pair may still come from the config file");
+        let text = naked
+            .tls_settings_problem(&crate::config::Config::default())
+            .expect("a TLS server with no certificate cannot complete a handshake");
         assert!(
             text.contains("--hep-tls-cert") && text.contains("--hep-tls-key"),
             "the refusal names both halves the listener is missing: {text}"

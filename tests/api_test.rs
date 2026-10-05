@@ -15,6 +15,8 @@ mod pcap_build;
 mod server;
 #[path = "support/mod.rs"]
 mod support;
+#[path = "support/tls_pki.rs"]
+mod tls_pki;
 
 use server::{ApiServer, run_and_capture_stderr};
 use support::schema::{assert_valid, load_validator};
@@ -1037,136 +1039,25 @@ fn rate_limiter_rejects_when_per_ip_budget_exhausted() {
     );
 }
 
-/// A certificate authority and a server certificate it issued for
-/// `127.0.0.1`, written as PEM files into a temporary directory.
-///
-/// A CA plus a leaf rather than one self-signed certificate: webpki, which
-/// the rustls client verifies with, does not accept an end-entity
-/// certificate as its own trust anchor, and a leaf issued by a private CA is
-/// also what an operator hands `--api-tls-cert` in practice.
-struct TestPki {
-    /// Holds the files; removed on drop.
-    _dir: tempfile::TempDir,
-    /// The server certificate, `--api-tls-cert`.
-    cert: String,
-    /// The server's private key, mode 0600, `--api-tls-key`.
-    key: String,
-    /// The CA a client must trust to accept `cert`.
-    ca: rustls::pki_types::CertificateDer<'static>,
+/// A CA and a server certificate it issued, from the helper every listener's
+/// TLS tests share (`support/tls_pki.rs`).
+fn test_pki() -> tls_pki::TestPki {
+    tls_pki::test_pki("api")
 }
 
-/// Issue a fresh [`TestPki`].
-fn test_pki() -> TestPki {
-    use rcgen::{
-        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
-        KeyPair, KeyUsagePurpose, SanType,
-    };
-    let dir = tempfile::tempdir().expect("tempdir");
-    let ca_key = KeyPair::generate().expect("CA key");
-    let mut ca_params = CertificateParams::default();
-    ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
-    ca_params.key_usages = vec![
-        KeyUsagePurpose::KeyCertSign,
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    ca_params
-        .distinguished_name
-        .push(DnType::CommonName, "sipnab API test CA");
-    let ca_cert = ca_params
-        .clone()
-        .self_signed(&ca_key)
-        .expect("self-signed CA");
-    let issuer = Issuer::new(ca_params, &ca_key);
-
-    let leaf_key = KeyPair::generate().expect("server key");
-    let mut leaf = CertificateParams::default();
-    leaf.is_ca = IsCa::ExplicitNoCa;
-    leaf.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
-        std::net::Ipv4Addr::LOCALHOST,
-    ))];
-    leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    leaf.distinguished_name
-        .push(DnType::CommonName, "sipnab API test server");
-    let leaf_cert = leaf.signed_by(&leaf_key, &issuer).expect("issue the leaf");
-
-    let cert = dir.path().join("api.pem");
-    let key = dir.path().join("api.key");
-    std::fs::write(&cert, leaf_cert.pem()).expect("write api.pem");
-    std::fs::write(&key, leaf_key.serialize_pem()).expect("write api.key");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod the key");
-    }
-    TestPki {
-        cert: cert.to_string_lossy().into_owned(),
-        key: key.to_string_lossy().into_owned(),
-        ca: ca_cert.der().clone(),
-        _dir: dir,
-    }
+/// The CLI arguments that turn on the API's HTTPS with `pki`'s files.
+fn api_args(pki: &tls_pki::TestPki) -> [&str; 4] {
+    pki.args("--api-tls-cert", "--api-tls-key")
 }
 
-impl TestPki {
-    /// The CLI arguments that turn on HTTPS with this certificate.
-    fn args(&self) -> [&str; 4] {
-        ["--api-tls-cert", &self.cert, "--api-tls-key", &self.key]
-    }
-}
-
-/// `GET path` over HTTPS, trusting only `ca`.
-///
-/// # Returns
-///
-/// `(status, body)`, or the error text when the TLS handshake or the
-/// exchange failed — a test about a refused handshake asserts on it.
+/// `GET path` over HTTPS, trusting only `ca`: `(status, body)`, or the error
+/// text when the handshake or the exchange failed.
 fn https_get(
     addr: &str,
     path: &str,
     ca: &rustls::pki_types::CertificateDer<'static>,
 ) -> Result<(u16, String), String> {
-    use std::io::{Read, Write};
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(ca.clone())
-        .map_err(|e| format!("trust store: {e}"))?;
-    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| format!("protocol versions: {e}"))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let port = addr.rsplit_once(':').map(|(_, p)| p).unwrap_or_default();
-    let target = format!("127.0.0.1:{port}");
-    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("IP server name");
-    let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name)
-        .map_err(|e| format!("client: {e}"))?;
-    let sock = std::net::TcpStream::connect(&target).map_err(|e| format!("connect: {e}"))?;
-    sock.set_read_timeout(Some(test_timeout(10))).ok();
-    let mut tls = rustls::StreamOwned::new(conn, sock);
-    tls.write_all(
-        format!("GET {path} HTTP/1.1\r\nHost: {target}\r\nConnection: close\r\n\r\n").as_bytes(),
-    )
-    .map_err(|e| format!("handshake or write: {e}"))?;
-    let mut raw = Vec::new();
-    match tls.read_to_end(&mut raw) {
-        Ok(_) => {}
-        // A peer that closes without close_notify: what was read still counts.
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !raw.is_empty() => {}
-        Err(e) => return Err(format!("read: {e}")),
-    }
-    let text = String::from_utf8_lossy(&raw);
-    let status = text
-        .lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse::<u16>().ok())
-        .ok_or_else(|| format!("no status line in response:\n{text}"))?;
-    let body = text
-        .split_once("\r\n\r\n")
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_default();
-    Ok((status, body))
+    tls_pki::https_get(addr, path, ca, test_timeout(10))
 }
 
 /// With `--api-tls-cert` and `--api-tls-key` the REST API serves HTTPS: a
@@ -1174,7 +1065,7 @@ fn https_get(
 #[test]
 fn tls_flags_serve_https() {
     let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     let (status, body) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS /health");
     assert_eq!(status, 200, "/health over HTTPS");
     assert_eq!(body.trim(), "ok");
@@ -1186,7 +1077,7 @@ fn tls_flags_serve_https() {
 #[test]
 fn tls_keeps_the_peer_address_for_guarded_routes() {
     let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     let (status, body) = https_get(&srv.addr, "/v1/dialogs", &pki.ca).expect("HTTPS /v1/dialogs");
     assert_eq!(status, 200, "/v1/dialogs over HTTPS: {body}");
     assert!(body.contains("\"total\""), "a dialog listing: {body}");
@@ -1198,7 +1089,7 @@ fn tls_keeps_the_peer_address_for_guarded_routes() {
 fn plain_http_to_the_tls_port_is_not_served() {
     use std::io::{Read, Write};
     let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     let mut sock = std::net::TcpStream::connect(&srv.addr).expect("connect");
     sock.set_read_timeout(Some(test_timeout(10))).ok();
     sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
@@ -1218,7 +1109,7 @@ fn plain_http_to_the_tls_port_is_not_served() {
 fn a_client_not_trusting_the_certificate_fails_the_handshake() {
     let pki = test_pki();
     let other = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     let err = https_get(&srv.addr, "/health", &other.ca)
         .expect_err("a client trusting another CA must not complete the handshake");
     assert!(
@@ -1235,7 +1126,7 @@ fn a_failed_handshake_does_not_stop_the_server() {
     use std::io::{Read, Write};
     let pki = test_pki();
     let other = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     assert!(https_get(&srv.addr, "/health", &other.ca).is_err());
     for garbage in [
         &b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"[..],
@@ -1258,7 +1149,7 @@ fn a_failed_handshake_does_not_stop_the_server() {
 #[test]
 fn a_silent_client_does_not_block_other_handshakes() {
     let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled(&pki.args());
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki));
     let _silent = std::net::TcpStream::connect(&srv.addr).expect("silent connect");
     let started = std::time::Instant::now();
     let (status, _) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS behind a silent peer");
@@ -1284,7 +1175,7 @@ fn the_non_loopback_warning_fires_only_without_tls() {
         plain.startup_log
     );
     let mut args = vec!["--api-key", "k"];
-    args.extend(pki.args());
+    args.extend(api_args(&pki));
     let tls = ApiServer::spawn_unsettled_on("0.0.0.0:0", &args);
     assert!(
         !tls.startup_log.contains("without TLS"),

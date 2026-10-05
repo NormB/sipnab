@@ -12,8 +12,8 @@
 //! ([`DEFAULT_MAX_CONCURRENT_CONNECTIONS`] unless an operator raised it);
 //! optional HTTP Basic auth protects non-loopback binds.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -111,6 +111,8 @@ impl ConnGate {
 ///   auth (loopback binds only).
 /// * `capture_meter` — Optional capture-queue meter for queue-depth and
 ///   backpressure gauges.
+/// * `tls` — from [`metrics_tls_config`]: `Some` serves HTTPS only on the
+///   port, `None` plain HTTP.
 /// * `max_conn` — Simultaneous connections before further ones get `503`.
 ///   Clamped up to 1: a zero gate refuses every scrape, and the operator-facing
 ///   refusal happens earlier, in `crate::config::LimitsConfig::validate` and in
@@ -131,15 +133,16 @@ impl ConnGate {
 /// Binds a TCP listener, spawns a long-lived accept-loop thread that in
 /// turn spawns one short-lived `metrics-conn` thread per accepted
 /// connection (bounded by the connection gate; excess connections get an
-/// immediate 503), logs the bound address, and warns when Basic auth is
-/// used on a non-loopback bind without TLS. The loop exits on shutdown
-/// request.
+/// immediate 503, or a closed connection over HTTPS), logs the bound address,
+/// and warns when Basic auth is used on a non-loopback bind without TLS. The
+/// loop exits on shutdown request.
 pub fn start_metrics_server(
     bind_addr: SocketAddr,
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
     basic_auth: Option<String>,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
+    tls: Option<Arc<rustls::ServerConfig>>,
     max_conn: usize,
 ) -> anyhow::Result<(SocketAddr, std::thread::JoinHandle<()>)> {
     // Fail closed on a non-loopback bind without authentication, matching
@@ -153,10 +156,11 @@ pub fn start_metrics_server(
              127.0.0.1, or set credentials to publish on a routable address."
         );
     }
-    if !bind_addr.ip().is_loopback() {
+    if tls.is_none() && !bind_addr.ip().is_loopback() {
         tracing::warn!(
             "metrics server bound non-loopback ({bind_addr}) with Basic auth only — \
-             credentials are base64-encoded, not encrypted; terminate TLS upstream."
+             credentials are base64-encoded, not encrypted; serve HTTPS with \
+             --metrics-tls-cert/--metrics-tls-key or terminate TLS upstream."
         );
     }
 
@@ -171,6 +175,9 @@ pub fn start_metrics_server(
     // connect. That is the whole reason the port-reservation race below could
     // exist at all -- see the note on the test helper.
     let actual_addr = listener.local_addr().unwrap_or(bind_addr);
+    if tls.is_some() {
+        tracing::info!("Prometheus metrics server serves HTTPS only (TLS 1.2/1.3)");
+    }
     tracing::info!("Prometheus metrics server listening on {actual_addr}");
 
     let handle = std::thread::Builder::new()
@@ -193,8 +200,13 @@ pub fn start_metrics_server(
                 // Refuse when at the concurrency cap so one slow client cannot
                 // monopolize the server and starve legitimate scrapes.
                 let Some(permit) = gate.try_acquire() else {
-                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
-                    write_simple(&mut stream, "503 Service Unavailable", "503 Busy\n");
+                    // Over HTTPS a plain-text 503 would be garbage to the
+                    // client, and a handshake is the work being refused, so
+                    // the connection is closed instead.
+                    if tls.is_none() {
+                        let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+                        write_simple(&mut stream, "503 Service Unavailable", "503 Busy\n");
+                    }
                     continue;
                 };
 
@@ -204,18 +216,39 @@ pub fn start_metrics_server(
                 let stream_store = Arc::clone(&stream_store);
                 let basic_auth = basic_auth.clone();
                 let capture_meter = capture_meter.clone();
+                let tls = tls.clone();
                 let spawned = std::thread::Builder::new()
                     .name("metrics-conn".to_string())
                     .spawn(move || {
                         // permit is moved in and dropped when the handler ends.
                         let _permit = permit;
-                        handle_metrics_connection(
-                            stream,
-                            &dialog_store,
-                            &stream_store,
-                            basic_auth.as_deref(),
-                            capture_meter.as_ref(),
-                        );
+                        // Set before the handshake, so a client that connects
+                        // and never speaks holds this one slot for 5 s at
+                        // most (slowloris defense), over HTTPS as over HTTP.
+                        let _ = stream.set_read_timeout(Some(CONNECTION_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(CONNECTION_TIMEOUT));
+                        let serve = |s: &mut dyn ReadWrite| {
+                            handle_metrics_connection(
+                                s,
+                                &dialog_store,
+                                &stream_store,
+                                basic_auth.as_deref(),
+                                capture_meter.as_ref(),
+                            );
+                        };
+                        match tls {
+                            None => serve(&mut stream),
+                            Some(config) => {
+                                let Ok(conn) = rustls::ServerConnection::new(config) else {
+                                    return;
+                                };
+                                // The handshake runs inside the first read.
+                                let mut tls = rustls::StreamOwned::new(conn, stream);
+                                serve(&mut tls);
+                                tls.conn.send_close_notify();
+                                let _ = tls.flush();
+                            }
+                        }
                     });
                 if spawned.is_err() {
                     tracing::debug!("Metrics server: failed to spawn connection handler");
@@ -227,9 +260,55 @@ pub fn start_metrics_server(
     Ok((actual_addr, handle))
 }
 
+/// How long one metrics connection may wait on a read or a write, the TLS
+/// handshake included.
+const CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A connection the handler reads a request from and writes a response to:
+/// the TCP stream itself, or a TLS stream over it.
+trait ReadWrite: Read + Write {}
+impl<T: Read + Write> ReadWrite for T {}
+
+/// The HTTPS configuration `--metrics-tls-cert` / `--metrics-tls-key` ask
+/// for, or `None` for plain HTTP.
+///
+/// Called before the server starts, so a bad file stops the run naming it.
+/// The files are read by [`crate::tls_files::server_config`], the reader the
+/// REST API, MCP over HTTP and the HEP listener use. No ALPN protocol is
+/// offered: the server speaks HTTP/1.1 only and a client that sends no ALPN
+/// is the common case for a scraper.
+///
+/// # Errors
+///
+/// Only one of the two flags; an unreadable file; no certificate; no private
+/// key; a key any other user can read; or a key that is not the
+/// certificate's. Each names the file or flag at fault.
+///
+/// # Side effects
+///
+/// Reads and stats both files.
+pub fn metrics_tls_config(
+    cert: Option<&str>,
+    key: Option<&str>,
+) -> anyhow::Result<Option<Arc<rustls::ServerConfig>>> {
+    if let Some(problem) = crate::cli::tls_pair_problem(crate::cli::METRICS_TLS_FLAGS, cert, key) {
+        anyhow::bail!(problem);
+    }
+    let (Some(cert), Some(key)) = (cert, key) else {
+        return Ok(None);
+    };
+    crate::tls_files::server_config(
+        std::path::Path::new(cert),
+        std::path::Path::new(key),
+        "metrics TLS",
+        Vec::new(),
+    )
+    .map(Some)
+}
+
 /// Write a minimal `Connection: close` HTTP response with a plain-text body.
 /// Best-effort: write errors are swallowed.
-fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
+fn write_simple(stream: &mut dyn Write, status_line: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status_line}\r\n\
          Content-Type: text/plain\r\n\
@@ -247,7 +326,8 @@ fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
 ///
 /// # Arguments
 ///
-/// * `stream` — The accepted TCP connection.
+/// * `stream` — The accepted connection, plain TCP or TLS over it, with its
+///   read and write timeouts already set.
 /// * `dialog_store` / `stream_store` — Stores snapshotted by
 ///   `collect_metrics` on a `/metrics` hit.
 /// * `basic_auth` — Expected `user:pass`, or `None` for no auth.
@@ -255,23 +335,18 @@ fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
 ///
 /// # Side effects
 ///
-/// Sets 5 s read/write timeouts (slowloris defense), reads the request
-/// from the socket, takes store read locks while collecting metrics, and
+/// Reads the request from the connection, takes store read locks while collecting metrics, and
 /// writes a 200/401/404 response. All I/O is best-effort; malformed
 /// requests simply end the connection.
 fn handle_metrics_connection(
-    mut stream: TcpStream,
+    stream: &mut dyn ReadWrite,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     basic_auth: Option<&str>,
     capture_meter: Option<&crate::capture::channel::CaptureMeter>,
 ) {
-    // Set a reasonable timeout to prevent slowloris.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
-
     // Read the HTTP request (just enough to get the path and headers).
-    let mut reader = BufReader::new(&stream);
+    let mut reader = BufReader::new(&mut *stream);
     let mut request_line = String::new();
     if reader.read_line(&mut request_line).is_err() {
         return;
@@ -337,7 +412,7 @@ fn handle_metrics_connection(
         );
         let _ = stream.write_all(response.as_bytes());
     } else {
-        write_simple(&mut stream, "404 Not Found", "404 Not Found\n");
+        write_simple(stream, "404 Not Found", "404 Not Found\n");
     }
 }
 
@@ -776,6 +851,7 @@ mod tests {
             populated_stream_store(),
             None,
             None,
+            None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect("server should bind");
@@ -799,6 +875,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
             None,
+            None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect("server should bind");
@@ -816,6 +893,7 @@ mod tests {
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
+            None,
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
@@ -876,6 +954,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
             None,
+            None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         )
         .expect_err("non-loopback without auth must be refused");
@@ -895,6 +974,7 @@ mod tests {
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
             None,
+            None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,
         );
         assert!(
@@ -910,6 +990,7 @@ mod tests {
             ephemeral(),
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
+            None,
             None,
             None,
             DEFAULT_MAX_CONCURRENT_CONNECTIONS,

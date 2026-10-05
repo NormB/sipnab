@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 295, TUI 25, REST 41, MCP 70.
+Totals: CLI 300, TUI 25, REST 41, MCP 70.
 
-## CLI flags (295)
+## CLI flags (300)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -114,6 +114,7 @@ Totals: CLI 295, TUI 25, REST 41, MCP 70.
 - `--hep-silence-warn`
 - `--hep-tls-ca`
 - `--hep-tls-cert`
+- `--hep-tls-extra-ca`
 - `--hep-tls-key`
 - `--hexdump`
 - `--ignore-case`
@@ -184,6 +185,8 @@ Totals: CLI 295, TUI 25, REST 41, MCP 70.
 - `--mcp-sampling-budget`
 - `--mcp-signing-key`
 - `--mcp-signing-key-file`
+- `--mcp-tls-cert`
+- `--mcp-tls-key`
 - `--mcp-token`
 - `--mcp-token-file`
 - `--mcp-token-ttl`
@@ -193,6 +196,8 @@ Totals: CLI 295, TUI 25, REST 41, MCP 70.
 - `--metrics-auth`
 - `--metrics-auth-file`
 - `--metrics-max-conn`
+- `--metrics-tls-cert`
+- `--metrics-tls-key`
 - `--mint-token`
 - `--mos-bad`
 - `--mos-warn`

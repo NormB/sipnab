@@ -483,6 +483,66 @@ fn contrib_example_config_parses_with_real_loader() {
     );
 }
 
+/// The example's commented TLS block is what a reader uncomments, so
+/// uncommented it must be a config the real loader accepts with every key
+/// known and every value landing where the reference says. Commented lines
+/// are invisible to the test above; without this one a renamed key would
+/// leave the example teaching a key sipnab warns about and ignores.
+#[test]
+fn contrib_example_tls_block_uncommented_is_a_real_config() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/sipnabrc.example");
+    let text = std::fs::read_to_string(path).expect("read the example");
+    let block = text
+        .split("# -- TLS for the listeners")
+        .nth(1)
+        .expect("the example carries its TLS block");
+    let uncommented: String = block
+        .lines()
+        .filter_map(|l| l.strip_prefix("# "))
+        .filter(|l| l.starts_with('[') || l.starts_with("tls_"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        sipnab::config::Config::unknown_keys(&uncommented).expect("parses"),
+        Vec::<String>::new(),
+        "every uncommented key is known:\n{uncommented}"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let file = dir.path().join("sipnab.toml");
+    std::fs::write(&file, &uncommented).expect("write");
+    let loaded = sipnab::config::Config::load(Some(file.to_str().expect("utf-8")), false)
+        .expect("the real loader accepts the uncommented block");
+    let c = loaded.config;
+    assert_eq!(c.api.tls_cert.as_deref(), Some("/etc/sipnab/api.pem"));
+    assert_eq!(c.api.tls_key.as_deref(), Some("/etc/sipnab/api.key"));
+    assert_eq!(c.mcp.tls_cert.as_deref(), Some("/etc/sipnab/mcp.pem"));
+    assert_eq!(c.mcp.tls_key.as_deref(), Some("/etc/sipnab/mcp.key"));
+    assert_eq!(
+        c.metrics.tls_cert.as_deref(),
+        Some("/etc/sipnab/metrics.pem")
+    );
+    assert_eq!(
+        c.metrics.tls_key.as_deref(),
+        Some("/etc/sipnab/metrics.key")
+    );
+    assert_eq!(
+        c.hep.tls_extra_ca.as_deref(),
+        Some(std::path::Path::new("/etc/sipnab/collector-ca.pem"))
+    );
+    assert_eq!(
+        c.hep.tls_ca, None,
+        "the example sets one trust key, not both"
+    );
+    assert_eq!(
+        c.hep.tls_cert.as_deref(),
+        Some(std::path::Path::new("/etc/sipnab/hep.pem"))
+    );
+    assert_eq!(
+        c.hep.tls_key.as_deref(),
+        Some(std::path::Path::new("/etc/sipnab/hep.key"))
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  [limits]: every documented key must change what the binary does
 // ═══════════════════════════════════════════════════════════════════════════

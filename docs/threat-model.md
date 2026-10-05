@@ -127,8 +127,8 @@ metrics endpoint (`--metrics`) serves Prometheus counters.
 | A token for one surface opens the other. | The audience check is unconditional, so an API token fails on MCP and the reverse. | [`src/auth.rs::verify_signed`](https://github.com/NormB/sipnab/blob/main/src/auth.rs) |
 | An attacker guesses tokens at high speed. | The per-client rate limit runs *before* authentication, so a wrong guess costs the same budget as a right one. | [`src/output/api.rs::guard_scoped`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 | A read-only credential triggers a ban on another system. | TFPS ban and unban need a token with the `actions` scope *and* a server-side setting that enables them. | [`src/output/api.rs::action_guard`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
-| A network observer reads bearer tokens or capture data in transit. | With `--api-tls-cert` and `--api-tls-key` the API serves HTTPS only (TLS 1.2 and 1.3), refuses a world-readable key or a key that does not match the certificate at startup, and refuses to start on only one of the two flags rather than serving plain HTTP. | [`src/output/api.rs::api_tls_config`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/tls_files.rs::server_config`](https://github.com/NormB/sipnab/blob/main/src/tls_files.rs) |
-| A client that connects and never finishes a TLS handshake holds the listener. | Each handshake runs in its own task with a 10-second timeout, at most 256 at once; sipnab closes connections past that. | [`src/output/api.rs::accept_tls`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
+| A network observer reads bearer tokens or capture data in transit. | With `--api-tls-cert` and `--api-tls-key` the API serves HTTPS only (TLS 1.2 and 1.3), refuses a world-readable key or a key that does not match the certificate at startup, and refuses to start on only one of the two flags rather than serving plain HTTP. HTTP MCP (`--mcp-tls-cert` / `--mcp-tls-key`) and the metrics endpoint (`--metrics-tls-cert` / `--metrics-tls-key`) apply the same checks through the same reader. | [`src/output/api.rs::api_tls_config`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/tls_files.rs::server_config`](https://github.com/NormB/sipnab/blob/main/src/tls_files.rs), [`src/cli.rs::tls_pair_problem`](https://github.com/NormB/sipnab/blob/main/src/cli.rs) |
+| A client that connects and never finishes a TLS handshake holds the listener. | On the API and HTTP MCP, each handshake runs in its own task with a 10-second timeout, at most 256 at once; sipnab closes connections past that. On the metrics endpoint each connection has its own thread with a 5-second read and write timeout, within the `--metrics-max-conn` limit. | [`src/tls_listener.rs::accept_tls`](https://github.com/NormB/sipnab/blob/main/src/tls_listener.rs), [`src/output/prometheus_server.rs::start_metrics_server`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs) |
 | A slow or huge request ties up the server. | Every route has a 30-second timeout and a 1 MiB body limit. | [`src/output/api.rs::build_router`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/output/api.rs::REQUEST_TIMEOUT`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/output/api.rs::MAX_REQUEST_BODY_BYTES`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 
 ## MCP clients
@@ -222,14 +222,15 @@ Each item below is a threat the code does not fully answer today. Most are
 choices with a stated reason, and some are open work. An operator who needs
 protection against one of these has to supply it outside sipnab.
 
-1. **TLS is opt-in on the REST API and absent on HTTP MCP.** The REST API
-   serves HTTPS only when started with `--api-tls-cert` and `--api-tls-key`
-   ([`src/output/api.rs::prepare_listener`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)).
-   Without them, and on HTTP MCP, which has no TLS option, the server logs a
-   warning on a non-loopback bind but still starts. Without TLS or a reverse
-   proxy, bearer tokens and capture data cross the network in clear text. The
-   metrics endpoint has no TLS either and uses Basic auth, which is encoding,
-   not encryption.
+1. **TLS is opt-in on every network listener.** The REST API, HTTP MCP and
+   the metrics endpoint serve HTTPS only when given a certificate and key
+   (`--api-tls-cert`, `--mcp-tls-cert`, `--metrics-tls-cert` and their key
+   flags, or the `tls_cert` / `tls_key` keys in `sipnab.toml`;
+   [`src/cli.rs::tls_settings_problem`](https://github.com/NormB/sipnab/blob/main/src/cli.rs)).
+   Without them each server logs a warning on a non-loopback bind but still
+   starts. Without TLS or a reverse proxy, bearer tokens, the metrics
+   endpoint's Basic credential (encoding, not encryption) and capture data
+   cross the network in clear text.
 2. **Loopback means no authentication.** With no key configured, the REST API
    and HTTP MCP accept every request on a loopback bind
    ([`src/output/api.rs::authenticate`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs)).

@@ -45,6 +45,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "journal",
             "mcp",
             "api",
+            "metrics",
+            "hep",
         ]
         .as_slice(),
     );
@@ -226,8 +228,18 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         ]
         .as_slice(),
     );
-    m.insert("mcp", ["tools", "output_schemas", "bundles"].as_slice());
-    m.insert("api", ["allowed_hosts"].as_slice());
+    m.insert(
+        "mcp",
+        ["tools", "output_schemas", "bundles", "tls_cert", "tls_key"].as_slice(),
+    );
+    m.insert("api", ["allowed_hosts", "tls_cert", "tls_key"].as_slice());
+    // [metrics] and [hep] hold the listeners' TLS files, the settings a
+    // deployment fixes once rather than types on every run.
+    m.insert("metrics", ["tls_cert", "tls_key"].as_slice());
+    m.insert(
+        "hep",
+        ["tls_ca", "tls_extra_ca", "tls_cert", "tls_key"].as_slice(),
+    );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
     m.insert(
         "names",
@@ -399,9 +411,16 @@ pub struct Config {
     /// The MCP server's tool surface -- see [`McpConfig`].
     #[serde(default)]
     pub mcp: McpConfig,
-    /// The REST API's `Host` allowlist -- see [`ApiConfig`].
+    /// The REST API's `Host` allowlist and TLS files -- see [`ApiConfig`].
     #[serde(default)]
     pub api: ApiConfig,
+    /// The metrics endpoint's TLS files -- see [`MetricsConfig`].
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+    /// The HEP sender's trust and the HEP listener's TLS files -- see
+    /// [`HepConfig`].
+    #[serde(default)]
+    pub hep: HepConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -413,6 +432,42 @@ pub struct ApiConfig {
     /// `127.0.0.1`, `::1` and the bound address, against DNS rebinding.
     /// `"*"` disables the check. `--api-allowed-host` replaces the list.
     pub allowed_hosts: Option<Vec<String>>,
+    /// PEM certificate chain the REST API serves HTTPS with. Needs
+    /// `tls_key`. `--api-tls-cert` replaces it.
+    pub tls_cert: Option<String>,
+    /// PEM private key for `tls_cert`. `--api-tls-key` replaces it.
+    pub tls_key: Option<String>,
+}
+
+/// `[metrics]`: the metrics endpoint's TLS files. The endpoint itself is
+/// still started by `--metrics`; these keys say how it serves when it is.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct MetricsConfig {
+    /// PEM certificate chain the metrics endpoint serves HTTPS with. Needs
+    /// `tls_key`. `--metrics-tls-cert` replaces it.
+    pub tls_cert: Option<String>,
+    /// PEM private key for `tls_cert`. `--metrics-tls-key` replaces it.
+    pub tls_key: Option<String>,
+}
+
+/// `[hep]`: TLS for the HEP sender and listener. The transports are still
+/// chosen on the command line; these keys say what TLS uses when it is.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct HepConfig {
+    /// CA (PEM) the collector's certificate is verified against, REPLACING
+    /// the host's CA bundle. Exclusive with `tls_extra_ca`. A
+    /// `--hep-tls-ca` or `--hep-tls-extra-ca` flag replaces both keys.
+    pub tls_ca: Option<PathBuf>,
+    /// CA (PEM) trusted IN ADDITION to the host's CA bundle. Exclusive with
+    /// `tls_ca`.
+    pub tls_extra_ca: Option<PathBuf>,
+    /// PEM certificate chain a TLS HEP listener presents. `--hep-tls-cert`
+    /// replaces it.
+    pub tls_cert: Option<PathBuf>,
+    /// PEM private key for `tls_cert`. `--hep-tls-key` replaces it.
+    pub tls_key: Option<PathBuf>,
 }
 
 /// `[mcp]`: which tools the MCP server registers, and whether it advertises
@@ -432,6 +487,11 @@ pub struct McpConfig {
     /// `[mcp.bundles]`: a name for a list of tool and built-in bundle names,
     /// usable in `tools` and `--mcp-tools`.
     pub bundles: std::collections::BTreeMap<String, Vec<String>>,
+    /// PEM certificate chain MCP over HTTP serves HTTPS with. Needs
+    /// `tls_key`. `--mcp-tls-cert` replaces it.
+    pub tls_cert: Option<String>,
+    /// PEM private key for `tls_cert`. `--mcp-tls-key` replaces it.
+    pub tls_key: Option<String>,
 }
 
 /// `[actions]`: what may change another system, per target, as a list of the
@@ -3397,6 +3457,66 @@ column_selector = "F10"
         assert_eq!(
             c.api.allowed_hosts,
             Some(vec!["proxy.example".to_string(), "*".to_string()])
+        );
+    }
+
+    /// Every listener's TLS keys parse and are known: `[api]`, `[mcp]` and
+    /// `[metrics]` take a certificate and key, `[hep]` the sender's trust
+    /// (`tls_ca` or `tls_extra_ca`) and the listener's pair.
+    #[test]
+    fn the_listener_tls_keys_parse_and_are_known() {
+        let text = "[api]\ntls_cert = \"/etc/sipnab/api.pem\"\ntls_key = \"/etc/sipnab/api.key\"\n\
+                    [mcp]\ntls_cert = \"/etc/sipnab/mcp.pem\"\ntls_key = \"/etc/sipnab/mcp.key\"\n\
+                    [metrics]\ntls_cert = \"/etc/sipnab/metrics.pem\"\n\
+                    tls_key = \"/etc/sipnab/metrics.key\"\n\
+                    [hep]\ntls_ca = \"/etc/sipnab/collector-ca.pem\"\n\
+                    tls_extra_ca = \"/etc/sipnab/extra-ca.pem\"\n\
+                    tls_cert = \"/etc/sipnab/hep.pem\"\ntls_key = \"/etc/sipnab/hep.key\"\n";
+        assert_eq!(
+            Config::unknown_keys(text).expect("parses"),
+            Vec::<String>::new()
+        );
+        let c: Config = toml::from_str(text).expect("deserializes");
+        assert_eq!(c.api.tls_cert.as_deref(), Some("/etc/sipnab/api.pem"));
+        assert_eq!(c.api.tls_key.as_deref(), Some("/etc/sipnab/api.key"));
+        assert_eq!(c.mcp.tls_cert.as_deref(), Some("/etc/sipnab/mcp.pem"));
+        assert_eq!(c.mcp.tls_key.as_deref(), Some("/etc/sipnab/mcp.key"));
+        assert_eq!(
+            c.metrics.tls_cert.as_deref(),
+            Some("/etc/sipnab/metrics.pem")
+        );
+        assert_eq!(
+            c.metrics.tls_key.as_deref(),
+            Some("/etc/sipnab/metrics.key")
+        );
+        assert_eq!(
+            c.hep.tls_ca.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/collector-ca.pem"))
+        );
+        assert_eq!(
+            c.hep.tls_extra_ca.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/extra-ca.pem"))
+        );
+        assert_eq!(
+            c.hep.tls_cert.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/hep.pem"))
+        );
+        assert_eq!(
+            c.hep.tls_key.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/hep.key"))
+        );
+    }
+
+    /// A misspelled TLS key is warned at, not silently dropped: the operator
+    /// who wrote `tls_crt` must not believe the listener serves HTTPS.
+    #[test]
+    fn a_misspelled_tls_key_is_reported() {
+        let text = "[metrics]\ntls_crt = \"/etc/sipnab/metrics.pem\"\n[hep]\nca = \"x\"\n";
+        let unknown = Config::unknown_keys(text).expect("parses");
+        assert!(
+            unknown.iter().any(|k| k.contains("tls_crt"))
+                && unknown.iter().any(|k| k.contains("ca")),
+            "both typos are reported: {unknown:?}"
         );
     }
 

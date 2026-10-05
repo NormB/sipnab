@@ -392,10 +392,15 @@ pub mod rate_limit;
 // the REST API and the MCP HTTP transport (which needs `api` to exist).
 #[cfg(feature = "api")]
 pub mod host_allowlist;
-// Server-side TLS files (PEM chain, private key, rustls config) for the two
-// listeners that terminate TLS themselves: HEP and the REST API.
-#[cfg(any(feature = "hep", feature = "api"))]
+// Server-side TLS files (PEM chain, private key, rustls config) for the
+// listeners that terminate TLS themselves: HEP, the REST API, MCP over HTTP
+// and the metrics endpoint.
+#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
 pub(crate) mod tls_files;
+// The HTTPS accept loop the axum servers share: the REST API and MCP over
+// HTTP (which needs `api`).
+#[cfg(feature = "api")]
+pub(crate) mod tls_listener;
 // Native only, alongside `rtpengine`, which together with the MCP surface is
 // its only caller: `reconcile` holds a `TransmitPermit`, which is itself
 // native-gated, and a browser analyzer has no control plane to reconcile

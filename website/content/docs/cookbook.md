@@ -2113,6 +2113,12 @@ any other user on the host can read:
   That is what you want for a private collector, and it means a public
   certificate stops verifying the moment you name a private issuer. Omit the
   flag to use the host's CA bundle instead.
+- **`--hep-tls-extra-ca` joins the trust store instead.** It trusts the named
+  CA in addition to the host's CA bundle, for a sender that should accept a
+  private collector's issuer and the public roots both. sipnab refuses the
+  two flags together. `[hep] tls_ca` and `[hep] tls_extra_ca` in
+  [`sipnab.toml`](@/docs/config.md#hep) set the same choice; a flag for
+  either replaces both keys.
 - A `tcp` or `tls` sender rebuilds its connection when the collector restarts,
   one attempt per packet. The packet that discovers the break can vanish.
   Nothing after it does.

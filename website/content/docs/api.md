@@ -309,8 +309,14 @@ HTTPS instead of plain HTTP on the `--api` port:
 
 ```bash
 sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
+  --api-allowed-host capture.example.net \
   --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key
 ```
+
+`--api-allowed-host` names the host clients use in the URL. On a `0.0.0.0`
+bind sipnab answers any IP address but no name it was not given, and refuses
+the request below with `403` without it
+([Which `Host` names the API answers](#which-host-names-the-api-answers)).
 
 A client then trusts the CA that issued the certificate. With curl:
 
@@ -327,6 +333,9 @@ curl --cacert /etc/sipnab/ca.pem -H "Authorization: Bearer secret" https://captu
   (application-layer protocol negotiation) and does not offer HTTP/2.
 - No client certificates. Clients authenticate with the bearer credential,
   as over plain HTTP.
+- `[api] tls_cert` and `[api] tls_key` in
+  [`sipnab.toml`](@/docs/config.md#api) set the same files. Each flag
+  replaces its own key.
 
 sipnab checks both files at startup and refuses to start, naming the file,
 when:

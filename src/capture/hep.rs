@@ -2917,32 +2917,82 @@ const HEP_SYSTEM_CA_BUNDLES: &[&str] = &[
 
 /// The roots a collector's certificate is checked against.
 ///
-/// With a file named, ONLY that file. A private collector's issuer is the
-/// whole trust store, and quietly adding the host's public roots beside it
-/// would widen what this sender accepts far past what the operator asked for.
-/// A path that cannot be read, or that holds no certificate, is an error
+/// With `--hep-tls-ca` named, ONLY that file. A private collector's issuer is
+/// the whole trust store, and quietly adding the host's public roots beside
+/// it would widen what this sender accepts far past what the operator asked
+/// for. A path that cannot be read, or that holds no certificate, is an error
 /// rather than an empty store.
 ///
-/// With no file named, the host's CA bundle — `$SSL_CERT_FILE` if set, else
-/// the first of [`HEP_SYSTEM_CA_BUNDLES`] that exists. Individual certificates
-/// a system bundle carries that rustls declines are skipped, because one
-/// unsupported root in a 140-certificate bundle must not take the other 139
-/// with it; a bundle from which nothing at all loads is an error.
+/// With `--hep-tls-extra-ca` named, the host's CA bundle AND that file. This
+/// is the explicit, separate choice for an operator whose collector's private
+/// issuer should be trusted in addition to the public roots; it never comes
+/// about by default. The file must hold at least one certificate, and the
+/// host must have a bundle to add it to.
+///
+/// With neither, the host's CA bundle ([`host_ca_bundle`]). Individual
+/// certificates a system bundle carries that rustls declines are skipped,
+/// because one unsupported root in a 140-certificate bundle must not take the
+/// other 139 with it; a bundle from which nothing at all loads is an error.
 ///
 /// # Arguments
 ///
-/// * `ca` — the `--hep-tls-ca` path, or `None` for the host's bundle.
+/// * `ca` — the `--hep-tls-ca` path.
+/// * `extra` — the `--hep-tls-extra-ca` path.
 ///
 /// # Errors
 ///
-/// The named file cannot be read or holds no certificate; or no host bundle
-/// was found, in which case the message names `--hep-tls-ca` as the way out.
+/// Both options named; a named file that cannot be read or holds no
+/// certificate; or no host bundle where one is needed, in which case the
+/// message names `--hep-tls-ca` as the way out.
 ///
 /// # Side effects
 ///
-/// Reads `$SSL_CERT_FILE` and stats the candidate bundle paths when `ca` is
-/// `None`.
-fn hep_tls_roots(ca: Option<&std::path::Path>) -> Result<rustls::RootCertStore> {
+/// Reads `$SSL_CERT_FILE` and stats the candidate bundle paths, then reads
+/// the files that apply.
+fn hep_tls_roots(
+    ca: Option<&std::path::Path>,
+    extra: Option<&std::path::Path>,
+) -> Result<rustls::RootCertStore> {
+    hep_tls_roots_from(ca, extra, host_ca_bundle().as_deref())
+}
+
+/// The host's CA bundle: `$SSL_CERT_FILE` if it names a file, else the first
+/// of [`HEP_SYSTEM_CA_BUNDLES`] that exists, else `None`.
+fn host_ca_bundle() -> Option<std::path::PathBuf> {
+    std::env::var_os("SSL_CERT_FILE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            HEP_SYSTEM_CA_BUNDLES
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.is_file())
+        })
+}
+
+/// [`hep_tls_roots`] with the host's bundle passed in, so the rule can be
+/// driven with any bundle (or none) rather than the one this machine has.
+///
+/// # Arguments
+///
+/// * `ca` — the `--hep-tls-ca` path: the whole store.
+/// * `extra` — the `--hep-tls-extra-ca` path: added to `host_bundle`.
+/// * `host_bundle` — the host's CA bundle, if it has one.
+///
+/// # Errors
+///
+/// As [`hep_tls_roots`].
+fn hep_tls_roots_from(
+    ca: Option<&std::path::Path>,
+    extra: Option<&std::path::Path>,
+    host_bundle: Option<&std::path::Path>,
+) -> Result<rustls::RootCertStore> {
+    ensure!(
+        !(ca.is_some() && extra.is_some()),
+        "--hep-tls-ca and --hep-tls-extra-ca cannot both be used: --hep-tls-ca \
+         trusts only its file, --hep-tls-extra-ca trusts its file in addition \
+         to the host's CA bundle"
+    );
     let mut store = rustls::RootCertStore::empty();
     if let Some(path) = ca {
         for cert in pem_certificates(path)? {
@@ -2952,20 +3002,18 @@ fn hep_tls_roots(ca: Option<&std::path::Path>) -> Result<rustls::RootCertStore> 
         }
         return Ok(store);
     }
-    let bundle = std::env::var_os("SSL_CERT_FILE")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            HEP_SYSTEM_CA_BUNDLES
-                .iter()
-                .map(std::path::PathBuf::from)
-                .find(|p| p.is_file())
-        })
-        .with_context(
-            || "no system CA bundle found; name the collector's issuer with --hep-tls-ca",
-        )?;
+    let bundle = match (host_bundle, extra) {
+        (Some(bundle), _) => bundle,
+        (None, Some(_)) => bail!(
+            "no system CA bundle found for --hep-tls-extra-ca to add to; name \
+             the collector's issuer with --hep-tls-ca to trust only that file"
+        ),
+        (None, None) => {
+            bail!("no system CA bundle found; name the collector's issuer with --hep-tls-ca")
+        }
+    };
     let mut added = 0usize;
-    for cert in pem_certificates(&bundle)? {
+    for cert in pem_certificates(bundle)? {
         if store.add(cert).is_ok() {
             added += 1;
         }
@@ -2976,6 +3024,13 @@ fn hep_tls_roots(ca: Option<&std::path::Path>) -> Result<rustls::RootCertStore> 
          collector's issuer with --hep-tls-ca",
         bundle.display()
     );
+    if let Some(path) = extra {
+        for cert in pem_certificates(path)? {
+            store
+                .add(cert)
+                .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
+        }
+    }
     Ok(store)
 }
 
@@ -3211,8 +3266,12 @@ pub struct HepSenderOpts<'a> {
     /// Which transport carries the feed (`--hep-send-transport`).
     pub transport: HepTransport,
     /// Certificate authority the collector is verified against under
-    /// [`HepTransport::Tls`] (`--hep-tls-ca`); `None` uses the host's bundle.
+    /// [`HepTransport::Tls`] (`--hep-tls-ca`), REPLACING the host's bundle;
+    /// `None` uses the host's bundle.
     pub tls_ca: Option<&'a std::path::Path>,
+    /// Certificate authority trusted IN ADDITION to the host's bundle under
+    /// [`HepTransport::Tls`] (`--hep-tls-extra-ca`). Exclusive with `tls_ca`.
+    pub tls_extra_ca: Option<&'a std::path::Path>,
 }
 
 /// A sink writing whole HEP packets to one TCP collector, reconnecting when
@@ -3301,6 +3360,7 @@ fn hep_tcp_sink(
 /// * `server_name` — the name the certificate must match, from
 ///   [`server_name_of`].
 /// * `ca` — `--hep-tls-ca`, or `None` for the host's bundle.
+/// * `extra` — `--hep-tls-extra-ca`, added to the host's bundle.
 ///
 /// # Returns
 ///
@@ -3321,6 +3381,7 @@ fn hep_tls_sink(
     dest: std::net::SocketAddr,
     server_name: &str,
     ca: Option<&std::path::Path>,
+    extra: Option<&std::path::Path>,
 ) -> Result<(HepSink, std::net::SocketAddr)> {
     use std::io::Write;
     use std::net::TcpStream;
@@ -3329,7 +3390,7 @@ fn hep_tls_sink(
         rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
             .with_safe_default_protocol_versions()
             .context("HEP TLS sender: no usable protocol versions")?
-            .with_root_certificates(hep_tls_roots(ca)?)
+            .with_root_certificates(hep_tls_roots(ca, extra)?)
             .with_no_client_auth(),
     );
     let name = rustls::pki_types::ServerName::try_from(server_name.to_string())
@@ -3431,6 +3492,7 @@ impl HepSender {
                 auth_mode,
                 transport: HepTransport::Udp,
                 tls_ca: None,
+                tls_extra_ca: None,
             },
         )
     }
@@ -3477,6 +3539,7 @@ impl HepSender {
             auth_mode,
             transport,
             tls_ca,
+            tls_extra_ca,
         } = opts;
         let permit = HepExportPermit::for_destination(destination);
         let dest_addr = destination.as_str();
@@ -3516,7 +3579,7 @@ impl HepSender {
                         "--hep-send '{dest_addr}' has no host:port to take a certificate name from"
                     )
                 })?;
-                hep_tls_sink(dest, &name, tls_ca)?
+                hep_tls_sink(dest, &name, tls_ca, tls_extra_ca)?
             }
         };
         let nonce_salt = std::time::SystemTime::now()
@@ -4830,7 +4893,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (ca, _cert, _key) = test_chain(dir.path());
 
-        let only = hep_tls_roots(Some(&ca)).expect("one CA loads");
+        let only = hep_tls_roots(Some(&ca), None).expect("one CA loads");
         assert_eq!(
             only.len(),
             1,
@@ -4839,17 +4902,150 @@ mod tests {
 
         let missing = dir.path().join("absent.pem");
         assert!(
-            hep_tls_roots(Some(&missing)).is_err(),
+            hep_tls_roots(Some(&missing), None).is_err(),
             "a CA path that cannot be read is an error, not an empty store"
         );
 
         let empty = dir.path().join("empty.pem");
         std::fs::write(&empty, b"# no certificate here\n").expect("write");
-        let err = hep_tls_roots(Some(&empty)).expect_err("a file with no certificate is an error");
+        let err =
+            hep_tls_roots(Some(&empty), None).expect_err("a file with no certificate is an error");
         assert!(
             format!("{err:#}").contains("no certificate"),
             "the refusal must say what was missing: {err:#}"
         );
+    }
+
+    /// `--hep-tls-extra-ca` ADDS its certificates to the host's bundle: the
+    /// store holds both. The negative control is the same bundle without the
+    /// extra file, which holds one.
+    #[test]
+    fn an_extra_ca_joins_the_host_bundle_rather_than_replacing_it() {
+        let host = tempfile::tempdir().expect("tempdir");
+        let extra = tempfile::tempdir().expect("tempdir");
+        let (host_ca, _, _) = test_chain(host.path());
+        let (extra_ca, _, _) = test_chain(extra.path());
+
+        let joined = hep_tls_roots_from(None, Some(&extra_ca), Some(&host_ca))
+            .expect("the host bundle and the extra CA load");
+        assert_eq!(joined.len(), 2, "host root plus the extra CA");
+
+        let host_only = hep_tls_roots_from(None, None, Some(&host_ca)).expect("host bundle");
+        assert_eq!(
+            host_only.len(),
+            1,
+            "without the extra CA only the host root"
+        );
+    }
+
+    /// `--hep-tls-ca` still REPLACES the store when a host bundle exists:
+    /// adding `--hep-tls-extra-ca` as a second option must not have changed
+    /// the first.
+    #[test]
+    fn a_named_ca_still_ignores_the_host_bundle() {
+        let host = tempfile::tempdir().expect("tempdir");
+        let named = tempfile::tempdir().expect("tempdir");
+        let (host_ca, _, _) = test_chain(host.path());
+        let (named_ca, _, _) = test_chain(named.path());
+        let only = hep_tls_roots_from(Some(&named_ca), None, Some(&host_ca)).expect("loads");
+        assert_eq!(only.len(), 1, "the named CA is the whole store");
+    }
+
+    /// An extra CA on a host with no bundle is refused, naming both options:
+    /// the operator asked for "the host's roots and this one", and silently
+    /// trusting only this one would be the replace behavior they did not
+    /// choose.
+    #[test]
+    fn an_extra_ca_with_no_host_bundle_is_refused_naming_both_options() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (extra_ca, _, _) = test_chain(dir.path());
+        let err =
+            hep_tls_roots_from(None, Some(&extra_ca), None).expect_err("no host bundle to add to");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("--hep-tls-extra-ca") && text.contains("--hep-tls-ca"),
+            "the refusal must name the option given and the one to use instead: {text}"
+        );
+    }
+
+    /// An extra CA file with no certificate in it is an error, not a no-op.
+    #[test]
+    fn an_extra_ca_file_with_no_certificate_is_refused() {
+        let host = tempfile::tempdir().expect("tempdir");
+        let (host_ca, _, _) = test_chain(host.path());
+        let empty = host.path().join("empty-extra.pem");
+        std::fs::write(&empty, b"# no certificate here\n").expect("write");
+        let err = hep_tls_roots_from(None, Some(&empty), Some(&host_ca))
+            .expect_err("an empty extra CA is an error");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("no certificate") && text.contains("empty-extra.pem"),
+            "the refusal must name the file and what was missing: {text}"
+        );
+    }
+
+    /// Both options at once are refused, naming both: one says "only this
+    /// CA", the other "the host's roots and this CA".
+    #[test]
+    fn a_named_ca_and_an_extra_ca_together_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ca, _, _) = test_chain(dir.path());
+        let err = hep_tls_roots_from(Some(&ca), Some(&ca), Some(&ca))
+            .expect_err("replace and add at once is contradictory");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("--hep-tls-ca") && text.contains("--hep-tls-extra-ca"),
+            "the refusal must name both options: {text}"
+        );
+    }
+
+    /// Through the real sender: a collector whose certificate is issued by
+    /// the extra CA is accepted on a host whose bundle does not hold that CA.
+    /// Without a host bundle (a minimal container) the sender refuses at
+    /// startup instead, and that refusal is asserted.
+    #[test]
+    fn the_sender_trusts_a_collector_issued_by_the_extra_ca() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (ca, cert, key) = test_chain(dir.path());
+        let (socket, bind) = loopback_tcp();
+        let config = CaptureConfig {
+            count: Some(1),
+            duration: Some(Duration::from_secs(20)),
+            ..CaptureConfig::default()
+        };
+        let (rx, _done) = start_listener(
+            socket,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            config,
+        );
+        let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &bind);
+        let sent = HepSender::for_destination(
+            &destination,
+            HepSenderOpts {
+                transport: HepTransport::Tls,
+                tls_extra_ca: Some(&ca),
+                ..HepSenderOpts::default()
+            },
+        );
+        match host_ca_bundle() {
+            Some(_) => {
+                let sender = sent.expect("the extra CA issued the collector's certificate");
+                sender
+                    .send_payload(&v4_endpoint(), Utc::now(), HepProtocol::Sip, b"EXTRA-CA")
+                    .expect("send over TLS");
+                assert_eq!(drain_payloads(&rx, 1)[0].as_slice(), b"EXTRA-CA");
+            }
+            None => {
+                let text = match sent {
+                    Ok(_) => panic!("no host bundle: an extra CA has nothing to join"),
+                    Err(e) => format!("{e:#}"),
+                };
+                assert!(text.contains("--hep-tls-ca"), "{text}");
+            }
+        }
     }
 
     /// A private key any local account can read is refused.

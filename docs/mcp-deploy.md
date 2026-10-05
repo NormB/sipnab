@@ -389,7 +389,8 @@ sequenceDiagram
 
 For a capture that runs continuously and answers agents whenever they ask.
 Keep this shape on a trusted network (LAN/VPN): the token authenticates,
-but the transport is plaintext HTTP. Across untrusted networks, use
+but the transport is plaintext HTTP unless you give sipnab a certificate
+([MCP TLS](#mcp-tls)). Across untrusted networks, use
 [an SSH tunnel](#keep-a-capture-running-without-exposing-a-port) or
 [put it behind a proxy that terminates TLS](mcp-estate.md#reach-sipnab-from-outside-your-network)
 instead.
@@ -1485,7 +1486,8 @@ What remains **your** call:
   and [the SSH tunnel (2C)](#keep-a-capture-running-without-exposing-a-port)
   expose nothing.
   [The token service (2B)](#keep-a-capture-running-between-agent-sessions)
-  is plaintext HTTP (LAN/VPN only).
+  is plaintext HTTP (LAN/VPN only) unless it serves HTTPS
+  ([MCP TLS](#mcp-tls)).
   [The nginx TLS endpoint (4)](mcp-estate.md#reach-sipnab-from-outside-your-network)
   is the only shape that belongs
   on the public internet, and even there sipnab stays on loopback behind
@@ -1646,8 +1648,9 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
   `SIPNAB_MCP_SIGNING_KEY`). Otherwise sipnab refuses to start (D18).
 - Prefer `--mcp-token-file` to `--mcp-token`/`SIPNAB_MCP_TOKEN`
   (no token in `ps` output or unit files).
-- For TLS, terminate it in nginx in front of sipnab. Bind sipnab to
-  `127.0.0.1:8731` and let nginx handle the public 443 endpoint.
+- For TLS, give sipnab a certificate and key ([MCP TLS](#mcp-tls)), or
+  terminate TLS in nginx in front of sipnab: bind sipnab to `127.0.0.1:8731`
+  and let nginx handle the public 443 endpoint.
 
 ### Issue a token the client can present
 
@@ -1681,6 +1684,64 @@ sudo cat /etc/sipnab/mcp.token
 ```
 
 and configure it as a bearer token for `http://capture01.example.net:8731`.
+
+### MCP TLS
+
+Give sipnab a certificate and its private key, and MCP over HTTP serves HTTPS
+instead of plain HTTP on the `--mcp-bind` port, with no proxy in front:
+
+```bash
+sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+  --mcp-token-file /etc/sipnab/mcp.token \
+  --mcp-allowed-host capture01.example.net \
+  --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key
+```
+
+`--mcp-allowed-host` names the host clients use in the URL; without it the
+request below gets `403` ([Stop a browser reaching your
+server](#stop-a-browser-reaching-your-server---mcp-allowed-host)).
+
+Check it from the client with curl, trusting the CA that issued the
+certificate and presenting the token from `SIPNAB_MCP_TOKEN`. It prints `ok`:
+
+```bash
+curl --cacert ca.pem -H "Authorization: Bearer $SIPNAB_MCP_TOKEN" https://capture01.example.net:8731/health
+```
+
+Configure the agent with `https://capture01.example.net:8731/mcp`, and make
+the agent trust the CA that issued the certificate.
+
+- `--mcp-tls-cert` is a PEM certificate chain, the server's own certificate
+  first. `--mcp-tls-key` is its PEM private key (`PRIVATE KEY`,
+  `RSA PRIVATE KEY` or `EC PRIVATE KEY`).
+- The port speaks HTTPS only. A plain-HTTP request to it fails the TLS
+  handshake and is not served.
+- TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN and does
+  not offer HTTP/2.
+- No client certificates. Clients authenticate with the bearer token, as over
+  plain HTTP, and the `Host` allowlist below applies unchanged.
+- `[mcp] tls_cert` and `[mcp] tls_key` in
+  [`sipnab.toml`](config-reference.md#mcp) set the same files. Each flag
+  replaces its own key.
+- The flags need `--mcp --mcp-transport http`. With the stdio transport there
+  is no port to serve, and sipnab refuses them.
+
+sipnab checks both files at startup and refuses to start, naming the file,
+when you give only one of the pair, when it cannot read either file, when the
+certificate file holds no certificate or the key file no private key, when
+any other user on the host can read the key file (`chmod 600` it;
+group-readable stays allowed), or when the key does not belong to the
+certificate.
+
+Each handshake runs on its own, gets 10 seconds to finish, and at most 256
+run at once, so a client that connects and sends nothing does not hold up
+anyone else. These are the REST API's limits, from the same code. A
+non-loopback bind still needs a token or signing key, with or without TLS.
+Without TLS sipnab also warns that the bind is plain HTTP, and with TLS it
+does not.
+
+sipnab reads the certificate once, at startup. To pick up a renewed
+certificate, restart sipnab.
 
 ### Stop a browser reaching your server (`--mcp-allowed-host`)
 

@@ -17,9 +17,6 @@ something here matters to you, or something missing should be here, tell us:
 lists what sipnab does not protect against today. We intend to work down that
 list, starting with the network-facing ones:
 
-- **TLS for MCP over HTTP and for the metrics endpoint.** Today neither can
-  serve TLS itself, so you must keep them on loopback or put a TLS-terminating
-  reverse proxy in front. The REST API already serves HTTPS.
 - **Safer sandbox defaults.** The Landlock sandbox and the seccomp system-call
   filter exist but are off by default
   ([seccomp and Landlock](docs/design/syscall-sandbox.md)). We want turning

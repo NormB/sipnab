@@ -2588,6 +2588,7 @@ impl BatchRunner {
                     addr,
                 );
                 let transport = cli.hep_send_transport();
+                let (tls_ca, tls_extra_ca) = cli.hep_tls_trust(config);
                 match crate::capture::hep::HepSender::for_destination(
                     &destination,
                     crate::capture::hep::HepSenderOpts {
@@ -2595,7 +2596,8 @@ impl BatchRunner {
                         auth_key: hep_auth,
                         auth_mode: cli.hep_args.hep_auth_mode,
                         transport,
-                        tls_ca: cli.hep_args.hep_tls_ca.as_deref(),
+                        tls_ca: tls_ca.as_deref(),
+                        tls_extra_ca: tls_extra_ca.as_deref(),
                     },
                 ) {
                     Ok(sender) => {
@@ -3148,6 +3150,9 @@ impl BatchRunner {
                 mcp_tools: cli.mcp_tool_selection(config).unwrap_or_default(),
                 mcp_output_schemas: cli.mcp_output_schemas(config),
                 api_allowed_hosts: cli.api_allowed_hosts(config),
+                api_tls: cli.api_tls_files(config),
+                mcp_tls: cli.mcp_tls_files(config),
+                metrics_tls: cli.metrics_tls_files(config),
                 mcp_row_cap: cli.mcp_row_cap(config),
                 mcp_body_cap: cli.mcp_body_cap(config),
                 mcp_wait_seconds: cli.mcp_wait_cap(config),
