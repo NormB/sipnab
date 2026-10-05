@@ -273,7 +273,7 @@ impl<T: Read + Write> ReadWrite for T {}
 /// for, or `None` for plain HTTP.
 ///
 /// Called before the server starts, so a bad file stops the run naming it.
-/// The files are read by [`crate::tls_files::server_config`], the reader the
+/// The files are read by `crate::tls_files::server_config`, the reader the
 /// REST API, MCP over HTTP and the HEP listener use. No ALPN protocol is
 /// offered: the server speaks HTTP/1.1 only and a client that sends no ALPN
 /// is the common case for a scraper.

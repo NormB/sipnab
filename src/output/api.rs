@@ -1084,11 +1084,11 @@ pub struct ApiServerConfig {
 
 /// How long a connecting client has to finish its TLS handshake. The same
 /// figure for every listener that serves HTTPS: see
-/// [`crate::tls_listener::HANDSHAKE_TIMEOUT`].
+/// `crate::tls_listener::HANDSHAKE_TIMEOUT`.
 pub const API_TLS_HANDSHAKE_TIMEOUT: Duration = crate::tls_listener::HANDSHAKE_TIMEOUT;
 
 /// TLS handshakes the API runs at once before it sheds new connections. See
-/// [`crate::tls_listener::MAX_HANDSHAKES`]. Separate from `--api-max-conn`,
+/// `crate::tls_listener::MAX_HANDSHAKES`. Separate from `--api-max-conn`,
 /// which caps requests in flight once a connection is established, over HTTPS
 /// as over plain HTTP.
 pub const API_TLS_MAX_HANDSHAKES: usize = crate::tls_listener::MAX_HANDSHAKES;

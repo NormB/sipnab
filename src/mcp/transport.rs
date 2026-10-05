@@ -469,7 +469,7 @@ mod http {
     ///
     /// Called when the run starts, before anything listens, so a bad file is
     /// a startup error naming it rather than a line logged from the server
-    /// thread. The files are read by [`crate::tls_files::server_config`], the
+    /// thread. The files are read by `crate::tls_files::server_config`, the
     /// reader the REST API, the metrics endpoint and the HEP listener use.
     ///
     /// # Errors
@@ -522,7 +522,7 @@ mod http {
     ///   `resource_metadata` to every challenge; `None` leaves both off.
     /// * `tls` — from [`mcp_tls_config`]: `Some` serves HTTPS only on `bind`,
     ///   through the accept loop the REST API uses
-    ///   ([`crate::tls_listener::TlsListener`]); `None` serves plain HTTP.
+    ///   (`crate::tls_listener::TlsListener`); `None` serves plain HTTP.
     ///
     /// # Errors
     ///
