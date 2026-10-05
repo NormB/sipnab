@@ -36,6 +36,14 @@ entry that carries them.
   flag replaces both trust keys. Pending flags in `src/settings.rs` fall from
   103 to 98.
 
+### Fixed
+
+- **A `--hep-send` run whose sender cannot start now fails with exit 2.** An
+  unreachable or untrusted collector, or a name that does not resolve, used to
+  be logged as an error while the run went on and exited 0, so
+  `sipnab ... --hep-send collector && echo forwarded` reported success with
+  nothing sent. `--metrics` and `--api` already refused the same way.
+
 ### Changed
 
 - **The home page groups TFPS with fail2ban and gives rtpproxy its own map

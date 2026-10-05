@@ -965,13 +965,15 @@ mod hep_keys {
         let pki = test_pki("hep-none");
         let collector = Collector::spawn(&listener_config(&pki));
         let sender_cfg = config_file(&pki, "sender.toml", "");
-        let (stderr, _) = send(collector.port, &sender_cfg);
-        // The refusal is asserted by its message, not the exit status: a run
-        // whose HEP sender cannot start logs the error and still exits 0
-        // today, which is recorded as its own defect.
+        let (stderr, code) = send(collector.port, &sender_cfg);
+        assert_eq!(
+            code,
+            Some(2),
+            "a collector from an untrusted issuer must fail the run:\n{stderr}"
+        );
         assert!(
             stderr.contains("Failed to establish a TLS session"),
-            "a collector from an untrusted issuer must be refused:\n{stderr}"
+            "the refusal names the handshake:\n{stderr}"
         );
         let mut collector = collector;
         let _ = collector.child.kill();

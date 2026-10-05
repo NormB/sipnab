@@ -938,6 +938,80 @@ fn hep_send_forwards_captured_sip_as_hep3() {
     let _ = terminate(&mut child);
 }
 
+/// Run `sipnab -N -I <fixture> --hep-send <target>` plus `extra` to its end.
+///
+/// # Returns
+///
+/// `(exit code, stderr)`.
+fn hep_send_run(target: &str, extra: &[&str]) -> (Option<i32>, String) {
+    let pcap = format!(
+        "{}/tests/fixtures/sip_call.pcap",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", &pcap, "--hep-send", target, "--quiet"])
+        .args(extra)
+        .env("SIPNAB_LOG", "warn")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run sipnab --hep-send");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A `--hep-send` whose sender cannot start fails the run, exit 2, with the
+/// reason on stderr. It used to log the error and exit 0, so
+/// `sipnab ... --hep-send collector && echo forwarded` printed `forwarded`
+/// with nothing sent: the operator asked for forwarding and the exit status
+/// said they had it. `--metrics` and `--api` already refuse the same way.
+///
+/// Two causes: a TCP collector that refuses the connection, and a host name
+/// that does not resolve. Both are found before the first packet.
+#[test]
+fn a_hep_sender_that_cannot_start_fails_the_run() {
+    // A port nothing listens on: bind, read the number, release it.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = closed.local_addr().expect("addr").port();
+    drop(closed);
+    let target = format!("127.0.0.1:{port}");
+    for (target, extra, what) in [
+        (
+            target.as_str(),
+            &["--hep-send-transport", "tcp"][..],
+            "a refused TCP connection",
+        ),
+        (
+            "collector.invalid:9060",
+            &[][..],
+            "a name that does not resolve",
+        ),
+    ] {
+        let (code, stderr) = hep_send_run(target, extra);
+        assert_eq!(
+            code,
+            Some(2),
+            "{what} must fail the run with exit 2, got {code:?}:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("HEP sender") && stderr.contains(target),
+            "{what}: the error names the sender and the destination:\n{stderr}"
+        );
+    }
+}
+
+/// The negative control: a sender that starts still exits 0, so the fix did
+/// not turn every `--hep-send` run into a failure.
+#[test]
+fn a_hep_sender_that_starts_still_exits_zero() {
+    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+    let (code, stderr) = hep_send_run(&target, &[]);
+    assert_eq!(code, Some(0), "a working sender exits 0:\n{stderr}");
+}
+
 /// A `--hep-send` run ends by saying what it exported: how many packets,
 /// how many failed and why, over which transport, and what "sent" means
 /// there. Before this a failed forward was one `debug!` line, so an agent
