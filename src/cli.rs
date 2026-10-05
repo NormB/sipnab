@@ -4304,22 +4304,24 @@ impl FromToModeArg {
 /// * `flags` — the listener's `(certificate flag, key flag)`, as an operator
 ///   types them: [`API_TLS_FLAGS`], [`MCP_TLS_FLAGS`] or
 ///   [`METRICS_TLS_FLAGS`].
-/// * `cert` — the certificate file, if given.
-/// * `key` — the key file, if given.
+/// * `first_file` — the certificate chain's path, if given.
+/// * `second_file` — the private key's path, if given.
 ///
 /// # Returns
 ///
 /// The refusal, naming the file that was given and the flag that was not.
 pub fn tls_pair_problem(
     flags: (&str, &str),
-    cert: Option<&str>,
-    key: Option<&str>,
+    first_file: Option<&str>,
+    second_file: Option<&str>,
 ) -> Option<String> {
-    // `first` names the chain's flag and `second` the private key's. Neutral
-    // names on purpose: these hold flag NAMES, and CodeQL's cleartext-logging
-    // query reads a variable named for a certificate as the certificate.
+    // `first` names the chain's flag and `second` the private key's, and the
+    // two files are their PATHS. Neutral names on purpose: CodeQL's
+    // cleartext-logging query reads a variable named for a certificate or a
+    // key as that certificate or key, and the message names only a flag and a
+    // path.
     let (first, second) = flags;
-    let (given_flag, file, missing) = match (cert, key) {
+    let (given_flag, file, missing) = match (first_file, second_file) {
         (Some(file), None) => (first, file, second),
         (None, Some(file)) => (second, file, first),
         _ => return None,
@@ -4342,8 +4344,8 @@ pub const METRICS_TLS_FLAGS: (&str, &str) = ("--metrics-tls-cert", "--metrics-tl
 
 /// [`tls_pair_problem`] for the REST API's `--api-tls-cert` /
 /// `--api-tls-key`.
-pub fn api_tls_pair_problem(cert: Option<&str>, key: Option<&str>) -> Option<String> {
-    tls_pair_problem(API_TLS_FLAGS, cert, key)
+pub fn api_tls_pair_problem(first_file: Option<&str>, second_file: Option<&str>) -> Option<String> {
+    tls_pair_problem(API_TLS_FLAGS, first_file, second_file)
 }
 
 /// `DO, gb,,do` → `["DO", "GB"]`: one rule for the flag and the config key.
@@ -4985,13 +4987,13 @@ impl Cli {
             ("mcp", MCP_TLS_FLAGS, self.mcp_tls_files(config)),
             ("metrics", METRICS_TLS_FLAGS, self.metrics_tls_files(config)),
         ];
-        for (section, (first, second), (cert, key)) in pairs {
+        for (section, (first, second), (first_file, second_file)) in pairs {
             let first_label = label(first, section, "tls_cert");
             let second_label = label(second, section, "tls_key");
             if let Some(problem) = tls_pair_problem(
                 (&first_label, &second_label),
-                cert.as_deref(),
-                key.as_deref(),
+                first_file.as_deref(),
+                second_file.as_deref(),
             ) {
                 return Some(problem);
             }

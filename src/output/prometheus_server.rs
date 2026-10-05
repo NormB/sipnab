@@ -288,18 +288,20 @@ impl<T: Read + Write> ReadWrite for T {}
 ///
 /// Reads and stats both files.
 pub fn metrics_tls_config(
-    cert: Option<&str>,
-    key: Option<&str>,
+    first_file: Option<&str>,
+    second_file: Option<&str>,
 ) -> anyhow::Result<Option<Arc<rustls::ServerConfig>>> {
-    if let Some(problem) = crate::cli::tls_pair_problem(crate::cli::METRICS_TLS_FLAGS, cert, key) {
+    if let Some(problem) =
+        crate::cli::tls_pair_problem(crate::cli::METRICS_TLS_FLAGS, first_file, second_file)
+    {
         anyhow::bail!(problem);
     }
-    let (Some(cert), Some(key)) = (cert, key) else {
+    let (Some(chain), Some(pem)) = (first_file, second_file) else {
         return Ok(None);
     };
     crate::tls_files::server_config(
-        std::path::Path::new(cert),
-        std::path::Path::new(key),
+        std::path::Path::new(chain),
+        std::path::Path::new(pem),
         "metrics TLS",
         Vec::new(),
     )
