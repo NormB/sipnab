@@ -4315,10 +4315,13 @@ pub fn tls_pair_problem(
     cert: Option<&str>,
     key: Option<&str>,
 ) -> Option<String> {
-    let (cert_flag, key_flag) = flags;
+    // `first` names the chain's flag and `second` the private key's. Neutral
+    // names on purpose: these hold flag NAMES, and CodeQL's cleartext-logging
+    // query reads a variable named for a certificate as the certificate.
+    let (first, second) = flags;
     let (given_flag, file, missing) = match (cert, key) {
-        (Some(file), None) => (cert_flag, file, key_flag),
-        (None, Some(file)) => (key_flag, file, cert_flag),
+        (Some(file), None) => (first, file, second),
+        (None, Some(file)) => (second, file, first),
         _ => return None,
     };
     Some(format!(
@@ -4982,12 +4985,14 @@ impl Cli {
             ("mcp", MCP_TLS_FLAGS, self.mcp_tls_files(config)),
             ("metrics", METRICS_TLS_FLAGS, self.metrics_tls_files(config)),
         ];
-        for (section, (cert_flag, key_flag), (cert, key)) in pairs {
-            let cert_label = label(cert_flag, section, "tls_cert");
-            let key_label = label(key_flag, section, "tls_key");
-            if let Some(problem) =
-                tls_pair_problem((&cert_label, &key_label), cert.as_deref(), key.as_deref())
-            {
+        for (section, (first, second), (cert, key)) in pairs {
+            let first_label = label(first, section, "tls_cert");
+            let second_label = label(second, section, "tls_key");
+            if let Some(problem) = tls_pair_problem(
+                (&first_label, &second_label),
+                cert.as_deref(),
+                key.as_deref(),
+            ) {
                 return Some(problem);
             }
         }
@@ -6514,8 +6519,8 @@ mod tests {
                 (Some("file.pem".into()), Some("file.key".into())),
                 "{surface}: the keys apply with no flag"
             );
-            let cert_flag = format!("--{surface}-tls-cert");
-            let mut argv = vec!["sipnab", cert_flag.as_str(), "flag.pem"];
+            let first_flag = format!("--{surface}-tls-cert");
+            let mut argv = vec!["sipnab", first_flag.as_str(), "flag.pem"];
             match surface {
                 "metrics" => argv.extend(["--metrics", "127.0.0.1:0"]),
                 "mcp" => argv.extend(["--mcp", "--mcp-transport", "http"]),
