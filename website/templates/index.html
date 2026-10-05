@@ -42,7 +42,7 @@
 <section class="sysmap-section">
   {# The system map: what sipnab reads, what it works out, and where you read
      the answer, above the animation so a visitor sees the whole tool before
-     the one surface sngrep users already know. Plain HTML lists, no script
+     the terminal UI the animation shows. Plain HTML lists, no script
      and no image: an AI agent or a screen reader gets every item as text, it
      renders with scripting off, and it needs no CSP re-pin. The arrows are
      decorative and hidden from assistive technology; the column headings
@@ -59,7 +59,8 @@
           <li><a href="{{ get_url(path='@/docs/homer-sipnab.md') }}">HEP copies from OpenSIPS, Kamailio, rtpengine</a> <code>-L</code> <code>-E</code></li>
           <li><a href="{{ get_url(path='@/docs/tls-capture.md') }}">Encrypted SIP, with TLS keys or eBPF</a> <code>--keylog</code> <code>--uprobe-tls</code></li>
           <li><a href="{{ get_url(path='@/docs/encapsulations.md') }}">VLAN, MPLS, GTP-U, VXLAN, WebSocket</a> <code>--capture-tunnels</code></li>
-          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relays: rtpengine, rtpproxy</a> <code>--rtpengine-control</code></li>
+          <li><a href="{{ get_url(path='@/docs/rtpengine-sipnab.md') }}">Media relay: rtpengine</a> <code>--rtpengine-control</code></li>
+          <li><a href="{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>
         </ul>
       </section>
       <span class="sysmap-arrow" aria-hidden="true"></span>
@@ -77,7 +78,7 @@
       <section class="sysmap-col sysmap-out" aria-labelledby="sysmap-out-h">
         <h3 id="sysmap-out-h">Where you read it</h3>
         <ul>
-          <li><a href="{{ get_url(path='@/docs/tui.md') }}">A terminal UI, like sngrep</a> <code>sipnab</code></li>
+          <li><a href="{{ get_url(path='@/docs/tui.md') }}">An interactive terminal UI</a> <code>sipnab</code></li>
           <li><a href="{{ get_url(path='@/docs/output-formats.md') }}">Text, JSON and reports for scripts</a> <code>-N</code> <code>--json</code></li>
           <li><a href="{{ get_url(path='@/docs/api.md') }}">A REST API</a> <code>--api</code></li>
           <li><a href="{{ get_url(path='@/docs/mcp.md') }}">An MCP server for AI agents</a> <code>--mcp</code></li>
