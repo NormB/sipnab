@@ -37,6 +37,18 @@ mod tui_thread {
     ///
     /// `(dialogs, packets the live detectors observed as SIP)`.
     fn run(args: &[&str], config: &Config) -> (usize, usize) {
+        let frames = super::pcap_build::hep_call_frames("tui-hep@example.com");
+        let (dialogs, observed_sip, _) = run_frames(args, config, &frames);
+        (dialogs, observed_sip)
+    }
+
+    /// [`run`] over any frames.
+    ///
+    /// # Returns
+    ///
+    /// `(dialogs, packets observed as the call's SIP, packets observed at
+    /// all)`.
+    fn run_frames(args: &[&str], config: &Config, frames: &[Vec<u8>]) -> (usize, usize, usize) {
         let cli = Cli::parse_from(args);
         let mut output = TuiOutput::new(&cli, (None, None, None));
         let mut media = TuiMedia::from_cli(&cli);
@@ -46,11 +58,9 @@ mod tui_thread {
         let mut heuristic = RtpHeuristic::new();
         let opts = tui_pipeline_options(&cli, config, false);
         let mut observed_sip = 0usize;
+        let mut observed_any = 0usize;
         let base = chrono::Utc::now();
-        for (i, f) in super::pcap_build::hep_call_frames("tui-hep@example.com")
-            .iter()
-            .enumerate()
-        {
+        for (i, f) in frames.iter().enumerate() {
             let p = Packet {
                 timestamp: base + chrono::Duration::milliseconds(i as i64),
                 data: f.clone().into(),
@@ -73,6 +83,7 @@ mod tui_thread {
                 None,
                 false,
                 |pp: &ParsedPacket| {
+                    observed_any += 1;
                     // The call's own SIP, not the HEP datagram that
                     // carried it: the Call-ID line is in all seven messages,
                     // and a wrapper's payload starts `HEP3`.
@@ -87,7 +98,38 @@ mod tui_thread {
             .expect("process");
         }
         let dialogs = ds.read().len();
-        (dialogs, observed_sip)
+        (dialogs, observed_sip, observed_any)
+    }
+
+    /// A HEP datagram whose IP protocol chunk names no transport (99) is
+    /// counted NOT DECODED and goes no further: no dialog, and the live
+    /// detectors are not handed the wrapper as if it were a UDP packet.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn the_tui_thread_drops_hep_whose_transport_no_rule_names() {
+        sipnab::capture::reset_undecodable_frames();
+        let frame = super::pcap_build::hep_frame_with_ip_proto(99);
+        let (dialogs, _, observed) = run_frames(
+            &["sipnab", "-d", "lo", "-E"],
+            &Config::default(),
+            std::slice::from_ref(&frame),
+        );
+        assert_eq!(dialogs, 0);
+        assert_eq!(observed, 0, "the detectors never see the datagram");
+        assert_eq!(
+            sipnab::capture::undecodable_frames(),
+            1,
+            "counted NOT DECODED"
+        );
+        // The control: without -E the datagram is ordinary UDP, handed on as
+        // such and not counted.
+        sipnab::capture::reset_undecodable_frames();
+        let (_, _, observed) = run_frames(&["sipnab", "-d", "lo"], &Config::default(), &[frame]);
+        assert_eq!(
+            observed, 1,
+            "without -E the UDP datagram reaches the detectors"
+        );
+        assert_eq!(sipnab::capture::undecodable_frames(), 0);
     }
 
     /// `-E` on the TUI's command line unwraps the HEP copy: the call is one
@@ -153,6 +195,44 @@ mod cores {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// Under `--cores`, a HEP datagram whose transport no rule names is
+    /// reported NOT DECODED, as the single-threaded run reports it, and the
+    /// readable call beside it still comes out.
+    #[test]
+    fn cores_reports_undecodable_hep() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pcap = dir.path().join("hep.pcap");
+        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto(99)];
+        frames.extend(super::pcap_build::hep_call_frames("cores-hep@example.com"));
+        super::pcap_build::write_pcap(&pcap, &frames);
+        for cores in ["1", "2"] {
+            let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+                .args([
+                    "-N",
+                    "-I",
+                    pcap.to_str().expect("utf-8"),
+                    "--json-dialogs",
+                    "--no-config",
+                    "-E",
+                    "--cores",
+                    cores,
+                ])
+                .env("NO_COLOR", "1")
+                .output()
+                .expect("run sipnab");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stdout.contains("cores-hep@example.com"),
+                "--cores {cores}: the call:\n{stdout}"
+            );
+            assert!(
+                stderr.contains("NOT DECODED") && stderr.contains("99"),
+                "--cores {cores}: the protocol-99 datagram is reported:\n{stderr}"
+            );
+        }
+    }
+
     /// `--cores 2 -E` reports the call `--cores 1 -E` reports. The control
     /// is `--cores 2` without `-E`, which must report none.
     #[test]
@@ -190,6 +270,12 @@ mod tui_file_open {
             &dir.path().join("hep.pcap"),
             &super::pcap_build::hep_call_frames("open-hep@example.com"),
         );
+        open_dir(dir.path(), hep_parse)
+    }
+
+    /// Open `dir/hep.pcap` from the file browser; the dialog count once the
+    /// load settles.
+    fn open_dir(dir: &std::path::Path, hep_parse: bool) -> usize {
         let options = sipnab::tui::TuiOptions {
             capture_options: sipnab::pipeline::PipelineOptions {
                 hep_parse,
@@ -205,7 +291,7 @@ mod tui_file_open {
                 sipnab::rtp::stream_store::StreamStore::new(100),
             )),
         );
-        app.set_open_dir_for_test(dir.path().to_path_buf());
+        app.set_open_dir_for_test(dir.to_path_buf());
         app.handle_key(KeyCode::Char('O'));
         assert_eq!(
             app.open_entry_names_for_test(),
@@ -228,6 +314,26 @@ mod tui_file_open {
     #[test]
     fn a_capture_opened_in_the_tui_unwraps_hep() {
         assert_eq!(open(true), 1, "the opened HEP copy is one dialog");
+    }
+
+    /// A HEP datagram whose transport no rule names is counted NOT DECODED
+    /// when a capture is opened in the TUI, as in a headless run, and adds no
+    /// dialog. The background load is waited out through the counter.
+    #[test]
+    #[serial_test::serial(undecodable_tally)]
+    fn a_capture_opened_in_the_tui_counts_undecodable_hep() {
+        sipnab::capture::reset_undecodable_frames();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto(99)];
+        frames.extend(super::pcap_build::hep_call_frames("open-hep@example.com"));
+        super::pcap_build::write_pcap(&dir.path().join("hep.pcap"), &frames);
+        let dialogs = open_dir(dir.path(), true);
+        assert_eq!(dialogs, 1, "the readable call still loads");
+        assert_eq!(
+            sipnab::capture::undecodable_frames(),
+            1,
+            "the protocol-99 datagram is NOT DECODED"
+        );
     }
 
     /// The negative control. It waits out the deadline, because "nothing
