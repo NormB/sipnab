@@ -255,19 +255,10 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z"/></svg>
         </div>
         <h3>Attack blocking</h3>
-        <p>TFPS stops SIP scanners and fraud in the kernel with XDP, before they reach your SIP proxy, and sipnab works beside it so you can see what it has blocked.</p>
+        <p>TFPS stops SIP scanners and fraud in the kernel with XDP, before they reach your SIP proxy, and sipnab shows you what it has blocked. fail2ban bans scanners and password guessers with an nftables rule, from the lines OpenSIPS logs or the ones sipnab writes.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/tfps.md') }}">Use TFPS</a></li>
           <li><a href="{{ get_url(path='@/docs/tfps-sipnab.md') }}">Run sipnab beside it</a></li>
-        </ul>
-      </div>
-      <div class="feature-card feature-card--blue fade-in-up">
-        <div class="feature-icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        </div>
-        <h3>Firewall bans</h3>
-        <p>fail2ban bans SIP scanners and password guessers with an nftables rule, from the lines OpenSIPS logs or the ones sipnab writes.</p>
-        <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/fail2ban.md') }}">Use fail2ban</a></li>
           <li><a href="{{ get_url(path='@/docs/fail2ban-sipnab.md') }}">Run sipnab beside it</a></li>
         </ul>
@@ -575,7 +566,7 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 70 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the thirteen that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 10761 automated tests. Under 18 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 10763 automated tests. Under 18 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -616,7 +607,7 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="10761" data-suffix="">10761</span>
+        <span class="arch-stat" data-count="10763" data-suffix="">10763</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

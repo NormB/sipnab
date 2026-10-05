@@ -10934,6 +10934,49 @@ fn the_media_relay_tile_pairs_each_relay_with_its_sipnab_guide() {
     }
 }
 
+/// The home page names no other SIP capture tool, in its text or its
+/// template comments (Norm, 2026-10-05: "remove sipgrep and sngrep from the
+/// homepage"), and the system map gives rtpproxy its own item, linked to its
+/// own guide, beside rtpengine's.
+#[test]
+fn the_home_page_names_no_peer_capture_tool_and_maps_rtpproxy() {
+    let page = read("website/templates/index.html");
+    let lower = page.to_ascii_lowercase();
+    for name in ["sngrep", "sipgrep"] {
+        assert!(!lower.contains(name), "the home page names {name}");
+    }
+    let item = "<li><a href=\"{{ get_url(path='@/docs/rtpproxy-sipnab.md') }}\">Media relay: rtpproxy</a> <code>--rtpproxy-control</code></li>";
+    assert!(page.contains(item), "the map has no rtpproxy item: {item}");
+}
+
+/// TFPS and fail2ban do one job, blocking SIP scanners and fraud at the host,
+/// so they share the "Attack blocking" tile as rtpengine and rtpproxy share
+/// "Media relay" (Norm, 2026-10-05), each with its own pair of links, and
+/// no second tile for either remains.
+#[test]
+fn the_attack_blocking_tile_pairs_each_blocker_with_its_sipnab_guide() {
+    let page = read("website/templates/index.html");
+    let tiles: Vec<&str> = page
+        .split("class=\"feature-card")
+        .filter(|card| card.contains("@/docs/tfps.md") || card.contains("@/docs/fail2ban.md"))
+        .collect();
+    assert_eq!(tiles.len(), 1, "TFPS and fail2ban share one tile");
+    let tile = tiles[0];
+    assert!(
+        tile.contains("<h3>Attack blocking</h3>"),
+        "the tile's heading is not \"Attack blocking\":\n{tile}"
+    );
+    for (href, text) in [
+        ("@/docs/tfps.md", "Use TFPS"),
+        ("@/docs/tfps-sipnab.md", "Run sipnab beside it"),
+        ("@/docs/fail2ban.md", "Use fail2ban"),
+        ("@/docs/fail2ban-sipnab.md", "Run sipnab beside it"),
+    ] {
+        let link = format!("<a href=\"{{{{ get_url(path='{href}') }}}}\">{text}</a>");
+        assert!(tile.contains(&link), "missing {link}:\n{tile}");
+    }
+}
+
 /// The voice-stack tiles name the role a component plays, not the product
 /// (Norm, 2026-09-28: "homer is a product. maybe the tile title should not say
 /// homer."), and each pairs "Use <product>" with "Run sipnab beside it", as
@@ -10961,7 +11004,7 @@ fn the_voice_stack_tiles_name_roles_and_pair_their_guides() {
             "@/docs/tfps-sipnab.md",
         ),
         (
-            "Firewall bans",
+            "Attack blocking",
             "@/docs/fail2ban.md",
             "Use fail2ban",
             "@/docs/fail2ban-sipnab.md",

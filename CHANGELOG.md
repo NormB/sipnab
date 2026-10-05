@@ -38,6 +38,12 @@ entry that carries them.
 
 ### Changed
 
+- **The home page groups TFPS with fail2ban and gives rtpproxy its own map
+  item.** TFPS and fail2ban share the "Attack blocking" tile, as rtpengine and
+  rtpproxy share "Media relay". The system map's relay entry is split so
+  rtpproxy links to its own guide with `--rtpproxy-control`. The page no
+  longer names other SIP capture tools.
+
 - **The TLS pairing rules run after the config file is read.** One half of a
   certificate/key pair, from either the flags or the file, stops the run with
   exit 2 naming the flag and the key for the missing half; the check covers
