@@ -155,6 +155,9 @@ pub struct ParallelConfig {
     pub no_rtp: bool,
     /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`).
     pub quiet_bad_parse: bool,
+    /// `--hep-parse` / `[capture] hep_parse`: unwrap HEP-encapsulated
+    /// packets before classifying them.
+    pub hep_parse: bool,
     /// `--rtpproxy-control`: the rtpproxy control socket whose traffic names
     /// the relay's media.
     pub rtpproxy_control: Option<std::net::SocketAddr>,
@@ -370,7 +373,15 @@ fn reconstruct(
         sip_portrange: Some(cfg.portrange),
         rtpproxy_control: cfg.rtpproxy_control,
         quiet_bad_parse: cfg.quiet_bad_parse,
+        hep_parse: cfg.hep_parse,
     };
+    // `--hep-parse`, by the rule `--cores 1` applies. The packet was sharded
+    // by its outer addresses, which for a HEP copy are the same for every
+    // call, so one worker takes the whole copy: correct, if not parallel.
+    let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
+        return;
+    };
+    let pp: &ParsedPacket = &pp;
     let mut decrypt = MediaDecrypt::default();
     match classify_packet(pp, heuristic, &opts, &mut decrypt) {
         PacketAction::None => {}
@@ -2641,6 +2652,7 @@ mod tests {
             dialog_tracking: crate::sip::dialog_store::DialogTracking::default(),
             no_rtp: false,
             quiet_bad_parse: false,
+            hep_parse: false,
             rtpproxy_control: None,
             xcid_headers: Vec::new(),
             leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,

@@ -653,6 +653,10 @@ pub fn run_tui_mode(
     // Resolved before the move: the thread owns a Cli clone but not the
     // Config, and the cap needs both.
     let reassembly_cap = cli.max_reassembly_limit(&config);
+    // The same for the pipeline options: `[capture] hep_parse` lives in the
+    // Config. Built once, from the function a capture opened inside the
+    // session uses too, so the two classify alike.
+    let pipeline_opts = tui_pipeline_options(&cli, &config, no_rtp);
 
     // Taken BEFORE `rx` moves into the thread below. The meter is a cheap
     // shared handle; `PacketRx` is not `Clone`, so reading it afterwards would
@@ -752,7 +756,7 @@ pub fn run_tui_mode(
                     &ds,
                     &ss,
                     &mut rtp_heuristic,
-                    &tui_pipeline_options(&cli_clone, no_rtp),
+                    &pipeline_opts,
                     &mut media,
                     relay_orphans.as_ref(),
                     is_paused,
@@ -925,7 +929,7 @@ pub fn run_tui_mode(
             capture_mode: Some(tui_capture_mode(&cli, &config)),
             // A capture opened inside the session is classified as the live
             // capture thread classifies, from the same function.
-            capture_options: tui_pipeline_options(&cli, no_rtp),
+            capture_options: tui_pipeline_options(&cli, &config, no_rtp),
             rescan_path: (cli.capture_args.input.len() == 1)
                 .then(|| std::path::PathBuf::from(&cli.capture_args.input[0])),
             notes,
@@ -1253,6 +1257,13 @@ pub fn tui_process_packet(
     let parsed_packets = processor.process(packet);
     if !paused {
         for pp in &parsed_packets {
+            // `--hep-parse`: the TUI reads a sniffed HEP copy as the headless
+            // run does, so the dialogs and the live detectors see the SIP
+            // inside rather than the UDP datagram that carried it.
+            let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
+                continue;
+            };
+            let pp: &capture::ParsedPacket = &pp;
             #[cfg(feature = "tls")]
             let mut media_decrypt = crate::pipeline::MediaDecrypt {
                 srtp: media.srtp.as_mut(),
@@ -1279,14 +1290,20 @@ pub fn tui_process_packet(
     output.drain()
 }
 
-/// The pipeline options the TUI classifies with, from its command line.
-pub fn tui_pipeline_options(cli: &Cli, no_rtp: bool) -> crate::pipeline::PipelineOptions {
+/// The pipeline options the TUI classifies with, from its command line and
+/// its config file (`[capture] hep_parse`).
+pub fn tui_pipeline_options(
+    cli: &Cli,
+    config: &crate::config::Config,
+    no_rtp: bool,
+) -> crate::pipeline::PipelineOptions {
     crate::pipeline::PipelineOptions {
         no_dialog: cli.dialog_args.no_dialog,
         no_rtp,
         sip_portrange: None,
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+        hep_parse: cli.hep_parse(config),
     }
 }
 
@@ -1471,7 +1488,7 @@ mod tests {
     #[test]
     fn the_tui_classifies_with_the_command_lines_options() {
         let cli = cli_from(&["--rtpproxy-control", "192.0.2.40:7722", "--no-dialog"]);
-        let opts = super::tui_pipeline_options(&cli, true);
+        let opts = super::tui_pipeline_options(&cli, &crate::config::Config::default(), true);
         assert_eq!(
             opts.rtpproxy_control,
             Some("192.0.2.40:7722".parse().unwrap())
@@ -1483,9 +1500,23 @@ mod tests {
             "a live capture's BPF already filtered, so there is no port gate"
         );
 
-        let plain = super::tui_pipeline_options(&cli_from(&[]), false);
+        let plain =
+            super::tui_pipeline_options(&cli_from(&[]), &crate::config::Config::default(), false);
         assert_eq!(plain.rtpproxy_control, None);
         assert!(!plain.no_dialog && !plain.no_rtp);
+        assert!(!plain.hep_parse, "HEP is unwrapped only when asked");
+    }
+
+    /// `-E` and `[capture] hep_parse` reach the options the TUI classifies
+    /// with, so its capture thread and a capture opened in the session read a
+    /// HEP copy as the headless run does.
+    #[test]
+    fn the_tui_options_carry_hep_parse_from_the_flag_or_the_key() {
+        let config = crate::config::Config::default();
+        assert!(super::tui_pipeline_options(&cli_from(&["-E"]), &config, false).hep_parse);
+        let mut keyed = crate::config::Config::default();
+        keyed.capture.hep_parse = Some(true);
+        assert!(super::tui_pipeline_options(&cli_from(&[]), &keyed, false).hep_parse);
     }
 
     /// Parse a CLI from arguments, `sipnab` included as argv[0].
