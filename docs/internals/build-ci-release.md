@@ -807,14 +807,14 @@ the caller's `~/.cargo/bin`.
 
 ## The toolchain
 
-**Rust 1.98.1**, pinned across seven files and enforced in none of them
+**Rust 1.99.0**, pinned across seven files and enforced in none of them
 locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (5 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.98.1` |
-| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](../../crates/sipnab-audio/Cargo.toml), [`crates/sipnab-bpf-types/Cargo.toml`](../../crates/sipnab-bpf-types/Cargo.toml) | `rust-version = "1.98"` (MSRV) |
-| `Dockerfile`, [`harness/sipnab/Dockerfile`](../../harness/sipnab/Dockerfile) | `FROM rust:1.98-slim-trixie@sha256:<digest>` |
+| `ci.yml` (5 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.99.0` |
+| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](../../crates/sipnab-audio/Cargo.toml), [`crates/sipnab-bpf-types/Cargo.toml`](../../crates/sipnab-bpf-types/Cargo.toml) | `rust-version = "1.99"` (MSRV) |
+| `Dockerfile`, [`harness/sipnab/Dockerfile`](../../harness/sipnab/Dockerfile) | `FROM rust:1.99-slim-trixie@sha256:<digest>` |
 
 A commit SHA pins the action, so the **version lives in the trailing
 comment** — which makes that comment load-bearing rather than decorative.
@@ -1294,7 +1294,7 @@ tagged commit, the tag (`sipnab --version`), which are the same for every
 build of one commit when the build runs in a git checkout of it. A source
 tarball without `.git` embeds neither, and so builds a different binary.
 
-**What a rebuild must hold fixed besides the source.** Rust 1.98.1, the
+**What a rebuild must hold fixed besides the source.** Rust 1.99.0, the
 eBPF nightly [`bpf/rust-toolchain.toml`](../../bpf/rust-toolchain.toml) names, bpf-linker 0.11.0 (pinned by
 sha256 in `release.yml`), and the linker, C compiler and C runtime objects.
 For the gnu targets those come from the `rust:1-bookworm` image `release.yml`

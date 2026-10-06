@@ -75,7 +75,7 @@ jobs:
           # libyang2-tools is yanglint, for the YANG validation step below.
           packages: libpcap-dev libasound2-dev libyang2-tools
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           components: clippy, rustfmt
           # `cargo test --all-features` includes `plugins`, and
@@ -389,7 +389,7 @@ jobs:
         with:
           packages: libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           targets: ${{ matrix.target }}
           # llvm-objcopy, which the split uses on Linux.
@@ -674,7 +674,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           components: clippy, rustfmt
       - name: Run the pre-push hook against its scenarios
@@ -794,7 +794,7 @@ jobs:
         with:
           packages: libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
       # A self-hosted runner keeps its workspace, and with it `target`, between
       # runs, and its ~/.cargo is the machine's own: nothing to restore, and
       # nothing that should be uploaded.
@@ -888,7 +888,7 @@ jobs:
         with:
           packages: libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
       - name: Package and verify both crates
         run: cargo package --locked -p sipnab-bpf-types -p sipnab
 
@@ -913,7 +913,7 @@ jobs:
         with:
           packages: libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
       - name: Install cargo-audit
         uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
         with:

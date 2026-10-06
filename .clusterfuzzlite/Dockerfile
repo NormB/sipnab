@@ -23,7 +23,7 @@ FROM gcr.io/oss-fuzz-base/base-builder-rust:v1@sha256:5fd6a6afd7369a3277b9697b39
 
 # The builder image's Rust is a year behind sipnab's. It ships
 # `nightly-2025-09-05` --- rustc 1.91.0-nightly --- and this crate's
-# `rust-version` is 1.98, so without a newer toolchain the build stops at
+# `rust-version` is 1.99, so without a newer toolchain the build stops at
 # resolution with "rustc 1.91.0-nightly is not supported by the following
 # packages" before a single target compiles. That failure is why this line
 # exists rather than a guess that the image would be current.

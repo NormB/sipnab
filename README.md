@@ -282,7 +282,7 @@ Next: [REST API and metrics](docs/rest-api.md),
 
 ## Build from source
 
-You need **Rust 1.98+** (edition 2024) and the libpcap headers:
+You need **Rust 1.99+** (edition 2024) and the libpcap headers:
 
 - macOS: included with the Xcode Command Line Tools (`xcode-select --install`)
 - Debian/Ubuntu: `apt install libpcap-dev`

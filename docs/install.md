@@ -108,7 +108,7 @@ covers every file, and the tarballs additionally ship an individual
 | `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
-| `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.98+ builds | tagged source tree |
+| `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.99+ builds | tagged source tree |
 
 ### Which capture backends an artifact can reach
 
@@ -490,7 +490,7 @@ packages all ship a finished binary.
 
 **Before you build, you need:**
 
-- **Rust 1.98+** — the toolchain the project builds and tests against.
+- **Rust 1.99+** — the toolchain the project builds and tests against.
 - **libpcap headers** — `libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on
   RHEL/Fedora. This is the one library sipnab links against.
 - **pkg-config** — how the build finds libpcap.
@@ -629,7 +629,7 @@ first one.
 You need a git checkout of the tag, not a source tarball: the binary embeds
 the commit hash and the tag, and a tarball has neither. You also need the
 same toolchain the release used. For the gnu targets, that is the
-`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.98.1, the eBPF
+`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.99.0, the eBPF
 nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names, and bpf-linker 0.11.0. The release
 job's log shows each version it used.
 
@@ -848,7 +848,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
 docker build -t sipnab .
 ```
 
-The multi-stage Dockerfile uses `rust:1.98-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
+The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
 
 ## Platform notes
 

@@ -52,7 +52,7 @@
 # in a git checkout of that commit (a tarball without .git embeds none).
 #
 # What a rebuild must hold fixed besides the source: the Rust toolchain
-# (1.98.1), the eBPF nightly (bpf/rust-toolchain.toml), bpf-linker (0.11.0,
+# (1.99.0), the eBPF nightly (bpf/rust-toolchain.toml), bpf-linker (0.11.0,
 # pinned by sha256 in release.yml), and the linker and C compiler, which for
 # the gnu targets come from the rust:1-bookworm image release.yml pins by
 # digest. docs/internals/build-ci-release.md "Reproducible builds" says how.

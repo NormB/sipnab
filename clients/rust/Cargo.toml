@@ -2,7 +2,7 @@
 name = "sipnab-client"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 publish = false
 description = "The Rust REST client the site's client page shows, compiled and run in CI."

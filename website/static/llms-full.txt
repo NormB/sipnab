@@ -8832,7 +8832,7 @@ covers every file, and the tarballs additionally ship an individual
 | `SHA256SUMS.txt` | — | — | checksums for every package, tarball, symbol file, and SBOM |
 | `sipnab-<version>.cdx.json` | — | — | CycloneDX SBOM — full dependency tree |
 | `sipnab-audio-<version>.cdx.json` | — | — | CycloneDX SBOM — audio feature subtree |
-| `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.98+ builds | tagged source tree |
+| `v<version>.tar.gz`, `v<version>.zip` | — | anywhere Rust 1.99+ builds | tagged source tree |
 
 ### Which capture backends an artifact can reach
 
@@ -9214,7 +9214,7 @@ packages all ship a finished binary.
 
 **Before you build, you need:**
 
-- **Rust 1.98+** — the toolchain the project builds and tests against.
+- **Rust 1.99+** — the toolchain the project builds and tests against.
 - **libpcap headers** — `libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on
   RHEL/Fedora. This is the one library sipnab links against.
 - **pkg-config** — how the build finds libpcap.
@@ -9353,7 +9353,7 @@ first one.
 You need a git checkout of the tag, not a source tarball: the binary embeds
 the commit hash and the tag, and a tarball has neither. You also need the
 same toolchain the release used. For the gnu targets, that is the
-`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.98.1, the eBPF
+`rust:1-bookworm` image `release.yml` pins by digest, Rust 1.99.0, the eBPF
 nightly [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml) names, and bpf-linker 0.11.0. The release
 job's log shows each version it used.
 
@@ -9572,7 +9572,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
 docker build -t sipnab .
 ```
 
-The multi-stage Dockerfile uses `rust:1.98-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
+The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
 
 ## Platform notes
 
@@ -43310,14 +43310,14 @@ the caller's `~/.cargo/bin`.
 
 ## The toolchain
 
-**Rust 1.98.1**, pinned across seven files and enforced in none of them
+**Rust 1.99.0**, pinned across seven files and enforced in none of them
 locally:
 
 | Location | Form |
 |---|---|
-| `ci.yml` (5 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.98.1` |
-| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](../../crates/sipnab-audio/Cargo.toml), [`crates/sipnab-bpf-types/Cargo.toml`](../../crates/sipnab-bpf-types/Cargo.toml) | `rust-version = "1.98"` (MSRV) |
-| `Dockerfile`, [`harness/sipnab/Dockerfile`](../../harness/sipnab/Dockerfile) | `FROM rust:1.98-slim-trixie@sha256:<digest>` |
+| `ci.yml` (5 jobs), `quality.yml` (3 jobs), `release.yml` | `dtolnay/rust-toolchain@<sha> # 1.99.0` |
+| `Cargo.toml`, [`crates/sipnab-audio/Cargo.toml`](../../crates/sipnab-audio/Cargo.toml), [`crates/sipnab-bpf-types/Cargo.toml`](../../crates/sipnab-bpf-types/Cargo.toml) | `rust-version = "1.99"` (MSRV) |
+| `Dockerfile`, [`harness/sipnab/Dockerfile`](../../harness/sipnab/Dockerfile) | `FROM rust:1.99-slim-trixie@sha256:<digest>` |
 
 A commit SHA pins the action, so the **version lives in the trailing
 comment** — which makes that comment load-bearing rather than decorative.
@@ -43797,7 +43797,7 @@ tagged commit, the tag (`sipnab --version`), which are the same for every
 build of one commit when the build runs in a git checkout of it. A source
 tarball without `.git` embeds neither, and so builds a different binary.
 
-**What a rebuild must hold fixed besides the source.** Rust 1.98.1, the
+**What a rebuild must hold fixed besides the source.** Rust 1.99.0, the
 eBPF nightly [`bpf/rust-toolchain.toml`](../../bpf/rust-toolchain.toml) names, bpf-linker 0.11.0 (pinned by
 sha256 in `release.yml`), and the linker, C compiler and C runtime objects.
 For the gnu targets those come from the `rust:1-bookworm` image `release.yml`
