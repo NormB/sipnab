@@ -108,10 +108,17 @@ fn payload_text(resp: &serde_json::Value) -> String {
 }
 
 /// Call `list_dialogs` repeatedly (reusing `id`) until it returns a
-/// non-empty summaries array, or fail once `timeout` elapses. Replay
-/// ingestion runs asynchronously to the MCP server loop, so the first
-/// call after `initialize` can legitimately observe zero dialogs on a
-/// slow runner; every reply must still be well-formed.
+/// non-empty summaries array AND reports `source_exhausted: true`, or fail
+/// once `timeout` elapses. Replay ingestion runs asynchronously to the MCP
+/// server loop, so the first call after `initialize` can legitimately observe
+/// zero dialogs on a slow runner; every reply must still be well-formed.
+///
+/// A dialog being visible is not the capture being read. Until the source is
+/// exhausted every store-reading tool turns its own `complete: true` into
+/// `false` (`src/mcp/completeness.rs::refuse_complete`), so a caller that
+/// asserts a whole answer must wait for the whole read. macOS CI run
+/// 37482898687 called `get_dialog` after the first dialog appeared and before
+/// the read finished, and got `complete: false`.
 ///
 /// # Returns
 /// The `dialogs` array out of the `list_dialogs` page (non-empty); panics on
@@ -155,13 +162,15 @@ fn list_dialogs_until_nonempty(
             parsed["total_matched"].is_u64(),
             "a page without total_matched is a silently truncated answer: {parsed}"
         );
-        if !dialogs.is_empty() {
+        if !dialogs.is_empty() && parsed["source_exhausted"] == serde_json::json!(true) {
             return parsed["dialogs"].clone();
         }
         assert!(
             Instant::now() < deadline,
-            "list_dialogs still empty after {timeout:?}; \
-             fixture replay never surfaced a dialog"
+            "after {timeout:?} list_dialogs held {} dialog(s) with \
+             source_exhausted={}; the fixture replay never finished: {parsed}",
+            dialogs.len(),
+            parsed["source_exhausted"]
         );
         std::thread::sleep(Duration::from_millis(50));
     }
