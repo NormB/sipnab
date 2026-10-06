@@ -49,7 +49,7 @@ pull requests pass the check without one.
 
 ## Prerequisites
 
-- Rust 1.98+ (edition 2024)
+- Rust 1.99+ (edition 2024)
 - libpcap headers
   - macOS: `xcode-select --install`
   - Debian/Ubuntu: `apt install libpcap-dev`

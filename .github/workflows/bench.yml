@@ -51,7 +51,7 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1
+      - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
 
       - name: Build the release binary
         # Release, not debug: a debug build measures the absence of

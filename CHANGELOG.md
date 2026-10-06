@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Rust 1.99.0, the latest stable release, replaces 1.98.1 as the pinned
+  toolchain.** `rust-version` moves to 1.99 in the four crates that state it;
+  CI, quality, bench, pages, reproducible and release jobs install 1.99.0
+  (`dtolnay/rust-toolchain` at its `1.99.0` branch, pinned by SHA); both
+  Dockerfiles build on `rust:1.99-slim-trixie`, and the gnu release builds on
+  a `rust:1-bookworm` digest whose rustc is 1.99.0. Building from source now
+  needs Rust 1.99+.
+
 ## [0.5.203] - 2026-10-05
 
 ### Added
