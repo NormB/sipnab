@@ -1961,7 +1961,7 @@ mod tests {
             let out = match run {
                 Ok(out) => out,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    eprintln!(
+                    stderr_line!(
                         "skipped: no tshark on this host; the pcap-file round trip above still ran"
                     );
                     return;

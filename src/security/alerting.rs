@@ -767,7 +767,7 @@ impl AlertEngine {
         // Structured machine channel: one JSON object per line on STDERR (the
         // MCP/`--json` wire is stdout, so stderr is safe even mid-session).
         if self.json_output {
-            eprintln!(
+            stderr_line!(
                 "{}",
                 alert_json_line(alert_type, src_ip, &sanitized_detail, fired_at)
             );

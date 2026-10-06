@@ -310,6 +310,20 @@
 #![warn(missing_docs)]
 #![warn(clippy::missing_docs_in_private_items)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
+
+/// Write one line to stderr, as `eprintln!` does, and ignore a failed write.
+///
+/// `eprintln!` panics when the write fails, and stderr fails whenever its
+/// reader has gone: `sipnab ... 2>&1 | head -1` closes it after one line. A
+/// line nobody will read is not worth a crash, so every stderr line in this
+/// crate goes through here. `tests/closed_stderr_test.rs` refuses an
+/// `eprintln!` anywhere in `src/`.
+macro_rules! stderr_line {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod analysis;
 // Operator notes: written into pcapng packet comments, never read back.
