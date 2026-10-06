@@ -21,7 +21,7 @@
 # Globbed fragments match either way. website/public is Zola's build output and
 # gitignored; it is skipped so a stale local build cannot fail the check with
 # prose that has already been fixed at the source.
-skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.min.js,*.min.css,*.pcap,*.pcapng,*.svg,*.png,*.woff,*.woff2,*.ico,*/snapshots/*,*/cli/out/*,THIRD-PARTY-NOTICES.md,*/superpowers/*
+skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.min.js,*.min.css,*.pcap,*.pcapng,*.svg,*.png,*.woff,*.woff2,*.ico,*/snapshots/*,*/cli/out/*,THIRD-PARTY-NOTICES.md
 #
 # ignore-words-list = real vocabulary codespell mistakes for typos. Each one was
 # checked in context rather than waved through:

@@ -493,7 +493,7 @@ jobs:
           # checkout -- a test that passes locally and fails in CI.
           unzip -q -o Google.zip -d .vale/styles/
 
-      # Published docs only; docs/design, docs/research and docs/superpowers are
+      # Published docs only; docs/design and docs/research are
       # exempted by glob sections in .vale.ini because they are working
       # documents. Curation brought this from 13,892 alerts to zero.
       - name: Prose style (Vale + Google)

@@ -206,7 +206,6 @@ def test_the_page_set_reaches_past_the_docs_tree(tmp_path):
     assert any(p.startswith(str(drift.REPO / "docs")) for p in pages)
     assert any("/website/content/" in p for p in pages)
     assert any(p.endswith("/README.md") for p in pages)
-    assert not any("superpowers" in p for p in pages)
 
 
 # ── the two the recurring cost demanded ──────────────────────────────

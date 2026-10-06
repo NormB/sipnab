@@ -342,7 +342,7 @@ def main() -> int:
     # build-site-internals.py errored on the same page while this exited 0.
     #
     # Scoped to the trees the wiki serves: docs/ top level and docs/internals/.
-    # docs/design|research|superpowers are planning records, deliberately
+    # docs/design|research are planning records, deliberately
     # unpublished, and are excluded here rather than registered.
     published = {p.relative_to(docs).as_posix() for p in docs.glob("*.md")} | {
         p.relative_to(docs).as_posix() for p in (docs / "internals").rglob("*.md")
@@ -358,7 +358,7 @@ def main() -> int:
             print(
                 f"ERROR: docs/{name} exists but is in no PAGES entry — it would "
                 f"publish nowhere. Register it, or move it under "
-                f"docs/design|research|superpowers if it is not for readers.",
+                f"docs/design|research if it is not for readers.",
                 file=sys.stderr,
             )
         return 1

@@ -697,7 +697,7 @@ fn every_import_of_a_moved_module_resolves() {
 /// only for pages under `docs/internals/`. Measured on 2026-08-31: the `docs/`
 /// tree holds 294 relative links into `src/`, 208 of them on internals pages
 /// that gate reads and 86 on pages it never opens (`docs/*.md`,
-/// `docs/design/`, `docs/research/`, `docs/superpowers/`). The sibling gates
+/// `docs/design/`, `docs/research/`). The sibling gates
 /// do not close that gap either: `link_integrity_test` and
 /// `doc_link_hygiene_test` both `continue` on any target not ending in `.md`.
 ///

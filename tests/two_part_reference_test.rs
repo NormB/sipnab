@@ -212,7 +212,7 @@ fn the_scan_reaches_every_page_the_documentation_is_published_from() {
         assert!(listed.status.success(), "git ls-files failed");
         String::from_utf8_lossy(&listed.stdout)
             .split('\0')
-            .filter(|r| !r.is_empty() && !r.contains("superpowers"))
+            .filter(|r| !r.is_empty())
             .map(|r| repo().join(r))
             .collect()
     }

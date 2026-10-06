@@ -1630,7 +1630,7 @@ fn published_markdown() -> Vec<(String, String)> {
     //   THIRD-PARTY-NOTICES.md — generated from the dependency tree; its
     //     content is not authored here.
     const ROOT_PAGES: &[&str] = &["README.md", "SECURITY.md", "CONTRIBUTING.md"];
-    const SKIP: &[&str] = &["docs/design/", "docs/research/", "docs/superpowers/"];
+    const SKIP: &[&str] = &["docs/design/", "docs/research/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
@@ -3747,7 +3747,7 @@ fn scanned_markdown() -> Vec<std::path::PathBuf> {
     // Planning material, never published. Retro-editing a historical record to
     // satisfy a rendering gate would corrupt it. Same exclusion and reason as
     // link_integrity_test's docs-tree scan.
-    const SKIP_DIRS: &[&str] = &["docs/superpowers/", "docs/design/", "docs/research/"];
+    const SKIP_DIRS: &[&str] = &["docs/design/", "docs/research/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files", "*.md"])
@@ -3764,6 +3764,35 @@ fn scanned_markdown() -> Vec<std::path::PathBuf> {
         .filter(|rel| !SKIP_DIRS.iter().any(|d| rel.starts_with(d)))
         .map(|rel| root.join(rel))
         .collect()
+}
+
+/// Agent planning documents are never committed.
+///
+/// `docs/superpowers/` held an AI agent's specs and implementation plans from
+/// 2026-07-24 and 2026-07-25. They were tracked, so public on GitHub, until
+/// 2026-10-06. Planning material belongs to the session that wrote it, not to
+/// the project's published tree. `.superpowers/` is the same tool's scratch
+/// directory, already gitignored; this keeps a forced `git add` from bringing
+/// either back.
+#[test]
+fn agent_planning_documents_are_never_committed() {
+    const FORBIDDEN: &[&str] = &["docs/superpowers/", ".superpowers/"];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .current_dir(root)
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success(), "git ls-files failed");
+    let tracked: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|rel| FORBIDDEN.iter().any(|d| rel.starts_with(d)))
+        .map(str::to_string)
+        .collect();
+    assert!(
+        tracked.is_empty(),
+        "agent planning documents are tracked; remove them with `git rm`: {tracked:?}"
+    );
 }
 
 /// Open work is tracked in ONE file, and no second tracker appears.
@@ -3795,10 +3824,6 @@ fn only_the_backlog_tracks_open_work() {
     const HISTORICAL: &[(&str, usize)] = &[
         ("docs/design/implementation-plan-v6.md", 851),
         ("docs/design/implementation-plan-phases-8-10.md", 515),
-        (
-            "docs/superpowers/plans/2026-07-25-developer-documentation.md",
-            101,
-        ),
         ("docs/design/conditional-content-persistence.md", 19),
         ("docs/research/capture-performance.md", 14),
         ("docs/design/capture-tuning-tasks.md", 13),
@@ -4154,7 +4179,9 @@ fn no_documentation_table_repeats_a_row() {
     // under docs/ and their two generated site pages.
     // 264 -> 268: the two fail2ban guides (fail2ban, fail2ban-sipnab) under
     // docs/ and their two generated site pages.
-    const EXPECTED_MARKDOWN_FILES: usize = 268;
+    // 268 -> 265: the three agent planning documents under docs/superpowers/
+    // were removed (agent_planning_documents_are_never_committed).
+    const EXPECTED_MARKDOWN_FILES: usize = 265;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4656,7 +4683,9 @@ fn no_documentation_table_repeats_a_row() {
     // 1058 -> 1062: docs/config-reference.md's new [metrics] and [hep] key
     // tables, and their two copies in website/content/docs/config.md.
     // Attributed by counting added separator rows per file: 2, 2.
-    const EXPECTED_TABLES: usize = 1062;
+    // 1062 -> 1054: the docs/superpowers/ planning documents were removed.
+    // Attributed by counting separator rows per removed file: 3, 0, 5.
+    const EXPECTED_TABLES: usize = 1054;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

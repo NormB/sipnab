@@ -31,8 +31,8 @@ published roadmap, and a public backlog invites being held to it.
 
 `only_the_backlog_tracks_open_work` (in [`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs)) fails when a
 file in this tree starts carrying `- [ ]` items, so a second todo list cannot
-quietly appear. The historical planning records under `docs/design/`,
-`docs/research/` and `docs/superpowers/` are named there with the count each
+quietly appear. The historical planning records under `docs/design/`
+and `docs/research/` are named there with the count each
 held: they are acceptance criteria written before the work shipped and never
 ticked afterwards, not lists of what is left, and they are left exactly as
 written rather than retro-edited.

@@ -1622,7 +1622,6 @@ fn published_glibc_floor_matches_release_gate() {
         if rel == "CHANGELOG.md"
             || rel.starts_with("docs/design/")
             || rel.starts_with("docs/research/")
-            || rel.starts_with("docs/superpowers/")
         {
             continue;
         }
