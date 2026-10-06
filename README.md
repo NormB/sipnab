@@ -13,7 +13,7 @@ From an interface or a file it also reads the RTP audio packets underneath,
 and grades their quality. It shows you the call flow, the audio quality, and
 the security signals around each call.
 
-![The sipnab TUI: a call-flow ladder of a complete SIP lifecycle — REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE, and BYE — with the decoded INVITE in the detail pane](website/static/demos/hero-static.webp)
+![sipnab interactive TUI — call-flow ladder of a complete call: INVITE with SDP, 100 Trying, 180 Ringing, 200 OK, ACK, the RTP media line, then BYE and its 200 OK, with the decoded INVITE in the detail pane. One of seven dialogs in the same sample capture the analyze page loads](website/static/demos/hero-static.webp)
 
 sipnab is one binary with no database and no web UI to run. You can point it
 at one box's traffic, or have every proxy in a cluster send it
@@ -186,8 +186,8 @@ sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 
 The server offers 70 tools, and every tool costs the agent context before it
 asks anything. `--mcp-tools core` loads a small set that still answers a whole
-call. Named bundles such as `signaling` and `media`, and your own in the config
-file, landed after release 0.5.196
+call. Named bundles such as `signaling` and `media`, and bundles of your own in
+the config file, load other sets
 ([Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load)).
 
 Next: [REST API and metrics](docs/rest-api.md),
@@ -212,9 +212,7 @@ Next: [REST API and metrics](docs/rest-api.md),
   `--mcp-tls-key` ([MCP TLS](docs/mcp-deploy.md#mcp-tls)) and
   `--metrics-tls-cert` / `--metrics-tls-key`
   ([Metrics TLS](docs/prometheus-metrics.md#metrics-tls)), or the matching
-  `tls_cert` / `tls_key` keys in `sipnab.toml`. The REST API's pair landed
-  after release 0.5.196, which still refuses the two flags; the MCP and
-  metrics pairs landed after release 0.5.202. HEP can use TLS in both
+  `tls_cert` / `tls_key` keys in `sipnab.toml`. HEP can use TLS in both
   directions (`--hep-listen-transport tls`, `--hep-send-transport tls`), and
   the sender either trusts only a named CA (`--hep-tls-ca`) or adds one to the
   host's bundle (`--hep-tls-extra-ca`).
@@ -233,36 +231,54 @@ Next: [REST API and metrics](docs/rest-api.md),
   the REST API, and the MCP server
 - **Call analysis.** Dialog state, PDD (post-dial delay, the wait before
   ringing), SIP header matching (`--from`, `--to` and the rest), and a
-  [filter language](docs/filter-dsl.md)
+  [filter language](docs/filter-dsl.md) of 32 fields, 8 operators and boolean
+  logic
 - **Diagnostic aliases.** `--problems`, `--slow-setup`, `--short-calls`,
   `--one-way` and `--nat-issues` as flags; `codec-asym`, `ptime-asym`,
   `payload-asym`, `duration-asym` and `late-media` through `--filter`
   (for example `sipnab -N -I capture.pcap --filter codec-asym`)
 - **RTP quality.** Jitter, loss, MOS (mean opinion score, an estimate of how
-  the call sounded; [where it comes from](docs/mos-and-codecs.md)), and
-  one-way audio
+  the call sounded, from the ITU-T G.107 E-model;
+  [where it comes from](docs/mos-and-codecs.md)), RTCP XR
+  ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611)) reports, and one-way
+  audio
 - **Security analysis.** Scanner detection, registration floods, digest
   credential leaks, STIR/SHAKEN, and fraud heuristics, with alerts to syslog,
-  JSON or a command of your own (`--alert`, `--alert-exec`)
+  JSON or a command of your own (`--alert`, `--alert-exec`). It can write
+  fail2ban input (`--fail2ban`), and ask [TFPS](docs/tfps-sipnab.md) to ban a
+  source, which is an action that stays off until `--allow-action` enables it
 - **HEP v3** send over UDP, TCP or TLS, and HEP v2/v3 receive
 - **TLS and SRTP decryption.** From an SSLKEYLOGFILE (TLS 1.2 and 1.3), an RSA
-  private key (`--tls-key`, TLS 1.2 RSA key exchange only), SDES SRTP keys
-  (`--srtp-keys`), and DTLS-SRTP (`--dtls-keylog`,
+  private key (`--tls-key`, TLS 1.2 RSA key exchange only), SRTP keys (the
+  SDES `a=crypto` keys in the SDP, or a master-keys file with `--srtp-keys`),
+  and DTLS-SRTP (`--dtls-keylog`,
   [RFC 5764](https://www.rfc-editor.org/rfc/rfc5764)).
   [Capture SIP over TLS](docs/tls-capture.md) helps you choose
+- **eBPF TLS capture.** This does not break TLS. On a host where you already
+  have root, kernel uprobes read the SIP plaintext inside OpenSSL or wolfSSL
+  before the library encrypts it (`--uprobe-tls`), so it needs no key,
+  certificate or restart. It is in the released Linux gnu tarballs, `.deb` and
+  `.rpm`, not the static musl builds, and needs a kernel with BTF
 - **SIPREC metadata.** Reads the recording metadata
   ([RFC 7866](https://www.rfc-editor.org/rfc/rfc7866)) that a session recording
   client sends. sipnab is not a recording client or server
 - **Relay correlation.** Ties media on an rtpengine relay
   ([rtpengine](docs/rtpengine.md)) or an rtpproxy relay (`--rtpproxy-control`)
-  back to its call
+  back to its call, and reads rtpengine's own counters over its control port
+  (`--rtpengine-control`), labeled as the relay's report rather than
+  sipnab's measurement
 - **vCon export.** Writes one observed call as a vCon, a conversation
-  container ([Export a call as a vCon](docs/vcon.md))
+  container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md))
+- **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
+  the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
   splitting; reads directories, tar archives and password-protected ZIP and 7z
-- **MCP server.** 70 tools over stdio or HTTP. Out of the box they only read.
-  The tools that save files, swap the capture, query a relay, attach to TLS
-  processes or shut the server down stay off until you enable them.
+- **MCP server.** 70 tools over stdio or HTTP: 57 only read, and the 13 that
+  write each say what they change. File writes stay inside `--mcp-file-root`;
+  swapping the capture, shutting the server down, recording findings and
+  asking TFPS to ban a source stay off until you enable them
+  (`--mcp-allow-open-capture`, `--mcp-allow-shutdown`,
+  `--mcp-allow-save-findings`, `--allow-action`).
   [MCP server](docs/mcp.md) has a first working example
 
 ## The TUI
@@ -281,6 +297,10 @@ Next: [REST API and metrics](docs/rest-api.md),
 [Keybindings](docs/keybindings.md) lists every key, per view.
 
 ## Build from source
+
+sipnab is Rust everywhere except the OS boundary: 110 `unsafe` blocks, all of
+them FFI, and the build rejects any block that does not state its own soundness
+argument.
 
 You need **Rust 1.99+** (edition 2024) and the libpcap headers:
 

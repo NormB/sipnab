@@ -1269,7 +1269,9 @@ fn root_community_file_links_resolve() {
     // MAINTAINERS.md to it (+27, the same delta measured on the older base).
     // 112 -> 114: README.md's TLS bullet links MCP TLS and Metrics TLS beside
     // API TLS (+2 net, measured from the diff).
-    const EXPECTED_COMMUNITY_LINKS: usize = 114;
+    // 114 -> 115: README.md's Security bullet links docs/tfps-sipnab.md for
+    // `--allow-action` (the only relative link the README sync adds).
+    const EXPECTED_COMMUNITY_LINKS: usize = 115;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
