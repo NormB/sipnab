@@ -48,6 +48,17 @@ entry that carries them.
   and `build_hep_v3_hmac(..., &HepHmacSigning { key, token_ts, nonce },
   payload)` change signature (the library API is unstable). A gate test,
   `lint_suppression_test`, refuses the attribute anywhere in the tree.
+- **The README agrees with the home page and the code again, and a test keeps
+  it that way.** The hero image's description named a REGISTER and a
+  re-INVITE the image does not show; two sentences called features shipped
+  in 0.5.197 and 0.5.203 unreleased; the MCP paragraph said every tool only
+  reads out of the box (13 write, each gated as `docs/mcp-protocol.md`
+  describes); and `--srtp-keys` was described as SDES keys (it is a master-keys
+  file; SDES keys come from the SDP). Seven home page capabilities the README
+  left out are now in it. `readme_homepage_parity_test` requires every home
+  page capability row to be covered, the hero description to match, the tool
+  and write counts, the filter DSL size and the `unsafe` count to agree, and
+  no released version to be called unreleased.
 
 ## [0.5.204] - 2026-10-06
 

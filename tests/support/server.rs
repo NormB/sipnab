@@ -75,6 +75,17 @@ pub struct ApiServer {
     pub startup_log: String,
 }
 
+/// Whether two consecutive `/v1/stats` reads show a capture that has settled:
+/// the reader has reached the end of the file (`source_exhausted`) and the
+/// store did not change between the reads.
+///
+/// `cur` is the latest read and `prev` the one before it, if any. Equal reads
+/// alone are not enough: a reader that stalls for one poll interval before it
+/// stores anything gives two identical reads of an empty store.
+pub fn capture_settled(prev: Option<&serde_json::Value>, cur: &serde_json::Value) -> bool {
+    cur["source_exhausted"] == true && prev == Some(cur)
+}
+
 impl ApiServer {
     /// Spawn against `tests/fixtures/sip_call.pcap` with extra CLI args (e.g.
     /// `--api-key`). Panics if the server doesn't come up.
@@ -259,7 +270,9 @@ impl ApiServer {
             // transport framing/whitespace variance in the raw response.
             let raw = http_get(&self.addr, "/v1/stats", auth.as_deref()).body;
             let cur = serde_json::from_str::<serde_json::Value>(&raw).ok();
-            if cur.is_some() && cur == prev {
+            if let Some(read) = &cur
+                && capture_settled(prev.as_ref(), read)
+            {
                 return;
             }
             prev = cur;
