@@ -76,9 +76,76 @@ pub fn validate_filter(bpf: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// What a capture filter that would not compile owes an operator who typed it
+/// after the options, or `None` for one from `--bpf-file` or the config.
+///
+/// sngrep and sipgrep both take `[match expression] [bpf filter]` there;
+/// sipnab takes only the filter, so `sipnab -I call.pcap INVITE` hands libpcap
+/// `INVITE` and fails. The sentence says where the match expression goes.
+#[must_use]
+pub fn positional_filter_hint(positional: bool) -> Option<&'static str> {
+    positional.then_some(
+        "sipnab reads only a capture (BPF) filter after its options. To match SIP \
+         text, use -e '<pattern>': sngrep and sipgrep take a match expression there \
+         first, and sipnab does not.",
+    )
+}
+
+/// The refusal for a lone positional argument that names an existing file,
+/// which sngrep users type as `sngrep call.pcap`. sipnab would read it as a
+/// capture filter; `None` for anything else.
+pub fn forgot_input_flag(
+    positional: &[String],
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<String> {
+    match positional {
+        [only] if exists(std::path::Path::new(only)) => Some(format!(
+            "'{only}' is a file, and sipnab reads the words after its options as a \
+             capture filter. Read the file with: sipnab -I {only}"
+        )),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_positional_filter_that_fails_gets_the_match_expression_hint() {
+        let hint = positional_filter_hint(true).expect("positional");
+        assert!(hint.contains("-e '<pattern>'"), "{hint}");
+        assert!(
+            hint.contains("sngrep") && hint.contains("sipgrep"),
+            "{hint}"
+        );
+    }
+
+    #[test]
+    fn a_filter_from_a_file_or_the_config_gets_no_such_hint() {
+        assert_eq!(positional_filter_hint(false), None);
+    }
+
+    #[test]
+    fn a_lone_positional_naming_a_file_is_refused_with_the_input_flag() {
+        let exists = |p: &std::path::Path| p == std::path::Path::new("call.pcap");
+        let msg = forgot_input_flag(&["call.pcap".to_string()], exists).expect("a file");
+        assert!(msg.contains("-I call.pcap"), "{msg}");
+    }
+
+    #[test]
+    fn a_real_filter_or_several_words_are_not_mistaken_for_a_file() {
+        let exists = |p: &std::path::Path| p == std::path::Path::new("call.pcap");
+        assert_eq!(
+            forgot_input_flag(
+                &["udp".to_string(), "port".to_string(), "5060".to_string()],
+                exists
+            ),
+            None
+        );
+        assert_eq!(forgot_input_flag(&["port".to_string()], exists), None);
+        assert_eq!(forgot_input_flag(&[], exists), None);
+    }
 
     /// Replace makes the typed expression the whole selection.
     #[test]

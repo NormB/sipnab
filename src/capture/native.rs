@@ -282,6 +282,10 @@ pub struct CaptureConfig {
     /// thousand-column expression. Defaults to `false`: an operator filter, a
     /// file replay, or no filter is never "the generated default".
     pub bpf_filter_generated: bool,
+    /// Whether `bpf_filter` came from the trailing positional arguments, where
+    /// sngrep and sipgrep users put a match expression; a compile failure then
+    /// carries [`crate::capture::bpf_filter::positional_filter_hint`].
+    pub bpf_filter_positional: bool,
     /// Stop after capturing this many packets.
     pub count: Option<u64>,
     /// Stop after this duration.
@@ -368,6 +372,7 @@ impl Default for CaptureConfig {
             buffer_mb: DEFAULT_BUFFER_MB,
             bpf_filter: None,
             bpf_filter_generated: false,
+            bpf_filter_positional: false,
             count: None,
             duration: None,
             replay: false,

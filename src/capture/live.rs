@@ -580,7 +580,11 @@ fn capture_live_group(
     if let Some(ref bpf) = config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
-        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        let err = anyhow::Error::new(e).context(format!(
+            "Failed to compile BPF filter: {bpf}{}",
+            crate::capture::bpf_filter::positional_filter_hint(config.bpf_filter_positional)
+                .map_or_else(String::new, |h| format!(". {h}"))
+        ));
         if let Some(ready) = ready_tx {
             let _ = ready.send(Err(format!("{err:#}")));
         }

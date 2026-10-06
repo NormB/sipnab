@@ -87,6 +87,15 @@ Generate a detailed diagnostic report for a specific Call-ID.
 Detect SIP scanning (UA signatures and behavioral heuristics) and send the
 kill response back to the scanner.
 .TP
+.B \-\-no\-kill\-scanner
+Do not answer scanners, even when the configuration file sets
+.BR "kill_scanner = true" .
+The last of
+.B \-\-kill\-scanner
+and
+.B \-\-no\-kill\-scanner
+given wins.
+.TP
 .BI \-K " addr[:port-range]"
 Targeted scanner kill: send the kill response to any request whose source
 matches

@@ -714,8 +714,13 @@ pub struct CaptureArgs {
     pub multi_device: bool,
 
     /// Disable RTP capture and analysis.
-    #[arg(help_heading = "Capture", long)]
+    #[arg(help_heading = "Capture", long, overrides_with = "rtp")]
     pub no_rtp: bool,
+
+    /// Capture and analyze RTP even when `[capture] no_rtp = true` says not
+    /// to. The last of `--no-rtp` / `--rtp` typed wins.
+    #[arg(help_heading = "Capture", long, overrides_with = "no_rtp")]
+    pub rtp: bool,
 
     /// Do not put the interface into promiscuous mode. By default
     /// promiscuous mode is enabled for a named device (never for the "any"
@@ -868,13 +873,40 @@ pub struct NameResolutionArgs {
     /// Resolve IP addresses to names for display (manual mappings + hosts).
     /// Sets the TUI's initial name-resolution mode; press `n` to cycle it
     /// (Off / Static / DNS).
-    #[arg(help_heading = "Name resolution", long = "resolve")]
+    #[arg(
+        help_heading = "Name resolution",
+        long = "resolve",
+        overrides_with = "no_resolve"
+    )]
     pub resolve: bool,
+
+    /// Show addresses, not names, whatever else would turn name resolution
+    /// on (`[names] enabled`, `--names`, `--reverse-dns`, a hosts file). The
+    /// last of `--resolve` / `--no-resolve` typed wins.
+    #[arg(
+        help_heading = "Name resolution",
+        long = "no-resolve",
+        overrides_with = "resolve"
+    )]
+    pub no_resolve: bool,
 
     /// Also use reverse DNS (PTR) lookups for name resolution. Implies
     /// `--resolve`. Off by default (it emits DNS queries for captured IPs).
-    #[arg(help_heading = "Name resolution", long = "reverse-dns")]
+    #[arg(
+        help_heading = "Name resolution",
+        long = "reverse-dns",
+        overrides_with = "no_reverse_dns"
+    )]
     pub reverse_dns: bool,
+
+    /// Do not make reverse-DNS lookups even when `[names] reverse_dns =
+    /// true`. The last of `--reverse-dns` / `--no-reverse-dns` typed wins.
+    #[arg(
+        help_heading = "Name resolution",
+        long = "no-reverse-dns",
+        overrides_with = "reverse_dns"
+    )]
+    pub no_reverse_dns: bool,
 
     /// Reverse-DNS results held at once (default 4096). Config:
     /// `[names] dns_cache_entries`.
@@ -1457,8 +1489,13 @@ pub struct OutputArgs {
     pub hexdump: bool,
 
     /// Show delta time between consecutive messages.
-    #[arg(help_heading = "Output", long)]
+    #[arg(help_heading = "Output", long, overrides_with = "no_delta_time")]
     pub delta_time: bool,
+
+    /// Show absolute times even when `[display] delta_time = true`. The last
+    /// of `--delta-time` / `--no-delta-time` typed wins.
+    #[arg(help_heading = "Output", long, overrides_with = "delta_time")]
+    pub no_delta_time: bool,
 
     /// Show N messages after each match (like grep -A).
     #[arg(help_heading = "Output", short = 'A', long = "after", value_name = "N")]
@@ -1936,8 +1973,13 @@ pub struct RtpArgs {
 #[derive(clap::Args, Debug, Clone)]
 pub struct SecurityArgs {
     /// Detect and report SIP scanning activity.
-    #[arg(help_heading = "Security", long)]
+    #[arg(help_heading = "Security", long, overrides_with = "no_kill_scanner")]
     pub kill_scanner: bool,
+
+    /// Do not answer scanners even when `[security] kill_scanner = true`. The
+    /// last of `--kill-scanner` / `--no-kill-scanner` typed wins.
+    #[arg(help_heading = "Security", long, overrides_with = "kill_scanner")]
+    pub no_kill_scanner: bool,
 
     /// Bound which files this process can reach, using Landlock.
     ///
@@ -2140,8 +2182,13 @@ pub struct SecurityArgs {
     pub allow_action: Vec<String>,
 
     /// Enable fraud detection heuristics.
-    #[arg(help_heading = "Security", long)]
+    #[arg(help_heading = "Security", long, overrides_with = "no_fraud_detect")]
     pub fraud_detect: bool,
+
+    /// Do not run fraud detection even when `[security] fraud_detect = true`.
+    /// The last of `--fraud-detect` / `--no-fraud-detect` typed wins.
+    #[arg(help_heading = "Security", long, overrides_with = "fraud_detect")]
+    pub no_fraud_detect: bool,
 
     /// Publish every finding that names a source as JSON Lines, for a system that
     /// decides what to do with it. `-` is standard output, for a pipe; a path is
@@ -3732,10 +3779,24 @@ pub struct HepArgs {
     pub hep_senders: bool,
 
     /// Parse incoming HEP packets (enable HEP decoding). Config:
-    /// `[capture] hep_parse`; there is no "off" form, so a file that sets it is
-    /// undone only by `--no-config`.
-    #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
+    /// `[capture] hep_parse`; `--no-hep-parse` turns it off again.
+    #[arg(
+        help_heading = "HEP",
+        short = 'E',
+        long = "hep-parse",
+        overrides_with = "no_hep_parse"
+    )]
     pub hep_parse: bool,
+
+    /// Do not unwrap HEP found in the capture, even when `[capture]
+    /// hep_parse = true` says to. The last of `-E` / `--no-hep-parse` typed
+    /// wins.
+    #[arg(
+        help_heading = "HEP",
+        long = "no-hep-parse",
+        overrides_with = "hep_parse"
+    )]
+    pub no_hep_parse: bool,
 
     /// Allowed source addresses for HEP input (repeatable).
     #[arg(help_heading = "HEP", long, value_name = "ADDR")]
@@ -3936,8 +3997,13 @@ pub struct PrivilegeArgs {
     pub user: Option<String>,
 
     /// Do not drop privileges after opening capture devices.
-    #[arg(help_heading = "Privilege", long)]
+    #[arg(help_heading = "Privilege", long, overrides_with = "priv_drop")]
     pub no_priv_drop: bool,
+
+    /// Drop privileges even when `[privilege] no_priv_drop = true`. The last
+    /// of `--no-priv-drop` / `--priv-drop` typed wins.
+    #[arg(help_heading = "Privilege", long, overrides_with = "no_priv_drop")]
+    pub priv_drop: bool,
 
     /// Chroot to this directory after initialization.
     #[arg(help_heading = "Privilege", long, value_name = "DIR")]
@@ -4286,6 +4352,25 @@ impl FromToModeArg {
             Self::User => "user",
             Self::UserHostPort => "user-host-port",
         }
+    }
+}
+
+/// A yes/no setting from its "on" flag, its "off" flag, its config key and
+/// its default: the flag typed wins, then the key, then the default.
+///
+/// The two flags are declared with clap's `overrides_with` against each other,
+/// so at most one arrives set and the last one typed is the one that does.
+/// One rule for every switch, because the inline `flag || key` it replaces
+/// left a file that turned a setting on with no way to turn it off again
+/// short of `--no-config`.
+#[must_use]
+pub fn switch(on: bool, off: bool, key: Option<bool>, default: bool) -> bool {
+    if on {
+        true
+    } else if off {
+        false
+    } else {
+        key.unwrap_or(default)
     }
 }
 
@@ -4700,15 +4785,104 @@ impl Cli {
             })
     }
 
+    /// Whether RTP is left out of this run: `--no-rtp` / `--rtp` (the last
+    /// typed), else `[capture] no_rtp`, else analyzed.
+    #[must_use]
+    pub fn no_rtp(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.capture_args.no_rtp,
+            self.capture_args.rtp,
+            config.capture.no_rtp,
+            false,
+        )
+    }
+
+    /// Whether times show as deltas: `--delta-time` / `--no-delta-time`, else
+    /// `[display] delta_time`, else absolute.
+    #[must_use]
+    pub fn delta_time(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.output_args.delta_time,
+            self.output_args.no_delta_time,
+            config.display.delta_time,
+            false,
+        )
+    }
+
+    /// Whether privileges are kept: `--no-priv-drop` / `--priv-drop`, else
+    /// `[privilege] no_priv_drop`, else dropped.
+    #[must_use]
+    pub fn no_priv_drop(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.privilege_args.no_priv_drop,
+            self.privilege_args.priv_drop,
+            config.privilege.no_priv_drop,
+            false,
+        )
+    }
+
+    /// Whether fraud detection runs: `--fraud-detect` / `--no-fraud-detect`,
+    /// else `[security] fraud_detect`, else off.
+    #[must_use]
+    pub fn fraud_detect(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.security_args.fraud_detect,
+            self.security_args.no_fraud_detect,
+            config.security.fraud_detect,
+            false,
+        )
+    }
+
+    /// Whether scanners are answered: `--kill-scanner` / `--no-kill-scanner`,
+    /// else `[security] kill_scanner`, else off.
+    #[must_use]
+    pub fn kill_scanner(&self, config: &crate::config::Config) -> bool {
+        switch(
+            self.security_args.kill_scanner,
+            self.security_args.no_kill_scanner,
+            config.security.kill_scanner,
+            false,
+        )
+    }
+
+    /// Whether reverse-DNS lookups run: `--reverse-dns` / `--no-reverse-dns`,
+    /// else `[names] reverse_dns`, else off; never under `--no-resolve`.
+    #[must_use]
+    pub fn reverse_dns(&self, config: &crate::config::Config) -> bool {
+        !self.name_args.no_resolve
+            && switch(
+                self.name_args.reverse_dns,
+                self.name_args.no_reverse_dns,
+                config.names.reverse_dns,
+                false,
+            )
+    }
+
+    /// Whether names are shown for addresses. `--no-resolve` turns it off
+    /// whatever else would turn it on; otherwise any of `--resolve`,
+    /// `[names] enabled`, reverse DNS, a `--names` file, `[names] hosts_file`
+    /// or a non-empty `[names.manual]` turns it on.
+    #[must_use]
+    pub fn resolve_names(&self, config: &crate::config::Config) -> bool {
+        let cfg = &config.names;
+        !self.name_args.no_resolve
+            && (switch(self.name_args.resolve, false, cfg.enabled, false)
+                || self.reverse_dns(config)
+                || !self.name_args.names.is_empty()
+                || cfg.hosts_file.is_some()
+                || cfg.manual.as_ref().is_some_and(|m| !m.is_empty()))
+    }
+
     /// Whether HEP-encapsulated SIP in the capture is unwrapped: `-E` /
-    /// `--hep-parse`, or `[capture] hep_parse = true`.
-    ///
-    /// Either source turns it on. The flag has no negative form, so a file
-    /// that sets the key cannot be overridden off from the command line;
-    /// `--no-config` runs without it.
+    /// `--no-hep-parse` (the last typed), else `[capture] hep_parse`, else off.
     #[must_use]
     pub fn hep_parse(&self, config: &crate::config::Config) -> bool {
-        self.hep_args.hep_parse || config.capture.hep_parse.unwrap_or(false)
+        switch(
+            self.hep_args.hep_parse,
+            self.hep_args.no_hep_parse,
+            config.capture.hep_parse,
+            false,
+        )
     }
 
     /// SIP-over-WebSocket port set: `--ws-portrange`, else
@@ -9872,6 +10046,177 @@ mod tests {
     /// unwrapping on (issue #343). The flag has no negative form, so the file
     /// cannot be overridden off from the command line, only on; an explicit
     /// `false` in the file is the default, not a veto over the flag.
+    #[test]
+    fn switch_follows_the_flag_typed_then_the_key_then_the_default() {
+        // (on flag, off flag, key, default) -> value
+        let cases = [
+            (true, false, None, false, true),
+            (true, false, Some(false), false, true),
+            (false, true, None, true, false),
+            (false, true, Some(true), false, false),
+            (false, false, Some(true), false, true),
+            (false, false, Some(false), true, false),
+            (false, false, None, false, false),
+            (false, false, None, true, true),
+        ];
+        for (on, off, key, default, want) in cases {
+            assert_eq!(
+                super::switch(on, off, key, default),
+                want,
+                "{on} {off} {key:?} {default}"
+            );
+        }
+    }
+
+    /// `--no-hep-parse` turns off what `[capture] hep_parse = true` turned
+    /// on, and the last of `-E` / `--no-hep-parse` typed wins.
+    #[test]
+    fn no_hep_parse_overrides_the_file_and_the_last_flag_typed_wins() {
+        let mut on = crate::config::Config::default();
+        on.capture.hep_parse = Some(true);
+        let off = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--no-hep-parse"]);
+        assert!(
+            !off.hep_parse(&on),
+            "--no-hep-parse must beat the file's true"
+        );
+        let last_on =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--no-hep-parse", "-E"]);
+        assert!(
+            last_on.hep_parse(&crate::config::Config::default()),
+            "-E typed last wins"
+        );
+        let last_off =
+            Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "-E", "--no-hep-parse"]);
+        assert!(!last_off.hep_parse(&on), "--no-hep-parse typed last wins");
+    }
+
+    /// Every switch: (on flag, off flag, set the key to true, read the value).
+    type Switch = (
+        &'static str,
+        &'static str,
+        fn(&mut crate::config::Config),
+        fn(&Cli, &crate::config::Config) -> bool,
+    );
+
+    fn switches() -> Vec<Switch> {
+        vec![
+            (
+                "--hep-parse",
+                "--no-hep-parse",
+                |c| c.capture.hep_parse = Some(true),
+                |cli, c| cli.hep_parse(c),
+            ),
+            (
+                "--no-rtp",
+                "--rtp",
+                |c| c.capture.no_rtp = Some(true),
+                |cli, c| cli.no_rtp(c),
+            ),
+            (
+                "--delta-time",
+                "--no-delta-time",
+                |c| c.display.delta_time = Some(true),
+                |cli, c| cli.delta_time(c),
+            ),
+            (
+                "--no-priv-drop",
+                "--priv-drop",
+                |c| c.privilege.no_priv_drop = Some(true),
+                |cli, c| cli.no_priv_drop(c),
+            ),
+            (
+                "--fraud-detect",
+                "--no-fraud-detect",
+                |c| c.security.fraud_detect = Some(true),
+                |cli, c| cli.fraud_detect(c),
+            ),
+            (
+                "--kill-scanner",
+                "--no-kill-scanner",
+                |c| c.security.kill_scanner = Some(true),
+                |cli, c| cli.kill_scanner(c),
+            ),
+            (
+                "--reverse-dns",
+                "--no-reverse-dns",
+                |c| c.names.reverse_dns = Some(true),
+                |cli, c| cli.reverse_dns(c),
+            ),
+            (
+                "--resolve",
+                "--no-resolve",
+                |c| c.names.enabled = Some(true),
+                |cli, c| cli.resolve_names(c),
+            ),
+        ]
+    }
+
+    fn parse(extra: &[&str]) -> Cli {
+        let mut args = vec!["sipnab", "-N", "-I", "x.pcap"];
+        args.extend_from_slice(extra);
+        Cli::parse_from_args(args)
+    }
+
+    /// The failure that motivated the off flags: a file turns a switch on, and
+    /// the off flag turns it off again. Before, only `--no-config` could.
+    #[test]
+    fn every_off_flag_beats_a_file_that_turned_its_switch_on() {
+        for (on, off, set, read) in switches() {
+            let mut cfg = crate::config::Config::default();
+            set(&mut cfg);
+            assert!(read(&parse(&[]), &cfg), "{on}: the file alone turns it on");
+            assert!(
+                !read(&parse(&[off]), &cfg),
+                "{off} must beat the file's true"
+            );
+        }
+    }
+
+    /// The last of the pair typed wins, in either order.
+    #[test]
+    fn the_last_of_each_switch_pair_typed_wins() {
+        let cfg = crate::config::Config::default();
+        for (on, off, _, read) in switches() {
+            assert!(
+                read(&parse(&[off, on]), &cfg),
+                "{off} {on}: {on} typed last"
+            );
+            assert!(
+                !read(&parse(&[on, off]), &cfg),
+                "{on} {off}: {off} typed last"
+            );
+        }
+    }
+
+    /// With no flag, the key decides, and its absence means the default.
+    #[test]
+    fn every_switch_falls_back_to_its_key_then_off() {
+        for (on, _, set, read) in switches() {
+            assert!(
+                !read(&parse(&[]), &crate::config::Config::default()),
+                "{on}: default off"
+            );
+            let mut cfg = crate::config::Config::default();
+            set(&mut cfg);
+            assert!(read(&parse(&[]), &cfg), "{on}: the key decides");
+        }
+    }
+
+    /// `--no-resolve` wins over every other way names get turned on.
+    #[test]
+    fn no_resolve_beats_names_files_hosts_files_and_reverse_dns() {
+        let mut cfg = crate::config::Config::default();
+        cfg.names.hosts_file = Some("/etc/sipnab/hosts".into());
+        cfg.names.reverse_dns = Some(true);
+        let cli = parse(&["--names", "lab.hosts", "--reverse-dns", "--no-resolve"]);
+        assert!(
+            !cli.resolve_names(&cfg),
+            "--no-resolve must beat --names and hosts_file"
+        );
+        assert!(!cli.reverse_dns(&cfg), "no lookups when names are off");
+        assert!(parse(&["--names", "lab.hosts"]).resolve_names(&crate::config::Config::default()));
+    }
+
     #[test]
     fn hep_parse_resolves_from_the_flag_or_the_config_key() {
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);

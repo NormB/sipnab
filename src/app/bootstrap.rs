@@ -379,6 +379,14 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
+    // `sipnab call.pcap`, typed the sngrep way, would read the file name as a
+    // capture filter. Refused before any capture opens, naming the fix.
+    if let Some(msg) =
+        crate::capture::bpf_filter::forgot_input_flag(&cli.bpf_filter, std::path::Path::exists)
+    {
+        return Err(PlanError::arg(msg));
+    }
+
     // An `[actions]` entry naming nothing sipnab knows is refused here, before
     // anything runs, rather than read as "nothing enabled".
     cli.action_policy(config).map_err(PlanError::arg)?;
@@ -682,9 +690,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // someone believing their scanner defense is armed. Said in `plan` rather
     // than at the spawn site because `plan` runs for every mode, including
     // `--cores` and the TUI, which never reach the spawn site at all.
-    let kill_requested = cli.security_args.kill_scanner
-        || !cli.security_args.kill_target.is_empty()
-        || config.security.kill_scanner.unwrap_or(false);
+    let kill_requested = cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty();
     if kill_requested
         && let Some(ref s) = source
         && crate::security::transmit_guard::TransmitPermit::for_source(s).is_none()
@@ -790,7 +796,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Whether this run analyzes media, which decides what the generated
     // filter admits. The same precedence every other reader of `no_rtp` uses.
-    let media = !(cli.capture_args.no_rtp || config.capture.no_rtp.unwrap_or(false));
+    let media = !(cli.no_rtp(config));
     let composite = matches!(source, Some(CaptureSource::Composite(_)));
 
     // Two sources with a signaling-only filter is a run that measures no media
@@ -895,7 +901,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             "never" => ColorMode::Never,
             _ => ColorMode::Auto,
         },
-        delta_time: cli.output_args.delta_time || config.display.delta_time.unwrap_or(false),
+        delta_time: cli.delta_time(config),
         payload_limit: cli
             .output_args
             .payload_limit
@@ -2084,8 +2090,7 @@ pub fn launch(
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
     let effective_user = effective_user(cli, config);
-    let effective_no_priv_drop =
-        cli.privilege_args.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
+    let effective_no_priv_drop = cli.no_priv_drop(config);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         tracing::error!("Failed to drop privileges: {e}");
         capture::stop_and_join(handle, rx);
@@ -2458,9 +2463,7 @@ fn effective_user<'a>(cli: &'a Cli, config: &'a Config) -> Option<&'a str> {
 /// The one rule for starting the worker process. Whether it may actually
 /// transmit is the permit's question, answered separately from the source.
 pub(crate) fn kill_worker_wanted(cli: &Cli, config: &Config) -> bool {
-    cli.security_args.kill_scanner
-        || config.security.kill_scanner.unwrap_or(false)
-        || !cli.security_args.kill_target.is_empty()
+    cli.kill_scanner(config) || !cli.security_args.kill_target.is_empty()
 }
 
 /// How this run starts its scanner-kill worker: its own executable, its
@@ -3542,7 +3545,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         .unwrap_or(64);
 
     // BPF filter: --bpf-file takes precedence, then positional args, then
-    // `[capture] bpf_filter`.
+    // `[capture] bpf_filter`. Only the positional form gets the
+    // match-expression hint on a compile failure.
+    let bpf_filter_positional = cli.capture_args.bpf_file.is_none() && !cli.bpf_filter.is_empty();
     let bpf_filter = if let Some(ref bpf_file) = cli.capture_args.bpf_file {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
@@ -3583,6 +3588,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         // Operator-supplied or absent here; the live default is generated later
         // (see the auto_bpf_filter block), which is where this flips to true.
         bpf_filter_generated: false,
+        bpf_filter_positional,
         count,
         duration,
         replay: cli.capture_args.replay,
@@ -4290,7 +4296,7 @@ fn metrics_ignored_on_cores_warning(cli: &Cli) -> Option<String> {
 /// The operator-facing message, or `None` when the pattern reaches a detector.
 fn scanner_pattern_unread_refusal(cli: &Cli, config: &Config) -> Option<String> {
     let pattern = cli.security_args.kill_ua.as_deref()?;
-    let armed = cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+    let armed = cli.kill_scanner(config);
     if armed {
         return None;
     }
@@ -4362,18 +4368,12 @@ fn security_detection_unarmed_refusal(
     // The same conditions `batch::run` arms each detector on, so this cannot
     // report a flag as ignored that the headless run would have ignored too.
     let asked: Vec<&str> = [
-        (
-            cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false),
-            "--kill-scanner",
-        ),
+        (cli.kill_scanner(config), "--kill-scanner"),
         (
             !cli.security_args.kill_target.is_empty(),
             "-K/--kill-target",
         ),
-        (
-            cli.security_args.fraud_detect || config.security.fraud_detect.unwrap_or(false),
-            "--fraud-detect",
-        ),
+        (cli.fraud_detect(config), "--fraud-detect"),
         (cli.security_args.digest_leak, "--digest-leak"),
         (cli.security_args.reg_flood, "--reg-flood"),
     ]
@@ -4897,6 +4897,40 @@ mod tests {
             cc.bpf_filter.as_deref(),
             Some("tcp port 5061"),
             "--bpf-file must outrank the key"
+        );
+    }
+
+    /// Only a filter typed after the options is marked positional: it alone
+    /// gets the match-expression hint when it fails to compile.
+    #[test]
+    fn only_the_positional_filter_is_marked_positional() {
+        let mut cli = base_cli();
+        cli.bpf_filter = vec!["INVITE".to_string()];
+        assert!(
+            build_capture_config(&cli, &Config::default())
+                .unwrap()
+                .bpf_filter_positional
+        );
+
+        let mut config = Config::default();
+        config.capture.bpf_filter = Some("udp".to_string());
+        assert!(
+            !build_capture_config(&base_cli(), &config)
+                .unwrap()
+                .bpf_filter_positional
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f.bpf");
+        std::fs::write(&f, "udp\n").unwrap();
+        let mut cli = base_cli();
+        cli.capture_args.bpf_file = Some(f.to_string_lossy().into_owned());
+        cli.bpf_filter = vec!["tcp".to_string()];
+        assert!(
+            !build_capture_config(&cli, &Config::default())
+                .unwrap()
+                .bpf_filter_positional,
+            "--bpf-file wins, so the positional words are not the filter"
         );
     }
 

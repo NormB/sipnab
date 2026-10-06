@@ -2866,3 +2866,65 @@ fn evidence_out_refuses_an_unwritable_path_at_startup() {
         "the message names the flag and the path: {stderr}"
     );
 }
+
+/// sngrep and sipgrep take a match expression before the capture filter;
+/// sipnab takes only the filter. `sipnab -I call.pcap INVITE` fails to
+/// compile `INVITE` as BPF, and the error says how to match SIP text instead.
+#[test]
+fn a_positional_filter_that_does_not_compile_points_at_dash_e() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "--no-config",
+            "-N",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "INVITE",
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run sipnab");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "INVITE is not a BPF filter:\n{err}");
+    assert!(
+        err.contains("-e '<pattern>'"),
+        "the error must point at -e:\n{err}"
+    );
+}
+
+/// The same bad filter from --bpf-file names no match expression: that
+/// operator wrote a filter file, not a sngrep command line.
+#[test]
+fn a_bpf_file_that_does_not_compile_gets_no_match_expression_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("f.bpf");
+    std::fs::write(&f, "INVITE\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "--no-config",
+            "-N",
+            "-I",
+            "tests/fixtures/sip_call.pcap",
+            "--bpf-file",
+            f.to_str().unwrap(),
+        ])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run sipnab");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(!err.contains("-e '<pattern>'"), "{err}");
+}
+
+/// `sipnab call.pcap`, as sngrep users type it, names a file where sipnab
+/// expects a capture filter. It is refused before any capture opens.
+#[test]
+fn a_lone_file_argument_asks_for_dash_i() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["--no-config", "-N", "tests/fixtures/sip_call.pcap"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("run sipnab");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{err}");
+    assert!(err.contains("-I tests/fixtures/sip_call.pcap"), "{err}");
+}
