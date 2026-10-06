@@ -141,12 +141,14 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
     let mut writer = match crate::capture::PcapWriter::with_provenance(
         &path,
         1,
-        None,
-        None,
-        pcapng,
-        crate::capture::PcapExportMode::Raw,
-        None,
-        Some(provenance),
+        crate::capture::PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng,
+            export_mode: crate::capture::PcapExportMode::Raw,
+            interface: None,
+            provenance: Some(provenance),
+        },
     ) {
         Ok(w) => w,
         Err(e) => {

@@ -15,7 +15,7 @@
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-/// The TUI's processing thread: `tui_process_packet` with the options the
+/// The TUI's processing thread: `TuiPacketThread::process` with the options the
 /// thread builds from the command line and the config file.
 #[cfg(all(feature = "tui", feature = "tls"))]
 mod tui_thread {
@@ -23,7 +23,7 @@ mod tui_thread {
 
     use clap::Parser;
     use parking_lot::RwLock;
-    use sipnab::app::tui_mode::{TuiMedia, TuiOutput, tui_pipeline_options, tui_process_packet};
+    use sipnab::app::tui_mode::{TuiMedia, TuiOutput, TuiPacketThread, tui_pipeline_options};
     use sipnab::capture::{Packet, PacketProcessor, ParsedPacket};
     use sipnab::cli::Cli;
     use sipnab::config::Config;
@@ -50,13 +50,16 @@ mod tui_thread {
     /// all)`.
     fn run_frames(args: &[&str], config: &Config, frames: &[Vec<u8>]) -> (usize, usize, usize) {
         let cli = Cli::parse_from(args);
-        let mut output = TuiOutput::new(&cli, (None, None, None));
-        let mut media = TuiMedia::from_cli(&cli);
-        let mut processor = PacketProcessor::new();
-        let ds = Arc::new(RwLock::new(DialogStore::new(64, false)));
-        let ss = Arc::new(RwLock::new(StreamStore::new(64)));
-        let mut heuristic = RtpHeuristic::new();
-        let opts = tui_pipeline_options(&cli, config, false);
+        let mut thread = TuiPacketThread {
+            output: TuiOutput::new(&cli, (None, None, None)),
+            processor: PacketProcessor::new(),
+            rtp_heuristic: RtpHeuristic::new(),
+            media: TuiMedia::from_cli(&cli),
+            opts: tui_pipeline_options(&cli, config, false),
+            relay_orphans: None,
+            dialogs: Arc::new(RwLock::new(DialogStore::new(64, false))),
+            streams: Arc::new(RwLock::new(StreamStore::new(64))),
+        };
         let mut observed_sip = 0usize;
         let mut observed_any = 0usize;
         let base = chrono::Utc::now();
@@ -71,18 +74,8 @@ mod tui_thread {
                 pre_parsed: None,
                 origin: None,
             };
-            tui_process_packet(
-                &p,
-                &mut output,
-                &mut processor,
-                &ds,
-                &ss,
-                &mut heuristic,
-                &opts,
-                &mut media,
-                None,
-                false,
-                |pp: &ParsedPacket| {
+            thread
+                .process(&p, false, |pp: &ParsedPacket| {
                     observed_any += 1;
                     // The call's own SIP, not the HEP datagram that
                     // carried it: the Call-ID line is in all seven messages,
@@ -93,11 +86,10 @@ mod tui_thread {
                     {
                         observed_sip += 1;
                     }
-                },
-            )
-            .expect("process");
+                })
+                .expect("process");
         }
-        let dialogs = ds.read().len();
+        let dialogs = thread.dialogs.read().len();
         (dialogs, observed_sip, observed_any)
     }
 

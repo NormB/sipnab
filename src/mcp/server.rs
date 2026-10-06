@@ -8084,9 +8084,7 @@ impl SipnabMcp {
                 params.call_id.as_deref(),
                 &params.summary,
                 params.detail.as_deref(),
-                &capture_identity.instance,
-                capture_identity.dialog_generation,
-                capture_identity.stream_generation,
+                &capture_identity,
             )
         };
         // Refused, not silently dropped: an agent told "recorded" about a
@@ -9681,14 +9679,16 @@ pub(crate) fn write_messages_to_pcap(
         path,
         // DLT_EN10MB: the synthetic frames carry an Ethernet header.
         1,
-        None,
-        None,
-        pcapng,
-        // Raw: no key material embedded. An agent-triggered export must not
-        // write decryption secrets into a file it just named.
-        PcapExportMode::Raw,
-        None,
-        Some(note),
+        crate::capture::PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng,
+            // Raw: no key material embedded. An agent-triggered export must not
+            // write decryption secrets into a file it just named.
+            export_mode: PcapExportMode::Raw,
+            interface: None,
+            provenance: Some(note),
+        },
     )?;
     let mut written = 0;
     for msg in messages {

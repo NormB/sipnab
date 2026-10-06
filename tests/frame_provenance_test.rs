@@ -621,7 +621,7 @@ fn a_sip_message_carries_a_frame_ref_that_resolves_to_its_own_bytes() {
 /// test written against the call.
 #[test]
 fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
-    use sipnab::capture::{PcapExportMode, PcapWriter};
+    use sipnab::capture::{PcapExportMode, PcapWriter, PcapWriterOptions};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("evidence.pcapng");
@@ -631,12 +631,14 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
     let mut w = PcapWriter::with_provenance(
         &path,
         1,
-        None,
-        None,
-        true,
-        PcapExportMode::Raw,
-        None,
-        Some(note.to_string()),
+        PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng: true,
+            export_mode: PcapExportMode::Raw,
+            interface: None,
+            provenance: Some(note.to_string()),
+        },
     )
     .expect("writer");
     w.finish().expect("finish");
@@ -653,9 +655,19 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() {
     // this test would pass against a writer that embeds a fixed string
     // regardless of what the caller asked for.
     let plain = dir.path().join("plain.pcapng");
-    let mut w2 =
-        PcapWriter::with_provenance(&plain, 1, None, None, true, PcapExportMode::Raw, None, None)
-            .expect("writer");
+    let mut w2 = PcapWriter::with_provenance(
+        &plain,
+        1,
+        PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng: true,
+            export_mode: PcapExportMode::Raw,
+            interface: None,
+            provenance: None,
+        },
+    )
+    .expect("writer");
     w2.finish().expect("finish");
     let plain_bytes = std::fs::read(&plain).expect("read");
     let plain_text = String::from_utf8_lossy(&plain_bytes);

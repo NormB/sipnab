@@ -1022,7 +1022,7 @@ const IP_PROTO_ESP: u8 = 50;
 /// only a multi-message TCP segment spills to the heap.
 pub type ParsedPackets = SmallVec<[ParsedPacket; 1]>;
 #[cfg(feature = "native")]
-pub use writer::{PcapExportMode, PcapWriter};
+pub use writer::{PcapExportMode, PcapWriter, PcapWriterOptions};
 
 use parse::parse_packet;
 use reassembly::{FragmentReassembler, TcpReassembler};

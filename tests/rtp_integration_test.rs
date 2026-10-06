@@ -45,23 +45,42 @@ fn ts(secs: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
 }
 
-/// Build a synthetic ParsedPacket with a valid RTP payload embedded.
-///
-/// # Arguments
-/// * `src_ip` / `dst_ip` / `src_port` / `dst_port` — the UDP 4-tuple.
-/// * `ssrc` / `seq` / `rtp_ts` / `pt` — RTP header fields; payload is 160
-///   bytes (20ms of G.711).
-#[allow(clippy::too_many_arguments)]
-fn make_rtp_parsed(
+/// The UDP 4-tuple a test packet travels on.
+#[derive(Clone, Copy)]
+struct Flow {
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     src_port: u16,
     dst_port: u16,
+}
+
+/// The RTP header fields a test packet carries.
+#[derive(Clone, Copy)]
+struct RtpFields {
     ssrc: u32,
     seq: u16,
     rtp_ts: u32,
     pt: u8,
-) -> ParsedPacket {
+}
+
+/// Build a synthetic ParsedPacket with a valid RTP payload embedded.
+///
+/// # Arguments
+/// * `flow` — the UDP 4-tuple.
+/// * `rtp` — RTP header fields; payload is 160 bytes (20ms of G.711).
+fn make_rtp_parsed(flow: Flow, rtp: RtpFields) -> ParsedPacket {
+    let Flow {
+        src_ip,
+        dst_ip,
+        src_port,
+        dst_port,
+    } = flow;
+    let RtpFields {
+        ssrc,
+        seq,
+        rtp_ts,
+        pt,
+    } = rtp;
     let mut payload = Vec::with_capacity(172);
     // byte 0: V=2, P=0, X=0, CC=0
     payload.push(0x80);
@@ -243,14 +262,18 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
     // Simulate 50 packets from a single SSRC (20ms apart, G.711)
     for i in 0u16..50 {
         let parsed = make_rtp_parsed(
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            20000,
-            30000,
-            ssrc,
-            100 + i,
-            i as u32 * 160,
-            0, // PCMU
+            Flow {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                src_port: 20000,
+                dst_port: 30000,
+            },
+            RtpFields {
+                ssrc,
+                seq: 100 + i,
+                rtp_ts: i as u32 * 160,
+                pt: 0, /* PCMU */
+            },
         );
         let rtp = parse_rtp_header(&parsed.payload).expect("valid synthetic RTP");
         store.process_rtp(&parsed, &rtp, ts(i as i64));
@@ -288,24 +311,32 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
     // Two different SSRCs on different ports (bidirectional call)
     for i in 0u16..10 {
         let fwd = make_rtp_parsed(
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            20000,
-            30000,
-            0x1111,
-            100 + i,
-            i as u32 * 160,
-            0,
+            Flow {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                src_port: 20000,
+                dst_port: 30000,
+            },
+            RtpFields {
+                ssrc: 0x1111,
+                seq: 100 + i,
+                rtp_ts: i as u32 * 160,
+                pt: 0,
+            },
         );
         let rev = make_rtp_parsed(
-            [10, 0, 0, 2],
-            [10, 0, 0, 1],
-            30000,
-            20000,
-            0x2222,
-            200 + i,
-            i as u32 * 160,
-            0,
+            Flow {
+                src_ip: [10, 0, 0, 2],
+                dst_ip: [10, 0, 0, 1],
+                src_port: 30000,
+                dst_port: 20000,
+            },
+            RtpFields {
+                ssrc: 0x2222,
+                seq: 200 + i,
+                rtp_ts: i as u32 * 160,
+                pt: 0,
+            },
         );
         let rtp_fwd = parse_rtp_header(&fwd.payload).unwrap();
         let rtp_rev = parse_rtp_header(&rev.payload).unwrap();
@@ -495,34 +526,55 @@ fn packet_loss_detected_from_sequence_gaps() {
 
     let ssrc = 0xDEAD;
     // Packet 1: seq=100
-    let p1 = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, ssrc, 100, 0, 0);
+    let p1 = make_rtp_parsed(
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
+    );
     let r1 = parse_rtp_header(&p1.payload).unwrap();
     store.process_rtp(&p1, &r1, ts(0));
 
     // Packet 2: seq=105 (gap of 4: 101, 102, 103, 104 missing)
     let p2 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc,
-        105,
-        800,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc,
+            seq: 105,
+            rtp_ts: 800,
+            pt: 0,
+        },
     );
     let r2 = parse_rtp_header(&p2.payload).unwrap();
     store.process_rtp(&p2, &r2, ts(1));
 
     // Packet 3: seq=106 (no gap)
     let p3 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc,
-        106,
-        960,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc,
+            seq: 106,
+            rtp_ts: 960,
+            pt: 0,
+        },
     );
     let r3 = parse_rtp_header(&p3.payload).unwrap();
     store.process_rtp(&p3, &r3, ts(2));
@@ -548,14 +600,18 @@ fn no_false_loss_on_sequential_packets() {
 
     for i in 0u16..100 {
         let p = make_rtp_parsed(
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            20000,
-            30000,
-            ssrc,
-            i,
-            i as u32 * 160,
-            0,
+            Flow {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                src_port: 20000,
+                dst_port: 30000,
+            },
+            RtpFields {
+                ssrc,
+                seq: i,
+                rtp_ts: i as u32 * 160,
+                pt: 0,
+            },
         );
         let r = parse_rtp_header(&p.payload).unwrap();
         store.process_rtp(&p, &r, ts(i as i64));
@@ -699,14 +755,18 @@ fn stream_linked_to_dialog() {
 
     // Create a stream: 10.0.0.1:20000 -> 10.0.0.2:30000
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0x1234,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0x1234,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -738,14 +798,18 @@ fn link_by_source_endpoint() {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0x5678,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0x5678,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -776,14 +840,18 @@ fn unlinked_stream_is_orphaned_immediately() {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0xAAAA,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0xAAAA,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -807,14 +875,18 @@ fn linked_stream_not_orphaned() {
     let mut store = StreamStore::new(100);
 
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0xBBBB,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0xBBBB,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -1207,14 +1279,18 @@ fn rtcp_is_recorded_beside_the_measurement() {
 
     // Create a stream
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0xFFFF,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0xFFFF,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -1270,14 +1346,18 @@ fn rtcp_is_recorded_beside_the_measurement() {
 fn negative_cumulative_lost_survives_as_negative() {
     let mut store = StreamStore::new(100);
     let parsed = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        0xFFFE,
-        100,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: 0xFFFE,
+            seq: 100,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
@@ -1481,14 +1561,18 @@ fn stream_store_evicts_at_capacity() {
 
     for i in 0u32..5 {
         let parsed = make_rtp_parsed(
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            20000 + i as u16,
-            30000,
-            i,
-            100,
-            0,
-            0,
+            Flow {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                src_port: 20000 + i as u16,
+                dst_port: 30000,
+            },
+            RtpFields {
+                ssrc: i,
+                seq: 100,
+                rtp_ts: 0,
+                pt: 0,
+            },
         );
         let rtp = parse_rtp_header(&parsed.payload).unwrap();
         store.process_rtp(&parsed, &rtp, ts(i as i64));
@@ -1513,56 +1597,72 @@ fn sequence_wraparound_no_false_loss_in_store() {
 
     // Start at seq 65534
     let p1 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc_val,
-        65534,
-        0,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: ssrc_val,
+            seq: 65534,
+            rtp_ts: 0,
+            pt: 0,
+        },
     );
     let r1 = parse_rtp_header(&p1.payload).unwrap();
     store.process_rtp(&p1, &r1, ts(0));
 
     // seq 65535
     let p2 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc_val,
-        65535,
-        160,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: ssrc_val,
+            seq: 65535,
+            rtp_ts: 160,
+            pt: 0,
+        },
     );
     let r2 = parse_rtp_header(&p2.payload).unwrap();
     store.process_rtp(&p2, &r2, ts(1));
 
     // seq 0 (wraparound)
     let p3 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc_val,
-        0,
-        320,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: ssrc_val,
+            seq: 0,
+            rtp_ts: 320,
+            pt: 0,
+        },
     );
     let r3 = parse_rtp_header(&p3.payload).unwrap();
     store.process_rtp(&p3, &r3, ts(2));
 
     // seq 1
     let p4 = make_rtp_parsed(
-        [10, 0, 0, 1],
-        [10, 0, 0, 2],
-        20000,
-        30000,
-        ssrc_val,
-        1,
-        480,
-        0,
+        Flow {
+            src_ip: [10, 0, 0, 1],
+            dst_ip: [10, 0, 0, 2],
+            src_port: 20000,
+            dst_port: 30000,
+        },
+        RtpFields {
+            ssrc: ssrc_val,
+            seq: 1,
+            rtp_ts: 480,
+            pt: 0,
+        },
     );
     let r4 = parse_rtp_header(&p4.payload).unwrap();
     store.process_rtp(&p4, &r4, ts(3));
@@ -1605,14 +1705,18 @@ fn stream_detail_render_does_not_panic() {
     // Feed 50 RTP packets to get meaningful quality metrics
     for i in 0u16..50 {
         let parsed = make_rtp_parsed(
-            [10, 0, 0, 1],
-            [10, 0, 0, 2],
-            20000,
-            30000,
-            ssrc,
-            100 + i,
-            i as u32 * 160,
-            0, // PCMU
+            Flow {
+                src_ip: [10, 0, 0, 1],
+                dst_ip: [10, 0, 0, 2],
+                src_port: 20000,
+                dst_port: 30000,
+            },
+            RtpFields {
+                ssrc,
+                seq: 100 + i,
+                rtp_ts: i as u32 * 160,
+                pt: 0, /* PCMU */
+            },
         );
         let rtp = parse_rtp_header(&parsed.payload).expect("valid synthetic RTP");
         store.process_rtp(&parsed, &rtp, ts(i as i64));

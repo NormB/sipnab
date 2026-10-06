@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:770`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L770)), repeats the consequence for the
+([`file.rs:800`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L800)), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or

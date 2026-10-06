@@ -462,34 +462,44 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             .any(|(k, v)| k == need && (v == "write" || v == level))
     }
 
-    let mut gaps: Vec<String> = Vec::new();
-    let mut jobs_needing = 0usize;
+    /// What the scan has found across every workflow.
+    #[derive(Default)]
+    struct Tally {
+        /// Jobs seen to need an inferable permission.
+        jobs_needing: usize,
+        /// Jobs whose permissions block omits one they need.
+        gaps: Vec<String>,
+    }
+
+    /// The job the scan is inside, and what it has seen of it.
+    #[derive(Default)]
+    struct JobScan {
+        /// The job's name, once its header is read.
+        name: Option<String>,
+        /// Its own `permissions:` block, when it has one.
+        perms: Option<Vec<(String, String)>>,
+        /// Whether the scan is inside that block.
+        in_perms: bool,
+        /// Markers of steps that need a permission.
+        markers: Vec<&'static str>,
+        /// Whether a step sets `push: true`.
+        pushes: bool,
+    }
+
+    let mut tally = Tally::default();
 
     for (name, body) in workflows() {
         let mut wf_perms: Vec<(String, String)> = Vec::new();
         let mut in_wf_perms = false;
         let mut in_jobs = false;
 
-        let mut job: Option<String> = None;
-        let mut job_perms: Option<Vec<(String, String)>> = None;
-        let mut in_job_perms = false;
-        let mut markers: Vec<&str> = Vec::new();
-        let mut job_pushes = false;
+        let mut scan = JobScan::default();
 
         // Borrowed by the loop and again after it, so it takes its state as
         // arguments rather than capturing.
-        #[allow(clippy::too_many_arguments)]
-        fn close(
-            file: &str,
-            job: &Option<String>,
-            perms: &Option<Vec<(String, String)>>,
-            wf: &[(String, String)],
-            markers: &[&str],
-            pushes: bool,
-            counter: &mut usize,
-            out: &mut Vec<String>,
-        ) {
-            let Some(j) = job else { return };
+        fn close(file: &str, wf: &[(String, String)], scan: &JobScan, tally: &mut Tally) {
+            let Some(j) = &scan.name else { return };
+            let (perms, markers, pushes) = (&scan.perms, &scan.markers, scan.pushes);
 
             let mut needs: Vec<(&str, &str)> = Vec::new();
             for m in markers {
@@ -510,7 +520,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             if needs.is_empty() {
                 return;
             }
-            *counter += 1;
+            tally.jobs_needing += 1;
 
             // No job block means the workflow block applies unmodified.
             let effective = perms.as_deref().unwrap_or(wf);
@@ -521,7 +531,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
                     } else {
                         "the workflow-level block"
                     };
-                    out.push(format!(
+                    tally.gaps.push(format!(
                         "{file}: job `{j}` needs `{need}: {level}` -- {via} omits it"
                     ));
                 }
@@ -536,21 +546,8 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             }
 
             if indent == 0 {
-                close(
-                    &name,
-                    &job,
-                    &job_perms,
-                    &wf_perms,
-                    &markers,
-                    job_pushes,
-                    &mut jobs_needing,
-                    &mut gaps,
-                );
-                job = None;
-                job_perms = None;
-                markers.clear();
-                job_pushes = false;
-                in_job_perms = false;
+                close(&name, &wf_perms, &scan, &mut tally);
+                scan = JobScan::default();
                 in_wf_perms = trimmed.starts_with("permissions:");
                 in_jobs = trimmed.starts_with("jobs:");
                 continue;
@@ -568,36 +565,26 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             }
 
             if indent == 2 && trimmed.ends_with(':') {
-                close(
-                    &name,
-                    &job,
-                    &job_perms,
-                    &wf_perms,
-                    &markers,
-                    job_pushes,
-                    &mut jobs_needing,
-                    &mut gaps,
-                );
-                job = Some(trimmed.trim_end_matches(':').to_string());
-                job_perms = None;
-                markers.clear();
-                job_pushes = false;
-                in_job_perms = false;
+                close(&name, &wf_perms, &scan, &mut tally);
+                scan = JobScan {
+                    name: Some(trimmed.trim_end_matches(':').to_string()),
+                    ..JobScan::default()
+                };
                 continue;
             }
-            if job.is_none() {
+            if scan.name.is_none() {
                 continue;
             }
 
             if indent == 4 {
-                in_job_perms = trimmed.starts_with("permissions:");
-                if in_job_perms {
-                    job_perms = Some(Vec::new());
+                scan.in_perms = trimmed.starts_with("permissions:");
+                if scan.in_perms {
+                    scan.perms = Some(Vec::new());
                 }
-            } else if in_job_perms
+            } else if scan.in_perms
                 && indent == 6
                 && let Some((k, v)) = trimmed.split_once(':')
-                && let Some(p) = job_perms.as_mut()
+                && let Some(p) = scan.perms.as_mut()
             {
                 p.push((k.to_string(), v.trim().to_string()));
             }
@@ -606,41 +593,33 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
             // inside the job is this job's step.
             if trimmed.contains("uses:") {
                 for (marker, _, _) in NEEDS {
-                    if trimmed.contains(marker) && !markers.contains(marker) {
-                        markers.push(marker);
+                    if trimmed.contains(marker) && !scan.markers.contains(marker) {
+                        scan.markers.push(marker);
                     }
                 }
-                if trimmed.contains(PUSH_MARKER) && !markers.contains(&PUSH_MARKER) {
-                    markers.push(PUSH_MARKER);
+                if trimmed.contains(PUSH_MARKER) && !scan.markers.contains(&PUSH_MARKER) {
+                    scan.markers.push(PUSH_MARKER);
                 }
             }
             if trimmed == "push: true" {
-                job_pushes = true;
+                scan.pushes = true;
             }
         }
-        close(
-            &name,
-            &job,
-            &job_perms,
-            &wf_perms,
-            &markers,
-            job_pushes,
-            &mut jobs_needing,
-            &mut gaps,
-        );
+        close(&name, &wf_perms, &scan, &mut tally);
     }
 
     // A detector that recognizes nothing reports every workflow as correct.
     assert!(
-        jobs_needing >= 6,
-        "only {jobs_needing} jobs were seen to need an inferable permission -- \
+        tally.jobs_needing >= 6,
+        "only {} jobs were seen to need an inferable permission -- \
          SARIF upload, CodeQL analysis, attestation, Pages deployment, release \
          creation and the GHCR push are spread across more jobs than that, so \
-         the parser is broken and a pass here means nothing"
+         the parser is broken and a pass here means nothing",
+        tally.jobs_needing
     );
 
     assert!(
-        gaps.is_empty(),
+        tally.gaps.is_empty(),
         "these jobs run a step whose permission their own block does not \
          grant:\n  {}\n\n\
          A job-level `permissions:` block REPLACES the workflow-level one, so a \
@@ -648,7 +627,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
          restates permissions. The step fails with `Resource not accessible by \
          integration`, which names neither the permission nor the override, and \
          which fork PRs produce for unrelated reasons.",
-        gaps.join("\n  ")
+        tally.gaps.join("\n  ")
     );
 }
 

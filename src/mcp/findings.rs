@@ -182,19 +182,22 @@ impl FindingsLog {
     /// Record one finding by writing it to the log. The only way in, and there
     /// is deliberately no way out.
     ///
+    /// `capture` is the capture and store revision the agent read, which the
+    /// log line carries so the finding can be tied to what it was about.
+    ///
     /// Returns `None` when the process cap is reached, so the caller refuses
     /// out loud rather than accepting a write it will not honor.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::mcp) fn record(
         &mut self,
         written_at: chrono::DateTime<chrono::Utc>,
         call_id: Option<&str>,
         summary: &str,
         detail: Option<&str>,
-        capture_instance: &str,
-        dialog_generation: u64,
-        stream_generation: u64,
+        capture: &crate::provenance::CaptureEtag,
     ) -> Option<Recorded> {
+        let capture_instance = capture.instance.as_str();
+        let dialog_generation = capture.dialog_generation;
+        let stream_generation = capture.stream_generation;
         if self.is_full() {
             return None;
         }
@@ -249,8 +252,31 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// The capture the test findings are recorded against.
+    fn etag() -> crate::provenance::CaptureEtag {
+        crate::provenance::CaptureEtag {
+            node: "test-node".to_string(),
+            instance: "cap-1".to_string(),
+            dialog_generation: 1,
+            stream_generation: 2,
+        }
+    }
+
+    /// A recorded finding's log line names the capture and store revision
+    /// it was about, so an operator can tie the agent's claim to what it read.
+    #[test]
+    fn the_log_line_names_the_capture_the_finding_was_about() {
+        let mut log = FindingsLog::new();
+        let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+            rec(&mut log, "a finding").expect("under the cap");
+        });
+        assert!(logs.contains("capture_instance=\"cap-1\""), "{logs}");
+        assert!(logs.contains("dialog_generation=1"), "{logs}");
+        assert!(logs.contains("stream_generation=2"), "{logs}");
+    }
+
     fn rec(log: &mut FindingsLog, summary: &str) -> Option<Recorded> {
-        log.record(ts(), None, summary, None, "cap-1", 1, 2)
+        log.record(ts(), None, summary, None, &etag())
     }
 
     #[test]
@@ -320,7 +346,7 @@ mod tests {
         let mut log = FindingsLog::new();
         let detail = "y".repeat(MAX_DETAIL_CHARS + 10);
         let r = log
-            .record(ts(), None, "fine", Some(&detail), "cap-1", 1, 2)
+            .record(ts(), None, "fine", Some(&detail), &etag())
             .expect("accepted");
         assert!(r.truncated);
         assert_eq!(r.detail_chars_submitted, MAX_DETAIL_CHARS + 10);

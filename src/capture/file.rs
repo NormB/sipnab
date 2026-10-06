@@ -229,9 +229,11 @@ pub fn capture_file(
         path,
         config,
         &tx,
-        std::time::Instant::now(),
-        &mut count,
-        &mut prev_ts,
+        ReadTimeline {
+            start: std::time::Instant::now(),
+            count: &mut count,
+            prev_ts: &mut prev_ts,
+        },
     )
 }
 
@@ -499,6 +501,21 @@ impl ReadTally {
     }
 }
 
+/// Where a read stands on the run's timeline: when it started, how many
+/// packets went out, and the previous packet's time.
+///
+/// One value because the three together are what make several files read as
+/// one capture (one `--count`, one `--duration` clock, one replay timeline),
+/// and a reader handed only some of them would keep its own.
+struct ReadTimeline<'a> {
+    /// When the run started reading, for `--duration`.
+    start: std::time::Instant,
+    /// Packets sent so far, across every file read on this timeline.
+    count: &'a mut u64,
+    /// Previous packet's timestamp, so replay reproduces the gaps.
+    prev_ts: &'a mut Option<DateTime<Utc>>,
+}
+
 /// State carried from one file of a set to the next.
 ///
 /// Bundled rather than passed as six more parameters, because every member of
@@ -670,9 +687,11 @@ fn read_member(
         path,
         config,
         tx,
-        start,
-        state.count,
-        &mut state.prev_ts,
+        ReadTimeline {
+            start,
+            count: state.count,
+            prev_ts: &mut state.prev_ts,
+        },
     ) {
         Ok(read) => read,
         Err(e) => {
@@ -808,11 +827,9 @@ fn read_opened(
     path: &Path,
     config: &CaptureConfig,
     tx: &PacketTx,
-    start: std::time::Instant,
-    count: &mut u64,
-    prev_ts: &mut Option<DateTime<Utc>>,
+    timeline: ReadTimeline<'_>,
 ) -> Result<()> {
-    let _ = read_opened_inner(cap, path, config, tx, start, count, prev_ts)?;
+    let _ = read_opened_inner(cap, path, config, tx, timeline)?;
     Ok(())
 }
 
@@ -901,16 +918,19 @@ impl<'a> SendBatcher<'a> {
 ///
 /// Separate from [`read_opened`] only so its [`FileRead`] is available to
 /// [`capture_files`], which needs both halves of it.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 fn read_opened_inner(
     cap: &mut pcap::Capture<pcap::Offline>,
     path: &Path,
     config: &CaptureConfig,
     tx: &PacketTx,
-    start: std::time::Instant,
-    count: &mut u64,
-    prev_ts: &mut Option<DateTime<Utc>>,
+    timeline: ReadTimeline<'_>,
 ) -> Result<FileRead> {
+    let ReadTimeline {
+        start,
+        count,
+        prev_ts,
+    } = timeline;
     let link_type = cap.get_datalink().0;
     let replay = config.replay;
     // The source stamped on every packet this file yields. Interned ONCE per
@@ -1420,9 +1440,11 @@ mod tests {
             &path,
             &CaptureConfig::default(),
             &tx,
-            std::time::Instant::now(),
-            &mut count,
-            &mut prev_ts,
+            ReadTimeline {
+                start: std::time::Instant::now(),
+                count: &mut count,
+                prev_ts: &mut prev_ts,
+            },
         )
         .expect("read");
 
@@ -1668,6 +1690,53 @@ mod tests {
         std::fs::write(&small, gzip(&one_record(1, 1_000, &[0u8; 60]))).expect("write");
         let (mut cap, _guard) = open_offline_with(&small, &limits).expect("within the ceiling");
         assert!(cap.next_packet().is_ok());
+    }
+
+    /// Replaying a set reproduces the gap BETWEEN its files, not only within
+    /// them: the timeline (`ReadTimeline::prev_ts`) is shared, so the second
+    /// file's first packet waits for the time that separated it from the
+    /// first file's last.
+    #[test]
+    fn replaying_a_set_reproduces_the_gap_between_its_files() {
+        // One Ethernet record per file, 300 ms apart.
+        fn record_at(secs: u32, usecs: u32) -> Vec<u8> {
+            let frame = [0u8; 60];
+            let mut f = Vec::new();
+            f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
+            f.extend_from_slice(&2u16.to_le_bytes());
+            f.extend_from_slice(&4u16.to_le_bytes());
+            for v in [0u32, 0, 65_535, 1, secs, usecs] {
+                f.extend_from_slice(&v.to_le_bytes());
+            }
+            f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            f.extend_from_slice(&frame);
+            f
+        }
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join("a.pcap");
+        let second = root.path().join("b.pcap");
+        std::fs::write(&first, record_at(1_000, 0)).expect("write");
+        std::fs::write(&second, record_at(1_000, 300_000)).expect("write");
+        let config = CaptureConfig {
+            replay: true,
+            ..CaptureConfig::default()
+        };
+        let mut tally = ReadTally {
+            given: 2,
+            ..ReadTally::default()
+        };
+        let mut count = 0u64;
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let started = std::time::Instant::now();
+        read_set(&[first, second], &config, &tx, None, &mut tally, &mut count)
+            .expect("both files read");
+        let took = started.elapsed();
+        assert_eq!(count, 2);
+        assert!(
+            took >= std::time::Duration::from_millis(250),
+            "the 300 ms gap between the files was not replayed: took {took:?}"
+        );
     }
 
     /// A member whose link type sipnab cannot decode is skipped when the BPF
