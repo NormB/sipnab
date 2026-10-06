@@ -299,8 +299,6 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     problems, fixed, checked = [], 0, 0
 
     for md in tracked("docs/**/*.md") if pages is None else pages:
-        if "superpowers" in str(md):
-            continue
         text = md.read_text()
         # A page outside the repository -- a test fixture -- has no path
         # relative to it, and reporting an absolute path is better than
@@ -404,7 +402,7 @@ def anchor_pages() -> list[pathlib.Path]:
     the point: a page set chosen by where citations happen to be today is one
     that misses the first one written tomorrow.
     """
-    pages = [p for p in tracked("docs/**/*.md") if "superpowers" not in str(p)]
+    pages = tracked("docs/**/*.md")
     pages += tracked("website/content/**/*.md")
     readme = REPO / "README.md"
     if readme.is_file():

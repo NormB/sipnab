@@ -2235,7 +2235,7 @@ fn no_references_to_merged_away_mcp_pages() {
     // from the old `md_files_recursive("docs")`:
     //   - gains root markdown: README.md links into docs/ and shipped two
     //     dead mcp-*.md links precisely because the scan stopped at docs/;
-    //   - drops docs/superpowers/ and docs/design/: planning material that
+    //   - drops docs/design/: planning material that
     //     is never published, and that must be free to name a merged-away
     //     page while describing the merge.
     let mut files = wiki_source_files();
@@ -2391,7 +2391,7 @@ fn every_docs_page_is_linked_from_the_index() {
             if p.is_dir() {
                 // Planning material outside the published journey, matching the
                 // scope `scanned_markdown` already documents.
-                if !matches!(name.as_str(), "design" | "research" | "superpowers") {
+                if !matches!(name.as_str(), "design" | "research") {
                     stack.push(p);
                 }
                 continue;

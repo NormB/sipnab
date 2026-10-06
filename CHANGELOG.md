@@ -10,6 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Removed
+
+- **AI agent planning documents are no longer in the repository.**
+  `docs/superpowers/` held three specs and plans written on 2026-07-24 and
+  2026-07-25. A gate test now fails if `docs/superpowers/` or `.superpowers/`
+  is tracked again, and the exclusions that named the directory in the docs
+  gates, Vale, codespell and lychee configs are gone with it. The files remain
+  in git history.
+
 ### Security
 
 - **The TypeScript MCP client example pins `@modelcontextprotocol/sdk`

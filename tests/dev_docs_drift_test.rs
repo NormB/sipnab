@@ -8,8 +8,7 @@
 //! user-facing docs this way (`docs_drift_test`, `link_integrity_test`);
 //! this is the same contract for the developer tree.
 //!
-//! Conventions enforced here (see
-//! `docs/superpowers/specs/2026-07-25-developer-documentation-design.md`):
+//! Conventions enforced here:
 //!
 //! 1. cited repo paths exist,
 //! 2. symbols named in link text — `()`-suffixed — resolve to a definition,

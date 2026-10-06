@@ -236,7 +236,6 @@ exclude = [
 ]
 
 exclude_path = [
-  "docs/superpowers",
   "docs/research",
   "target",
   "website/public/mermaid.min.js",
