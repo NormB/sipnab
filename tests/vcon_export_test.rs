@@ -95,6 +95,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
             facts: &facts,
             max_inline_media_bytes: None,
             analysis: None,
+            media: &[],
         },
     );
 
@@ -209,6 +210,7 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
                 facts: &facts,
                 max_inline_media_bytes: None,
                 analysis: None,
+                media: &[],
             },
         )
         .uuid

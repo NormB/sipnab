@@ -548,7 +548,7 @@ fn linked_code_targets_exist() {
     // one link, same mechanism as the entry above.
     // 354 -> 365: `docs/internals/rtpengine-control-plane.md`, one new page.
     // Four links are the module's own files plus
-    // `pipeline::apply_relay_control_links`; the other seven came from
+    // `pipeline::apply_relay_control`; the other seven came from
     // `scripts/link-repo-paths.py --apply`, which the sibling gate
     // `repo_paths_in_docs_are_clickable` demands for the fixtures, the test
     // file and the fuzz target the page names. Attributed per file before the

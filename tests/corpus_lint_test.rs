@@ -135,18 +135,10 @@ fn ingest(path: &Path) -> Option<Ingested> {
                         .link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
-            PacketAction::RelayControl {
-                sdp_links,
-                relay_links,
-                implementation,
-                delivery,
-            } => {
-                sipnab::pipeline::apply_relay_control_links(
+            PacketAction::RelayControl(message) => {
+                sipnab::pipeline::apply_relay_control(
                     &mut out.streams,
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
+                    &message,
                     parsed.input_origin,
                     parsed.timestamp,
                 );

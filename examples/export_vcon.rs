@@ -144,6 +144,7 @@ fn main() {
             // the container reports that rather than implying a clean bill.
             max_inline_media_bytes: None,
             analysis: None,
+            media: &[],
         },
     );
 

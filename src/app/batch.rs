@@ -1197,6 +1197,7 @@ fn report_parallel_run(
         );
         report_undecodable(r.packets_read);
         report_icmp_summary(&r.stream_store);
+        report_relay_retries(&r.stream_store);
         report_impossible_rates(&r.stream_store);
         report_retention_losses(&r.dialog_store);
         report_capture_quality();
@@ -1389,6 +1390,44 @@ fn retention_summary(dialogs: &DialogStore) -> Option<String> {
 ///
 /// Silent when the capture was clean, so a good run stays quiet — the same rule
 /// [`retention_summary`] follows.
+/// One line per relay control socket whose commands were retried (RP4).
+///
+/// A retry is a command repeating a cookie already seen: the proxy sent it
+/// again because it did not hear an answer in time. One sent after the
+/// relay's answer was already on the wire means that answer was lost or late
+/// on its way back. From the SIP side a control channel losing answers shows
+/// only as a proxy that is sometimes slow. Empty for a clean channel.
+fn relay_retry_lines(counts: &[crate::relay_vocab::ControlChannelCounts]) -> Vec<String> {
+    counts
+        .iter()
+        .filter(|c| c.retried_commands > 0)
+        .map(|c| {
+            format!(
+                "{} at {}: {} of {} control commands were retried (the same cookie sent \
+                 again), {} after the relay's answer was already on the wire. A retry \
+                 means the proxy did not hear an answer in time; one sent after the \
+                 answer means that answer was lost or late on its way back.",
+                c.implementation.as_str(),
+                c.relay,
+                c.retried_commands,
+                c.commands,
+                c.retried_after_answer,
+            )
+        })
+        .collect()
+}
+
+/// Warn about retried relay commands. See [`relay_retry_lines`].
+///
+/// # Side effects
+///
+/// Writes warnings to the tracing log; silent when no command was retried.
+fn report_relay_retries(store: &crate::rtp::stream_store::StreamStore) {
+    for line in relay_retry_lines(&store.relay_control_summary()) {
+        tracing::warn!("{line}");
+    }
+}
+
 /// Report Binding Requests that never came back.
 ///
 /// Separate from `capture_quality`, which is about what sipnab RECEIVED. This
@@ -4324,6 +4363,7 @@ impl BatchRunner {
             }
 
             report_icmp_summary(&stream_store.read());
+            report_relay_retries(&stream_store.read());
             report_impossible_rates(&stream_store.read());
             report_retention_losses(&dialog_store.read());
             report_capture_quality();
@@ -4823,22 +4863,14 @@ fn process_parsed_packet(
 
             *prev_timestamp = Some(sip_msg.timestamp);
         }
-        crate::pipeline::PacketAction::RelayControl {
-            sdp_links,
-            relay_links,
-            implementation,
-            delivery,
-        } => {
+        crate::pipeline::PacketAction::RelayControl(message) => {
             // A standalone media relay carries no SIP, so on that host this is
             // the ONLY thing that names a call. Without it every stream in the
             // capture reports orphaned.
-            if !sdp_links.is_empty() || !relay_links.is_empty() {
-                crate::pipeline::apply_relay_control_links(
+            if message.carries_anything() {
+                crate::pipeline::apply_relay_control(
                     stream_store,
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
+                    &message,
                     pp.input_origin,
                     pp.timestamp,
                 );
@@ -6352,11 +6384,13 @@ fn write_vcon_containers(
         .chain(tombstones.iter().map(|d| (*d, true)));
     let mut written = 0_usize;
     for (dialog, withheld) in work {
+        let media = crate::output::vcon::media_quality_for(batch.stream_store, &dialog.call_id);
         let context = crate::output::vcon::ExportContext {
             capture_id: crate::output::vcon::dialog_capture_id(dialog),
             facts: &facts,
             analysis: Some(&analysis),
             max_inline_media_bytes: media_budget(cli),
+            media: &media,
         };
         let container = if withheld {
             crate::output::vcon::export_withheld_dialog(dialog, &context, header)
@@ -6921,6 +6955,7 @@ fn write_single_vcon(
     // is already the operator's opt-in: without it there is no payload to
     // decode, and the container then carries the exporter's own explanation of
     // what was measured instead of an absence a reader has to interpret.
+    let media = crate::output::vcon::media_quality_for(stream_store, call_id);
     let decoded = decode_observed_audio(stream_store, call_id);
     let reason = decoded
         .as_ref()
@@ -6935,6 +6970,7 @@ fn write_single_vcon(
             facts: &facts,
             analysis: Some(&analysis),
             max_inline_media_bytes: media_budget(cli),
+            media: &media,
         },
         audio,
     );

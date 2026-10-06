@@ -8,18 +8,51 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The call report and the vCon carry MOS (CMP6).** Wherever a stream's MOS
+  is computed from the capture, it is now reported. The call report's text
+  gains `mos=<x> R=<r>` per stream, or `mos=unknown (<grounding>)` when the
+  MOS rests on no published or declared impairment value, and the Markdown
+  report gains `MOS` and `MOS_CQEW` columns. A vCon's analysis body gains
+  `media_quality` (MOS, R-factor, grounding and the AMR-WB wideband score per
+  stream; addresses left out); the key is additive and omitted for a dialog
+  with no media. The per-stream objects in `--json-dialogs`, `GET
+  /v1/streams/{id}` and the exec hooks' `SIPNAB_STREAM_JSON` gain `mos`,
+  `r_factor`, `mos_grounded`, `mos_grounding`, `mos_note` and the wideband
+  fields. Every surface takes the figures from the projection `GET
+  /v1/streams` serializes, so none can disagree.
+- **MCP `render_ladder` with `format: "mermaid"` annotates the diagram.** Each
+  arrow carries its offset from the first message, `PDD <n>ms` on the first
+  180, the SDP change against the call's previous SDP (`+G722`, `−PCMU`,
+  `HOLD`, `UNHOLD`) and `retransmission`, and IPv6 endpoints are bracketed.
+  The browser analyzer's export draws the same rows; the SDP change badge is
+  the TUI ladder's own rule, now shared.
+- **Retried rtpproxy commands are counted (RP4).** rtpproxy answers a
+  repeated cookie from its reply cache, so a capture shows a retry as the same
+  cookie sent twice: the proxy did not hear an answer in time. MCP
+  `reconcile_orphans` gains `relay_control`, one row per control socket read
+  with `--rtpproxy-control`, giving `commands`, `retried_commands` and
+  `retried_after_answer` (retries sent after the relay's answer was already on
+  the wire, so the answer was lost or late on its way back). A headless run
+  warns with the same counts at the end. Counted per capture, so re-reading a
+  capture does not turn every command into a retry.
+
 ## [0.5.204] - 2026-10-06
 
 ### Added
 
-- **Every yes/no setting can now be turned off from the command line.** A
-  config file that switched one on used to leave `--no-config` as the only way
-  to turn it off for a run. Eight new flags fix that, each the opposite of an
-  existing one, and the last of a pair typed wins: `--no-hep-parse`, `--rtp`,
-  `--no-delta-time`, `--priv-drop`, `--no-fraud-detect`, `--no-kill-scanner`,
-  `--no-reverse-dns` and `--no-resolve`. `--no-resolve` turns name display off
-  whatever else would turn it on, including `--names` files and
-  `[names.manual]`.
+- **Every yes/no setting now has a flag for each direction.** A config file
+  that set one used to leave `--no-config` as the only way to override it for
+  a run. Eight new flags complete the pairs, and the last of a pair typed
+  wins. Six turn off a feature the file turned on: `--no-hep-parse`,
+  `--no-delta-time`, `--no-fraud-detect`, `--no-kill-scanner`,
+  `--no-reverse-dns` and `--no-resolve`. Two turn back on a feature the file
+  turned off: `--rtp` (against `[capture] no_rtp`) and `--priv-drop` (against
+  `[privilege] no_priv_drop`). `--no-resolve` turns name display off whatever
+  else would turn it on, including `--names` files and `[names.manual]`.
 - **A match expression or a file name typed where sipnab expects a capture
   filter now gets an error that says what to type.** `sngrep` and `sipgrep`
   take a match expression before the capture filter; sipnab takes only the

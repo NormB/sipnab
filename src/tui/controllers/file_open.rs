@@ -660,20 +660,12 @@ fn load_one_capture(
                     }
                 }
             }
-            crate::pipeline::PacketAction::RelayControl {
-                sdp_links,
-                relay_links,
-                implementation,
-                delivery,
-            } => {
-                if !sdp_links.is_empty() || !relay_links.is_empty() {
-                    crate::pipeline::apply_relay_control_links(
+            crate::pipeline::PacketAction::RelayControl(message) => {
+                if message.carries_anything() {
+                    // Read off the wire: unauthenticated, and the relay this run watches.
+                    crate::pipeline::apply_relay_control(
                         &mut stream_store.write(),
-                        &sdp_links,
-                        &relay_links,
-                        // Read off the wire: unauthenticated, and the relay this run watches.
-                        implementation,
-                        delivery,
+                        &message,
                         parsed.input_origin,
                         parsed.timestamp,
                     );

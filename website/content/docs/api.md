@@ -2102,7 +2102,7 @@ const stream = await resp.json();
 console.log(`Codec: ${stream.codec}, Packets: ${stream.packets}`);
 ```
 
-**Response:** full RTP stream JSON including codec, packet counts, jitter, loss, MOS estimate, and associated dialog. Returns `400` for invalid SSRC format, `404` if not found.
+**Response:** full RTP stream JSON including codec, packet counts, jitter, loss, associated dialog, and the same MOS figures `GET /v1/streams` carries: `mos`, `r_factor`, `mos_grounded`, `mos_grounding`, `mos_note` when the MOS needs care, and for AMR-WB `mos_wideband`, `mos_wideband_context` or `mos_wideband_unavailable`. Returns `400` for invalid SSRC format, `404` if not found.
 
 ---
 

@@ -1360,6 +1360,25 @@ pub struct ExportContext<'a> {
     /// every inline body, which is how an operator says "never inline media"
     /// without turning the exporter off.
     pub max_inline_media_bytes: Option<usize>,
+    /// The quality of this dialog's RTP streams, as `GET /v1/streams`
+    /// reports it, for the analysis report's `media_quality`. Empty when the
+    /// caller has no streams for the dialog, which the report then omits.
+    pub media: &'a [crate::output::model::StreamSummary],
+}
+
+/// The quality of `call_id`'s RTP streams for [`ExportContext::media`], on the
+/// delay basis `GET /v1/streams` uses, so the container and the API report
+/// the same figures.
+#[must_use]
+pub fn media_quality_for(
+    store: &crate::rtp::stream_store::StreamStore,
+    call_id: &str,
+) -> Vec<crate::output::model::StreamSummary> {
+    let delay = crate::rtp::quality::MosDelay::from_capture(store);
+    store
+        .streams_for(call_id)
+        .map(|s| crate::output::model::StreamSummary::of(s, delay))
+        .collect()
 }
 
 impl ExportContext<'_> {
@@ -1752,7 +1771,7 @@ pub fn export_dialog_and_completeness(
         parties,
         dialog: dialog_objects,
         attachments,
-        analysis: vec![report(dialog, &completeness)],
+        analysis: vec![report(dialog, &completeness, context.media)],
     };
 
     ExportedDialog {
@@ -2487,7 +2506,11 @@ fn completeness_attachment(
 /// The signaling diagnosis is reused rather than recomputed: it is already the
 /// wire shape `--json-dialogs` emits, and a second projection of one analysis
 /// is two definitions waiting to disagree.
-fn report(dialog: &SipDialog, completeness: &CaptureCompleteness) -> Analysis {
+fn report(
+    dialog: &SipDialog,
+    completeness: &CaptureCompleteness,
+    media: &[crate::output::model::StreamSummary],
+) -> Analysis {
     let signaling = crate::sip::diagnosis::diagnose_signaling(&dialog.messages);
     let mut body = serde_json::json!({
         "schema_version": DIAGNOSIS_SCHEMA_VERSION,
@@ -2502,6 +2525,45 @@ fn report(dialog: &SipDialog, completeness: &CaptureCompleteness) -> Analysis {
         // sipnab surface renders a clean dialog.
         if !signaling.is_empty() {
             map.insert("signaling_diagnosis".into(), to_value_or_note(&signaling));
+        }
+        // The quality of the dialog's RTP, as `GET /v1/streams` reports it:
+        // the same projection, so the container and the API cannot disagree.
+        // Addresses are left out: `--redact` rewrites the addresses it knows,
+        // and the figures are what a reader of the call needs from here.
+        // Omitted when the caller had no streams for the dialog.
+        if !media.is_empty() {
+            let rows: Vec<serde_json::Value> = media
+                .iter()
+                .map(|m| {
+                    let mut row = serde_json::json!({
+                        "ssrc": m.ssrc,
+                        "codec": m.codec,
+                        "packets": m.packets,
+                        "jitter_ms": m.jitter_ms,
+                        "loss_pct": m.loss_pct,
+                        "mos": m.mos,
+                        "r_factor": m.r_factor,
+                        "mos_grounded": m.mos_grounded,
+                        "mos_grounding": m.mos_grounding,
+                    });
+                    if let Some(obj) = row.as_object_mut() {
+                        if let Some(note) = &m.mos_note {
+                            obj.insert("mos_note".into(), note.clone().into());
+                        }
+                        if let Some(wb) = m.mos_wideband {
+                            obj.insert("mos_wideband".into(), wb.into());
+                        }
+                        if let Some(ctx) = &m.mos_wideband_context {
+                            obj.insert("mos_wideband_context".into(), ctx.clone().into());
+                        }
+                        if let Some(why) = &m.mos_wideband_unavailable {
+                            obj.insert("mos_wideband_unavailable".into(), why.clone().into());
+                        }
+                    }
+                    row
+                })
+                .collect();
+            map.insert("media_quality".into(), rows.into());
         }
     }
     strip_credentials(&mut body);
@@ -3039,9 +3101,77 @@ mod tests {
                 facts,
                 max_inline_media_bytes: None,
                 analysis: None,
+                media: &[],
             },
             exported_at(),
         )
+    }
+
+    /// The analysis body parsed out of an exported container.
+    fn report_body(v: &Vcon) -> serde_json::Value {
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(v).expect("serializes")).expect("JSON");
+        serde_json::from_str(json["analysis"][0]["body"].as_str().expect("string body"))
+            .expect("the analysis body parses")
+    }
+
+    /// One PCMU stream's summary, as `GET /v1/streams` reports it.
+    fn pcmu_summary() -> crate::output::model::StreamSummary {
+        let key = crate::rtp::stream::StreamKey {
+            ssrc: 0x1234_5678,
+            src: "10.0.0.1:20000".parse().expect("addr"),
+            dst: "10.0.0.2:30000".parse().expect("addr"),
+        };
+        let hdr = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x1234_5678,
+            payload_offset: 12,
+        };
+        let mut stream = crate::rtp::stream::RtpStream::new(key, &hdr, exported_at());
+        stream.codec = Some("PCMU".to_string());
+        crate::output::model::StreamSummary::of(&stream, crate::rtp::quality::MosDelay::unknown())
+    }
+
+    /// The report carries each stream's MOS, the figure `GET /v1/streams`
+    /// reports, with what it rests on.
+    #[test]
+    fn the_report_carries_each_streams_mos() {
+        let summary = pcmu_summary();
+        let facts = clean_facts();
+        let v = export_dialog_at(
+            &dialog_with(&[response(200, "OK")]),
+            &ExportContext {
+                capture_id: "fixture.pcap",
+                facts: &facts,
+                max_inline_media_bytes: None,
+                analysis: None,
+                media: std::slice::from_ref(&summary),
+            },
+            exported_at(),
+        );
+        let body = report_body(&v);
+        let row = &body["media_quality"][0];
+        assert_eq!(row["ssrc"], summary.ssrc, "{body}");
+        assert_eq!(row["codec"], "PCMU", "{body}");
+        assert_eq!(row["mos"].as_f64(), Some(summary.mos), "{body}");
+        assert_eq!(row["r_factor"].as_f64(), Some(summary.r_factor), "{body}");
+        assert_eq!(row["mos_grounded"], true, "{body}");
+        assert_eq!(row["mos_grounding"], "published", "{body}");
+    }
+
+    /// No streams, no key: a dialog without media is not a dialog whose
+    /// media scored nothing.
+    #[test]
+    fn a_report_without_media_has_no_media_quality() {
+        let v = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
+        assert!(report_body(&v).get("media_quality").is_none());
     }
 
     // ── What the container says it does not contain ─────────────
@@ -3150,6 +3280,7 @@ mod tests {
                 facts,
                 max_inline_media_bytes: None,
                 analysis: None,
+                media: &[],
             },
             ObservedAudio::NotConsidered,
             exported_at(),
@@ -3335,6 +3466,7 @@ mod tests {
                     facts: &facts,
                     max_inline_media_bytes: None,
                     analysis,
+                    media: &[],
                 },
                 ObservedAudio::NotConsidered,
                 exported_at(),
@@ -4346,6 +4478,7 @@ mod tests {
                 facts,
                 analysis: None,
                 max_inline_media_bytes: None,
+                media: &[],
             },
             header,
             exported_at(),
@@ -5539,6 +5672,7 @@ mod tests {
                 facts: &facts,
                 max_inline_media_bytes: None,
                 analysis: Some(&CaptureAnalysis::default()),
+                media: &[],
             },
             exported_at(),
         );
@@ -5600,6 +5734,7 @@ mod tests {
                 facts: &facts,
                 max_inline_media_bytes: None,
                 analysis: Some(&analysis),
+                media: &[],
             },
             exported_at(),
         ))
@@ -5750,6 +5885,7 @@ mod tests {
                 facts: &clean_facts(),
                 max_inline_media_bytes: None,
                 analysis: None,
+                media: &[],
             },
             exported_at(),
         );
@@ -5760,6 +5896,7 @@ mod tests {
                 facts: &clean_facts(),
                 max_inline_media_bytes: None,
                 analysis: None,
+                media: &[],
             },
             exported_at() + chrono::TimeDelta::days(400),
         );
@@ -6005,6 +6142,7 @@ mod tests {
                 facts: &facts,
                 analysis: None,
                 max_inline_media_bytes: None,
+                media: &[],
             },
             "X-No-Record",
             exported_at(),

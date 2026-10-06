@@ -126,7 +126,7 @@ SIP Transactions:
   BYE -> 200 (8504ms)
 
 Media Streams:
-  RTP 10.0.2.15->10.0.2.20 PCMU SSRC=0x343da99b pkts=425 jitter=0ms loss=0.0%
+  RTP 10.0.2.15->10.0.2.20 PCMU SSRC=0x343da99b pkts=425 jitter=0ms loss=0.0% mos=4.36 R=90.8
 
 Issues Detected:
   - RTP flowed 10.0.2.15:27942 -> 10.0.2.20:6000 only (SSRC 0x343da99b). No reverse media flow detected.

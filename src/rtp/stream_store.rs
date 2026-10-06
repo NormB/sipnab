@@ -662,6 +662,11 @@ pub struct StreamStore {
     /// Structural-change counter for cache invalidation — see
     /// `Self::generation`.
     generation: u64,
+    /// Relay control traffic's retried commands, per control socket (RP4).
+    /// Here rather than beside the relay's pairing table because that table
+    /// outlives a capture, and a capture opened twice would read every
+    /// command of the second pass as a retry of the first.
+    relay_control: crate::relay_vocab::ControlChannels,
 }
 
 impl StreamStore {
@@ -685,6 +690,7 @@ impl StreamStore {
             link_scan_iters: 0,
             evict_shift_work: 0,
             generation: 0,
+            relay_control: crate::relay_vocab::ControlChannels::default_capacity(),
         }
     }
 
@@ -1824,6 +1830,7 @@ impl StreamStore {
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
         self.provenance.clear();
+        self.relay_control = crate::relay_vocab::ControlChannels::default_capacity();
         self.generation += 1;
     }
 
@@ -1897,6 +1904,18 @@ impl StreamStore {
         }
         self.link_scan_iters += other.link_scan_iters;
         self.evict_shift_work += other.evict_shift_work;
+        self.relay_control.merge(other.relay_control);
+    }
+
+    /// Count one relay control datagram toward its socket's retries (RP4).
+    pub fn record_relay_control(&mut self, control: &crate::relay_vocab::ControlCookie) {
+        self.relay_control.record(control);
+    }
+
+    /// Retried relay commands per control socket, as this capture saw them.
+    #[must_use]
+    pub fn relay_control_summary(&self) -> Vec<crate::relay_vocab::ControlChannelCounts> {
+        self.relay_control.summary()
     }
 
     /// Globally (re)link every stream to its dialog via the merged SDP endpoints.
@@ -1985,6 +2004,26 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 /// merge, and the SNB-0015 performance probes.
 #[cfg(test)]
 mod tests {
+
+    /// A cleared store forgets relay retries. Re-scanning a capture clears
+    /// and reads it again; without this every command of the second pass
+    /// would count as a retry of the first.
+    #[test]
+    fn clearing_the_store_forgets_relay_retries() {
+        let cookie = crate::relay_vocab::ControlCookie {
+            relay: "192.0.2.40:7722".parse().expect("addr"),
+            implementation: crate::relay_vocab::RelayImplementation::Rtpproxy,
+            cookie: "c1".to_string(),
+            command: true,
+        };
+        let mut store = StreamStore::new(16);
+        store.record_relay_control(&cookie);
+        store.clear();
+        store.record_relay_control(&cookie);
+        let rows = store.relay_control_summary();
+        assert_eq!(rows[0].commands, 1);
+        assert_eq!(rows[0].retried_commands, 0, "the first pass was forgotten");
+    }
     /// The buffering gate and the export gate must answer identically.
     ///
     /// They diverged for real: this side matched Opus's three canonical

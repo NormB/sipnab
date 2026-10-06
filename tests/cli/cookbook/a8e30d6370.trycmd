@@ -24,9 +24,9 @@ $ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --call-report 1-1966@10.0.2.
 
 ## Media Streams
 
-| SSRC | Codec | Source | Destination | Packets | Jitter | Loss |
-|------|-------|--------|-------------|---------|--------|------|
-| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% |
+| SSRC | Codec | Source | Destination | Packets | Jitter | Loss | MOS | MOS_CQEW |
+|------|-------|--------|-------------|---------|--------|------|-----|----------|
+| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% | 4.36 | - |
 
 ## Issues
 

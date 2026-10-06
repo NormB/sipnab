@@ -591,13 +591,16 @@ static PAIRINGS: std::sync::LazyLock<
 /// names nothing yet. The table is process-wide so every capture worker pairs
 /// against one definition; `--cores` also sends a command and its reply to
 /// the same worker, since both travel between the same two hosts.
+///
+/// The cookie travels with the answer whether or not it names anything, so a
+/// retried command is countable even when it opens no media (RP4).
 #[must_use]
 pub fn observe_on(
     control: std::net::SocketAddr,
     src: std::net::SocketAddr,
     dst: std::net::SocketAddr,
     payload: &[u8],
-) -> Option<Option<RelayLink>> {
+) -> Option<(Option<RelayLink>, crate::relay_vocab::ControlCookie)> {
     let to_relay = if dst == control {
         true
     } else if src == control {
@@ -606,15 +609,27 @@ pub fn observe_on(
         return None;
     };
     let decoded = decode(payload, to_relay)?;
+    let cookie = match &decoded {
+        RtpproxyControl::Command { cookie, .. } | RtpproxyControl::Reply { cookie, .. } => {
+            cookie.clone()
+        }
+    };
     let mut tables = PAIRINGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    Some(
-        tables
-            .entry(control)
-            .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
-            .observe(decoded),
-    )
+    let link = tables
+        .entry(control)
+        .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
+        .observe(decoded);
+    Some((
+        link,
+        crate::relay_vocab::ControlCookie {
+            relay: control,
+            implementation: crate::relay_vocab::RelayImplementation::Rtpproxy,
+            cookie,
+            command: to_relay,
+        },
+    ))
 }
 
 /// Statistics from an `I` (info) reply's free text (ST3).

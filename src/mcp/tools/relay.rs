@@ -323,6 +323,25 @@ pub struct OrphanRow {
     pub note: &'static str,
 }
 
+/// One relay control socket's retried commands, as the capture saw them (RP4).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RelayControlRow {
+    /// The relay's control socket, `address:port`.
+    pub relay: String,
+    /// Which relay's protocol it speaks: `rtpproxy`.
+    pub implementation: &'static str,
+    /// Command datagrams seen, retries included.
+    pub commands: u64,
+    /// Commands that repeated a cookie already seen: the proxy sent the same
+    /// command again because it did not hear an answer in time.
+    pub retried_commands: u64,
+    /// Of those, retries sent after the relay's answer was already on the
+    /// wire: the answer was lost or late on its way back to the proxy. The
+    /// rest went out before any answer was seen.
+    pub retried_after_answer: u64,
+}
+
 /// What `reconcile_orphans` answers with.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -339,6 +358,10 @@ pub struct OrphanReconciliation {
     /// which is a weaker statement than "asked and told no" and must not be
     /// read as the stronger one.
     pub relay_was_consulted: bool,
+    /// Retried commands per relay control socket this capture read (RP4).
+    /// A control channel losing answers shows on the SIP side only as a
+    /// proxy that is sometimes slow. Empty when no control socket was read.
+    pub relay_control: Vec<RelayControlRow>,
     /// Schema version for this payload.
     pub schema_version: u32,
     /// Which capture answered, and at which store revision.
@@ -473,7 +496,7 @@ impl SipnabMcp {
         Parameters(params): Parameters<ReconcileOrphansParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = params.limit.unwrap_or(50).max(1) as usize;
-        let (rows, total, consulted, identity) = {
+        let (rows, total, consulted, identity, relay_control) = {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
@@ -514,7 +537,18 @@ impl SipnabMcp {
                     note: reason.explain(),
                 });
             }
-            (rows, total, consulted, identity)
+            let relay_control = ss
+                .relay_control_summary()
+                .into_iter()
+                .map(|c| RelayControlRow {
+                    relay: c.relay.to_string(),
+                    implementation: c.implementation.as_str(),
+                    commands: c.commands,
+                    retried_commands: c.retried_commands,
+                    retried_after_answer: c.retried_after_answer,
+                })
+                .collect();
+            (rows, total, consulted, identity, relay_control)
         };
 
         let payload = OrphanReconciliation {
@@ -522,6 +556,7 @@ impl SipnabMcp {
             total_orphans: total,
             orphans: rows,
             relay_was_consulted: consulted,
+            relay_control,
             schema_version: 1,
             capture_identity: identity,
         };

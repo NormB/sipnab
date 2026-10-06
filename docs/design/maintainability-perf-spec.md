@@ -217,7 +217,7 @@ bodies:
 
 | Copy | Location | Size | Consumer |
 |---|---|---|---|
-| Canonical | [`src/pipeline.rs:2610`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2610) `process_packet` | 142 ln | TUI live |
+| Canonical | [`src/pipeline.rs:2636`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2636) `process_packet` | 142 ln | TUI live |
 | Batch | [`src/app/batch.rs:2870`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2870) `process_parsed_packet` | 402 ln | batch mode |
 | TUI file-open | `src/tui/events.rs:1536` `load_pcap_file` | 194 ln | F3 open |
 | Sharded | [`src/parallel.rs`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) + worker loops | ~200 ln | `--jobs N` |
@@ -350,9 +350,9 @@ Five implementations of "dialog summary", already divergent on the wire:
 
 | Surface | Site | Drift |
 |---|---|---|
-| CLI/NDJSON | [`src/output/json.rs:481`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L481) `DialogJson` | `msg_count`, `schema_version: 1` |
+| CLI/NDJSON | [`src/output/json.rs:516`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L516) `DialogJson` | `msg_count`, `schema_version: 1` |
 | REST API | [`src/output/api.rs:715`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L715) ad-hoc `json!` | `msg_count`, `method.as_str()` |
-| MCP | [`src/mcp/server.rs:9276`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9276) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
+| MCP | [`src/mcp/server.rs:9228`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9228) `DialogSummary` | **`message_count`**, **`format!("{:?}", method)`** |
 | TUI save | [`src/tui/save.rs:212`](https://github.com/NormB/sipnab/blob/main/src/tui/save.rs#L212) hand-built `json!` | third field set, no `schema_version` |
 | Report | `src/output/call_report.rs:50/183` | independent text/markdown re-derivations |
 

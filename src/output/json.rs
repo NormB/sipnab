@@ -260,6 +260,29 @@ struct StreamJson {
     jitter_ms: f64,
     /// Packet loss percentage (0-100).
     loss_pct: f64,
+    /// The stream's MOS. Read `mos_grounded` before quoting it: on a codec
+    /// with no published or declared impairment value this is a placeholder
+    /// meaning "unknown". The same figure `GET /v1/streams` carries, from the
+    /// same projection ([`crate::output::model::StreamSummary`]).
+    mos: f64,
+    /// The R-factor `mos` was converted from.
+    r_factor: f64,
+    /// Whether `mos` rests on a real impairment value.
+    mos_grounded: bool,
+    /// What `mos` rests on: `published`, `operator_declared` or `unpublished`.
+    mos_grounding: String,
+    /// Why a placeholder or declared MOS needs care, when it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mos_note: Option<String>,
+    /// AMR-WB only: `MOS_CQEW` on the ITU-T G.107.1 wideband scale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mos_wideband: Option<f64>,
+    /// The listening context the wideband score was read in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mos_wideband_context: Option<String>,
+    /// Why an AMR-WB stream has no wideband score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mos_wideband_unavailable: Option<String>,
     /// True when no SIP dialog explains this stream.
     orphaned: bool,
     /// Call-ID of the owning dialog, when linked.
@@ -1042,7 +1065,16 @@ fn build_stream_json(stream: &RtpStream, delay: crate::rtp::quality::MosDelay<'_
         })
         .collect();
 
+    let summary = crate::output::model::StreamSummary::of(stream, delay);
     StreamJson {
+        mos: summary.mos,
+        r_factor: summary.r_factor,
+        mos_grounded: summary.mos_grounded,
+        mos_grounding: summary.mos_grounding,
+        mos_note: summary.mos_note,
+        mos_wideband: summary.mos_wideband,
+        mos_wideband_context: summary.mos_wideband_context,
+        mos_wideband_unavailable: summary.mos_wideband_unavailable,
         schema_version: 1,
         ssrc: format!("0x{:08x}", stream.key.ssrc),
         codec: stream.codec.clone(),
@@ -2466,6 +2498,41 @@ mod tests {
         assert!(parsed["loss_pct"].is_number());
         assert!(parsed["packets"].is_number());
         assert_eq!(parsed["ssrc"], "0x12345678");
+    }
+
+    /// The stream object carries the headline MOS figures `GET /v1/streams`
+    /// carries, from the same projection, so `--json-dialogs`, a single-stream
+    /// REST read, the exec hooks and MCP cannot disagree with the list.
+    #[test]
+    fn the_stream_object_carries_the_headline_mos_figures() {
+        let mut stream = make_stream();
+        stream.codec = Some("PCMU".to_string());
+        let delay = crate::rtp::quality::MosDelay::unknown();
+        let summary = crate::output::model::StreamSummary::of(&stream, delay);
+        let v: serde_json::Value =
+            serde_json::from_str(&stream_to_json(&stream, delay)).expect("JSON");
+        assert_eq!(v["mos"].as_f64(), Some(summary.mos), "{v}");
+        assert_eq!(v["r_factor"].as_f64(), Some(summary.r_factor), "{v}");
+        assert_eq!(v["mos_grounded"], true, "{v}");
+        assert_eq!(v["mos_grounding"], summary.mos_grounding, "{v}");
+        assert!(v.get("mos_wideband").is_none(), "narrowband: {v}");
+    }
+
+    /// An AMR-WB stream's object carries the wideband score too.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn an_amr_wb_stream_object_carries_its_wideband_score() {
+        let mut stream = make_stream();
+        stream.codec = Some("AMR-WB".to_string());
+        stream.amr_frame_types_seen = 1u16 << 2;
+        let delay = crate::rtp::quality::MosDelay::unknown();
+        let summary = crate::output::model::StreamSummary::of(&stream, delay);
+        let v: serde_json::Value =
+            serde_json::from_str(&stream_to_json(&stream, delay)).expect("JSON");
+        assert_eq!(v["mos_wideband"].as_f64(), summary.mos_wideband, "{v}");
+        assert_eq!(v["mos_wideband_context"], "monotic", "{v}");
+        assert_eq!(v["mos_grounded"], false, "{v}");
+        assert!(v["mos_note"].is_string(), "the placeholder says so: {v}");
     }
 
     // ── ICMP media on the per-dialog document ──────────────────────────

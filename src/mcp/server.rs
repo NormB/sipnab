@@ -3497,63 +3497,10 @@ fn stream_json(
     // a measurement to something that will then reason about it is how a
     // confident wrong answer reaches an operator.
     if let Some(obj) = v.as_object_mut() {
-        // The MOS itself, because the NDJSON stream shape this builds on does
-        // not carry one — that is the CLI's per-stream line, where MOS lives on
-        // the dialog instead. Without this the grounding flag below described a
-        // number absent from the payload, which is worse than saying nothing:
-        // it implies a MOS is there.
-        if let Some(n) = serde_json::Number::from_f64(stream_mos(s, delay)) {
-            obj.insert("mos".into(), serde_json::Value::Number(n));
-        }
-        // The R-factor the MOS was converted from, on the same delay basis.
-        // An SLA is written in R and R is the linear scale, so eight R-points
-        // is a real difference where the MOS gap it maps to looks like
-        // rounding. It carries the same grounding flags below, because it is
-        // the same derivation.
-        if let Some(n) = serde_json::Number::from_f64(delay.r_factor(s)) {
-            obj.insert("r_factor".into(), serde_json::Value::Number(n));
-        }
-        // Resolved ONCE and matched, so the boolean, the label and the note
-        // cannot describe three different groundings of the same stream.
-        let grounding = crate::rtp::quality::mos_grounding(s.codec.as_deref());
-        obj.insert(
-            "mos_grounded".into(),
-            serde_json::Value::Bool(grounding.is_grounded()),
-        );
-        obj.insert(
-            "mos_grounding".into(),
-            serde_json::Value::String(grounding.as_str().into()),
-        );
-        // The caveat, from the same enum that named the grounding, so an agent
-        // cannot be told `operator_declared` under a sentence about G.113.
-        // `None` is the Published case and is emitted as nothing at all.
-        if let Some(note) = grounding.note() {
-            obj.insert("mos_note".into(), serde_json::Value::String(note.into()));
-        }
-
-        // The wideband score, for AMR-WB. The `mos` above is on the G.107
-        // narrowband scale, which cannot score a wideband codec; REST and the
-        // TUI carry the G.107.1 figure, and an agent must not be the one
-        // surface left with only the number they exist to correct. Taken from
-        // `StreamSummary`, the projection REST serializes, so the rule that
-        // decides scored, unavailable or not attempted has one copy.
-        let summary = crate::output::model::StreamSummary::of(s, delay);
-        if let Some(n) = summary.mos_wideband.and_then(serde_json::Number::from_f64) {
-            obj.insert("mos_wideband".into(), serde_json::Value::Number(n));
-        }
-        if let Some(context) = summary.mos_wideband_context {
-            obj.insert(
-                "mos_wideband_context".into(),
-                serde_json::Value::String(context),
-            );
-        }
-        if let Some(reason) = summary.mos_wideband_unavailable {
-            obj.insert(
-                "mos_wideband_unavailable".into(),
-                serde_json::Value::String(reason),
-            );
-        }
-
+        // `mos`, `r_factor`, the grounding fields and, for AMR-WB, the
+        // wideband score come from the stream object itself
+        // (`output::json::build_stream_json`, through `StreamSummary`), the
+        // one projection every surface reads.
         // Latency, the third of the three numbers that decide whether a call
         // was acceptable — and the one an agent is most likely to assume it
         // has. Jitter and loss are always present here, so a response carrying
@@ -5243,28 +5190,14 @@ impl SipnabMcp {
                     None,
                 )
             })?;
-            let rows: Vec<(String, String, String, bool)> = dialog
-                .messages
-                .iter()
-                .map(|m| {
-                    let label = if m.is_request {
-                        m.method.as_ref().map_or("?", |x| x.as_str()).to_string()
-                    } else {
-                        format!(
-                            "{} {}",
-                            m.status_code.unwrap_or(0),
-                            m.reason.as_deref().unwrap_or("")
-                        )
-                    };
-                    (
-                        format!("{}:{}", m.src_addr, m.src_port),
-                        format!("{}:{}", m.dst_addr, m.dst_port),
-                        label,
-                        m.is_request,
-                    )
-                })
-                .collect();
-            let diagram = crate::mermaid::sequence_diagram(&rows, MERMAID_MAX_MESSAGES);
+            // Annotated: the offset, the post-dial delay, SDP changes and
+            // retransmissions, as the TUI's export carries them.
+            let rows = crate::mermaid::dialog_rows(&dialog.messages, dialog.timing.pdd_ms());
+            let diagram = crate::mermaid::sequence_diagram_rows(
+                &rows,
+                &|endpoint: &str| endpoint.to_string(),
+                MERMAID_MAX_MESSAGES,
+            );
             drop(ds);
             // Fenced ONCE around the whole diagram rather than per label: the
             // markers are visible glyphs that would render inside the picture,

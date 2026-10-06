@@ -1763,26 +1763,29 @@ pub fn extract_sdp_links(
 /// different claims, and a bare datagram read off the wire is authenticated by
 /// nothing whoever sent it -- so the caller states both rather than letting a
 /// consumer assume the estate runs only one relay, reachable only one way.
-pub fn apply_relay_control_links(
+///
+/// A message's cookie, when it has one, counts toward its socket's retried
+/// commands (RP4).
+pub fn apply_relay_control(
     ss: &mut rtp::stream_store::StreamStore,
-    sdp_links: &[(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)],
-    relay_links: &[crate::relay::reconcile::RelayLink],
-    implementation: crate::relay::RelayImplementation,
-    delivery: crate::relay::ControlDelivery,
+    message: &RelayControlMessage,
     input_origin: crate::capture::parse::InputOrigin,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) {
+    if let Some(control) = &message.control {
+        ss.record_relay_control(control);
+    }
     let provenance = rtp::stream_store::SdpProvenance::relay_asserted(
-        implementation,
-        delivery,
+        message.implementation,
+        message.delivery,
         input_origin,
         timestamp,
     );
-    for (ip, port, call_id, media) in sdp_links {
+    for (ip, port, call_id, media) in &message.sdp_links {
         ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
     }
     // No rtpmap and no ptime: the relay named a port, not a codec.
-    for link in relay_links {
+    for link in &message.relay_links {
         ss.link_endpoint_from(
             link.address,
             link.port,
@@ -1796,7 +1799,7 @@ pub fn apply_relay_control_links(
 
 /// Register a relay's startup snapshot as media endpoints on one store.
 ///
-/// The counterpart to [`apply_relay_control_links`] for the half of RE4 that
+/// The counterpart to [`apply_relay_control`] for the half of RE4 that
 /// ASKS rather than watches, and factored out for the same reason: each worker
 /// builds its own [`rtp::stream_store::StreamStore`], and a snapshot that
 /// reached some of them and not the others is the drift one definition makes
@@ -2082,6 +2085,44 @@ pub struct MediaDecrypt<'a> {
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
+/// One relay control message, as the decoder that read it states it.
+///
+/// One value rather than loose fields, because every consumer applies it the
+/// same way: [`apply_relay_control`] takes it whole.
+#[derive(Debug, Clone)]
+pub struct RelayControlMessage {
+    /// `(media_ip, media_port, call_id, media)` links to apply to streams.
+    pub sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+    /// Media the relay named WITHOUT an SDP body. rtpproxy's protocol
+    /// carries no SDP, only the port it opened, so there is no `SdpMedia`
+    /// to put in `sdp_links` and inventing one would state codecs nobody
+    /// sent.
+    pub relay_links: Vec<crate::relay::reconcile::RelayLink>,
+    /// Which relay said it, stated by the DECODER that read the message.
+    ///
+    /// Carried here so no consuming layer has to name a vendor to apply an
+    /// attribution. The decoder is the only thing that knows -- it just
+    /// parsed that relay's wire format -- and a consumer picking a name
+    /// would be guessing, which is what made the second relay a second
+    /// code path the first time.
+    pub implementation: crate::relay::RelayImplementation,
+    /// How the message reached the capture, on the same terms.
+    pub delivery: crate::relay::ControlDelivery,
+    /// The datagram's cookie, when its protocol has one, so a retried
+    /// command is counted per capture (RP4). `None` for a message that
+    /// carries no cookie this decoder reads.
+    pub control: Option<crate::relay_vocab::ControlCookie>,
+}
+
+impl RelayControlMessage {
+    /// Whether applying it changes anything: a link to make, or a cookie to
+    /// count.
+    #[must_use]
+    pub fn carries_anything(&self) -> bool {
+        !self.sdp_links.is_empty() || !self.relay_links.is_empty() || self.control.is_some()
+    }
+}
+
 /// The store-mutation intent produced by `classify_packet` — the outcome of
 /// classifying one packet without touching either DIALOG STORE. Each router
 /// applies it with its own store access: the live path takes brief per-store
@@ -2126,25 +2167,7 @@ pub enum PacketAction {
     /// so the appliers can share their linking code, but they are applied with
     /// relay provenance (`SdpProvenance::relay_asserted`) rather than the
     /// signaled provenance an SDP body on the wire would get.
-    RelayControl {
-        /// `(media_ip, media_port, call_id, media)` links to apply to streams.
-        sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
-        /// Media the relay named WITHOUT an SDP body. rtpproxy's protocol
-        /// carries no SDP, only the port it opened, so there is no `SdpMedia`
-        /// to put in `sdp_links` and inventing one would state codecs nobody
-        /// sent.
-        relay_links: Vec<crate::relay::reconcile::RelayLink>,
-        /// Which relay said it, stated by the DECODER that read the message.
-        ///
-        /// Carried here so no consuming layer has to name a vendor to apply an
-        /// attribution. The decoder is the only thing that knows -- it just
-        /// parsed that relay's wire format -- and a consumer picking a name
-        /// would be guessing, which is what made the second relay a second
-        /// code path the first time.
-        implementation: crate::relay::RelayImplementation,
-        /// How the message reached the capture, on the same terms.
-        delivery: crate::relay::ControlDelivery,
-    },
+    RelayControl(RelayControlMessage),
     /// Parsed RTCP compound-packet reports, to feed to `process_rtcp`.
     Rtcp(Vec<rtp::rtcp::RtcpPacket>),
     /// An RTP packet to record. `decrypted_payload` is `Some` only when SRTP
@@ -2412,14 +2435,15 @@ pub fn classify_packet(
     {
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
-        return PacketAction::RelayControl {
+        return PacketAction::RelayControl(RelayControlMessage {
             sdp_links,
             relay_links: Vec::new(),
             // `ng` over HEP, read off the wire: the decoder names its own
             // relay and the datagram carried no credential.
             implementation: crate::relay::RelayImplementation::Rtpengine,
             delivery: crate::relay::ControlDelivery::BareDatagram,
-        };
+            control: None,
+        });
     }
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
@@ -2442,14 +2466,15 @@ pub fn classify_packet(
         // `ng` is control traffic; that it named no endpoint this time (a
         // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
         // is not a reason to reconsider it as media.
-        return PacketAction::RelayControl {
+        return PacketAction::RelayControl(RelayControlMessage {
             sdp_links,
             relay_links: Vec::new(),
             // `ng` over HEP, read off the wire: the decoder names its own
             // relay and the datagram carried no credential.
             implementation: crate::relay::RelayImplementation::Rtpengine,
             delivery: crate::relay::ControlDelivery::BareDatagram,
-        };
+            control: None,
+        });
     }
 
     // rtpproxy's control plane, on the one socket the operator named. Believed
@@ -2457,19 +2482,20 @@ pub fn classify_packet(
     // the operator did not name, 22222 included, is not believed.
     if pp.transport == TransportProto::Udp
         && let Some(control) = opts.rtpproxy_control
-        && let Some(named) = crate::relay::rtpproxy::observe_on(
+        && let Some((named, cookie)) = crate::relay::rtpproxy::observe_on(
             control,
             std::net::SocketAddr::new(pp.src_addr, pp.src_port),
             std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
             &pp.payload,
         )
     {
-        return PacketAction::RelayControl {
+        return PacketAction::RelayControl(RelayControlMessage {
             sdp_links: Vec::new(),
             relay_links: named.into_iter().collect(),
             implementation: crate::relay::RelayImplementation::Rtpproxy,
             delivery: crate::relay::ControlDelivery::BareDatagram,
-        };
+            control: Some(cookie),
+        });
     }
 
     // RTP/RTCP detection
@@ -2643,24 +2669,16 @@ pub fn process_packet(
                 }
             }
         }
-        PacketAction::RelayControl {
-            sdp_links,
-            relay_links,
-            implementation,
-            delivery,
-        } => {
+        PacketAction::RelayControl(message) => {
             // Same gate the SIP arm uses: `--no-dialog` opts out of call
             // association, and a relay-derived association is still one.
             if opts.no_dialog {
                 return;
             }
-            if !sdp_links.is_empty() || !relay_links.is_empty() {
-                apply_relay_control_links(
+            if message.carries_anything() {
+                apply_relay_control(
                     &mut stream_store.write(),
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
+                    &message,
                     pp.input_origin,
                     pp.timestamp,
                 );
@@ -3532,12 +3550,15 @@ mod relay_control_tests {
         assert_eq!(links.len(), 1, "fixture must yield exactly one endpoint");
 
         let mut relay_store = StreamStore::new(1000);
-        super::apply_relay_control_links(
+        super::apply_relay_control(
             &mut relay_store,
-            &links,
-            &[],
-            crate::relay::RelayImplementation::Rtpengine,
-            crate::relay::ControlDelivery::BareDatagram,
+            &super::RelayControlMessage {
+                sdp_links: links.clone(),
+                relay_links: Vec::new(),
+                implementation: crate::relay::RelayImplementation::Rtpengine,
+                delivery: crate::relay::ControlDelivery::BareDatagram,
+                control: None,
+            },
             InputOrigin::Hep,
             ts,
         );
@@ -3593,12 +3614,15 @@ mod relay_control_tests {
 
         let mut store = StreamStore::new(1000);
         let ts = chrono::Utc::now();
-        super::apply_relay_control_links(
+        super::apply_relay_control(
             &mut store,
-            &links,
-            &[],
-            crate::relay::RelayImplementation::Rtpengine,
-            crate::relay::ControlDelivery::BareDatagram,
+            &super::RelayControlMessage {
+                sdp_links: links.clone(),
+                relay_links: Vec::new(),
+                implementation: crate::relay::RelayImplementation::Rtpengine,
+                delivery: crate::relay::ControlDelivery::BareDatagram,
+                control: None,
+            },
             InputOrigin::Hep,
             ts,
         );
@@ -4228,15 +4252,16 @@ mod rtpproxy_control_tests {
     /// The links a `RelayControl` names, or `None` when it is not one.
     fn relay_links(action: PacketAction) -> Option<Vec<RelayLink>> {
         match action {
-            PacketAction::RelayControl {
-                relay_links,
-                implementation,
-                delivery,
-                ..
-            } => {
-                assert_eq!(implementation, crate::relay::RelayImplementation::Rtpproxy);
-                assert_eq!(delivery, crate::relay::ControlDelivery::BareDatagram);
-                Some(relay_links)
+            PacketAction::RelayControl(message) => {
+                assert_eq!(
+                    message.implementation,
+                    crate::relay::RelayImplementation::Rtpproxy
+                );
+                assert_eq!(
+                    message.delivery,
+                    crate::relay::ControlDelivery::BareDatagram
+                );
+                Some(message.relay_links)
             }
             _ => None,
         }
@@ -4296,22 +4321,8 @@ mod rtpproxy_control_tests {
             udp(proxy, relay, "a1 U rp-cap-4 192.0.2.10 40000 ftag1\n"),
             udp(relay, proxy, "a1 49514 10.0.0.40\n"),
         ] {
-            if let PacketAction::RelayControl {
-                sdp_links,
-                relay_links,
-                implementation,
-                delivery,
-            } = classify(&pp, Some(relay))
-            {
-                super::apply_relay_control_links(
-                    &mut store,
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
-                    pp.input_origin,
-                    pp.timestamp,
-                );
+            if let PacketAction::RelayControl(message) = classify(&pp, Some(relay)) {
+                super::apply_relay_control(&mut store, &message, pp.input_origin, pp.timestamp);
             }
         }
 

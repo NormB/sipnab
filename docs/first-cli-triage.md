@@ -133,8 +133,8 @@ SIP Transactions:
   BYE -> 200 (8468ms)
 
 Media Streams:
-  RTP 192.0.2.10->192.0.2.20 PCMU SSRC=0x1a2b3c4d pkts=300 jitter=0ms loss=0.0%
-  RTP 192.0.2.20->192.0.2.10 PCMU SSRC=0x5e6f7a8b pkts=300 jitter=0ms loss=0.0%
+  RTP 192.0.2.10->192.0.2.20 PCMU SSRC=0x1a2b3c4d pkts=300 jitter=0ms loss=0.0% mos=4.36 R=90.8
+  RTP 192.0.2.20->192.0.2.10 PCMU SSRC=0x5e6f7a8b pkts=300 jitter=0ms loss=0.0% mos=4.36 R=90.8
 
 Issues Detected: None
 ```

@@ -3787,6 +3787,7 @@ async fn get_dialog_vcon(
     // Media is attempted always. When the run retained no payload the decode
     // fails and its message travels in the container, which reports what was
     // MEASURED rather than claiming the call was silent.
+    let media = output::vcon::media_quality_for(&ss, &call_id);
     let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
     let decoded = crate::rtp::audio_export::decode_dialog_audio(&dialog_streams);
     let reason = decoded
@@ -3804,6 +3805,7 @@ async fn get_dialog_vcon(
             facts: &facts,
             analysis: Some(&analysis),
             max_inline_media_bytes: state.max_inline_media_bytes,
+            media: &media,
         },
         audio,
     );

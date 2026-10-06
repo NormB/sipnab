@@ -156,8 +156,11 @@ six: the live router, the `--cores` shard, the batch path, the TUI's
 file-open, and two test harnesses that mirror them
 ([`tests/rtp_quality_provenance_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/rtp_quality_provenance_test.rs), [`tests/corpus_lint_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/corpus_lint_test.rs)). The
 behavior itself lives once, in
-[`pipeline::apply_relay_control_links`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs), so the six
-call sites cannot drift apart.
+[`pipeline::apply_relay_control`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs), so the six call
+sites cannot drift apart. The variant carries one
+`pipeline::RelayControlMessage` (its links, the relay that said it, how it
+arrived, and its cookie), so every applier passes the message whole rather
+than unpacking its fields.
 
 ### `EndpointAssertion`, and why it is not a fourth `InputOrigin`
 

@@ -1191,6 +1191,40 @@
           "loss_pct": {
             "type": "number"
           },
+          "mos": {
+            "type": "number"
+          },
+          "mos_grounded": {
+            "type": "boolean"
+          },
+          "mos_grounding": {
+            "enum": [
+              "published",
+              "operator_declared",
+              "unpublished"
+            ],
+            "type": "string"
+          },
+          "mos_note": {
+            "type": "string"
+          },
+          "mos_wideband": {
+            "type": "number"
+          },
+          "mos_wideband_context": {
+            "enum": [
+              "monotic",
+              "diotic"
+            ],
+            "type": "string"
+          },
+          "mos_wideband_unavailable": {
+            "enum": [
+              "unpublished_mode",
+              "loss_not_computable"
+            ],
+            "type": "string"
+          },
           "octets": {
             "minimum": 0,
             "type": "integer"
@@ -1209,6 +1243,9 @@
           },
           "quality_intervals": {
             "type": "array"
+          },
+          "r_factor": {
+            "type": "number"
           },
           "schema_version": {
             "const": 1
@@ -1230,6 +1267,10 @@
           "octets",
           "jitter_ms",
           "loss_pct",
+          "mos",
+          "r_factor",
+          "mos_grounded",
+          "mos_grounding",
           "orphaned",
           "first_seen",
           "last_seen",
@@ -3573,6 +3614,40 @@
           "loss_pct": {
             "type": "number"
           },
+          "mos": {
+            "type": "number"
+          },
+          "mos_grounded": {
+            "type": "boolean"
+          },
+          "mos_grounding": {
+            "enum": [
+              "published",
+              "operator_declared",
+              "unpublished"
+            ],
+            "type": "string"
+          },
+          "mos_note": {
+            "type": "string"
+          },
+          "mos_wideband": {
+            "type": "number"
+          },
+          "mos_wideband_context": {
+            "enum": [
+              "monotic",
+              "diotic"
+            ],
+            "type": "string"
+          },
+          "mos_wideband_unavailable": {
+            "enum": [
+              "unpublished_mode",
+              "loss_not_computable"
+            ],
+            "type": "string"
+          },
           "octets": {
             "minimum": 0,
             "type": "integer"
@@ -3595,6 +3670,9 @@
             },
             "type": "array"
           },
+          "r_factor": {
+            "type": "number"
+          },
           "schema_version": {
             "const": 1
           },
@@ -3615,6 +3693,10 @@
           "octets",
           "jitter_ms",
           "loss_pct",
+          "mos",
+          "r_factor",
+          "mos_grounded",
+          "mos_grounding",
           "orphaned",
           "first_seen",
           "last_seen",

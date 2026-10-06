@@ -91,18 +91,10 @@ fn replay(paths: &[PathBuf], apply_rtcp: bool) -> Vec<(StreamKey, Observed, Cloc
             // This harness mirrors the production appliers, so it has to
             // carry every action they do -- including relay-asserted links,
             // which is how media on a standalone rtpengine host gets named.
-            PacketAction::RelayControl {
-                sdp_links,
-                relay_links,
-                implementation,
-                delivery,
-            } => {
-                pipeline::apply_relay_control_links(
+            PacketAction::RelayControl(message) => {
+                pipeline::apply_relay_control(
                     &mut streams,
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
+                    &message,
                     pp.input_origin,
                     pp.timestamp,
                 );
@@ -360,18 +352,10 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() {
                     streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
-            PacketAction::RelayControl {
-                sdp_links,
-                relay_links,
-                implementation,
-                delivery,
-            } => {
-                pipeline::apply_relay_control_links(
+            PacketAction::RelayControl(message) => {
+                pipeline::apply_relay_control(
                     &mut streams,
-                    &sdp_links,
-                    &relay_links,
-                    implementation,
-                    delivery,
+                    &message,
                     pp.input_origin,
                     pp.timestamp,
                 );

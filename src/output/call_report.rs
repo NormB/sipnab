@@ -58,9 +58,68 @@ pub fn generate_call_report(
     delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     match format {
-        ReportFormat::Text => generate_text_report(dialog, streams, diagnosis),
+        ReportFormat::Text => generate_text_report(dialog, streams, diagnosis, delay),
         ReportFormat::Json => super::json::dialog_to_json(dialog, streams, diagnosis, delay),
-        ReportFormat::Markdown => generate_markdown_report(dialog, streams, diagnosis),
+        ReportFormat::Markdown => generate_markdown_report(dialog, streams, diagnosis, delay),
+    }
+}
+
+// ── Media quality rendering ──────────────────────────────────────────
+
+/// A stream's MOS figures, read from the projection REST and MCP serialize.
+///
+/// Taken from [`crate::output::model::StreamSummary`] rather than computed
+/// here, so the report and the API cannot print different numbers for one
+/// stream. A MOS with no published or declared impairment value behind it
+/// is reported as unknown: the placeholder figure reads as a measurement.
+struct StreamQuality {
+    /// The stream as `GET /v1/streams` reports it.
+    summary: crate::output::model::StreamSummary,
+}
+
+impl StreamQuality {
+    /// Project `stream` on the capture's delay basis.
+    fn of(stream: &RtpStream, delay: crate::rtp::quality::MosDelay<'_>) -> Self {
+        Self {
+            summary: crate::output::model::StreamSummary::of(stream, delay),
+        }
+    }
+
+    /// The narrowband MOS, or `unknown` when it rests on no published value.
+    fn mos_cell(&self) -> String {
+        if self.summary.mos_grounded {
+            format!("{:.2}", self.summary.mos)
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    /// The wideband score with its listening context, the reason there is
+    /// none, or `-` for a stream nobody scores wideband.
+    fn wideband_cell(&self) -> String {
+        match (
+            self.summary.mos_wideband,
+            self.summary.mos_wideband_context.as_deref(),
+            self.summary.mos_wideband_unavailable.as_deref(),
+        ) {
+            (Some(mos), Some(context), _) => format!("{mos:.2} ({context})"),
+            (_, _, Some(reason)) => format!("n/a ({reason})"),
+            _ => "-".to_string(),
+        }
+    }
+
+    /// The text report's `mos=` fields.
+    fn text(&self) -> String {
+        let mut out = if self.summary.mos_grounded {
+            format!("mos={:.2} R={:.1}", self.summary.mos, self.summary.r_factor)
+        } else {
+            format!("mos=unknown ({})", self.summary.mos_grounding)
+        };
+        let wideband = self.wideband_cell();
+        if wideband != "-" {
+            out.push_str(&format!(" MOS_CQEW={wideband}"));
+        }
+        out
     }
 }
 
@@ -312,6 +371,7 @@ fn generate_text_report(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diagnosis: &MediaDiagnosis,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     let mut out = String::with_capacity(2048);
 
@@ -419,10 +479,14 @@ fn generate_text_report(
             };
             let codec = stream.codec.as_deref().unwrap_or("?");
             let from_to = format!("{}->{}", stream.key.src.ip(), stream.key.dst.ip());
+            let quality = StreamQuality::of(stream, delay);
             let _ = writeln!(
                 out,
-                "  RTP {from_to} {codec} SSRC=0x{:08x} pkts={} jitter={:.0}ms loss={loss_pct:.1}%",
-                stream.key.ssrc, stream.packet_count, stream.jitter,
+                "  RTP {from_to} {codec} SSRC=0x{:08x} pkts={} jitter={:.0}ms loss={loss_pct:.1}% {}",
+                stream.key.ssrc,
+                stream.packet_count,
+                stream.jitter,
+                quality.text(),
             );
             // Burst/gap analysis for loss pattern characterization
             if let Some(bg) = stream.burst_gap_analysis() {
@@ -477,6 +541,7 @@ fn generate_markdown_report(
     dialog: &SipDialog,
     streams: &[&RtpStream],
     diagnosis: &MediaDiagnosis,
+    delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     let mut out = String::with_capacity(2048);
 
@@ -558,11 +623,11 @@ fn generate_markdown_report(
     } else {
         let _ = writeln!(
             out,
-            "| SSRC | Codec | Source | Destination | Packets | Jitter | Loss |"
+            "| SSRC | Codec | Source | Destination | Packets | Jitter | Loss | MOS | MOS_CQEW |"
         );
         let _ = writeln!(
             out,
-            "|------|-------|--------|-------------|---------|--------|------|"
+            "|------|-------|--------|-------------|---------|--------|------|-----|----------|"
         );
         for stream in streams {
             let total = stream.packet_count + stream.lost_packets;
@@ -571,15 +636,18 @@ fn generate_markdown_report(
             } else {
                 0.0
             };
+            let quality = StreamQuality::of(stream, delay);
             let _ = writeln!(
                 out,
-                "| 0x{:08x} | {} | {} | {} | {} | {:.0}ms | {loss_pct:.1}% |",
+                "| 0x{:08x} | {} | {} | {} | {} | {:.0}ms | {loss_pct:.1}% | {} | {} |",
                 stream.key.ssrc,
                 stream.codec.as_deref().unwrap_or("?"),
                 stream.key.src,
                 stream.key.dst,
                 stream.packet_count,
                 stream.jitter,
+                quality.mos_cell(),
+                quality.wideband_cell(),
             );
         }
     }
@@ -809,6 +877,75 @@ mod tests {
             payload_offset: 12,
         };
         RtpStream::new(key, &hdr, base_ts())
+    }
+
+    /// The figures REST serializes for `stream`, which the report must agree with.
+    fn summary(stream: &RtpStream) -> crate::output::model::StreamSummary {
+        crate::output::model::StreamSummary::of(stream, crate::rtp::quality::MosDelay::unknown())
+    }
+
+    fn report_for(stream: &RtpStream, format: ReportFormat) -> String {
+        generate_call_report(
+            &make_dialog_with_messages(),
+            &[stream],
+            &MediaDiagnosis::default(),
+            format,
+            crate::rtp::quality::MosDelay::unknown(),
+        )
+    }
+
+    /// A stream whose MOS rests on a published impairment value reports it,
+    /// with its R-factor, in both human formats: the same number REST carries.
+    #[test]
+    fn a_grounded_mos_is_reported_in_text_and_markdown() {
+        let mut stream = make_stream();
+        stream.codec = Some("PCMU".to_string());
+        let s = summary(&stream);
+        assert!(s.mos_grounded, "precondition: PCMU is published");
+        let text = report_for(&stream, ReportFormat::Text);
+        assert!(
+            text.contains(&format!("mos={:.2} R={:.1}", s.mos, s.r_factor)),
+            "{text}"
+        );
+        let md = report_for(&stream, ReportFormat::Markdown);
+        assert!(md.contains("| MOS |"), "no MOS column:\n{md}");
+        assert!(md.contains(&format!("| {:.2} |", s.mos)), "{md}");
+    }
+
+    /// A MOS sipnab has no published basis for is reported as unknown, never
+    /// as the placeholder number, which reads as a measurement.
+    #[test]
+    fn an_ungrounded_mos_is_reported_as_unknown() {
+        let mut stream = make_stream();
+        stream.codec = Some("EVS".to_string());
+        let s = summary(&stream);
+        assert!(!s.mos_grounded, "precondition: EVS has no published Ie");
+        let text = report_for(&stream, ReportFormat::Text);
+        assert!(text.contains("mos=unknown"), "{text}");
+        assert!(!text.contains(&format!("mos={:.2}", s.mos)), "{text}");
+        let md = report_for(&stream, ReportFormat::Markdown);
+        assert!(md.contains("| unknown |"), "{md}");
+    }
+
+    /// An AMR-WB stream carries its wideband score beside the narrowband one.
+    #[test]
+    #[serial_test::serial(listening_context)]
+    fn an_amr_wb_stream_reports_its_wideband_score() {
+        let mut stream = make_stream();
+        stream.codec = Some("AMR-WB".to_string());
+        stream.amr_frame_types_seen = 1u16 << 2;
+        stream.packet_count = 100;
+        let s = summary(&stream);
+        let wb = s
+            .mos_wideband
+            .expect("precondition: 12.65 kbit/s is published");
+        let text = report_for(&stream, ReportFormat::Text);
+        assert!(
+            text.contains(&format!("MOS_CQEW={wb:.2} (monotic)")),
+            "{text}"
+        );
+        let md = report_for(&stream, ReportFormat::Markdown);
+        assert!(md.contains(&format!("{wb:.2} (monotic)")), "{md}");
     }
 
     /// The text report renders every section header plus PDD/setup lines.

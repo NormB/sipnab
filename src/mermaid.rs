@@ -285,6 +285,147 @@ pub fn sequence_diagram_with_labels(
     sequence_diagram_rows(&rows, label_for, max_messages)
 }
 
+/// Codec names an SDP session offers, across all media sections, in
+/// appearance order.
+///
+/// Prefers `a=rtpmap` encoding names; a media section with no rtpmap falls
+/// back to the well-known static payload types (0/8/9/18/4/3/101) and passes
+/// unknown formats through verbatim. Shared by the TUI ladder and
+/// [`dialog_rows`], so a badge reads the same on every surface.
+#[must_use]
+pub fn codec_list(session: &crate::sip::sdp::SdpSession) -> Vec<String> {
+    let mut codecs = Vec::new();
+    for media in &session.media {
+        for rm in &media.rtpmap {
+            codecs.push(rm.encoding.clone());
+        }
+        if media.rtpmap.is_empty() {
+            for f in &media.formats {
+                let name = match f.as_str() {
+                    "0" => "PCMU",
+                    "8" => "PCMA",
+                    "9" => "G722",
+                    "18" => "G729",
+                    "4" => "G723",
+                    "3" => "GSM",
+                    "101" => "telephone-event",
+                    o => o,
+                };
+                codecs.push(name.to_string());
+            }
+        }
+    }
+    codecs
+}
+
+/// What changed between a call's previous SDP and this one: codecs added
+/// (`+X`), removed (`−X`, U+2212), and a move onto or off hold.
+///
+/// `None` when nothing changed. Shared by the TUI ladder and [`dialog_rows`].
+#[must_use]
+pub fn sdp_badge(
+    previous: (&[String], crate::sip::sdp::SdpDirection),
+    current: (&[String], crate::sip::sdp::SdpDirection),
+) -> Option<String> {
+    use crate::sip::sdp::SdpDirection;
+    let (prev_codecs, prev_dir) = previous;
+    let (codecs, dir) = current;
+    let mut parts: Vec<String> = Vec::new();
+    for c in codecs {
+        if !prev_codecs.contains(c) {
+            parts.push(format!("+{c}"));
+        }
+    }
+    for c in prev_codecs {
+        if !codecs.contains(c) {
+            parts.push(format!("\u{2212}{c}"));
+        }
+    }
+    match (dir, prev_dir) {
+        (SdpDirection::SendOnly | SdpDirection::Inactive, SdpDirection::SendRecv) => {
+            parts.push("HOLD".to_string());
+        }
+        (SdpDirection::SendRecv, SdpDirection::SendOnly | SdpDirection::Inactive) => {
+            parts.push("UNHOLD".to_string());
+        }
+        _ => {}
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// Diagram rows for one dialog's messages, each with what the ladder knows
+/// about it as its note.
+///
+/// The note joins, with a middle dot: the offset from the first message;
+/// `PDD <n>ms` on the first 180 when `pdd_ms` is known; the SDP change badge
+/// ([`sdp_badge`]); and `retransmission`. Endpoints are written with
+/// [`crate::net::endpoint_label`], so an IPv6 address is bracketed and its
+/// port cannot be read as part of it. MCP's `render_ladder` and the browser
+/// analyzer both draw from this, so the two cannot annotate differently.
+#[must_use]
+pub fn dialog_rows(
+    messages: &[crate::sip::message::SipMessage],
+    pdd_ms: Option<i64>,
+) -> Vec<DiagramRow> {
+    let first = messages.first().map(|m| m.timestamp);
+    let mut pdd_noted = false;
+    let mut last_sdp: std::collections::HashMap<
+        String,
+        (Vec<String>, crate::sip::sdp::SdpDirection),
+    > = std::collections::HashMap::new();
+    messages
+        .iter()
+        .map(|m| {
+            let label = if m.is_request {
+                m.method.as_ref().map_or("?", |x| x.as_str()).to_string()
+            } else {
+                format!(
+                    "{} {}",
+                    m.status_code.unwrap_or(0),
+                    m.reason.as_deref().unwrap_or("")
+                )
+            };
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(first) = first {
+                let ms = m.timestamp.signed_duration_since(first).num_milliseconds();
+                parts.push(format!("+{:.3}s", ms as f64 / 1000.0));
+            }
+            if !pdd_noted
+                && !m.is_request
+                && m.status_code == Some(180)
+                && let Some(pdd) = pdd_ms
+            {
+                parts.push(format!("PDD {pdd}ms"));
+                pdd_noted = true;
+            }
+            if let Some(session) = m.sdp() {
+                let codecs = codec_list(&session);
+                let dir = session
+                    .media
+                    .first()
+                    .map_or(crate::sip::sdp::SdpDirection::SendRecv, |x| x.direction);
+                let call = m.call_id().unwrap_or("").to_string();
+                if let Some((prev_codecs, prev_dir)) = last_sdp.get(&call)
+                    && let Some(badge) = sdp_badge((prev_codecs, *prev_dir), (&codecs, dir))
+                {
+                    parts.push(badge);
+                }
+                last_sdp.insert(call, (codecs, dir));
+            }
+            if m.is_retransmission {
+                parts.push("retransmission".to_string());
+            }
+            DiagramRow {
+                from: crate::net::endpoint_label(m.src_addr, m.src_port),
+                to: crate::net::endpoint_label(m.dst_addr, m.dst_port),
+                label,
+                is_request: m.is_request,
+                note: (!parts.is_empty()).then(|| parts.join(" \u{b7} ")),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +633,161 @@ mod tests {
             "two endpoints sharing a resolved name are still two lifelines: \
              {out}"
         );
+    }
+}
+
+/// The shared row builder MCP and the browser analyzer draw from.
+#[cfg(test)]
+mod dialog_rows_tests {
+    use super::*;
+    use crate::capture::parse::TransportProto;
+    use crate::sip::message::SipMessage;
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn at(ms: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(1_700_000_000, 0).single().expect("ts")
+            + chrono::Duration::milliseconds(ms)
+    }
+
+    fn msg(first_line: &str, ms: i64, sdp: Option<&str>, src: &str, dst: &str) -> SipMessage {
+        let body = sdp.unwrap_or("");
+        let ct = if sdp.is_some() {
+            "Content-Type: application/sdp"
+        } else {
+            "X-Pad: 1"
+        };
+        let len = format!("Content-Length: {}", body.len());
+        let raw = crate::test_utils::build_sip_message(
+            first_line,
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKm",
+                "From: <sip:a@x>;tag=1",
+                "To: <sip:b@y>",
+                "Call-ID: rows@test",
+                "CSeq: 1 INVITE",
+                ct,
+                &len,
+            ],
+            body.as_bytes(),
+        );
+        let (s_ip, s_port) = src.rsplit_once(':').expect("src");
+        let (d_ip, d_port) = dst.rsplit_once(':').expect("dst");
+        let ip = |s: &str| {
+            s.trim_matches(|c| c == '[' || c == ']')
+                .parse()
+                .expect("ip")
+        };
+        crate::sip::parser::parse_sip(
+            &raw,
+            at(ms),
+            ip(s_ip),
+            ip(d_ip),
+            s_port.parse().expect("port"),
+            d_port.parse().expect("port"),
+            TransportProto::Udp,
+        )
+        .expect("parses")
+    }
+
+    fn sdp(codec_pts: &str, rtpmaps: &[&str], direction: &str) -> String {
+        let mut s = format!(
+            "v=0\r\no=- 1 1 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+             m=audio 4000 RTP/AVP {codec_pts}\r\n"
+        );
+        for r in rtpmaps {
+            s.push_str(&format!("a=rtpmap:{r}\r\n"));
+        }
+        s.push_str(&format!("a={direction}\r\n"));
+        s
+    }
+
+    const A: &str = "10.0.0.1:5060";
+    const B: &str = "10.0.0.2:5060";
+
+    /// Every row carries its offset from the first message.
+    #[test]
+    fn every_row_carries_its_offset_from_the_first_message() {
+        let msgs = vec![
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
+            msg("SIP/2.0 100 Trying", 15, None, B, A),
+        ];
+        let rows = dialog_rows(&msgs, None);
+        assert_eq!(rows[0].note.as_deref(), Some("+0.000s"));
+        assert_eq!(rows[1].note.as_deref(), Some("+0.015s"));
+    }
+
+    /// Post-dial delay is noted on the first 180, and only there.
+    #[test]
+    fn pdd_is_noted_on_the_first_ringing_only() {
+        let msgs = vec![
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
+            msg("SIP/2.0 180 Ringing", 847, None, B, A),
+            msg("SIP/2.0 180 Ringing", 900, None, B, A),
+        ];
+        let rows = dialog_rows(&msgs, Some(847));
+        assert_eq!(rows[1].note.as_deref(), Some("+0.847s · PDD 847ms"));
+        assert_eq!(rows[2].note.as_deref(), Some("+0.900s"));
+    }
+
+    /// A later SDP that changes codecs or puts the call on hold is badged
+    /// the way the TUI ladder badges it.
+    #[test]
+    fn an_sdp_change_is_badged() {
+        let offer = sdp("0", &["0 PCMU/8000"], "sendrecv");
+        let reinvite = sdp("9", &["9 G722/8000"], "sendonly");
+        let msgs = vec![
+            msg("INVITE sip:b@y SIP/2.0", 0, Some(&offer), A, B),
+            msg("INVITE sip:b@y SIP/2.0", 5000, Some(&reinvite), A, B),
+        ];
+        let rows = dialog_rows(&msgs, None);
+        assert_eq!(
+            rows[0].note.as_deref(),
+            Some("+0.000s"),
+            "first SDP: no badge"
+        );
+        assert_eq!(
+            rows[1].note.as_deref(),
+            Some("+5.000s · +G722 \u{2212}PCMU HOLD")
+        );
+    }
+
+    /// A retransmission says so.
+    #[test]
+    fn a_retransmission_is_noted() {
+        let mut second = msg("INVITE sip:b@y SIP/2.0", 500, None, A, B);
+        second.is_retransmission = true;
+        let msgs = vec![msg("INVITE sip:b@y SIP/2.0", 0, None, A, B), second];
+        let rows = dialog_rows(&msgs, None);
+        assert_eq!(rows[1].note.as_deref(), Some("+0.500s · retransmission"));
+    }
+
+    /// An IPv6 endpoint is bracketed, so its port cannot be read as part of
+    /// the address.
+    #[test]
+    fn an_ipv6_endpoint_is_bracketed() {
+        let msgs = vec![msg(
+            "INVITE sip:b@y SIP/2.0",
+            0,
+            None,
+            "[2001:db8::1]:5060",
+            B,
+        )];
+        let rows = dialog_rows(&msgs, None);
+        assert_eq!(rows[0].from, "[2001:db8::1]:5060");
+    }
+
+    /// The rendered diagram carries the notes.
+    #[test]
+    fn the_diagram_draws_the_notes() {
+        let msgs = vec![
+            msg("INVITE sip:b@y SIP/2.0", 0, None, A, B),
+            msg("SIP/2.0 180 Ringing", 847, None, B, A),
+        ];
+        let out = sequence_diagram_rows(
+            &dialog_rows(&msgs, Some(847)),
+            &|e: &str| e.to_string(),
+            MAX_MESSAGES,
+        );
+        assert!(out.contains("PDD 847ms"), "{out}");
     }
 }

@@ -80,7 +80,7 @@ ordinary update.
 | [`get_dialog`](#get-dialog) | `call_id`, `max_messages?`, `cursor?` | Paginated dialog with full SIP messages |
 | [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
 | [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
-| [`render_ladder`](#render-ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text) |
+| [`render_ladder`](#render-ladder) | `call_id`, `format?` | Call-flow ladder (Markdown / text), or an annotated Mermaid diagram |
 | [`get_sdp_timeline`](#get-sdp-timeline) | `call_id` | SDP offer/answer exchanges in order: codecs, ptime, direction |
 | [`check_codec_negotiation`](#check-codec-negotiation) | `call_id` | Codecs offered vs answered and whether they intersect — for 488s |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
@@ -1781,9 +1781,26 @@ needs.
 against the rows you received, and raise `limit` to reach the rest.
 
 **Returns** `orphans`, `total_orphans` (the count before `limit` bit),
-`truncated`, `relay_was_consulted`, `capture_identity` and `schema_version`.
-Each `orphans` row carries `ssrc`, `src`, `dst`, `named_endpoint`, `asserted_by`,
-`reason` and `note`.
+`truncated`, `relay_was_consulted`, `relay_control`, `capture_identity` and
+`schema_version`. Each `orphans` row carries `ssrc`, `src`, `dst`,
+`named_endpoint`, `asserted_by`, `reason` and `note`.
+
+`relay_control` has one row per relay control socket this capture read
+(`--rtpproxy-control`), and is empty when the capture read none. It counts retried
+commands, because a control channel that loses answers shows on the SIP side
+only as a proxy that is sometimes slow:
+
+| Field | Meaning |
+|---|---|
+| `relay` | The control socket, `address:port` |
+| `implementation` | `rtpproxy` |
+| `commands` | Command datagrams seen, retries included |
+| `retried_commands` | Commands that repeated a cookie already seen. rtpproxy answers a repeated cookie from its reply cache, so the same cookie twice is the proxy sending the command again because it did not hear an answer in time |
+| `retried_after_answer` | Of those, retries sent after the relay's answer was already on the wire: the answer got lost, or arrived late, on its way back to the proxy. The rest went out before the capture showed any answer |
+
+sipnab remembers the 4,096 most recent cookies per socket, so a retry of an
+older one does not count. A headless run prints the same counts as a warning
+at the end when the proxy retried any command.
 
 Three verdicts, and the difference between them is the point:
 
@@ -3211,10 +3228,18 @@ Call-flow ladder for one Call-ID.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id` | string | A Call-ID the store holds. | Required — the call fails. |
-| `format` | string? | `"markdown"` or `"text"`. Anything else, `"json"` included, fails with `unknown format 'x', expected markdown\|text`. | `"markdown"`. |
+| `format` | string? | `"markdown"`, `"text"` or `"mermaid"`. Anything else, `"json"` included, fails with `unknown format 'x', expected markdown\|text\|mermaid`. | `"markdown"`. |
 
 Returns one text content block holding the rendered report, and the provenance
-note as a second block. There is no JSON shape here — ask
+note as a second block.
+
+`"mermaid"` returns a Mermaid `sequenceDiagram` of the call instead, fenced as
+untrusted text. Each arrow carries a `Note` with what the ladder knows about
+that message: its offset from the first message (`+0.500s`), `PDD <n>ms` on
+the first 180, the SDP change against the call's previous SDP (`+G722`,
+`−PCMU`, `HOLD`, `UNHOLD`) and `retransmission`. IPv6 endpoints carry brackets
+(`[2001:db8::1]:5060`). The browser analyzer draws the same rows, and the SDP
+change badge is the TUI ladder's own rule. There is no JSON shape here — ask
 [`get_dialog_report`](#get-dialog-report) with `format: "json"` for fields a
 program can read.
 
@@ -3257,9 +3282,9 @@ change: the block goes after it, so no line of the drawing moves.
 
 ## Media Streams
 
-| SSRC | Codec | Source | Destination | Packets | Jitter | Loss |
-|------|-------|--------|-------------|---------|--------|------|
-| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% |
+| SSRC | Codec | Source | Destination | Packets | Jitter | Loss | MOS | MOS_CQEW |
+|------|-------|--------|-------------|---------|--------|------|-----|----------|
+| 0x343da99b | PCMU | 10.0.2.15:27942 | 10.0.2.20:6000 | 425 | 0ms | 0.0% | 4.36 | - |
 
 ## Issues
 
