@@ -354,7 +354,9 @@ re-implemented:
 
 ## 4. Tracks (revised to reflect the audit)
 
-1. **Track 1 — NRB name metadata** (new; in progress): resolver serialization +
+1. **Track 1 — NRB name metadata** (new; in progress when this was written:
+   `7d3532d6` added saving names, operation A, and `3de309f4` reads them on
+   open; operation B is not traced to a commit here): resolver serialization +
    validation + atomic-write helper (done, tested), then writer integration
    (operation A), verbatim convert (operation B), and read-back. Build first.
 2. **Track 2 — Consume embedded keys on read** (gap; required): a pcapng

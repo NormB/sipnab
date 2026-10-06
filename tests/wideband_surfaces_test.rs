@@ -5,8 +5,10 @@
 //! # The gap this closes
 //!
 //! `score_amr_wb` and the three `StreamSummary` fields shipped first, which
-//! gave REST, MCP and the JSON save a wideband MOS for free — they all project
-//! through that one type. The terminal does not. `render_stream_detail` reads
+//! gave REST and the JSON save a wideband MOS for free — they project through
+//! that one type. MCP's `rtp_stats` builds its stream from the NDJSON line and
+//! did not carry it until 2026-10-06 (`tests/mcp_wideband_test.rs`). The
+//! terminal does not project through it either. `render_stream_detail` reads
 //! the stream directly and computed only the narrowband figure, so an operator
 //! watching the TUI saw a G.107 score for an AMR-WB call while the REST
 //! response beside it carried `MOS_CQEW` on the G.107.1 scale. Two doors, two
@@ -266,5 +268,10 @@ fn an_unscorable_mode_says_why_rather_than_going_blank() {
     assert!(
         screen.contains("not computable under loss"),
         "a stream sipnab cannot score wideband must say why:\n{screen}"
+    );
+    // And the value column says there is no number, rather than going blank.
+    assert!(
+        screen.contains("MOS_CQEW: n/a"),
+        "the refusal must read n/a where the number would be:\n{screen}"
     );
 }

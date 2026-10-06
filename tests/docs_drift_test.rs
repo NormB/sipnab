@@ -4685,7 +4685,9 @@ fn no_documentation_table_repeats_a_row() {
     // Attributed by counting added separator rows per file: 2, 2.
     // 1062 -> 1054: the docs/superpowers/ planning documents were removed.
     // Attributed by counting separator rows per removed file: 3, 0, 5.
-    const EXPECTED_TABLES: usize = 1054;
+    // 1054 -> 1056: rtp_stats' wideband field table in docs/mcp-tools.md and
+    // its copy in website/content/docs/mcp-tools.md.
+    const EXPECTED_TABLES: usize = 1056;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -7387,4 +7389,32 @@ fn every_not_checked_branch_in_pre_push_says_what_to_do() {
          tool:\n  {}",
         silent.join("\n  ")
     );
+}
+
+/// The OpenSIPS and Kamailio guides tell a reader on a freshly booted machine
+/// what the dpkg lock error means and what to do.
+///
+/// A fresh Debian 13 VM, 39 minutes after boot, failed a guide's first
+/// `apt-get install` with this error: the system's own timer-driven apt run
+/// held the lock. Reproduced on Ubuntu 24.04 on 2026-10-06 by holding
+/// `/var/lib/dpkg/lock-frontend` with `fcntl` as root and running
+/// `apt-get install -y coreutils`: apt printed `E: Could not get lock
+/// /var/lib/dpkg/lock-frontend. It is held by process <pid> (python3)` and
+/// exited 100, and the same command run after the holder finished exited 0.
+/// The quoted text must stay apt's own words, so a reader can match it.
+#[test]
+fn guides_explain_the_dpkg_lock_error_in_apts_own_words() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    for guide in ["docs/opensips.md", "docs/kamailio.md"] {
+        let text = std::fs::read_to_string(root.join(guide)).expect("read guide");
+        let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("Could not get lock /var/lib/dpkg/lock-frontend. It is held by process"),
+            "{guide} no longer quotes apt's lock error"
+        );
+        assert!(
+            flat.contains("Wait for it to finish, then run the block again."),
+            "{guide} no longer says what to do about it"
+        );
+    }
 }

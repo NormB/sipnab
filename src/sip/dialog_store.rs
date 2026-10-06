@@ -704,6 +704,15 @@ impl DialogStore {
         self
     }
 
+    /// The correlation header names this store follows, for tests that check
+    /// an entry point built the store from the configuration. Only the TUI's
+    /// store builder has no other way to show it, so no-`tui` test builds do
+    /// not see it as dead code.
+    #[cfg(all(test, feature = "tui"))]
+    pub(crate) fn xcid_headers(&self) -> &[String] {
+        &self.xcid_headers
+    }
+
     /// Monotonic mutation counter: bumped by every operation that can
     /// change what an observer would derive from the store (new dialog,
     /// in-place message, merge, clear, retain, idle compaction, and any

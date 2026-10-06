@@ -3531,6 +3531,29 @@ fn stream_json(
             obj.insert("mos_note".into(), serde_json::Value::String(note.into()));
         }
 
+        // The wideband score, for AMR-WB. The `mos` above is on the G.107
+        // narrowband scale, which cannot score a wideband codec; REST and the
+        // TUI carry the G.107.1 figure, and an agent must not be the one
+        // surface left with only the number they exist to correct. Taken from
+        // `StreamSummary`, the projection REST serializes, so the rule that
+        // decides scored, unavailable or not attempted has one copy.
+        let summary = crate::output::model::StreamSummary::of(s, delay);
+        if let Some(n) = summary.mos_wideband.and_then(serde_json::Number::from_f64) {
+            obj.insert("mos_wideband".into(), serde_json::Value::Number(n));
+        }
+        if let Some(context) = summary.mos_wideband_context {
+            obj.insert(
+                "mos_wideband_context".into(),
+                serde_json::Value::String(context),
+            );
+        }
+        if let Some(reason) = summary.mos_wideband_unavailable {
+            obj.insert(
+                "mos_wideband_unavailable".into(),
+                serde_json::Value::String(reason),
+            );
+        }
+
         // Latency, the third of the three numbers that decide whether a call
         // was acceptable — and the one an agent is most likely to assume it
         // has. Jitter and loss are always present here, so a response carrying

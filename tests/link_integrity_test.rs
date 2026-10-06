@@ -1141,7 +1141,9 @@ fn wiki_intra_docs_links_resolve() {
     // 1281 -> 1296: listener TLS. Net added links per file, measured from the
     // diff: config-reference.md +3, mcp-deploy.md +5, cli-reference.md +2,
     // rest-api.md +2, auth.md +1, examples.md +1, prometheus-metrics.md +1.
-    const EXPECTED_WIKI_LINKS: usize = 1296;
+    // 1296 -> 1297: docs/mcp-tools.md links rtp_stats' wideband fields to
+    // mos-and-codecs.md#where-the-wideband-score-appears.
+    const EXPECTED_WIKI_LINKS: usize = 1297;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

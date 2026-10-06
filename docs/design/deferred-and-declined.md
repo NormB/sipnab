@@ -1049,7 +1049,9 @@ addressed by any of this.
 
 ### Decision reversed by the owner, 2026-08-15
 
-**`TK6` is approved and being built.** The analysis above is kept in the tense
+**`TK6` is approved.** It was not built as of 2026-10-06: no secret
+extraction exists under `src/capture/uprobe/`, and the backlog lists `TK6`
+among the capability work still to choose. The analysis above is kept in the tense
 it was written in, per this page's method — it is the reasoning that produced a
 decline, and a reversal that erased it would teach nothing. What changed is the
 decision, not the facts: the offset table is still a real, permanent cost, and
@@ -1181,7 +1183,7 @@ closed the ML anomaly entry.
 | [Section 5c: PF_RING](#5c-pf_ring--declined-on-licensing) | Reopens only if ntop relicenses the `libpfring` blobs compatibly with MIT-OR-Apache-2.0. Not otherwise |
 | [Section 5d: AF_XDP](#5d-af_xdp--declined) | Reopens only if the kernel grows a tee (`clone_redirect` in `xdp_func_proto`) **and** an egress path. Both, not either |
 | [Section 5e: XDP as a capture filter](#5e-xdp-as-a-capture-filter--declined-on-architecture) | Does not reopen. It is on the wrong side of the tap; no permission change affects that |
-| [Section 6: native TLS secret extraction (`TK6`)](#6-native-tls-secret-extraction-tk6--reversed-approved-2026-08-15) | **Reversed 2026-08-15 — approved and being built.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
+| [Section 6: native TLS secret extraction (`TK6`)](#6-native-tls-secret-extraction-tk6--reversed-approved-2026-08-15) | **Reversed 2026-08-15 — approved; not built as of 2026-10-06.** The offset cost is accepted; offsets derive from OpenSSL's Apache-2.0 sources, never from GPL prior art |
 | [Section 7: AMR / AMR-WB / EVS decoding](#7-decoding-amr-amr-wb-and-evs--declined-for-the-shipped-artifacts-2026-09-09) | Reopens ONLY as a build-from-source, non-default link against a decoder the operator installed. Bundling into the `.deb`, the image or the tarballs does not reopen |
 
 The two feature decisions still open, sections 1 and 3 (multi-capture comparison
