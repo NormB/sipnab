@@ -12,6 +12,15 @@ entry that carries them.
 
 ### Security
 
+- **The TypeScript MCP client example pins `@modelcontextprotocol/sdk`
+  1.32.1, past CVE-2026-104850 (GHSA-6qxp-vccf-f47h).** Versions 1.12.0 to
+  1.30.x let an MCP server choose the authorization server the SDK's OAuth
+  client sends credentials to; 1.31.0 fixed it. `clients/typescript` pinned
+  1.30.1. The example does not use OAuth, and sipnab itself has no npm
+  dependency in its binary.
+
+### Security
+
 - **Legacy `%from`-style exec placeholders now reach the hook as one quoted
   word (CWE-78).** `--on-dialog-exec` and `--on-quality-exec` templates rewrote
   `%from` to an unquoted `$SIPNAB_FROM`, and `--alert-exec` did the same for
