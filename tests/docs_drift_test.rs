@@ -4687,7 +4687,11 @@ fn no_documentation_table_repeats_a_row() {
     // Attributed by counting separator rows per removed file: 3, 0, 5.
     // 1054 -> 1056: rtp_stats' wideband field table in docs/mcp-tools.md and
     // its copy in website/content/docs/mcp-tools.md.
-    const EXPECTED_TABLES: usize = 1056;
+    // 1056 -> 1058: reconcile_orphans' relay_control field table in
+    // docs/mcp-tools.md and its site copy (RP4). Attributed by counting
+    // separator rows per file: +2 -1 each, the -1 being the Media Streams
+    // table's separator widened for its MOS columns, not a removed table.
+    const EXPECTED_TABLES: usize = 1058;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

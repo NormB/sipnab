@@ -238,6 +238,12 @@ let vcon = export_dialog(
         // honest answer, and the container reports it as one rather than as
         // a clean bill.
         analysis: None,
+        // `None` takes the default inline-media budget.
+        max_inline_media_bytes: None,
+        // The dialog's RTP quality, for the report's `media_quality`:
+        // `sipnab::output::vcon::media_quality_for(&streams, &call_id)` builds
+        // it from a `StreamStore`. Empty leaves the key out.
+        media: &[],
     },
 );
 println!("{}", vcon.to_json().expect("the container serializes"));
@@ -541,6 +547,7 @@ participant.
 | `attachments[].party` | the observer contributed this document | that a participant did |
 | the message trace | these messages reached sipnab's parser | that they are all the messages |
 | `analysis[0].body` | sipnab's diagnosis of what it held | a diagnosis of the call |
+| `analysis[0].body.media_quality` | each RTP stream's MOS and R-factor, computed from the packets sipnab read, with `mos_grounded` saying whether the MOS rests on a published impairment value | that a listener heard that quality |
 | an absent field | the capture did not carry it | that the call lacked it |
 | a `dialog[]` object with no media fields | this export carries no media | that the call had none |
 

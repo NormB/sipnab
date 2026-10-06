@@ -292,28 +292,12 @@ impl SipnabSession {
         let Some(dialog) = self.dialog_store.get(call_id) else {
             return String::new();
         };
-        let rows: Vec<(String, String, String, bool)> = dialog
-            .messages
-            .iter()
-            .map(|msg| {
-                let label = if msg.is_request {
-                    msg.method.as_ref().map_or("?", |m| m.as_str()).to_string()
-                } else {
-                    format!(
-                        "{} {}",
-                        msg.status_code.unwrap_or(0),
-                        msg.reason.as_deref().unwrap_or("")
-                    )
-                };
-                (
-                    crate::net::endpoint_label(msg.src_addr, msg.src_port),
-                    crate::net::endpoint_label(msg.dst_addr, msg.dst_port),
-                    label,
-                    msg.is_request,
-                )
-            })
-            .collect();
-        crate::mermaid::sequence_diagram(&rows, crate::mermaid::MAX_MESSAGES)
+        let rows = crate::mermaid::dialog_rows(&dialog.messages, dialog.timing.pdd_ms());
+        crate::mermaid::sequence_diagram_rows(
+            &rows,
+            &|endpoint: &str| endpoint.to_string(),
+            crate::mermaid::MAX_MESSAGES,
+        )
     }
 
     /// Number of SIP dialogs in the loaded capture.

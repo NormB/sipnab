@@ -662,49 +662,19 @@ pub fn layout(
             let cid = msg.call_id().unwrap_or("").to_string();
             // Reuse the parse from the main loop instead of re-parsing.
             if let Some(ss) = msg_sdps[ri].as_ref() {
-                let codecs = extract_codec_list(ss);
+                let codecs = crate::mermaid::codec_list(ss);
                 let dir = ss
                     .media
                     .first()
                     .map(|m| m.direction)
                     .unwrap_or(SdpDirection::SendRecv);
-                if let Some(prev_codecs) = last_codecs.get(&cid) {
-                    let mut badge_parts: Vec<String> = Vec::new();
-                    // Codec additions
-                    for c in &codecs {
-                        if !prev_codecs.contains(c) {
-                            badge_parts.push(format!("+{c}"));
-                        }
-                    }
-                    // Codec removals (use minus sign U+2212)
-                    for c in prev_codecs {
-                        if !codecs.contains(c) {
-                            badge_parts.push(format!("\u{2212}{c}"));
-                        }
-                    }
-                    // Direction changes
-                    if let Some(prev_dir) = last_direction.get(&cid) {
-                        match (&dir, prev_dir) {
-                            (
-                                SdpDirection::SendOnly | SdpDirection::Inactive,
-                                SdpDirection::SendRecv,
-                            ) => {
-                                badge_parts.push("HOLD".to_string());
-                            }
-                            (
-                                SdpDirection::SendRecv,
-                                SdpDirection::SendOnly | SdpDirection::Inactive,
-                            ) => {
-                                badge_parts.push("UNHOLD".to_string());
-                            }
-                            _ => {}
-                        }
-                    }
-                    if !badge_parts.is_empty()
-                        && let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(ri))
-                    {
-                        fm.sdp_badge = Some(badge_parts.join(" "));
-                    }
+                if let Some(prev_codecs) = last_codecs.get(&cid)
+                    && let Some(prev_dir) = last_direction.get(&cid)
+                    && let Some(badge) =
+                        crate::mermaid::sdp_badge((prev_codecs, *prev_dir), (&codecs, dir))
+                    && let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(ri))
+                {
+                    fm.sdp_badge = Some(badge);
                 }
                 last_codecs.insert(cid.clone(), codecs);
                 last_direction.insert(cid, dir);
@@ -952,36 +922,6 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
     }
 
     result
-}
-
-/// Extract a list of codec names from an SDP session, across all media
-/// sections. Prefers `a=rtpmap` encoding names; a media section without any
-/// rtpmap falls back to mapping well-known static payload-type numbers
-/// (0/8/9/18/4/3/101), passing unknown formats through verbatim. Returns the
-/// names in appearance order (may be empty).
-fn extract_codec_list(session: &sdp::SdpSession) -> Vec<String> {
-    let mut codecs = Vec::new();
-    for media in &session.media {
-        for rm in &media.rtpmap {
-            codecs.push(rm.encoding.clone());
-        }
-        if media.rtpmap.is_empty() {
-            for f in &media.formats {
-                let name = match f.as_str() {
-                    "0" => "PCMU",
-                    "8" => "PCMA",
-                    "9" => "G722",
-                    "18" => "G729",
-                    "4" => "G723",
-                    "3" => "GSM",
-                    "101" => "telephone-event",
-                    o => o,
-                };
-                codecs.push(name.to_string());
-            }
-        }
-    }
-    codecs
 }
 
 /// Fold retransmissions and auth retry sequences in the laid-out row list.
@@ -1335,7 +1275,7 @@ pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
 /// actually use, so the RTP-in-flow bar prefers it over the full offer list.
 /// `None` when the SDP carries no codec.
 fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
-    extract_codec_list(session)
+    crate::mermaid::codec_list(session)
         .into_iter()
         .next()
         .filter(|s| !s.is_empty())
@@ -2971,13 +2911,13 @@ mod tests {
             t0(),
         );
         let session = with_map.sdp().expect("sdp");
-        let codecs = extract_codec_list(&session);
+        let codecs = crate::mermaid::codec_list(&session);
         assert_eq!(codecs, vec!["PCMU".to_string(), "PCMA".to_string()]);
 
         // No rtpmap → static payload-type number mapping.
         let no_map = invite_with_sdp("ccodec2", 1, "m=audio 20000 RTP/AVP 0 9 18 101", &[], t0());
         let session2 = no_map.sdp().expect("sdp2");
-        let codecs2 = extract_codec_list(&session2);
+        let codecs2 = crate::mermaid::codec_list(&session2);
         assert_eq!(
             codecs2,
             vec![

@@ -528,11 +528,13 @@ impl SipnabMcp {
                 Err(_) => ObservedAudio::NothingToDecode(&reason),
             };
 
+            let media = crate::output::vcon::media_quality_for(&ss, &dialog.call_id);
             let context = ExportContext {
                 capture_id: crate::output::vcon::dialog_capture_id(dialog),
                 facts: &facts,
                 analysis: Some(&analysis),
                 max_inline_media_bytes: budget,
+                media: &media,
             };
             let exported =
                 export_dialog_and_completeness(dialog, &context, audio, chrono::Utc::now());

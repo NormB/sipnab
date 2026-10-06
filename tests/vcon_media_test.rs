@@ -201,6 +201,7 @@ fn export_within(
             facts: &facts,
             max_inline_media_bytes: budget,
             analysis: None,
+            media: &[],
         },
         ObservedAudio::Decoded(&audio),
     );
@@ -231,6 +232,7 @@ fn export_reporting_within(
             facts: &facts,
             max_inline_media_bytes: budget,
             analysis: None,
+            media: &[],
         },
         ObservedAudio::Decoded(&audio),
         Utc::now(),
@@ -556,6 +558,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
             facts: &facts,
             max_inline_media_bytes: None,
             analysis: None,
+            media: &[],
         },
         ObservedAudio::NothingToDecode(&reason),
     );
@@ -593,6 +596,7 @@ fn a_dialog_with_no_exportable_audio_carries_no_recording_and_explains_itself() 
             facts: &facts,
             max_inline_media_bytes: None,
             analysis: None,
+            media: &[],
         },
     );
     assert_eq!(

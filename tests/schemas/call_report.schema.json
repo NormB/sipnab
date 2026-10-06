@@ -627,6 +627,10 @@
         "octets",
         "jitter_ms",
         "loss_pct",
+        "mos",
+        "r_factor",
+        "mos_grounded",
+        "mos_grounding",
         "orphaned",
         "first_seen",
         "last_seen",
@@ -666,6 +670,33 @@
         },
         "loss_pct": {
           "type": "number"
+        },
+        "mos": {
+          "type": "number"
+        },
+        "r_factor": {
+          "type": "number"
+        },
+        "mos_grounded": {
+          "type": "boolean"
+        },
+        "mos_grounding": {
+          "type": "string",
+          "enum": ["published", "operator_declared", "unpublished"]
+        },
+        "mos_note": {
+          "type": "string"
+        },
+        "mos_wideband": {
+          "type": "number"
+        },
+        "mos_wideband_context": {
+          "type": "string",
+          "enum": ["monotic", "diotic"]
+        },
+        "mos_wideband_unavailable": {
+          "type": "string",
+          "enum": ["unpublished_mode", "loss_not_computable"]
         },
         "orphaned": {
           "type": "boolean"
