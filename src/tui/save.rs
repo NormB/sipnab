@@ -1474,7 +1474,7 @@ mod tests {
     #[test]
     fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() {
         if !std::path::Path::new("/dev/full").exists() {
-            eprintln!("skipped: no /dev/full on this host");
+            stderr_line!("skipped: no /dev/full on this host");
             return;
         }
         let app = app_with_dialogs();

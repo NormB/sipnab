@@ -40,7 +40,7 @@ pub fn run(cli: &Cli, config: &Config) -> Option<i32> {
     if code == 0 {
         println!("{text}");
     } else {
-        eprintln!("{text}");
+        stderr_line!("{text}");
     }
     Some(code)
 }

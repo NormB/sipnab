@@ -2699,7 +2699,7 @@ mod tests {
         let raw = match RawKillSocket::open(&live_permit()) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("skipping close-on-exec test: raw socket unavailable ({e})");
+                stderr_line!("skipping close-on-exec test: raw socket unavailable ({e})");
                 return;
             }
         };
@@ -2733,7 +2733,7 @@ mod tests {
         let raw = match RawKillSocket::open(&live_permit()) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("skipping spoof test: raw socket unavailable ({e})");
+                stderr_line!("skipping spoof test: raw socket unavailable ({e})");
                 return;
             }
         };
@@ -2784,7 +2784,7 @@ mod tests {
         let raw = match RawKillSocket::open(&live_permit()) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("skipping v6 spoof test: raw socket unavailable ({e})");
+                stderr_line!("skipping v6 spoof test: raw socket unavailable ({e})");
                 return;
             }
         };
@@ -2792,7 +2792,7 @@ mod tests {
         let listener = match std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("skipping v6 spoof test: no IPv6 loopback ({e})");
+                stderr_line!("skipping v6 spoof test: no IPv6 loopback ({e})");
                 return;
             }
         };
@@ -2821,7 +2821,7 @@ mod tests {
             Err(e) => {
                 // Some environments block raw v6 loopback injection; treat as a
                 // skip rather than a hard failure (the builder is unit-tested).
-                eprintln!("skipping v6 spoof test: no packet received ({e})");
+                stderr_line!("skipping v6 spoof test: no packet received ({e})");
                 return;
             }
         };

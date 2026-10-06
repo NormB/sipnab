@@ -1434,7 +1434,7 @@ mod tests {
     #[test]
     fn corpus_directory_resolves_in_timestamp_order() {
         let Ok(dir) = std::env::var("SIPNAB_CORPUS") else {
-            eprintln!("SIPNAB_CORPUS not set — skipping");
+            stderr_line!("SIPNAB_CORPUS not set — skipping");
             return;
         };
         let out = resolve(std::slice::from_ref(&dir), &ResolveOptions::default())
@@ -1470,7 +1470,7 @@ mod tests {
             .iter()
             .zip(out.iter())
             .any(|(a, b)| a.path != b.path);
-        eprintln!(
+        stderr_line!(
             "corpus: {} files, filename order {} chronological order",
             out.len(),
             if name_order_differs {

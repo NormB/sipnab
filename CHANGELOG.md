@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A closed stderr no longer crashes a finished run with exit 101.**
+  `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line;
+  every later stderr write then fails. tracing-subscriber reported each failed
+  log line with an `eprintln!` to the same stderr, and sipnab printed its own
+  stderr lines with `eprintln!`; both panic on a failed write, so the panic
+  hook exited 101 and wrote a crash report. The subscriber no longer reports
+  its own write failures, and sipnab's 65 stderr lines go through one macro
+  that drops a failed write. The run now exits with the code it would have
+  had: 0 for that command.
+
 ### Removed
 
 - **AI agent planning documents are no longer in the repository.**
@@ -27,8 +39,6 @@ entry that carries them.
   client sends credentials to; 1.31.0 fixed it. `clients/typescript` pinned
   1.30.1. The example does not use OAuth, and sipnab itself has no npm
   dependency in its binary.
-
-### Security
 
 - **Legacy `%from`-style exec placeholders now reach the hook as one quoted
   word (CWE-78).** `--on-dialog-exec` and `--on-quality-exec` templates rewrote

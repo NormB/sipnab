@@ -1280,7 +1280,7 @@ mod tests {
 
         let sample = sample_pcap();
         if !sample.exists() {
-            eprintln!("Skipping: sample not found at {}", sample.display());
+            stderr_line!("Skipping: sample not found at {}", sample.display());
             return;
         }
         let baseline = count_packets(&sample);
@@ -1527,7 +1527,7 @@ mod tests {
         let path = fixture_path();
         if !path.exists() {
             // Skip if fixture not yet generated
-            eprintln!("Skipping: fixture not found at {}", path.display());
+            stderr_line!("Skipping: fixture not found at {}", path.display());
             return;
         }
 
@@ -1726,7 +1726,7 @@ mod tests {
         let a = sample("register-invite-reinvite-bye.pcap");
         let b = sample("sip-rtp-g711.pcap");
         if !a.exists() || !b.exists() {
-            eprintln!("Skipping: samples not found");
+            stderr_line!("Skipping: samples not found");
             return;
         }
 

@@ -733,7 +733,7 @@ fn worker_main(args: &[String]) -> i32 {
     let args = match WorkerArgs::parse(args) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("sipnab {KILL_WORKER_ARG}: {e}");
+            stderr_line!("sipnab {KILL_WORKER_ARG}: {e}");
             return 2;
         }
     };

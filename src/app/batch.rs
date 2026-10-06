@@ -947,7 +947,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
     let suppressions = match lint_suppressions(cli) {
         Ok(file) => file,
         Err(reason) => {
-            eprintln!("{reason}");
+            stderr_line!("{reason}");
             // The invocation was wrong, which is exit 2. Not 3: a pipeline has
             // to tell "this capture is non-conformant" apart from "sipnab was
             // asked to read a file that is not there", and only the first is a
@@ -992,13 +992,13 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
     let dialogs = ds.len();
     // Name the denominator: "0 findings" over 0 dialogs and over 900 are
     // different answers and only one is good news.
-    eprintln!("Lint: {total} finding(s) across {dialogs} dialog(s)");
+    stderr_line!("Lint: {total} finding(s) across {dialogs} dialog(s)");
     // Suppression never hides itself, on this surface as on the MCP one. A
     // short finding list has to say why it is short, and "which file" is the
     // actionable half: discovery may have climbed several directories to reach
     // a `.sipnablint` nobody on this pipeline knew about.
     if let Some(file) = &suppressions {
-        eprintln!(
+        stderr_line!(
             "Lint: suppressions from {} ({} pattern(s)), {} finding(s) silenced",
             file.path().display(),
             file.patterns().len(),
@@ -1006,7 +1006,7 @@ fn run_lint_stage(cli: &Cli, config: &Config, ds: &crate::sip::dialog_store::Dia
         );
     }
     if withheld.capped > 0 {
-        eprintln!(
+        stderr_line!(
             "Lint: {} finding(s) dropped by the per-rule cap of {}",
             withheld.capped,
             cli.lint_max_per_rule(config),
@@ -2112,7 +2112,7 @@ fn no_sip_guidance(
 /// Writes one line to stderr when anything failed to decode.
 fn report_undecodable(frames_read: u64) {
     if let Some(msg) = undecodable_summary(&crate::capture::undecodable_report(), frames_read) {
-        eprintln!("{msg}");
+        stderr_line!("{msg}");
     }
 }
 
@@ -2141,7 +2141,7 @@ fn report_llmnr_summary() {
     if llmnr.is_empty() {
         return;
     }
-    eprintln!(
+    stderr_line!(
         "LLMNR: {} packet(s) from {} host(s) — Windows name resolution is active on this \
          segment. It is the protocol Responder abuses to harvest NTLM credentials, and is \
          normally disabled by policy.",
@@ -2154,14 +2154,14 @@ fn report_llmnr_summary() {
     // different lines.
     let claimed = llmnr.claimed_names();
     if !claimed.is_empty() {
-        eprintln!(
+        stderr_line!(
             "LLMNR: hostname(s) claimed on this segment: {}.",
             join_capped(&claimed, 8)
         );
     }
     let unresolved = llmnr.unresolved_names();
     if !unresolved.is_empty() {
-        eprintln!(
+        stderr_line!(
             "LLMNR: name(s) queried that nothing answered for: {}.",
             join_capped(&unresolved, 8)
         );
@@ -2170,7 +2170,7 @@ fn report_llmnr_summary() {
         if host.names_queried.is_empty() {
             continue;
         }
-        eprintln!(
+        stderr_line!(
             "LLMNR:   {} looked up {}",
             host.addr,
             join_capped(
@@ -2184,15 +2184,16 @@ fn report_llmnr_summary() {
         );
     }
     if llmnr.hosts.len() > 8 {
-        eprintln!("LLMNR:   ... and {} more host(s).", llmnr.hosts.len() - 8);
+        stderr_line!("LLMNR:   ... and {} more host(s).", llmnr.hosts.len() - 8);
     }
     // A cap that silently swallowed evidence would make the roster above read
     // as complete when it is not.
     if llmnr.dropped_hosts > 0 || llmnr.dropped_names > 0 {
-        eprintln!(
+        stderr_line!(
             "LLMNR: {} host(s) and {} name(s) were not retained (tracking caps); the packet \
              count above stays exact.",
-            llmnr.dropped_hosts, llmnr.dropped_names
+            llmnr.dropped_hosts,
+            llmnr.dropped_names
         );
     }
 }
@@ -2263,7 +2264,7 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
                 None => format!("{} ({}, {})", e.addr, e.errors, e.description),
             })
             .collect();
-        eprintln!(
+        stderr_line!(
             "ICMP: {} error(s) quoting a SIP request, naming {} unreachable endpoint(s). \
              Busiest: {}.",
             icmp.errors,
@@ -2273,11 +2274,12 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
         // A cap that silently swallowed evidence would make the numbers above
         // understate the problem, so say when one bit.
         if icmp.unattributed > 0 || icmp.untracked_dialogs > 0 {
-            eprintln!(
+            stderr_line!(
                 "ICMP: {} error(s) quoted too little to name a Call-ID and {} more reached no \
                  dialog because the tracking cap was full — real evidence that appears against \
                  no call.",
-                icmp.unattributed, icmp.untracked_dialogs
+                icmp.unattributed,
+                icmp.untracked_dialogs
             );
         }
     }
@@ -2286,7 +2288,7 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
     // hide that the network answered, which is the whole point of reading ICMP.
     let media = crate::pipeline::icmp_media_report(streams);
     if media.errors > 0 {
-        eprintln!(
+        stderr_line!(
             "ICMP: {} error(s) quoting non-SIP traffic, {} of them media, across {} flow(s). \
              Attributed to a stream or SDP endpoint: {}; matched nothing this capture holds: {}.",
             media.errors,
@@ -2296,13 +2298,14 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
             media.unattributed,
         );
         for f in media.flows.iter().take(5) {
-            eprintln!("  {}", f.hint);
+            stderr_line!("  {}", f.hint);
         }
         if media.unkeyed > 0 || media.untracked_flows > 0 {
-            eprintln!(
+            stderr_line!(
                 "ICMP: {} media error(s) quoted too little to name a flow and {} more reached no \
                  flow because the tracking cap was full.",
-                media.unkeyed, media.untracked_flows
+                media.unkeyed,
+                media.untracked_flows
             );
         }
     }
@@ -3944,7 +3947,7 @@ impl BatchRunner {
                     }
                 }
             }
-            eprintln!("sipnab: {}", x.counts().summary_line());
+            stderr_line!("sipnab: {}", x.counts().summary_line());
         }
 
         // Flush the output writer explicitly: BufWriter's Drop discards
@@ -4121,7 +4124,7 @@ impl BatchRunner {
             let ds_guard = dialog_store.read();
             let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
             if call_ids.is_empty() {
-                eprintln!("No SIP dialogs to generate Wireshark filter for.");
+                stderr_line!("No SIP dialogs to generate Wireshark filter for.");
             } else {
                 // Escape each Call-ID before it lands inside the display
                 // filter's quoted string — a raw Call-ID could close the string
@@ -4279,7 +4282,7 @@ impl BatchRunner {
                     .take(5)
                     .map(|p| format!("{} ({})", p.port, p.messages))
                     .collect();
-                eprintln!(
+                stderr_line!(
                     "NOT ANALYZED: {} further SIP message(s) were seen on ports outside \
                      --portrange and are in none of the totals above. Busiest: {}. \
                      Re-run with --portrange 1-65535 to include them.",
@@ -4302,7 +4305,7 @@ impl BatchRunner {
                     .take(5)
                     .map(|p| format!("{} ({})", p.port, p.messages))
                     .collect();
-                eprintln!(
+                stderr_line!(
                     "NOT ANALYZED: {} SIP-over-WebSocket message(s) arrived on ports \
                      outside the WebSocket port set ({}) and are in none of the \
                      totals above. Busiest: {}. Re-run with --ws-portrange covering \
@@ -4318,7 +4321,7 @@ impl BatchRunner {
             // disagree about the same run.
             let undecodable = crate::capture::undecodable_report();
             if let Some(msg) = undecodable_summary(&undecodable, total_count) {
-                eprintln!("{msg}");
+                stderr_line!("{msg}");
             }
 
             report_icmp_summary(&stream_store.read());
@@ -4359,7 +4362,7 @@ impl BatchRunner {
             #[cfg(not(feature = "tls"))]
             let tls_report = crate::capture::TlsDecryptReport::default();
             for line in tls_decrypt_guidance(&tls_report, &mapped_tls_libraries()) {
-                eprintln!("{line}");
+                stderr_line!("{line}");
             }
 
             // Guidance when no SIP signaling was found — and, when the
@@ -4374,7 +4377,7 @@ impl BatchRunner {
                     total_count,
                     &tls_report,
                 ) {
-                    eprintln!("{line}");
+                    stderr_line!("{line}");
                 }
             }
         }
@@ -5555,7 +5558,7 @@ pub fn generate_reports(
     // O(calls²) before the endpoint index; it now grows ~linearly with streams.
     // A value near streams² means the quadratic regression is back.
     if std::env::var_os("SIPNAB_PERF_STATS").is_some() {
-        eprintln!(
+        stderr_line!(
             "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
             dialog_store.len(),
             stream_store.len(),
@@ -5815,7 +5818,7 @@ pub fn generate_reports(
         } else {
             // eprintln (not tracing) so the failure is visible even with
             // logging off — it decides the process exit code.
-            eprintln!("Call-ID '{call_id}' not found in tracked dialogs");
+            stderr_line!("Call-ID '{call_id}' not found in tracked dialogs");
             return false;
         }
     }
@@ -6454,14 +6457,14 @@ fn export_vcon_selection_after(
         match vcon_selection(cli, vcon_filter, dialog_store, stream_store) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("{e:#}");
+                stderr_line!("{e:#}");
                 return false;
             }
         };
     let dir = match prepare_export_dir(cli) {
         Ok(dir) => dir,
         Err(message) => {
-            eprintln!("{message}");
+            stderr_line!("{message}");
             return false;
         }
     };
@@ -6469,7 +6472,7 @@ fn export_vcon_selection_after(
     let policy = match redaction_policy(cli) {
         Ok(p) => p,
         Err(reason) => {
-            eprintln!("{reason}");
+            stderr_line!("{reason}");
             return false;
         }
     };
@@ -6510,7 +6513,7 @@ fn export_vcon_selection_after(
     ) {
         Ok(n) => n,
         Err((_, message)) => {
-            eprintln!("{message}");
+            stderr_line!("{message}");
             return false;
         }
     };
@@ -6520,7 +6523,7 @@ fn export_vcon_selection_after(
         // On stderr beside the count, because an operator has to be able to
         // say what was redacted and how reversible it is without opening a
         // container. The same report travels INSIDE every container too.
-        eprintln!(
+        stderr_line!(
             "Redaction: {} classes, key {}, {} leading digit(s) retained.",
             report.classes.len(),
             report.key_mode,
@@ -6528,19 +6531,19 @@ fn export_vcon_selection_after(
         );
         if let Some(path) = cli.output_args.redact_map.as_deref() {
             match write_redaction_map(path, r) {
-                Ok(n) => eprintln!(
+                Ok(n) => stderr_line!(
                     "Wrote {n} token mapping(s) to '{}' (mode 0600). It reverses every \
                      pseudonym in these containers, so it is as sensitive as the capture.",
                     path.display()
                 ),
                 Err(reason) => {
-                    eprintln!("{reason}");
+                    stderr_line!("{reason}");
                     return false;
                 }
             }
         }
     }
-    eprintln!("Wrote {written} vCon container(s) to '{}'.", dir.display());
+    stderr_line!("Wrote {written} vCon container(s) to '{}'.", dir.display());
     true
 }
 
@@ -6837,7 +6840,7 @@ fn dialog_carries_header(dialog: &crate::sip::dialog::SipDialog, header: &str) -
 /// # Side effects
 ///
 /// Writes the container to `--vcon-out` or to stdout, and every refusal to
-/// stderr — `eprintln!` rather than `tracing`, matching `--call-report`,
+/// stderr — `stderr_line!` rather than `tracing`, matching `--call-report`,
 /// because the message decides the process exit code and has to survive
 /// logging being off.
 #[cfg(feature = "vcon")]
@@ -6880,7 +6883,7 @@ fn export_vcon(
         return true;
     };
     let Some(dialog) = dialog_store.get(call_id) else {
-        eprintln!(
+        stderr_line!(
             "Call-ID '{call_id}' not found in tracked dialogs, so there is no \
              dialog to export. --report lists the Call-IDs this run holds."
         );
@@ -6940,7 +6943,7 @@ fn write_single_vcon(
     let policy = match redaction_policy(cli) {
         Ok(p) => p,
         Err(reason) => {
-            eprintln!("{reason}");
+            stderr_line!("{reason}");
             return false;
         }
     };
@@ -6954,7 +6957,7 @@ fn write_single_vcon(
     )) {
         Ok(json) => json,
         Err(e) => {
-            eprintln!("The vCon for Call-ID '{call_id}' would not serialize: {e}");
+            stderr_line!("The vCon for Call-ID '{call_id}' would not serialize: {e}");
             return false;
         }
     };
@@ -6962,7 +6965,7 @@ fn write_single_vcon(
 
     if let Some(r) = redactor.as_ref() {
         let report = r.policy().report();
-        eprintln!(
+        stderr_line!(
             "Redaction: {} classes, key {}, {} leading digit(s) retained.",
             report.classes.len(),
             report.key_mode,
@@ -6970,12 +6973,12 @@ fn write_single_vcon(
         );
         if let Some(path) = cli.output_args.redact_map.as_deref() {
             match write_redaction_map(path, r) {
-                Ok(n) => eprintln!(
+                Ok(n) => stderr_line!(
                     "Wrote {n} token mapping(s) to '{}' (mode 0600).",
                     path.display()
                 ),
                 Err(reason) => {
-                    eprintln!("{reason}");
+                    stderr_line!("{reason}");
                     return false;
                 }
             }
@@ -6990,7 +6993,7 @@ fn write_single_vcon(
     // false exactly when it is printed -- the operator's previous export would
     // already be gone.
     if let Err(e) = write_container_atomically(path, json.as_bytes()) {
-        eprintln!(
+        stderr_line!(
             "Could not write the vCon for Call-ID '{call_id}' to '{}': {e}. \
              Nothing was exported.",
             path.display()
@@ -7029,7 +7032,7 @@ fn export_vcon(
     match cli.vcon_refusal(false) {
         None => true,
         Some(refusal) => {
-            eprintln!("{refusal}.");
+            stderr_line!("{refusal}.");
             false
         }
     }

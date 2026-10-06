@@ -959,11 +959,11 @@ pub fn run_tui_mode(
         // after it: a closing write that itself failed is part of what the
         // operator has to be told.
         if let Some(problem) = trail.close_session() {
-            eprintln!("{problem}");
+            stderr_line!("{problem}");
             tracing::error!("{problem}");
         }
         if let Some(notice) = trail.exit_notice() {
-            eprintln!("{notice}");
+            stderr_line!("{notice}");
             tracing::error!("{notice}");
         }
     }
@@ -992,7 +992,7 @@ pub fn run_tui_mode(
     // it decides the exit status, and a status with no reason is the defect
     // this replaces.
     if let Some(e) = tui_failure {
-        eprintln!(
+        stderr_line!(
             "sipnab: the terminal UI could not start: {e}. It needs a terminal; \
              add -N for a run without one."
         );

@@ -953,7 +953,7 @@ mod tests {
             .join("fixtures")
             .join("udp_5060.pcap");
         if !fixture.exists() {
-            eprintln!("Skipping: fixture not found at {}", fixture.display());
+            stderr_line!("Skipping: fixture not found at {}", fixture.display());
             return;
         }
 

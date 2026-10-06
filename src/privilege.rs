@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn a_skipped_drop_records_no_user() {
         if is_root() {
-            eprintln!("skipped: running as root, a drop would really happen");
+            stderr_line!("skipped: running as root, a drop would really happen");
             return;
         }
         assert!(drop_privileges(None, true).is_ok());

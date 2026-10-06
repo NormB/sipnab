@@ -203,14 +203,14 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
             match discover::parse_flavor(name) {
                 Ok(f) => flavors.push(f),
                 Err(e) => {
-                    eprintln!("{e}");
+                    stderr_line!("{e}");
                     return 2;
                 }
             }
         }
         let found = discover::select(discover::discover(), &flavors);
         if found.is_empty() {
-            eprintln!(
+            stderr_line!(
                 "No TLS library is mapped by any process sipnab can see.\n\
                  Either nothing here uses OpenSSL or wolfSSL, or sipnab cannot read\n\
                  /proc/<pid>/maps — try again as root."
@@ -235,7 +235,7 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
         }
         let unreachable = found.iter().filter(|l| l.probe_path().is_none()).count();
         if unreachable > 0 {
-            eprintln!(
+            stderr_line!(
                 "\n{unreachable} of these cannot be reached from sipnab's mount namespace \
                  and would NOT be captured. They are most likely inside containers; run as root."
             );
@@ -245,7 +245,7 @@ pub fn uprobe_list(cli: &Cli) -> i32 {
     #[cfg(not(all(target_os = "linux", feature = "native")))]
     {
         let _ = cli;
-        eprintln!(
+        stderr_line!(
             "--uprobe-list needs Linux kernel uprobes and a sipnab built with the \
              `native` feature"
         );
@@ -2413,6 +2413,10 @@ pub fn init_logging(cli: &Cli) {
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
+        // When a log line cannot be written, the subscriber reports that with
+        // `eprintln!` to the same stderr, which panics if stderr is a pipe
+        // whose reader has gone (`2>&1 | head`). The line is lost either way.
+        .log_internal_errors(false)
         .with_target(true)
         .compact()
         .finish();
