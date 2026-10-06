@@ -1606,6 +1606,22 @@ mod tests {
     /// that `build_stores` *called* a setter would not have caught that —
     /// what is asserted here is the observable consequence, that one Call-ID
     /// seen on two Via branches becomes two tracked units.
+    /// The TUI's store follows no correlation header unless `[sip]
+    /// xcid_headers` names one: the same default as every other entry point.
+    #[test]
+    fn the_tui_store_follows_no_correlation_header_unless_configured() {
+        let cli = cli_from(&[]);
+        let (unset, _) = build_stores(&cli, &Config::default(), &Default::default());
+        assert!(
+            unset.read().xcid_headers().is_empty(),
+            "X-Call-ID is not a default"
+        );
+        let mut config = Config::default();
+        config.sip.xcid_headers = Some(vec!["X-Call-ID".to_string()]);
+        let (set, _) = build_stores(&cli, &config, &Default::default());
+        assert_eq!(set.read().xcid_headers(), ["X-Call-ID".to_string()]);
+    }
+
     #[test]
     fn dialog_track_branch_reaches_the_store_and_splits_a_reused_call_id() {
         let cli = cli_from(&["--dialog-track", "branch"]);

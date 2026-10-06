@@ -31,6 +31,13 @@ entry that carries them.
 
 ### Fixed
 
+- **MCP `rtp_stats` carries an AMR-WB stream's wideband score.** REST
+  (`GET /v1/streams`) and the TUI's `MOS_CQEW` row carried the G.107.1
+  `MOS_CQEW` since it shipped, and `docs/mos-and-codecs.md` said MCP did too;
+  `rtp_stats` builds its stream from the NDJSON line and carried only the
+  narrowband `mos`, the figure the wideband score exists to correct. It now
+  adds `mos_wideband`, `mos_wideband_context` and `mos_wideband_unavailable`
+  from the same projection REST serializes.
 - **A closed stderr no longer crashes a finished run with exit 101.**
   `sipnab -N -I call.pcap 2>&1 | head -1` closes the pipe after one line;
   every later stderr write then fails. tracing-subscriber reported each failed

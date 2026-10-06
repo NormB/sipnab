@@ -1,9 +1,10 @@
 # Automated threat mitigation
 
 **Status:** DESIGN, with one hard rule that applies immediately (section 3).
-**Verified against:** `63b771b` plus an uncommitted in-flight change to
-[`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) that section 4 describes and deliberately does
-not cite by line, because it was moving. Every line citation on this page was
+**Verified against:** `63b771b`. The change to
+[`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) that section 4 describes was not committed
+then and has since shipped: outcome gating (`REJECTED_PROBE_MIN`,
+`UNANSWERED_PROBE_MIN`) and probes keyed by the top `Via` branch. Every line citation on this page was
 re-anchored against `fcabc436` on 2026-09-02; the prose was not re-verified then.
 **Relationship to section 3 of [`deferred-and-declined.md`](deferred-and-declined.md),
 ["Automated threat-mitigation hooks"](deferred-and-declined.md#3-automated-threat-mitigation-hooks).**
@@ -135,10 +136,9 @@ land** — it probes addresses that do not exist, credentials that do not work,
 extensions nobody answers. That is an *outcome* signal, and it requires reading
 responses, which a volume counter does not do.
 
-Work in flight on [`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) (uncommitted at `63b771b`,
-owned by another change, cited without line numbers because they are moving)
-takes exactly this shape, and its structure is the right one regardless of where
-that particular change lands:
+[`src/security/scanner_detect.rs`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_detect.rs) takes exactly this shape. It was a separate
+change, not yet committed at `63b771b`, when this section was written; it has
+since shipped:
 
 - **Outcome gating.** Volume alone can no longer fire. A source must additionally
   show rejections, or show that a majority of its probes went unanswered.

@@ -7093,6 +7093,28 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The `--cores` paths take their correlation headers from the same key,
+    /// with the same default: none. Each worker builds its own store from
+    /// `ParallelConfig`, and a parallel run serves no query surface that
+    /// could show a correlation, so the conversion is what is tested.
+    #[test]
+    fn parallel_config_follows_no_correlation_header_unless_configured() {
+        let cli = Cli::parse_from_args(["sipnab"]);
+        let unset = Config::default();
+        assert!(
+            parallel_config(&cli, &unset, (1, 65535), false)
+                .xcid_headers
+                .is_empty(),
+            "X-Call-ID is not a default"
+        );
+        let mut set = Config::default();
+        set.sip.xcid_headers = Some(vec!["X-Call-ID".to_string()]);
+        assert_eq!(
+            parallel_config(&cli, &set, (1, 65535), false).xcid_headers,
+            vec!["X-Call-ID".to_string()]
+        );
+    }
+
     /// Baseline non-interactive CLI; mutate the pub fields per test.
     /// Build a `SipMessage` for `call_id` from the shared INVITE fixture.
     fn invite_msg(call_id: &str) -> sip::message::SipMessage {

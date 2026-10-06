@@ -220,7 +220,7 @@ alone.
   rather than by re-measuring: the page now says when it was last measured and
   that it does not track the crate version. No crate version is named here, so
   this entry cannot go stale the way the page it describes did.
-- [ ] **D6 — Sweep `docs/design/*.md` for in-flight language** — "being
+- [x] **D6 — Sweep `docs/design/*.md` for in-flight language** — "being
   addressed", "uncommitted", "the working tree carries", "shipped 0.5.NN" —
   and resolve each to shipped, dropped, or still-open. *Partly done:* the
   capture-tuning pages are clean. Still carrying it:
@@ -230,6 +230,13 @@ alone.
   repeats it) and
   `backlog.md:874`. Neither is capture work, which is why they were left rather
   than swept blind.
+  Done 2026-10-06: `threat-mitigation-hooks.md` now says the
+  `scanner_detect.rs` change shipped; `deferred-and-declined.md` no longer
+  says `TK6` is being built (no extraction code exists); `pcapng-metadata.md`
+  names the commits behind Track 1; `backlog.md` is a stub with none of it.
+  What `git grep -iE 'uncommitted|being built|in[- ]flight' docs/design`
+  still finds is technical use (an in-flight packet or request), this task
+  list, and a dated 2026-08-14 decision kept in its own tense.
 - [ ] **D7 — Sweep the two implementation plans** (`implementation-plan-v6.md`
   ~185 KB, `implementation-plan-phases-8-10.md` ~180 KB) for unchecked `- [ ]`
   boxes describing work that shipped. D16's "verified by checking PID differs

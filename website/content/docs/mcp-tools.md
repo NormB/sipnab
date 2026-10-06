@@ -3783,6 +3783,19 @@ either direction: its nine modes genuinely span about 4.49 down to 3.51. Do not
 report a MOS to a human without checking this field. See
 [MOS and codecs](@/docs/mos-and-codecs.md) for the full picture.
 
+An AMR-WB stream whose mode sipnab read also carries the wideband score, the
+same three fields `GET /v1/streams` returns:
+
+| Field | Meaning |
+|---|---|
+| `mos_wideband` | `MOS_CQEW` on the ITU-T G.107.1 wideband scale |
+| `mos_wideband_context` | The listening context sipnab scored the stream in: `monotic` or `diotic` |
+| `mos_wideband_unavailable` | Why there is no wideband score: `unpublished_mode` or `loss_not_computable` |
+
+`mos_wideband` and `mos` are different scales. Do not compare them. A stream
+that is not AMR-WB carries none of the three. See
+[Where the wideband score appears](@/docs/mos-and-codecs.md#where-the-wideband-score-appears).
+
 #### Who named the dialog — `dialog_assertion`
 
 Each stream also says who asserted the SDP media endpoint that tied it to its

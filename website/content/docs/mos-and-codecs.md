@@ -204,7 +204,7 @@ Without one of those, sipnab flags the stream rather than guessing.
 | Surface | What it carries |
 |---|---|
 | `GET /v1/streams` | `mos_wideband`, `mos_wideband_context`, `mos_wideband_unavailable` |
-| MCP stream tools | the same three fields |
+| MCP `rtp_stats` | the same three fields |
 | TUI stream detail | a `MOS_CQEW` row naming the scale, the mode and the listening context |
 
 The terminal row carries no quality band and no color, on purpose. The bands
