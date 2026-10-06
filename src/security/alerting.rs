@@ -1005,12 +1005,19 @@ impl Drop for AlertEngine {
     }
 }
 
-/// Rewrite legacy `%variable` placeholders to `$SIPNAB_VARIABLE` references.
+/// Legacy `%name` placeholders an `--alert-exec` template may use, and the
+/// environment variable each one names.
+const ALERT_PLACEHOLDERS: &[(&str, &str)] = &[
+    ("src", "SIPNAB_SRC"),
+    ("rule", "SIPNAB_RULE"),
+    ("detail", "SIPNAB_DETAIL"),
+];
+
+/// Rewrite legacy `%variable` placeholders to quoted `SIPNAB_*` references,
+/// each expanding as one word (see
+/// [`crate::security::exec_placeholders::quote_placeholders`]).
 fn migrate_alert_template(template: &str) -> String {
-    template
-        .replace("%src", "$SIPNAB_SRC")
-        .replace("%rule", "$SIPNAB_RULE")
-        .replace("%detail", "$SIPNAB_DETAIL")
+    crate::security::exec_placeholders::quote_placeholders(template, ALERT_PLACEHOLDERS)
 }
 
 /// Sanitize attacker-controlled values for log output (CRLF injection prevention).
@@ -1111,6 +1118,41 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use std::net::Ipv4Addr;
+
+    /// Every legacy alert placeholder reaches an `--alert-exec` hook as its
+    /// own variable's value, as ONE word: a detail string with spaces and a
+    /// `*` is neither split nor glob-expanded (CWE-78), whatever quoting the
+    /// operator put around the placeholder.
+    #[test]
+    fn legacy_alert_placeholders_reach_the_hook_as_one_word() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("glob-would-match-this"), b"").expect("seed file");
+        for (name, var) in [
+            ("src", "SIPNAB_SRC"),
+            ("rule", "SIPNAB_RULE"),
+            ("detail", "SIPNAB_DETAIL"),
+        ] {
+            let value = format!("{name}  value * -o /etc/x");
+            for template in [
+                format!("printf '<%s>' %{name}"),
+                format!("printf '<%s>' \"%{name}\""),
+                format!("printf '<%s>' '%{name}'"),
+            ] {
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(migrate_alert_template(&template))
+                    .env(var, &value)
+                    .current_dir(dir.path())
+                    .output()
+                    .expect("sh should run");
+                assert_eq!(
+                    String::from_utf8_lossy(&out.stdout),
+                    format!("<{value}>"),
+                    "template {template:?}"
+                );
+            }
+        }
+    }
 
     /// A fixed source IP used across the alerting tests.
     fn test_ip() -> IpAddr {

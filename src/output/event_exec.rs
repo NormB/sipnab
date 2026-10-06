@@ -708,27 +708,34 @@ impl Drop for EventExecEngine {
     }
 }
 
-/// Rewrite legacy `%variable` placeholders to `$SIPNAB_VARIABLE` references.
+/// Legacy `%name` placeholders and the environment variable each one names.
+/// No name is a prefix of another, so the first match is the only match.
+const LEGACY_PLACEHOLDERS: &[(&str, &str)] = &[
+    ("stream_json", "SIPNAB_STREAM_JSON"),
+    ("call_id", "SIPNAB_CALL_ID"),
+    ("method", "SIPNAB_METHOD"),
+    ("detail", "SIPNAB_DETAIL"),
+    ("jitter", "SIPNAB_JITTER"),
+    ("state", "SIPNAB_STATE"),
+    ("json", "SIPNAB_JSON"),
+    ("from", "SIPNAB_FROM"),
+    ("ssrc", "SIPNAB_SSRC"),
+    ("loss", "SIPNAB_LOSS"),
+    ("rule", "SIPNAB_RULE"),
+    ("mos", "SIPNAB_MOS"),
+    ("src", "SIPNAB_SRC"),
+    ("to", "SIPNAB_TO"),
+];
+
+/// Rewrite legacy `%variable` placeholders to quoted `SIPNAB_*` references.
 ///
 /// This provides backwards compatibility for users who have existing command
 /// templates using the old `%call_id`, `%from`, etc. syntax. The values are
-/// passed as environment variables, never interpolated into the command string.
+/// passed as environment variables, never interpolated into the command string,
+/// and each reference expands as one word (see
+/// [`crate::security::exec_placeholders::quote_placeholders`]).
 fn migrate_template_vars(template: &str) -> String {
-    template
-        .replace("%json", "$SIPNAB_JSON")
-        .replace("%call_id", "$SIPNAB_CALL_ID")
-        .replace("%from", "$SIPNAB_FROM")
-        .replace("%to", "$SIPNAB_TO")
-        .replace("%state", "$SIPNAB_STATE")
-        .replace("%method", "$SIPNAB_METHOD")
-        .replace("%stream_json", "$SIPNAB_STREAM_JSON")
-        .replace("%ssrc", "$SIPNAB_SSRC")
-        .replace("%mos", "$SIPNAB_MOS")
-        .replace("%jitter", "$SIPNAB_JITTER")
-        .replace("%loss", "$SIPNAB_LOSS")
-        .replace("%src", "$SIPNAB_SRC")
-        .replace("%rule", "$SIPNAB_RULE")
-        .replace("%detail", "$SIPNAB_DETAIL")
+    crate::security::exec_placeholders::quote_placeholders(template, LEGACY_PLACEHOLDERS)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1039,16 +1046,89 @@ mod tests {
     #[test]
     fn migrate_template_vars_call_id() {
         let migrated = migrate_template_vars("echo %call_id");
-        assert_eq!(migrated, "echo $SIPNAB_CALL_ID");
+        assert_eq!(migrated, "echo \"${SIPNAB_CALL_ID}\"");
+    }
+
+    /// Run a migrated legacy template through `sh -c` the way a hook runs,
+    /// with `SIPNAB_FROM` set to `value`, inside a directory holding one file
+    /// so an unquoted `*` would visibly glob. Returns stdout.
+    fn run_migrated(template: &str, value: &str) -> String {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("glob-would-match-this"), b"").expect("seed file");
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(migrate_template_vars(template))
+            .env("SIPNAB_FROM", value)
+            .current_dir(dir.path())
+            .output()
+            .expect("sh should run");
+        String::from_utf8(out.stdout).expect("utf-8 stdout")
+    }
+
+    /// A captured From value must reach a legacy `%from` hook as ONE argument,
+    /// byte for byte: no word splitting on its spaces, no glob expansion of
+    /// its `*`. An unquoted `$SIPNAB_FROM` fails both (CWE-78).
+    #[test]
+    fn legacy_placeholder_is_one_unexpanded_argument() {
+        let hostile = "a  b * -o /etc/x";
+        assert_eq!(
+            run_migrated("printf '<%s>' %from", hostile),
+            format!("<{hostile}>")
+        );
+    }
+
+    /// Every legacy name reaches the hook as its own variable's value, so no
+    /// shorter name (`%src`, `%state`) captures a longer one (`%ssrc`,
+    /// `%stream_json`), and each value arrives as one unsplit word.
+    #[test]
+    fn every_legacy_placeholder_reaches_its_own_variable() {
+        let names = [
+            "json",
+            "call_id",
+            "from",
+            "to",
+            "state",
+            "method",
+            "stream_json",
+            "ssrc",
+            "mos",
+            "jitter",
+            "loss",
+            "src",
+            "rule",
+            "detail",
+        ];
+        assert_eq!(names.len(), LEGACY_PLACEHOLDERS.len());
+        for (a, _) in LEGACY_PLACEHOLDERS {
+            for (b, _) in LEGACY_PLACEHOLDERS {
+                assert!(a == b || !b.starts_with(a), "%{a} is a prefix of %{b}");
+            }
+        }
+        for name in names {
+            let var = format!("SIPNAB_{}", name.to_uppercase());
+            let value = format!("{name} value *");
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(migrate_template_vars(&format!("printf '<%s>' %{name}")))
+                .env(&var, &value)
+                .output()
+                .expect("sh should run");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                format!("<{value}>"),
+                "%{name} must expand {var}"
+            );
+        }
     }
 
     /// Multiple `%` placeholders in one template all migrate.
     #[test]
     fn migrate_template_vars_multiple() {
         let migrated = migrate_template_vars("notify --from=%from --to=%to --state=%state");
-        assert!(migrated.contains("$SIPNAB_FROM"));
-        assert!(migrated.contains("$SIPNAB_TO"));
-        assert!(migrated.contains("$SIPNAB_STATE"));
+        assert_eq!(
+            migrated,
+            "notify --from=\"${SIPNAB_FROM}\" --to=\"${SIPNAB_TO}\" --state=\"${SIPNAB_STATE}\""
+        );
     }
 
     /// The command template is stored verbatim — values are only ever
@@ -1318,11 +1398,11 @@ mod tests {
         );
         assert_eq!(
             engine.on_dialog_cmd.as_deref(),
-            Some("echo $SIPNAB_CALL_ID $SIPNAB_FROM")
+            Some("echo \"${SIPNAB_CALL_ID}\" \"${SIPNAB_FROM}\"")
         );
         assert_eq!(
             engine.on_quality_cmd.as_deref(),
-            Some("alert $SIPNAB_MOS $SIPNAB_JITTER")
+            Some("alert \"${SIPNAB_MOS}\" \"${SIPNAB_JITTER}\"")
         );
     }
 }

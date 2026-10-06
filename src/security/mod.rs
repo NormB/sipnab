@@ -19,6 +19,7 @@ pub mod detectors;
 pub mod digest_leak;
 #[cfg(feature = "native")]
 pub mod evidence;
+pub(crate) mod exec_placeholders;
 pub mod findings;
 pub mod fraud_detect;
 pub mod kill_packet;
