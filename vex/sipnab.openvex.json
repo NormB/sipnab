@@ -3,8 +3,8 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-09-30T12:30:00Z",
-  "version": 1,
+  "timestamp": "2026-10-06T00:00:00Z",
+  "version": 2,
   "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
   "statements": [
     {
@@ -29,6 +29,23 @@
       "status": "not_affected",
       "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
       "impact_statement": "The Marvin Attack is an online chosen-ciphertext oracle: it needs a service that decrypts attacker-supplied RSA ciphertexts and leaks decryption timing back to the attacker. sipnab uses the rsa crate only under the optional `tls` feature, to decrypt offline the pre-master secret of an already-captured TLS 1.2 handshake with an operator-supplied key (`--tls-key`). No network-facing decryption oracle exists, nothing an attacker supplies is decrypted on demand, and no decryption timing is returned to anyone. No fixed rsa release exists as of 0.9.x. Re-evaluate if sipnab ever grows an online decryption path."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-hp3w-g68c-fv3c",
+        "aliases": [
+          "CVE-2026-97058"
+        ],
+        "description": "sprintf-js denial of service through unbounded precision specifiers in a format string"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/sipnab"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "component_not_present",
+      "impact_statement": "sprintf-js is not part of sipnab: no binary, package or crate the project ships contains it. It appears only in e2e/package-lock.json, the dev tooling for the website's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> argparse 1 -> sprintf-js 1.0.3), where argparse formats its own help templates and no attacker-supplied text becomes a format string. osv.dev lists no fixed release (every version through 1.1.3 is affected). Re-evaluate when a fix is published or @lhci drops js-yaml 3."
     }
   ]
 }

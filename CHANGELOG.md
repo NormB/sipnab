@@ -54,6 +54,13 @@ entry that carries them.
 
 ### Changed
 
+- **The e2e test tooling takes proxy-addr 2.0.8 and compression 1.8.2.**
+  `e2e/package-lock.json` (Lighthouse CI only, never shipped) moves off
+  proxy-addr 2.0.7 (GHSA-jqcg-44mw-7w3h, critical) and compression 1.8.1
+  (GHSA-vc2v-76pw-4v95, high), both published 2026-10-05. sprintf-js 1.0.3
+  (GHSA-hp3w-g68c-fv3c) has no fixed release; `osv-scanner.toml` and the VEX
+  document record it as not affecting sipnab, which does not contain it.
+
 - **The home page groups TFPS with fail2ban and gives rtpproxy its own map
   item.** TFPS and fail2ban share the "Attack blocking" tile, as rtpengine and
   rtpproxy share "Media relay". The system map's relay entry is split so
