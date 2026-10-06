@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+
+- **Legacy `%from`-style exec placeholders now reach the hook as one quoted
+  word (CWE-78).** `--on-dialog-exec` and `--on-quality-exec` templates rewrote
+  `%from` to an unquoted `$SIPNAB_FROM`, and `--alert-exec` did the same for
+  `%src`, `%rule` and `%detail`, so `sh -c` split a captured value
+  on its spaces and expanded `*` in it: a crafted SIP header could add or
+  replace hook arguments. Each placeholder now becomes `"${SIPNAB_FROM}"`
+  outside quotes, `${SIPNAB_FROM}` inside double quotes, and
+  `'"${SIPNAB_FROM}"'` inside single quotes, where the old rewrite left the
+  literal text `$SIPNAB_FROM`. The braces also fix `%from_x`, which expanded
+  an unset `SIPNAB_FROM_x` instead of the From value followed by `_x`.
+  Both hooks now share one rewrite. Templates that use `$SIPNAB_*` directly
+  are unchanged.
+
 ### Changed
 
 - **Rust 1.99.0, the latest stable release, replaces 1.98.1 as the pinned

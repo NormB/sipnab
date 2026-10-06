@@ -1458,7 +1458,7 @@ sudo sipnab -N -d eth0 --kill-scanner \
             --alert-exec '/usr/local/bin/notify-slack.sh "$SIPNAB_RULE" "$SIPNAB_SRC" "$SIPNAB_DETAIL"'
 ```
 
-Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail` into those `$SIPNAB_*` references for you. Anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
+Alert data reaches the hook as the `SIPNAB_RULE`, `SIPNAB_SRC`, and `SIPNAB_DETAIL` environment variables — never interpolated into the command string. sipnab rewrites only the three legacy placeholders `%rule`, `%src`, and `%detail` into quoted references to those variables, such as `"${SIPNAB_DETAIL}"`, so each value reaches the hook as one argument. Anything else (`%type%`, `%source_ip%`, …) reaches the shell verbatim.
 
 The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
 
