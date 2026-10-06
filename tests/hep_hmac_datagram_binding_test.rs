@@ -34,8 +34,8 @@
 #![cfg(feature = "hep")]
 
 use sipnab::capture::hep::{
-    DEFAULT_HMAC_WINDOW_SECS, HMAC_TOKEN_LEN, HMAC_TOKEN_VERSION, HepEndpoint, HepProtocol,
-    HmacAuthError, HmacNonceCache, build_hep_v3_hmac, parse_hep, verify_hmac_datagram,
+    DEFAULT_HMAC_WINDOW_SECS, HMAC_TOKEN_LEN, HMAC_TOKEN_VERSION, HepEndpoint, HepHmacSigning,
+    HepProtocol, HmacAuthError, HmacNonceCache, build_hep_v3_hmac, parse_hep, verify_hmac_datagram,
 };
 use sipnab::net::TransportProto;
 use std::net::IpAddr;
@@ -90,9 +90,11 @@ fn signed(payload: &[u8], nonce_byte: u8) -> Vec<u8> {
         chrono::Utc::now(),
         HepProtocol::Sip,
         1,
-        KEY,
-        NOW,
-        &[nonce_byte; 16],
+        &HepHmacSigning {
+            key: KEY,
+            token_ts: NOW,
+            nonce: &[nonce_byte; 16],
+        },
         payload,
     )
 }

@@ -495,6 +495,23 @@ fn hmac_over_datagram(key: &[u8], datagram: &[u8], mac_start: usize) -> [u8; 32]
     )
 }
 
+/// What one HEP datagram's HMAC token is made from.
+///
+/// The three travel together into every signed datagram, and the tag is only
+/// valid for all three at once: the key that signs it, the time the replay
+/// window is measured from, and the nonce that makes the datagram unique.
+#[cfg(feature = "hep")]
+#[derive(Clone, Copy)]
+pub struct HepHmacSigning<'a> {
+    /// The shared HMAC secret.
+    pub key: &'a [u8],
+    /// Token timestamp, seconds since the Unix epoch. The replay window is
+    /// measured against this, not against the capture timestamp.
+    pub token_ts: u64,
+    /// A 16-byte nonce, unique per message.
+    pub nonce: &'a [u8; 16],
+}
+
 /// Build a complete HEP v3 datagram whose `0x000e` chunk carries a version-2
 /// HMAC token computed over the finished datagram.
 ///
@@ -511,27 +528,26 @@ fn hmac_over_datagram(key: &[u8], datagram: &[u8], mac_start: usize) -> [u8; 32]
 /// * `timestamp` — capture time, encoded as TS_SEC/TS_USEC chunks.
 /// * `protocol` — application protocol type chunk (SIP/RTCP/RTP/...).
 /// * `capture_id` — capture agent ID chunk value.
-/// * `key` — the shared HMAC secret.
-/// * `token_ts` — token timestamp, seconds since the Unix epoch (the replay
-///   window is measured against this, not against `timestamp`).
-/// * `nonce` — 16-byte unique-per-message nonce.
+/// * `signing` — the key, token timestamp and nonce the tag is made from.
 /// * `payload` — the encapsulated message bytes.
 ///
 /// # Returns
 ///
 /// The complete wire-format HEP v3 datagram, signed.
 #[cfg(feature = "hep")]
-#[allow(clippy::too_many_arguments)]
 pub fn build_hep_v3_hmac(
     endpoint: &HepEndpoint,
     timestamp: DateTime<Utc>,
     protocol: HepProtocol,
     capture_id: u32,
-    key: &[u8],
-    token_ts: u64,
-    nonce: &[u8; 16],
+    signing: &HepHmacSigning<'_>,
     payload: &[u8],
 ) -> Vec<u8> {
+    let HepHmacSigning {
+        key,
+        token_ts,
+        nonce,
+    } = *signing;
     let placeholder = [0u8; HMAC_TOKEN_LEN];
     let mut pkt = build_hep_v3_bytes(
         endpoint,
@@ -3751,9 +3767,11 @@ impl HepSender {
                     timestamp,
                     protocol,
                     self.capture_id,
-                    key.as_bytes(),
-                    ts,
-                    &self.next_nonce(),
+                    &HepHmacSigning {
+                        key: key.as_bytes(),
+                        token_ts: ts,
+                        nonce: &self.next_nonce(),
+                    },
                     payload,
                 )
             }
@@ -6760,9 +6778,11 @@ mod tests {
                 chrono::Utc::now(),
                 HepProtocol::Sip,
                 1,
-                key(),
-                ts,
-                nonce,
+                &HepHmacSigning {
+                    key: key(),
+                    token_ts: ts,
+                    nonce,
+                },
                 payload,
             )
         }
@@ -7064,9 +7084,11 @@ mod tests {
                 chrono::Utc::now(),
                 HepProtocol::Sip,
                 1,
-                crate::test_material::key_bytes("hep-hmac-wrong"),
-                NOW,
-                &NONCE,
+                &HepHmacSigning {
+                    key: crate::test_material::key_bytes("hep-hmac-wrong"),
+                    token_ts: NOW,
+                    nonce: &NONCE,
+                },
                 payload,
             );
             let fp = span(&forged);

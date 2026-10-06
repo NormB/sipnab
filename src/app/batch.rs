@@ -1177,11 +1177,13 @@ fn report_parallel_run(
 ) -> bool {
     let reports_ok = generate_reports(
         cli,
-        &r.dialog_store,
-        &r.stream_store,
+        CaptureRead {
+            dialogs: &r.dialog_store,
+            streams: &r.stream_store,
+            frames_read: r.packets_read,
+        },
         filter,
         vcon_filter,
-        r.packets_read,
         None,
         // `--cores` reads files only, so there was no live export to follow.
         VconRunEnd::Whole,
@@ -3527,9 +3529,11 @@ impl BatchRunner {
                         live_vcon_sweep(
                             &cli,
                             vcon_filter_expr.as_ref(),
-                            ds,
-                            &ss,
-                            total_count,
+                            CaptureRead {
+                                dialogs: ds,
+                                streams: &ss,
+                                frames_read: total_count,
+                            },
                             gate,
                             tracker,
                             now.get(),
@@ -3643,12 +3647,14 @@ impl BatchRunner {
                         match PcapWriter::with_provenance(
                             &PathBuf::from(output_path),
                             packet.link_type,
-                            split_bytes,
-                            split_duration,
-                            use_pcapng,
-                            export_mode,
-                            capture_source,
-                            section_note,
+                            crate::capture::PcapWriterOptions {
+                                max_file_bytes: split_bytes,
+                                max_file_duration: split_duration,
+                                pcapng: use_pcapng,
+                                export_mode,
+                                interface: capture_source,
+                                provenance: section_note,
+                            },
                         )
                         .map(|w| w.keep_last_splits(split_keep))
                         {
@@ -4090,11 +4096,13 @@ impl BatchRunner {
             let gate = servers.as_ref().map(|s| s.persistence_gate.as_ref());
             if !generate_reports(
                 &cli,
-                &ds_guard,
-                &ss_guard,
+                CaptureRead {
+                    dialogs: &ds_guard,
+                    streams: &ss_guard,
+                    frames_read: total_count,
+                },
                 filter_expr.as_ref(),
                 vcon_filter_expr.as_ref(),
-                total_count,
                 gate,
                 vcon_end,
             ) {
@@ -5553,6 +5561,21 @@ fn write_stdout(text: &str) -> bool {
     }
 }
 
+/// What the run has read so far: both stores and the frame count behind them.
+///
+/// The three travel together into every end-of-run and live export step, so
+/// they are one value rather than three parameters a call site could pair up
+/// wrongly (a store from one read beside the frame count of another).
+#[derive(Clone, Copy)]
+pub struct CaptureRead<'a> {
+    /// The dialogs read.
+    pub dialogs: &'a DialogStore,
+    /// The RTP streams read.
+    pub streams: &'a StreamStore,
+    /// Frames read to build them.
+    pub frames_read: u64,
+}
+
 /// Generate post-capture reports (`--report`, `--call-report`,
 /// `--export-vcon`) from the final store contents. Returns `false` when a
 /// requested report could not be produced — an unknown Call-ID at either
@@ -5573,17 +5596,19 @@ fn write_stdout(text: &str) -> bool {
 /// Prints the requested reports to stdout, the not-found error (and the
 /// opt-in `SIPNAB_PERF_STATS=1` perf line) to stderr; reads the
 /// `SIPNAB_PERF_STATS` environment variable.
-#[allow(clippy::too_many_arguments)]
 pub fn generate_reports(
     cli: &Cli,
-    dialog_store: &DialogStore,
-    stream_store: &StreamStore,
+    read: CaptureRead<'_>,
     filter: Option<&FilterExpr>,
     vcon_filter: Option<&FilterExpr>,
-    frames_read: u64,
     gate: Option<&crate::output::persistence::PersistenceGate>,
     vcon_end: VconRunEnd<'_>,
 ) -> bool {
+    let CaptureRead {
+        dialogs: dialog_store,
+        streams: stream_store,
+        frames_read,
+    } = read;
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
     // O(calls²) before the endpoint index; it now grows ~linearly with streams.
@@ -6146,17 +6171,19 @@ fn live_vcon_due(
 ///
 /// Returns how many containers this sweep wrote.
 #[cfg(feature = "vcon")]
-#[allow(clippy::too_many_arguments)]
 fn live_vcon_sweep(
     cli: &Cli,
     vcon_filter: Option<&crate::sip::dsl::FilterExpr>,
-    dialog_store: &DialogStore,
-    stream_store: &StreamStore,
-    frames_read: u64,
+    read: CaptureRead<'_>,
     gate: Option<&crate::output::persistence::PersistenceGate>,
     tracker: &mut LiveVconTracker,
     now: chrono::DateTime<chrono::Utc>,
 ) -> usize {
+    let CaptureRead {
+        dialogs: dialog_store,
+        streams: stream_store,
+        frames_read,
+    } = read;
     tracker.prune(|call_id| dialog_store.get(call_id).is_some());
     // The gate at write time decides, as it does at the end of a run.
     if gate.is_some_and(|g| !g.writes_permitted()) {
@@ -7316,7 +7343,18 @@ mod tests {
         let mut tracker = LiveVconTracker::default();
         let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
 
-        let n = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
         assert_eq!(n, 1, "only the failed (ended) call is due");
         let files = containers_in(tmp.path());
         assert_eq!(files.len(), 1, "{files:?}");
@@ -7324,7 +7362,18 @@ mod tests {
         assert!(text.contains("failed-call@example.com"), "{text}");
         assert!(!tracker.failed());
 
-        let again = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        let again = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
         assert_eq!(again, 0, "a written call is not written again unchanged");
     }
 
@@ -7340,9 +7389,11 @@ mod tests {
         let n = live_vcon_sweep(
             &cli,
             None,
-            &two_dialogs_one_failed(),
-            &StreamStore::new(16),
-            4,
+            CaptureRead {
+                dialogs: &two_dialogs_one_failed(),
+                streams: &StreamStore::new(16),
+                frames_read: 4,
+            },
             None,
             &mut tracker,
             chrono::Utc::now(),
@@ -7367,9 +7418,11 @@ mod tests {
         let n = live_vcon_sweep(
             &cli,
             None,
-            &store,
-            &StreamStore::new(16),
-            2,
+            CaptureRead {
+                dialogs: &store,
+                streams: &StreamStore::new(16),
+                frames_read: 2,
+            },
             None,
             &mut tracker,
             later,
@@ -7519,9 +7572,11 @@ mod tests {
         let early = live_vcon_sweep(
             &cli,
             None,
-            &dialogs,
-            &streams,
-            4,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
             None,
             &mut tracker,
             chrono::Utc::now(),
@@ -7530,7 +7585,18 @@ mod tests {
         assert!(!out.exists(), "a call that has not settled is not written");
 
         let later = chrono::Utc::now() + settle() + chrono::TimeDelta::seconds(1);
-        let n = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        let n = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
         assert_eq!(n, 1, "the ended, settled call is written");
         assert!(!tracker.failed());
         let text = std::fs::read_to_string(&out).expect("the container was written");
@@ -7542,7 +7608,18 @@ mod tests {
         assert_eq!(tracker.written_at(CALL), Some(updated_at));
 
         std::fs::remove_file(&out).expect("remove");
-        let again = live_vcon_sweep(&cli, None, &dialogs, &streams, 4, None, &mut tracker, later);
+        let again = live_vcon_sweep(
+            &cli,
+            None,
+            CaptureRead {
+                dialogs: &dialogs,
+                streams: &streams,
+                frames_read: 4,
+            },
+            None,
+            &mut tracker,
+            later,
+        );
         assert_eq!(again, 0, "a written call is not written again unchanged");
         assert!(!out.exists());
     }
@@ -7560,9 +7637,11 @@ mod tests {
         let n = live_vcon_sweep(
             &cli,
             None,
-            &two_dialogs_one_failed(),
-            &StreamStore::new(16),
-            4,
+            CaptureRead {
+                dialogs: &two_dialogs_one_failed(),
+                streams: &StreamStore::new(16),
+                frames_read: 4,
+            },
             None,
             &mut tracker,
             chrono::Utc::now() + chrono::TimeDelta::hours(1),
@@ -12345,11 +12424,13 @@ mod tests {
         cli.output_args.report = true;
         generate_reports(
             &cli,
-            &dialog_store,
-            &stream_store,
+            CaptureRead {
+                dialogs: &dialog_store,
+                streams: &stream_store,
+                frames_read: 0,
+            },
             None,
             None,
-            0,
             None,
             VconRunEnd::Whole,
         );
@@ -12359,11 +12440,13 @@ mod tests {
         cli.output_args.call_report = Some("does-not-exist".to_string());
         generate_reports(
             &cli,
-            &dialog_store,
-            &stream_store,
+            CaptureRead {
+                dialogs: &dialog_store,
+                streams: &stream_store,
+                frames_read: 0,
+            },
             None,
             None,
-            0,
             None,
             VconRunEnd::Whole,
         );
@@ -12395,11 +12478,13 @@ mod tests {
             setup(&mut cli);
             generate_reports(
                 &cli,
-                &dialog_store,
-                &stream_store,
+                CaptureRead {
+                    dialogs: &dialog_store,
+                    streams: &stream_store,
+                    frames_read: 0,
+                },
                 None,
                 None,
-                0,
                 None,
                 VconRunEnd::Whole,
             );

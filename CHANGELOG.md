@@ -40,6 +40,15 @@ entry that carries them.
   warns with the same counts at the end. Counted per capture, so re-reading a
   capture does not turn every command into a retry.
 
+### Changed
+
+- **No `#[allow(clippy::too_many_arguments)]` remains; each was a design
+  fix instead.** Values that travel together are now named types: the
+  library's `PcapWriter::with_provenance(path, link_type, PcapWriterOptions)`
+  and `build_hep_v3_hmac(..., &HepHmacSigning { key, token_ts, nonce },
+  payload)` change signature (the library API is unstable). A gate test,
+  `lint_suppression_test`, refuses the attribute anywhere in the tree.
+
 ## [0.5.204] - 2026-10-06
 
 ### Added

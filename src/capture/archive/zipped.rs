@@ -55,6 +55,24 @@ struct EntryInfo {
     encryption: Encryption,
 }
 
+/// One member of a ZIP archive, as the walk found it: where it sits and how
+/// it is protected. Read together by both member readers.
+#[derive(Clone, Copy)]
+struct ZipMember<'a> {
+    /// Its index in the archive's central directory.
+    index: usize,
+    /// The archive's own label, which the member's path starts with.
+    archive_label: &'a str,
+    /// The member's full label, `<archive>/<path>`.
+    child: &'a str,
+    /// The containers it sits inside, outermost first, this ZIP included.
+    layers: &'a [Layer],
+    /// How deeply nested the archive is.
+    depth: usize,
+    /// How it is encrypted, `Encryption::None` for a plain member.
+    encryption: Encryption,
+}
+
 impl Walker<'_> {
     /// Open the archive `label` names, from `src`, for reading by seeking.
     ///
@@ -171,18 +189,18 @@ impl Walker<'_> {
             }
             let mut next = layers.to_vec();
             next.push(Layer::Zip);
+            let member = ZipMember {
+                index,
+                archive_label: label,
+                child: &child,
+                layers: &next,
+                depth,
+                encryption: info.encryption,
+            };
             let flow = if info.encryption == Encryption::None {
-                self.read_plain(&mut archive, index, &child, &next, depth)
+                self.read_plain(&mut archive, &member)
             } else {
-                self.read_encrypted(
-                    &mut archive,
-                    index,
-                    label,
-                    &child,
-                    &next,
-                    depth,
-                    info.encryption,
-                )
+                self.read_encrypted(&mut archive, &member)
             };
             if flow == Flow::Abort {
                 return Flow::Abort;
@@ -198,11 +216,15 @@ impl Walker<'_> {
     fn read_plain(
         &mut self,
         archive: &mut zip::ZipArchive<&std::fs::File>,
-        index: usize,
-        child: &str,
-        layers: &[Layer],
-        depth: usize,
+        member: &ZipMember<'_>,
     ) -> Flow {
+        let ZipMember {
+            index,
+            child,
+            layers,
+            depth,
+            ..
+        } = *member;
         match archive.by_index(index) {
             Ok(file) => {
                 let mut inner = Inflating {
@@ -224,17 +246,19 @@ impl Walker<'_> {
     }
 
     /// Read an encrypted member, offering it to the keyring.
-    #[allow(clippy::too_many_arguments)]
     fn read_encrypted(
         &mut self,
         archive: &mut zip::ZipArchive<&std::fs::File>,
-        index: usize,
-        archive_label: &str,
-        child: &str,
-        layers: &[Layer],
-        depth: usize,
-        encryption: Encryption,
+        member: &ZipMember<'_>,
     ) -> Flow {
+        let ZipMember {
+            index,
+            archive_label,
+            child,
+            layers,
+            depth,
+            encryption,
+        } = *member;
         let Some(keyring) = self.keyring.take() else {
             self.skip_enc(child, SkipReason::EncryptedNoPassword, encryption);
             return Flow::Continue;

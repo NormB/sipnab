@@ -689,17 +689,22 @@ pub fn run_tui_mode(
     let processing_thread = std::thread::Builder::new()
         .name("tui-processor".to_string())
         .spawn(move || {
-            let mut processor = capture::PacketProcessor::with_max_sessions(reassembly_cap)
-                .with_reassembly(!cli_clone.capture_args.no_reassembly)
-                .with_parse_limit(cli_clone.capture_args.limitlen);
-            let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
-
             // Media keys, and `-O` (with the decrypted export when asked for).
-            let mut media = TuiMedia::from_cli(&cli_clone);
-            let mut output = TuiOutput::new(
-                &cli_clone,
-                (policy.split_bytes, policy.split_duration, policy.split_keep),
-            );
+            let mut thread = TuiPacketThread {
+                output: TuiOutput::new(
+                    &cli_clone,
+                    (policy.split_bytes, policy.split_duration, policy.split_keep),
+                ),
+                processor: capture::PacketProcessor::with_max_sessions(reassembly_cap)
+                    .with_reassembly(!cli_clone.capture_args.no_reassembly)
+                    .with_parse_limit(cli_clone.capture_args.limitlen),
+                rtp_heuristic: rtp::heuristic::RtpHeuristic::new(),
+                media: TuiMedia::from_cli(&cli_clone),
+                opts: pipeline_opts,
+                relay_orphans,
+                dialogs: Arc::clone(&ds),
+                streams: Arc::clone(&ss),
+            };
             // Wall time for a live device, the capture's own timeline for
             // `-I`: the TUI reads files too, and there the packet clock and
             // `Utc::now()` are unrelated. See `batch::SweepClock`.
@@ -714,7 +719,7 @@ pub fn run_tui_mode(
                 }
 
                 if let Some(now) = sweep_clock.take_due(sweep_interval) {
-                    processor.sweep();
+                    thread.processor.sweep();
                     // No orphan sweep: orphan status is derived from
                     // `associated_dialog` at every read, so there is no flag to
                     // set — see [`crate::rtp::stream::RtpStream::orphaned`].
@@ -748,23 +753,11 @@ pub fn run_tui_mode(
                 // Live security detection: see `LiveDetectors::observe`.
                 // Findings go into the shared engine the security-findings
                 // view reads; nothing a detection could do is acted on.
-                if let Err(e) = tui_process_packet(
-                    &packet,
-                    &mut output,
-                    &mut processor,
-                    &ds,
-                    &ss,
-                    &mut rtp_heuristic,
-                    &pipeline_opts,
-                    &mut media,
-                    relay_orphans.as_ref(),
-                    is_paused,
-                    |pp| {
-                        if let Some(engine) = &sec_engine_for_thread {
-                            live_detectors.observe(pp, &ds, engine);
-                        }
-                    },
-                ) {
+                if let Err(e) = thread.process(&packet, is_paused, |pp| {
+                    if let Some(engine) = &sec_engine_for_thread {
+                        live_detectors.observe(pp, &ds, engine);
+                    }
+                }) {
                     tracing::error!("{e}");
                     break;
                 }
@@ -782,7 +775,7 @@ pub fn run_tui_mode(
 
             // A stop (quitting the TUI, a signal) discards what the decrypted
             // export still holds; the end of an input writes it.
-            if let Some(line) = output.close(signals::shutdown_requested()) {
+            if let Some(line) = thread.output.close(signals::shutdown_requested()) {
                 tracing::info!("sipnab: {line}");
             }
         });
@@ -1078,12 +1071,14 @@ impl TuiOutput {
             match PcapWriter::with_provenance(
                 path,
                 packet.link_type,
-                self.split.0,
-                self.split.1,
-                self.pcapng,
-                self.mode,
-                self.capture_source.as_deref(),
-                section_note,
+                crate::capture::PcapWriterOptions {
+                    max_file_bytes: self.split.0,
+                    max_file_duration: self.split.1,
+                    pcapng: self.pcapng,
+                    export_mode: self.mode,
+                    interface: self.capture_source.as_deref(),
+                    provenance: section_note,
+                },
             )
             .map(|w| w.keep_last_splits(self.split.2))
             {
@@ -1230,63 +1225,90 @@ impl TuiMedia {
     }
 }
 
-/// One captured packet through the TUI's processing thread: into `-O` (held
-/// in decrypted mode), reassembled, and, unless `paused`, through the
-/// pipeline, with `observe` called for each parsed packet (the live
-/// detectors). Then the decrypted export writes what has waited long enough.
-///
-/// # Errors
-///
-/// The output could not be opened or written; the thread stops on it.
-#[allow(clippy::too_many_arguments)]
-pub fn tui_process_packet(
-    packet: &capture::Packet,
-    output: &mut TuiOutput,
-    processor: &mut capture::PacketProcessor,
-    ds: &Arc<RwLock<DialogStore>>,
-    ss: &Arc<RwLock<StreamStore>>,
-    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
-    opts: &crate::pipeline::PipelineOptions,
-    media: &mut TuiMedia,
-    relay_orphans: Option<&crate::relay::reconcile::OrphanSink>,
-    paused: bool,
-    mut observe: impl FnMut(&capture::ParsedPacket),
-) -> anyhow::Result<()> {
-    output.on_packet(packet)?;
-    let parsed_packets = processor.process(packet);
-    if !paused {
-        for pp in &parsed_packets {
-            // `--hep-parse`: the TUI reads a sniffed HEP copy as the headless
-            // run does, so the dialogs and the live detectors see the SIP
-            // inside rather than the UDP datagram that carried it.
-            let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
-                continue;
-            };
-            let pp: &capture::ParsedPacket = &pp;
-            #[cfg(feature = "tls")]
-            let mut media_decrypt = crate::pipeline::MediaDecrypt {
-                srtp: media.srtp.as_mut(),
-                dtls: media.dtls.as_mut(),
-                export: output.export.as_mut(),
-            };
-            #[cfg(not(feature = "tls"))]
-            let mut media_decrypt = {
-                let _ = &media;
-                crate::pipeline::MediaDecrypt::default()
-            };
-            crate::pipeline::process_packet(
-                pp,
-                ds,
-                ss,
-                rtp_heuristic,
-                opts,
-                &mut media_decrypt,
-                relay_orphans,
-            );
-            observe(pp);
+/// The TUI processing thread's state: everything one captured packet passes
+/// through, owned together so the thread hands over a packet rather than
+/// eleven values a call site could mismatch.
+pub struct TuiPacketThread {
+    /// `-O` output, held in decrypted mode.
+    pub output: TuiOutput,
+    /// Reassembly and decapsulation.
+    pub processor: capture::PacketProcessor,
+    /// RTP detection for streams no SDP named.
+    pub rtp_heuristic: rtp::heuristic::RtpHeuristic,
+    /// SRTP and DTLS key material.
+    pub media: TuiMedia,
+    /// How the pipeline classifies, from the command line and config.
+    pub opts: crate::pipeline::PipelineOptions,
+    /// Where orphaned streams go for the relay to explain, when one is asked.
+    pub relay_orphans: Option<crate::relay::reconcile::OrphanSink>,
+    /// The dialogs the TUI shows.
+    pub dialogs: Arc<RwLock<DialogStore>>,
+    /// The streams the TUI shows.
+    pub streams: Arc<RwLock<StreamStore>>,
+}
+
+impl TuiPacketThread {
+    /// One captured packet: into `-O` (held in decrypted mode), reassembled,
+    /// and, unless `paused`, through the pipeline, with `observe` called for
+    /// each parsed packet (the live detectors). Then the decrypted export
+    /// writes what has waited long enough.
+    ///
+    /// # Errors
+    ///
+    /// The output could not be opened or written; the thread stops on it.
+    pub fn process(
+        &mut self,
+        packet: &capture::Packet,
+        paused: bool,
+        mut observe: impl FnMut(&capture::ParsedPacket),
+    ) -> anyhow::Result<()> {
+        let Self {
+            output,
+            processor,
+            rtp_heuristic,
+            media,
+            opts,
+            relay_orphans,
+            dialogs: ds,
+            streams: ss,
+        } = self;
+        let relay_orphans = relay_orphans.as_ref();
+        output.on_packet(packet)?;
+        let parsed_packets = processor.process(packet);
+        if !paused {
+            for pp in &parsed_packets {
+                // `--hep-parse`: the TUI reads a sniffed HEP copy as the headless
+                // run does, so the dialogs and the live detectors see the SIP
+                // inside rather than the UDP datagram that carried it.
+                let Some(pp) = crate::pipeline::apply_hep_parse(pp, opts.hep_parse) else {
+                    continue;
+                };
+                let pp: &capture::ParsedPacket = &pp;
+                #[cfg(feature = "tls")]
+                let mut media_decrypt = crate::pipeline::MediaDecrypt {
+                    srtp: media.srtp.as_mut(),
+                    dtls: media.dtls.as_mut(),
+                    export: output.export.as_mut(),
+                };
+                #[cfg(not(feature = "tls"))]
+                let mut media_decrypt = {
+                    let _ = &media;
+                    crate::pipeline::MediaDecrypt::default()
+                };
+                crate::pipeline::process_packet(
+                    pp,
+                    ds,
+                    ss,
+                    rtp_heuristic,
+                    opts,
+                    &mut media_decrypt,
+                    relay_orphans,
+                );
+                observe(pp);
+            }
         }
+        output.drain()
     }
-    output.drain()
 }
 
 /// The pipeline options the TUI classifies with, from its command line and

@@ -151,6 +151,24 @@ impl RawPcapWriter {
     }
 }
 
+/// How a [`PcapWriter`] writes: when it rotates, in which format, and what
+/// it says about itself.
+#[derive(Debug, Clone)]
+pub struct PcapWriterOptions<'a> {
+    /// Rotate to a new file past this many bytes.
+    pub max_file_bytes: Option<u64>,
+    /// Rotate to a new file after this long.
+    pub max_file_duration: Option<std::time::Duration>,
+    /// pcapng rather than classic pcap.
+    pub pcapng: bool,
+    /// What goes into the file: decrypted, encrypted with keys, or raw.
+    pub export_mode: PcapExportMode,
+    /// The capture source, named in the pcapng Interface Description Block.
+    pub interface: Option<&'a str>,
+    /// A note for the pcapng section comment saying how the file was made.
+    pub provenance: Option<String>,
+}
+
 /// Pcap output writer with optional file rotation.
 ///
 /// Wraps the raw classic-pcap writer or a PCAP-NG writer and tracks state for rotation decisions.
@@ -312,12 +330,14 @@ impl PcapWriter {
         Self::with_provenance(
             path,
             link_type,
-            max_file_bytes,
-            max_file_duration,
-            pcapng,
-            export_mode,
-            interface,
-            None,
+            PcapWriterOptions {
+                max_file_bytes,
+                max_file_duration,
+                pcapng,
+                export_mode,
+                interface,
+                provenance: None,
+            },
         )
     }
 
@@ -343,17 +363,19 @@ impl PcapWriter {
     /// Classic pcap has nowhere to put this — the format has no comment field —
     /// so a note passed with `pcapng: false` is silently unrepresentable. Pass
     /// `pcapng: true` for anything that will travel.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_provenance(
         path: &Path,
         link_type: i32,
-        max_file_bytes: Option<u64>,
-        max_file_duration: Option<std::time::Duration>,
-        pcapng: bool,
-        export_mode: PcapExportMode,
-        interface: Option<&str>,
-        provenance: Option<String>,
+        options: PcapWriterOptions<'_>,
     ) -> Result<Self> {
+        let PcapWriterOptions {
+            max_file_bytes,
+            max_file_duration,
+            pcapng,
+            export_mode,
+            interface,
+            provenance,
+        } = options;
         // M5: Warn on path traversal components
         if path
             .components()

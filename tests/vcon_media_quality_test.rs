@@ -75,3 +75,58 @@ fn an_exported_vcon_carries_the_calls_mos() {
         assert_eq!(row["mos_grounded"], true, "G.711 is published: {row}");
     }
 }
+
+/// The end-of-run export states how many frames the run read: the count the
+/// run hands to the reports with its stores (`batch::CaptureRead`).
+/// `sip_call.pcap` holds 7 frames.
+#[test]
+fn an_exported_vcon_states_how_many_frames_the_run_read() {
+    const SIP_CALL: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
+    let dialogs = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--no-config",
+            "--json-dialogs",
+            "--no-cli-print",
+        ])
+        .env("SIPNAB_LOG", "off")
+        .output()
+        .expect("run sipnab");
+    let first: serde_json::Value = serde_json::from_str(
+        String::from_utf8_lossy(&dialogs.stdout)
+            .lines()
+            .next()
+            .expect("one dialog"),
+    )
+    .expect("dialog JSON");
+    let call_id = first["call_id"].as_str().expect("call_id").to_string();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("call.vcon.json");
+    let run = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-I",
+            SIP_CALL,
+            "--no-config",
+            "--export-vcon",
+            &call_id,
+            "--vcon-out",
+        ])
+        .arg(&out)
+        .env("SIPNAB_LOG", "off")
+        .output()
+        .expect("run sipnab");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let vcon: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).expect("container")).expect("JSON");
+    let body: serde_json::Value =
+        serde_json::from_str(vcon["analysis"][0]["body"].as_str().expect("body string"))
+            .expect("body JSON");
+    assert_eq!(body["capture_completeness"]["frames_read"], 7, "{body}");
+}

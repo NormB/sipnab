@@ -315,17 +315,19 @@ pub fn write_annotated_copy(
     let mut writer = crate::capture::PcapWriter::with_provenance(
         temp.path(),
         link_type,
-        None,
-        None,
-        true,
-        // Raw: an annotated copy is for sending, and never carries secrets.
-        crate::capture::PcapExportMode::Raw,
-        Some(input_label),
-        Some(provenance(
-            input_label,
-            notes.len(),
-            crate::capture::archive::is_decrypted_member(input),
-        )),
+        crate::capture::PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng: true,
+            // Raw: an annotated copy is for sending, and never carries secrets.
+            export_mode: crate::capture::PcapExportMode::Raw,
+            interface: Some(input_label),
+            provenance: Some(provenance(
+                input_label,
+                notes.len(),
+                crate::capture::archive::is_decrypted_member(input),
+            )),
+        },
     )
     .map_err(|e| CopyError::Write(format!("{e:#}")))?;
 

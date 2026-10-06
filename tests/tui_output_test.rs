@@ -6,7 +6,7 @@
 //! nothing could test what it wrote. Its per-packet work --- open `-O` on the
 //! first packet, hold or write the packet, reassemble, run the pipeline with
 //! the media keys and the decrypted export, write what has waited long enough
-//! --- is `tui_process_packet`, and its end of run is `TuiOutput::close`. The
+//! --- is `TuiPacketThread::process`, and its end of run is `TuiOutput::close`. The
 //! thread calls exactly these, so these tests reach the TUI's `-O` with real
 //! captures (PCAPX-DEC-TUI, backlog 2026-09-29). The TUI decrypts SRTP but not
 //! TLS, so in `--pcap-export-mode decrypted` its SRTP comes out as RTP and its
@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use parking_lot::RwLock;
-use sipnab::app::tui_mode::{TuiMedia, TuiOutput, tui_pipeline_options, tui_process_packet};
+use sipnab::app::tui_mode::{TuiMedia, TuiOutput, TuiPacketThread, tui_pipeline_options};
 use sipnab::capture::{Packet, PacketProcessor, ParsedPacket};
 use sipnab::cli::Cli;
 use sipnab::rtp::heuristic::RtpHeuristic;
@@ -103,34 +103,25 @@ fn run_spaced(
     stopped: bool,
     dir: tempfile::TempDir,
 ) -> Run {
-    let mut output = TuiOutput::new(cli, (None, None, None));
-    let mut media = TuiMedia::from_cli(cli);
-    let mut processor = PacketProcessor::new();
-    let ds = Arc::new(RwLock::new(DialogStore::new(64, false)));
-    let ss = Arc::new(RwLock::new(StreamStore::new(64)));
-    let mut heuristic = RtpHeuristic::new();
-    let opts = tui_pipeline_options(cli, &sipnab::config::Config::default(), false);
+    let mut thread = TuiPacketThread {
+        output: TuiOutput::new(cli, (None, None, None)),
+        processor: PacketProcessor::new(),
+        rtp_heuristic: RtpHeuristic::new(),
+        media: TuiMedia::from_cli(cli),
+        opts: tui_pipeline_options(cli, &sipnab::config::Config::default(), false),
+        relay_orphans: None,
+        dialogs: Arc::new(RwLock::new(DialogStore::new(64, false))),
+        streams: Arc::new(RwLock::new(StreamStore::new(64))),
+    };
     let mut observed = 0usize;
     let mut error = None;
     for p in packets_every(frames, every_ms) {
-        if let Err(e) = tui_process_packet(
-            &p,
-            &mut output,
-            &mut processor,
-            &ds,
-            &ss,
-            &mut heuristic,
-            &opts,
-            &mut media,
-            None,
-            paused,
-            |_: &ParsedPacket| observed += 1,
-        ) {
+        if let Err(e) = thread.process(&p, paused, |_: &ParsedPacket| observed += 1) {
             error = Some(e.to_string());
             break;
         }
     }
-    let summary = output.close(stopped);
+    let summary = thread.output.close(stopped);
     let (frames, section) = read_pcapng(out);
     Run {
         frames,

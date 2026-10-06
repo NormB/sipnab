@@ -683,19 +683,44 @@ fn hep_ng(call_id: &str, sec: u32, usec: u32, sport: u16, dport: u16, payload: &
     out
 }
 
-/// The stream record rtpengine's `delete` reply carries for one socket.
-#[allow(clippy::too_many_arguments)]
-fn delete_stream(
+/// One SSRC as rtpengine reports it against a socket.
+#[derive(Clone, Copy)]
+struct SsrcStats {
+    ssrc: i64,
+    bytes: i64,
+    packets: i64,
+    last_rtp_timestamp: i64,
+    last_rtp_seq: i64,
+}
+
+/// One socket's record in rtpengine's `delete` reply.
+struct DeleteStream {
     local_port: u16,
     endpoint_port: u16,
     rtcp: bool,
     last_packet: i64,
     last_kernel: i64,
     last_user: i64,
-    ingress: Option<(i64, i64, i64, i64, i64)>,
-    egress: Option<(i64, i64, i64, i64, i64)>,
-    stats: (i64, i64),
-) -> Ben {
+    ingress: Option<SsrcStats>,
+    egress: Option<SsrcStats>,
+    packets: i64,
+    bytes: i64,
+}
+
+/// The stream record rtpengine's `delete` reply carries for one socket.
+fn delete_stream(stream: &DeleteStream) -> Ben {
+    let DeleteStream {
+        local_port,
+        endpoint_port,
+        rtcp,
+        last_packet,
+        last_kernel,
+        last_user,
+        ingress,
+        egress,
+        packets,
+        bytes,
+    } = *stream;
     let endpoint = || {
         bd(vec![
             ("family", bs("IPv4")),
@@ -703,14 +728,14 @@ fn delete_stream(
             ("port", Ben::Int(i64::from(endpoint_port))),
         ])
     };
-    let ssrcs = |s: Option<(i64, i64, i64, i64, i64)>| match s {
+    let ssrcs = |s: Option<SsrcStats>| match s {
         None => Ben::List(vec![]),
-        Some((ssrc, bytes, packets, ts, seq)) => Ben::List(vec![bd(vec![
-            ("SSRC", Ben::Int(ssrc)),
-            ("bytes", Ben::Int(bytes)),
-            ("packets", Ben::Int(packets)),
-            ("last RTP timestamp", Ben::Int(ts)),
-            ("last RTP seq", Ben::Int(seq)),
+        Some(s) => Ben::List(vec![bd(vec![
+            ("SSRC", Ben::Int(s.ssrc)),
+            ("bytes", Ben::Int(s.bytes)),
+            ("packets", Ben::Int(s.packets)),
+            ("last RTP timestamp", Ben::Int(s.last_rtp_timestamp)),
+            ("last RTP seq", Ben::Int(s.last_rtp_seq)),
         ])]),
     };
     let flags = if rtcp {
@@ -720,8 +745,8 @@ fn delete_stream(
     };
     let counters = || {
         bd(vec![
-            ("packets", Ben::Int(stats.0)),
-            ("bytes", Ben::Int(stats.1)),
+            ("packets", Ben::Int(packets)),
+            ("bytes", Ben::Int(bytes)),
             ("errors", Ben::Int(0)),
         ])
     };
@@ -777,28 +802,42 @@ fn delete_reply_body(created: i64) -> Ben {
                     (
                         "streams",
                         Ben::List(vec![
-                            delete_stream(
-                                rtp,
-                                party,
-                                false,
-                                last,
-                                last,
-                                created + 11,
-                                Some((ingress, 516, 3, 320, 149)),
-                                Some((egress, 24036, 150, 23840, 149)),
-                                (150, 25800),
-                            ),
-                            delete_stream(
-                                rtp + 1,
-                                party + 1,
-                                true,
-                                created,
-                                0,
-                                created,
-                                None,
-                                None,
-                                (0, 0),
-                            ),
+                            delete_stream(&DeleteStream {
+                                local_port: rtp,
+                                endpoint_port: party,
+                                rtcp: false,
+                                last_packet: last,
+                                last_kernel: last,
+                                last_user: created + 11,
+                                ingress: Some(SsrcStats {
+                                    ssrc: ingress,
+                                    bytes: 516,
+                                    packets: 3,
+                                    last_rtp_timestamp: 320,
+                                    last_rtp_seq: 149,
+                                }),
+                                egress: Some(SsrcStats {
+                                    ssrc: egress,
+                                    bytes: 24036,
+                                    packets: 150,
+                                    last_rtp_timestamp: 23840,
+                                    last_rtp_seq: 149,
+                                }),
+                                packets: 150,
+                                bytes: 25800,
+                            }),
+                            delete_stream(&DeleteStream {
+                                local_port: rtp + 1,
+                                endpoint_port: party + 1,
+                                rtcp: true,
+                                last_packet: created,
+                                last_kernel: 0,
+                                last_user: created,
+                                ingress: None,
+                                egress: None,
+                                packets: 0,
+                                bytes: 0,
+                            }),
                         ]),
                     ),
                 ])]),
@@ -1839,19 +1878,25 @@ fn error_code(code: u16) -> Vec<u8> {
     vec![0, 0, (code / 100) as u8, (code % 100) as u8]
 }
 
+/// One end of a UDP flow: an IPv4 address and a port.
+#[derive(Clone, Copy)]
+struct UdpEnd {
+    addr: [u8; 4],
+    port: u16,
+}
+
 /// A UDP frame the way every STUN fixture builds one: IP checksum filled in,
 /// UDP checksum left zero.
-#[allow(clippy::too_many_arguments)]
 fn stun_frame(
     macs: ([u8; 6], [u8; 6]),
-    src: [u8; 4],
-    sport: u16,
-    dst: [u8; 4],
-    dport: u16,
+    from: UdpEnd,
+    to: UdpEnd,
     tos: u8,
     ident: u16,
     payload: &[u8],
 ) -> Vec<u8> {
+    let (src, sport) = (from.addr, from.port);
+    let (dst, dport) = (to.addr, to.port);
     let ip = Ip {
         src,
         dst,
@@ -1891,7 +1936,20 @@ pub fn ice_checks() -> Vec<u8> {
     let d_to_c = (doc_mac(0x03), doc_mac(0x04));
     let tie = || CONTROLLING_TIEBREAKER.to_vec();
     let frame = |macs, src, sport, dst, dport, msg: Vec<u8>| {
-        stun_frame(macs, src, sport, dst, dport, 0, 0, &msg)
+        stun_frame(
+            macs,
+            UdpEnd {
+                addr: src,
+                port: sport,
+            },
+            UdpEnd {
+                addr: dst,
+                port: dport,
+            },
+            0,
+            0,
+            &msg,
+        )
     };
     let records = vec![
         at_ms(
@@ -2096,10 +2154,14 @@ pub fn turn_relay() -> Vec<u8> {
         };
         let frame = stun_frame(
             (doc_mac(0x02), doc_mac(0x01)),
-            src,
-            sport,
-            dst,
-            dport,
+            UdpEnd {
+                addr: src,
+                port: sport,
+            },
+            UdpEnd {
+                addr: dst,
+                port: dport,
+            },
             0,
             ident,
             &payload,
@@ -2271,7 +2333,20 @@ const STUN_SERVER: [u8; 4] = [198, 51, 100, 20];
 pub fn stun_nat_probe() -> Vec<u8> {
     const EPOCH: u32 = 1000;
     let frame = |src, sport, dst, dport, payload: &[u8]| {
-        stun_frame(NAT_MACS, src, sport, dst, dport, NAT_TOS, 0x1234, payload)
+        stun_frame(
+            NAT_MACS,
+            UdpEnd {
+                addr: src,
+                port: sport,
+            },
+            UdpEnd {
+                addr: dst,
+                port: dport,
+            },
+            NAT_TOS,
+            0x1234,
+            payload,
+        )
     };
     let first = nat_probe_request(0xaa);
     let second = nat_probe_request(0xbb);
@@ -2329,7 +2404,20 @@ pub fn stun_sdp_mismatch() -> Vec<u8> {
         records.push(at_ms(
             LEGACY_EPOCH,
             ms,
-            stun_frame(NAT_MACS, src, sport, dst, dport, NAT_TOS, ident, payload),
+            stun_frame(
+                NAT_MACS,
+                UdpEnd {
+                    addr: src,
+                    port: sport,
+                },
+                UdpEnd {
+                    addr: dst,
+                    port: dport,
+                },
+                NAT_TOS,
+                ident,
+                payload,
+            ),
         ));
     };
     let probe = nat_probe_request(0xaa);
@@ -2433,10 +2521,14 @@ const OPERATOR_MACS: ([u8; 6], [u8; 6]) = (doc_mac(0x12), doc_mac(0x11));
 fn sip_frame(ident: u16, src: [u8; 4], dst: [u8; 4], text: &str) -> Vec<u8> {
     stun_frame(
         OPERATOR_MACS,
-        src,
-        5060,
-        dst,
-        5060,
+        UdpEnd {
+            addr: src,
+            port: 5060,
+        },
+        UdpEnd {
+            addr: dst,
+            port: 5060,
+        },
         0,
         ident,
         text.as_bytes(),
