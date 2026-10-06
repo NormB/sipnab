@@ -30,3 +30,17 @@ attacker supplies is decrypted on demand, so the attack does not apply. No \
 fixed rsa release exists as of 0.9.x -- this is not waiting out a pending \
 upgrade. Re-evaluate if sipnab ever grows an online decryption path.\
 """
+
+[[IgnoredVulns]]
+id = "GHSA-hp3w-g68c-fv3c"
+# Also filed as CVE-2026-97058.
+reason = """
+sprintf-js denial of service through unbounded precision specifiers in a \
+FORMAT STRING. Reached only from e2e/package-lock.json, the dev tooling for \
+the site's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> \
+argparse 1 -> sprintf-js 1.0.3). argparse formats its own help templates \
+with it; no attacker-supplied text becomes a format string, and nothing in \
+e2e/ ships with sipnab or runs outside CI. osv.dev lists no fixed release: \
+every version through 1.1.3, the latest, is affected, so there is no upgrade \
+to take. Re-evaluate when sprintf-js publishes a fix or @lhci drops js-yaml 3.\
+"""
