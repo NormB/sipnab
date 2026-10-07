@@ -403,6 +403,9 @@ const CODES: &[(&str, &str)] = &[
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn digits(s: &str) -> InternationalDigits {
         InternationalDigits(s.to_string())
     }
@@ -492,15 +495,16 @@ mod tests {
     // ── country ──────────────────────────────────────────────────────────────
 
     #[test]
-    fn the_nanp_split_resolves_by_longest_code_not_by_country_code_one() {
+    fn the_nanp_split_resolves_by_longest_code_not_by_country_code_one() -> Result<(), TestError> {
         assert_eq!(resolve(&digits("18095550100")).map(|c| c.iso), Some("DO"));
         assert_eq!(resolve(&digits("12845550100")).map(|c| c.iso), Some("VG"));
         assert_eq!(resolve(&digits("12465550100")).map(|c| c.iso), Some("BB"));
-        let us = resolve(&digits("12125550100")).expect("+1 212 resolves");
+        let us = resolve(&digits("12125550100")).ok_or("+1 212 resolves")?;
         assert_eq!(
             us.calling_code, "1",
             "a plain NANP number matches the bare code"
         );
+        Ok(())
     }
 
     #[test]
@@ -515,11 +519,12 @@ mod tests {
     }
 
     #[test]
-    fn satellite_ranges_are_non_geographic_and_countries_are_not() {
-        let sat = resolve(&digits("8816000000")).expect("881 is in the table");
+    fn satellite_ranges_are_non_geographic_and_countries_are_not() -> Result<(), TestError> {
+        let sat = resolve(&digits("8816000000")).ok_or("881 is in the table")?;
         assert!(is_non_geographic(&sat), "{}", sat.iso);
-        let gb = resolve(&digits("442079460000")).expect("GB");
+        let gb = resolve(&digits("442079460000")).ok_or("GB")?;
         assert!(!is_non_geographic(&gb));
+        Ok(())
     }
 
     // ── end to end ───────────────────────────────────────────────────────────

@@ -451,16 +451,19 @@ mod txn_tests {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Parse a minimal SIP message from `start_line` and `cseq` (loopback
     /// addresses, fixed Call-ID) for transaction-grouping tests.
-    fn msg(start_line: &str, cseq: &str) -> SipMessage {
+    fn msg(start_line: &str, cseq: &str) -> Result<SipMessage, TestError> {
         let raw = format!(
             "{start_line}\r\nVia: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKx\r\n\
              From: <sip:a@x>;tag=1\r\nTo: <sip:b@x>\r\nCall-ID: c@x\r\n\
              CSeq: {cseq}\r\nContent-Length: 0\r\n\r\n"
         );
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             raw.as_bytes(),
             Utc::now(),
             ip,
@@ -469,58 +472,62 @@ mod txn_tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse")
+        .map_err(|e| format!("parse: {e:?}"))?)
     }
 
     /// A 6-message INVITE dialog: INVITE/180/200/ACK (transaction 1) then
     /// BYE/200 (transaction 2).
-    fn sample_dialog() -> Vec<SipMessage> {
-        vec![
-            msg("INVITE sip:b@x SIP/2.0", "1 INVITE"), // 0
-            msg("SIP/2.0 180 Ringing", "1 INVITE"),    // 1
-            msg("SIP/2.0 200 OK", "1 INVITE"),         // 2
-            msg("ACK sip:b@x SIP/2.0", "1 ACK"),       // 3
-            msg("BYE sip:b@x SIP/2.0", "2 BYE"),       // 4
-            msg("SIP/2.0 200 OK", "2 BYE"),            // 5
-        ]
+    fn sample_dialog() -> Result<Vec<SipMessage>, TestError> {
+        Ok(vec![
+            msg("INVITE sip:b@x SIP/2.0", "1 INVITE")?, // 0
+            msg("SIP/2.0 180 Ringing", "1 INVITE")?,    // 1
+            msg("SIP/2.0 200 OK", "1 INVITE")?,         // 2
+            msg("ACK sip:b@x SIP/2.0", "1 ACK")?,       // 3
+            msg("BYE sip:b@x SIP/2.0", "2 BYE")?,       // 4
+            msg("SIP/2.0 200 OK", "2 BYE")?,            // 5
+        ])
     }
 
     /// Selecting any message of the INVITE transaction yields all of
     /// INVITE/1xx/2xx/ACK.
     #[test]
-    fn ack_and_responses_group_with_invite() {
-        let d = sample_dialog();
+    fn ack_and_responses_group_with_invite() -> Result<(), TestError> {
+        let d = sample_dialog()?;
         // Selecting any message of the INVITE transaction yields INVITE+1xx+2xx+ACK.
         for sel in [0usize, 1, 2, 3] {
             assert_eq!(transaction_indices(&d, sel), vec![0, 1, 2, 3], "sel={sel}");
         }
+        Ok(())
     }
 
     /// The BYE and its 200 form their own transaction, distinct from INVITE.
     #[test]
-    fn bye_transaction_is_separate() {
-        let d = sample_dialog();
+    fn bye_transaction_is_separate() -> Result<(), TestError> {
+        let d = sample_dialog()?;
         assert_eq!(transaction_indices(&d, 4), vec![4, 5]);
         assert_eq!(transaction_indices(&d, 5), vec![4, 5]);
+        Ok(())
     }
 
     /// `transaction_key` maps ACK to its INVITE's key while BYE keeps its own.
     #[test]
-    fn key_folds_ack_into_invite_but_keeps_bye_distinct() {
-        let d = sample_dialog();
+    fn key_folds_ack_into_invite_but_keeps_bye_distinct() -> Result<(), TestError> {
+        let d = sample_dialog()?;
         assert_eq!(transaction_key(&d[0]), Some((1, "INVITE".to_string())));
         assert_eq!(transaction_key(&d[3]), Some((1, "INVITE".to_string()))); // ACK → INVITE
         assert_eq!(transaction_key(&d[4]), Some((2, "BYE".to_string())));
+        Ok(())
     }
 
     /// A selection with no usable CSeq (or out of range) falls back to all
     /// indices rather than an empty set.
     #[test]
-    fn missing_cseq_falls_back_to_all() {
+    fn missing_cseq_falls_back_to_all() -> Result<(), TestError> {
         // A selected message with no CSeq must not yield an empty set.
-        let d = vec![msg("INVITE sip:b@x SIP/2.0", "7 INVITE")];
+        let d = vec![msg("INVITE sip:b@x SIP/2.0", "7 INVITE")?];
         assert_eq!(transaction_indices(&d, 0), vec![0]);
         // Out-of-range selection also falls back to all.
         assert_eq!(transaction_indices(&d, 99), vec![0]);
+        Ok(())
     }
 }

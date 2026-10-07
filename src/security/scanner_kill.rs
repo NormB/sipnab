@@ -250,6 +250,9 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The source IP used to simulate a scanner.
     fn scanner_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99))
@@ -297,8 +300,12 @@ mod tests {
     }
 
     /// A fixed capture timestamp for the parsed messages.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("the timestamp is a single valid UTC instant")?,
+        )
     }
 
     use crate::test_utils::build_sip_message;
@@ -309,7 +316,7 @@ mod tests {
     }
 
     /// Build an INVITE request with a single Via and no To-tag.
-    fn make_invite() -> SipMessage {
+    fn make_invite() -> Result<SipMessage, TestError> {
         let raw = build_sip_bytes(
             "INVITE sip:target@example.com SIP/2.0",
             &[
@@ -322,20 +329,20 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             scanner_ip(),
             local_ip(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parse")
+        .map_err(|e| format!("parse: {e:?}"))?)
     }
 
     /// Build an OPTIONS request with two Via headers and an existing To-tag.
-    fn make_options() -> SipMessage {
+    fn make_options() -> Result<SipMessage, TestError> {
         let raw = build_sip_bytes(
             "OPTIONS sip:target@example.com SIP/2.0",
             &[
@@ -348,25 +355,25 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             scanner_ip(),
             local_ip(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parse")
+        .map_err(|e| format!("parse: {e:?}"))?)
     }
 
     /// A 200 OK response copies the request's Via/From/Call-ID/CSeq and adds a
     /// To-tag.
     #[test]
-    fn build_200_ok_for_invite() {
-        let msg = make_invite();
-        let resp = build_scanner_response(&msg, 200).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn build_200_ok_for_invite() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let resp = build_scanner_response(&msg, 200).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.starts_with("SIP/2.0 200 OK\r\n"));
         assert!(text.contains("Via: SIP/2.0/UDP 10.0.0.99:5060;branch=z9hG4bK-test\r\n"));
@@ -377,64 +384,70 @@ mod tests {
         // To should have a tag added
         assert!(text.contains("To: <sip:target@example.com>;tag=sn-"));
         assert!(text.ends_with("\r\n\r\n"));
+        Ok(())
     }
 
     /// A 404 response uses the "Not Found" reason phrase.
     #[test]
-    fn build_404_response() {
-        let msg = make_invite();
-        let resp = build_scanner_response(&msg, 404).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn build_404_response() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let resp = build_scanner_response(&msg, 404).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.starts_with("SIP/2.0 404 Not Found\r\n"));
+        Ok(())
     }
 
     /// A 403 response uses the "Forbidden" reason phrase.
     #[test]
-    fn build_403_response() {
-        let msg = make_invite();
-        let resp = build_scanner_response(&msg, 403).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn build_403_response() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let resp = build_scanner_response(&msg, 403).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.starts_with("SIP/2.0 403 Forbidden\r\n"));
+        Ok(())
     }
 
     /// An existing To-tag is preserved and no synthetic tag is added.
     #[test]
-    fn preserves_existing_to_tag() {
-        let msg = make_options();
-        let resp = build_scanner_response(&msg, 200).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn preserves_existing_to_tag() -> Result<(), TestError> {
+        let msg = make_options()?;
+        let resp = build_scanner_response(&msg, 200).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         // Existing tag should be preserved, not doubled
         assert!(text.contains("To: <sip:target@example.com>;tag=existing\r\n"));
         assert!(!text.contains("tag=sn-"));
+        Ok(())
     }
 
     /// All Via headers from the request are copied in order.
     #[test]
-    fn preserves_multiple_via_headers() {
-        let msg = make_options();
-        let resp = build_scanner_response(&msg, 200).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn preserves_multiple_via_headers() -> Result<(), TestError> {
+        let msg = make_options()?;
+        let resp = build_scanner_response(&msg, 200).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.contains("Via: SIP/2.0/UDP 10.0.0.99:5060;branch=z9hG4bK-opt1\r\n"));
         assert!(text.contains("Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-proxy\r\n"));
+        Ok(())
     }
 
     /// The response echoes the request's CSeq verbatim.
     #[test]
-    fn response_contains_correct_cseq() {
-        let msg = make_options();
-        let resp = build_scanner_response(&msg, 200).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn response_contains_correct_cseq() -> Result<(), TestError> {
+        let msg = make_options()?;
+        let resp = build_scanner_response(&msg, 200).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.contains("CSeq: 42 OPTIONS\r\n"));
+        Ok(())
     }
 
     /// Building a response for a SIP response message returns `None`.
     #[test]
-    fn returns_none_for_response_message() {
+    fn returns_none_for_response_message() -> Result<(), TestError> {
         let raw = build_sip_bytes(
             "SIP/2.0 200 OK",
             &[
@@ -448,25 +461,27 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             scanner_ip(),
             local_ip(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
+        .map_err(|e| format!("parse: {e:?}"))?;
         assert!(build_scanner_response(&msg, 200).is_none());
+        Ok(())
     }
 
     /// An unrecognized response code uses the "Unknown" reason phrase.
     #[test]
-    fn unknown_response_code_uses_unknown_reason() {
-        let msg = make_invite();
-        let resp = build_scanner_response(&msg, 699).expect("should build response");
-        let text = String::from_utf8(resp).expect("valid utf8");
+    fn unknown_response_code_uses_unknown_reason() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let resp = build_scanner_response(&msg, 699).ok_or("should build response")?;
+        let text = String::from_utf8(resp).map_err(|e| format!("valid utf8: {e:?}"))?;
 
         assert!(text.starts_with("SIP/2.0 699 Unknown\r\n"));
+        Ok(())
     }
 
     // ── KillTarget (targeted kill) ───────────────────────────────────
@@ -478,46 +493,51 @@ mod tests {
 
     /// A bare IPv4 target matches that address on any source port.
     #[test]
-    fn parse_bare_ipv4_matches_any_port() {
-        let t = KillTarget::parse("10.0.0.1").expect("valid");
+    fn parse_bare_ipv4_matches_any_port() -> Result<(), TestError> {
+        let t = KillTarget::parse("10.0.0.1").map_err(|e| format!("valid: {e:?}"))?;
         assert!(t.matches(ip4(10, 0, 0, 1), 5060));
         assert!(t.matches(ip4(10, 0, 0, 1), 1));
         assert!(t.matches(ip4(10, 0, 0, 1), 65535));
         assert!(!t.matches(ip4(10, 0, 0, 2), 5060));
+        Ok(())
     }
 
     /// An `ADDR:PORT` target matches only that single source port.
     #[test]
-    fn parse_ipv4_single_port() {
-        let t = KillTarget::parse("10.0.0.1:5060").expect("valid");
+    fn parse_ipv4_single_port() -> Result<(), TestError> {
+        let t = KillTarget::parse("10.0.0.1:5060").map_err(|e| format!("valid: {e:?}"))?;
         assert!(t.matches(ip4(10, 0, 0, 1), 5060));
         assert!(!t.matches(ip4(10, 0, 0, 1), 5061));
+        Ok(())
     }
 
     /// An `ADDR:LO-HI` target matches ports inclusive of both boundaries.
     #[test]
-    fn parse_ipv4_port_range_inclusive() {
-        let t = KillTarget::parse("10.0.0.1:5060-5090").expect("valid");
+    fn parse_ipv4_port_range_inclusive() -> Result<(), TestError> {
+        let t = KillTarget::parse("10.0.0.1:5060-5090").map_err(|e| format!("valid: {e:?}"))?;
         assert!(t.matches(ip4(10, 0, 0, 1), 5060)); // lo boundary
         assert!(t.matches(ip4(10, 0, 0, 1), 5075));
         assert!(t.matches(ip4(10, 0, 0, 1), 5090)); // hi boundary
         assert!(!t.matches(ip4(10, 0, 0, 1), 5059));
         assert!(!t.matches(ip4(10, 0, 0, 1), 5091));
-        assert!(!t.matches(ip4(10, 0, 0, 2), 5075)); // wrong ip
+        assert!(!t.matches(ip4(10, 0, 0, 2), 5075)); // wrong ip;
+        Ok(())
     }
 
     /// A bare IPv6 target matches any port; a bracketed IPv6 range honors its
     /// bounds.
     #[test]
-    fn parse_bare_ipv6_and_bracketed_with_port() {
-        let bare = KillTarget::parse("::1").expect("valid bare v6");
+    fn parse_bare_ipv6_and_bracketed_with_port() -> Result<(), TestError> {
+        let bare = KillTarget::parse("::1").map_err(|e| format!("valid bare v6: {e:?}"))?;
         let v6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
         assert!(bare.matches(v6, 12345));
 
-        let bracketed = KillTarget::parse("[::1]:5060-5061").expect("valid bracketed v6");
+        let bracketed = KillTarget::parse("[::1]:5060-5061")
+            .map_err(|e| format!("valid bracketed v6: {e:?}"))?;
         assert!(bracketed.matches(v6, 5060));
         assert!(bracketed.matches(v6, 5061));
         assert!(!bracketed.matches(v6, 5062));
+        Ok(())
     }
 
     /// Malformed kill-target specs are hard parse errors, not permissive

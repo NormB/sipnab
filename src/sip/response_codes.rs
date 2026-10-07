@@ -425,6 +425,9 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
 mod rfc_8224_naming_tests {
     use super::explain_response_code;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// 437's reason phrase is `Unsupported Credential`.
     ///
     /// [RFC 8224 section 6.2.2](https://www.rfc-editor.org/rfc/rfc8224#section-6.2.2) renamed it: *"The 437 'Unsupported Credential' response
@@ -437,8 +440,8 @@ mod rfc_8224_naming_tests {
     /// CREDENTIAL the verification service holds and cannot use, not about a
     /// certificate that failed to validate, which is 438's neighborhood.
     #[test]
-    fn four_thirty_seven_uses_the_current_rfc_8224_name() {
-        let text = explain_response_code(437).expect("437 is explained");
+    fn four_thirty_seven_uses_the_current_rfc_8224_name() -> Result<(), TestError> {
+        let text = explain_response_code(437).ok_or("437 is explained")?;
         assert!(
             text.starts_with("437 Unsupported Credential"),
             "RFC 8224 6.2.2 renamed 437; got: {text}"
@@ -447,6 +450,7 @@ mod rfc_8224_naming_tests {
             !text.contains("Unsupported Certificate"),
             "the superseded name must not survive anywhere in the text: {text}"
         );
+        Ok(())
     }
 }
 
@@ -454,70 +458,121 @@ mod rfc_8224_naming_tests {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Spot-check common success/error codes have meaningful text.
     #[test]
-    fn known_codes_have_explanations() {
-        assert!(explain_response_code(200).unwrap().contains("OK"));
-        assert!(explain_response_code(404).unwrap().contains("Not Found"));
+    fn known_codes_have_explanations() -> Result<(), TestError> {
+        assert!(
+            explain_response_code(200)
+                .ok_or("explain_response_code returned None")?
+                .contains("OK")
+        );
+        assert!(
+            explain_response_code(404)
+                .ok_or("explain_response_code returned None")?
+                .contains("Not Found")
+        );
         assert!(
             explain_response_code(488)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Codec negotiation")
         );
         assert!(
             explain_response_code(503)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Service Unavailable")
         );
+        Ok(())
     }
 
     /// 1xx provisional codes carry their standard names.
     #[test]
-    fn provisional_codes() {
-        assert!(explain_response_code(100).unwrap().contains("Trying"));
-        assert!(explain_response_code(180).unwrap().contains("Ringing"));
+    fn provisional_codes() -> Result<(), TestError> {
+        assert!(
+            explain_response_code(100)
+                .ok_or("explain_response_code returned None")?
+                .contains("Trying")
+        );
+        assert!(
+            explain_response_code(180)
+                .ok_or("explain_response_code returned None")?
+                .contains("Ringing")
+        );
         assert!(
             explain_response_code(183)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Session Progress")
         );
+        Ok(())
     }
 
     /// Frequently seen 4xx codes carry their standard names.
     #[test]
-    fn common_error_codes() {
-        assert!(explain_response_code(401).unwrap().contains("Unauthorized"));
-        assert!(explain_response_code(403).unwrap().contains("Forbidden"));
-        assert!(explain_response_code(407).unwrap().contains("Proxy"));
+    fn common_error_codes() -> Result<(), TestError> {
+        assert!(
+            explain_response_code(401)
+                .ok_or("explain_response_code returned None")?
+                .contains("Unauthorized")
+        );
+        assert!(
+            explain_response_code(403)
+                .ok_or("explain_response_code returned None")?
+                .contains("Forbidden")
+        );
+        assert!(
+            explain_response_code(407)
+                .ok_or("explain_response_code returned None")?
+                .contains("Proxy")
+        );
         assert!(
             explain_response_code(480)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Temporarily Unavailable")
         );
-        assert!(explain_response_code(486).unwrap().contains("Busy"));
-        assert!(explain_response_code(487).unwrap().contains("Terminated"));
-        assert!(explain_response_code(491).unwrap().contains("Pending"));
+        assert!(
+            explain_response_code(486)
+                .ok_or("explain_response_code returned None")?
+                .contains("Busy")
+        );
+        assert!(
+            explain_response_code(487)
+                .ok_or("explain_response_code returned None")?
+                .contains("Terminated")
+        );
+        assert!(
+            explain_response_code(491)
+                .ok_or("explain_response_code returned None")?
+                .contains("Pending")
+        );
+        Ok(())
     }
 
     /// 6xx global-failure codes carry their standard names.
     #[test]
-    fn global_failure_codes() {
+    fn global_failure_codes() -> Result<(), TestError> {
         assert!(
             explain_response_code(600)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Busy Everywhere")
         );
-        assert!(explain_response_code(603).unwrap().contains("Decline"));
+        assert!(
+            explain_response_code(603)
+                .ok_or("explain_response_code returned None")?
+                .contains("Decline")
+        );
         assert!(
             explain_response_code(604)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Does Not Exist")
         );
         assert!(
             explain_response_code(606)
-                .unwrap()
+                .ok_or("explain_response_code returned None")?
                 .contains("Not Acceptable")
         );
+        Ok(())
     }
 
     /// Unrecognized codes return `None`.
@@ -551,10 +606,10 @@ mod tests {
     /// Every implemented explanation starts with its code and contains the
     /// em-dash separator.
     #[test]
-    fn every_implemented_code_starts_with_its_number_and_is_nonempty() {
+    fn every_implemented_code_starts_with_its_number_and_is_nonempty() -> Result<(), TestError> {
         for &code in IMPLEMENTED_CODES {
             let text = explain_response_code(code)
-                .unwrap_or_else(|| panic!("code {code} should have an explanation"));
+                .ok_or_else(|| format!("code {code} should have an explanation"))?;
             // Each explanation opens with the numeric code, e.g. "404 Not Found …".
             assert!(
                 text.starts_with(&code.to_string()),
@@ -567,6 +622,7 @@ mod tests {
                 "explanation for {code} missing em-dash separator: {text:?}"
             );
         }
+        Ok(())
     }
 
     /// Sweeping 0..=1000, a code returns Some iff it is in IMPLEMENTED_CODES.

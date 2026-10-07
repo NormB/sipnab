@@ -377,14 +377,17 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
     }
 
-    fn only(sel: &ToolSelection) -> Vec<String> {
+    fn only(sel: &ToolSelection) -> Result<Vec<String>, TestError> {
         match sel {
-            ToolSelection::Full => panic!("expected a subset, got full"),
-            ToolSelection::Only { tools, .. } => tools.iter().cloned().collect(),
+            ToolSelection::Full => Err("expected a subset, got full".into()),
+            ToolSelection::Only { tools, .. } => Ok(tools.iter().cloned().collect()),
         }
     }
 
@@ -405,18 +408,20 @@ mod tests {
     }
 
     #[test]
-    fn core_selects_exactly_the_core_set() {
-        let sel = resolve(&names(&["core"]), &no_custom()).expect("core");
+    fn core_selects_exactly_the_core_set() -> Result<(), TestError> {
+        let sel = resolve(&names(&["core"]), &no_custom()).map_err(|e| format!("core: {e:?}"))?;
         let mut want = names(CORE_TOOLS);
         want.sort();
-        assert_eq!(only(&sel), want);
+        assert_eq!(only(&sel)?, want);
+        Ok(())
     }
 
     #[test]
-    fn bundles_and_tool_names_combine() {
-        let sel = resolve(&names(&["relay", "get_sdp_timeline"]), &no_custom()).expect("ok");
+    fn bundles_and_tool_names_combine() -> Result<(), TestError> {
+        let sel = resolve(&names(&["relay", "get_sdp_timeline"]), &no_custom())
+            .map_err(|e| format!("ok: {e:?}"))?;
         assert_eq!(
-            only(&sel),
+            only(&sel)?,
             names(&[
                 "decode_ng",
                 "get_sdp_timeline",
@@ -426,25 +431,30 @@ mod tests {
             ])
         );
         assert_eq!(sel.asked(), names(&["relay", "get_sdp_timeline"]));
+        Ok(())
     }
 
     #[test]
-    fn names_are_trimmed_and_repeats_are_harmless() {
+    fn names_are_trimmed_and_repeats_are_harmless() -> Result<(), TestError> {
         let sel = resolve(
             &names(&[" tls ", "tls", "list_tls_libraries"]),
             &no_custom(),
         )
-        .expect("ok");
-        assert_eq!(only(&sel).len(), 3);
+        .map_err(|e| format!("ok: {e:?}"))?;
+        assert_eq!(only(&sel)?.len(), 3);
+        Ok(())
     }
 
     #[test]
-    fn an_unknown_name_is_refused_with_the_valid_bundles() {
-        let e = resolve(&names(&["core", "minimal"]), &no_custom()).expect_err("refused");
+    fn an_unknown_name_is_refused_with_the_valid_bundles() -> Result<(), TestError> {
+        let e = resolve(&names(&["core", "minimal"]), &no_custom())
+            .err()
+            .ok_or("refused")?;
         assert!(e.contains("'minimal'"), "{e}");
         for (bundle, _) in BUNDLES {
             assert!(e.contains(bundle), "{bundle} missing from: {e}");
         }
+        Ok(())
     }
 
     #[test]
@@ -453,19 +463,22 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_list_or_an_empty_name_is_refused() {
+    fn an_empty_list_or_an_empty_name_is_refused() -> Result<(), TestError> {
         assert!(resolve(&[], &no_custom()).is_err());
-        let e = resolve(&names(&["core", ""]), &no_custom()).expect_err("empty");
+        let e = resolve(&names(&["core", ""]), &no_custom())
+            .err()
+            .ok_or("empty")?;
         assert!(e.contains("empty"), "{e}");
+        Ok(())
     }
 
     #[test]
-    fn a_custom_bundle_holds_tools_and_built_in_bundles() {
+    fn a_custom_bundle_holds_tools_and_built_in_bundles() -> Result<(), TestError> {
         let mut custom = no_custom();
         custom.insert("triage".into(), names(&["tls", "get_sdp_timeline"]));
-        let sel = resolve(&names(&["triage"]), &custom).expect("ok");
+        let sel = resolve(&names(&["triage"]), &custom).map_err(|e| format!("ok: {e:?}"))?;
         assert_eq!(
-            only(&sel),
+            only(&sel)?,
             names(&[
                 "get_sdp_timeline",
                 "list_tls_libraries",
@@ -473,36 +486,42 @@ mod tests {
                 "stop_tls_capture"
             ])
         );
+        Ok(())
     }
 
     #[test]
-    fn a_custom_bundle_defined_but_not_asked_for_selects_nothing() {
+    fn a_custom_bundle_defined_but_not_asked_for_selects_nothing() -> Result<(), TestError> {
         let mut custom = no_custom();
         custom.insert("triage".into(), names(&["tls"]));
-        let sel = resolve(&names(&["relay"]), &custom).expect("ok");
+        let sel = resolve(&names(&["relay"]), &custom).map_err(|e| format!("ok: {e:?}"))?;
         assert!(!sel.keeps("start_tls_capture"));
+        Ok(())
     }
 
     #[test]
-    fn a_custom_bundle_may_not_reuse_a_built_in_or_tool_name() {
+    fn a_custom_bundle_may_not_reuse_a_built_in_or_tool_name() -> Result<(), TestError> {
         for clash in ["core", "full", "get_dialog"] {
             let mut custom = no_custom();
             custom.insert(clash.into(), names(&["get_dialog"]));
-            let e = resolve(&names(&["core"]), &custom).expect_err(clash);
+            let e = resolve(&names(&["core"]), &custom).err().ok_or(clash)?;
             assert!(e.contains(clash) && e.contains("[mcp.bundles]"), "{e}");
         }
+        Ok(())
     }
 
     #[test]
-    fn a_custom_bundle_that_is_empty_or_names_the_unknown_is_refused() {
+    fn a_custom_bundle_that_is_empty_or_names_the_unknown_is_refused() -> Result<(), TestError> {
         let mut custom = no_custom();
         custom.insert("mine".into(), Vec::new());
         assert!(resolve(&names(&["core"]), &custom).is_err(), "empty bundle");
 
         let mut custom = no_custom();
         custom.insert("mine".into(), names(&["no_such_tool"]));
-        let e = resolve(&names(&["core"]), &custom).expect_err("unknown member");
+        let e = resolve(&names(&["core"]), &custom)
+            .err()
+            .ok_or("unknown member")?;
         assert!(e.contains("no_such_tool") && e.contains("mine"), "{e}");
+        Ok(())
     }
 
     #[test]
@@ -521,23 +540,25 @@ mod tests {
     }
 
     #[test]
-    fn full_excludes_nothing_and_a_subset_excludes_the_rest() {
+    fn full_excludes_nothing_and_a_subset_excludes_the_rest() -> Result<(), TestError> {
         let registered = names(&["list_dialogs", "shutdown_server", "triage_call"]);
         assert!(excluded(&ToolSelection::Full, &registered).is_empty());
-        let core = resolve(&names(&["core"]), &no_custom()).expect("core");
+        let core = resolve(&names(&["core"]), &no_custom()).map_err(|e| format!("core: {e:?}"))?;
         assert_eq!(excluded(&core, &registered), names(&["shutdown_server"]));
+        Ok(())
     }
 
     #[test]
-    fn every_tool_is_in_exactly_one_built_in_bundle() {
+    fn every_tool_is_in_exactly_one_built_in_bundle() -> Result<(), TestError> {
         let mut seen = std::collections::BTreeMap::new();
         for (bundle, tools) in BUNDLES {
             for t in *tools {
                 if let Some(first) = seen.insert(*t, *bundle) {
-                    panic!("{t} is in both {first} and {bundle}");
+                    return Err(format!("{t} is in both {first} and {bundle}").into());
                 }
             }
         }
+        Ok(())
     }
 
     #[test]

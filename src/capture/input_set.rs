@@ -1099,61 +1099,72 @@ mod tests {
     /// A single file still resolves to exactly itself. This is the
     /// overwhelmingly common case and must not change shape.
     #[test]
-    fn a_single_file_resolves_to_itself() {
+    fn a_single_file_resolves_to_itself() -> Result<(), TestError> {
         let f = samples().join("sip-rtp-g711.pcap");
-        let out = resolve(&[spec(&f)], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(&f)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].path, f);
         assert!(out[0].first_packet.is_some());
+        Ok(())
     }
 
     /// Extension-free and odd-suffix files are captures too, which is why the
     /// probe opens the file instead of reading its name.
     #[test]
-    fn a_capture_without_a_pcap_extension_is_accepted() {
+    fn a_capture_without_a_pcap_extension_is_accepted() -> Result<(), TestError> {
         let f = samples().join("SIP_CALL_RTP_G711");
         assert_eq!(f.extension(), None, "fixture must have no extension");
-        let out = resolve(&[spec(&f)], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(&f)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1);
+        Ok(())
     }
 
     /// Repeating -I builds one ordered set.
     #[test]
-    fn repeated_specs_combine() {
+    fn repeated_specs_combine() -> Result<(), TestError> {
         let a = samples().join("sip-rtp-g711.pcap");
         let b = samples().join("sip-rtp-g729a.pcap");
-        let out = resolve(&[spec(&a), spec(&b)], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(&a), spec(&b)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 2);
+        Ok(())
     }
 
     /// The same file named twice is read once. Reading it twice would double
     /// every dialog and stream count in the report.
     #[test]
-    fn the_same_file_twice_is_read_once() {
+    fn the_same_file_twice_is_read_once() -> Result<(), TestError> {
         let a = samples().join("sip-rtp-g711.pcap");
-        let out = resolve(&[spec(&a), spec(&a)], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(&a), spec(&a)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "duplicates must collapse, got {out:?}");
+        Ok(())
     }
 
     /// A glob expands internally, because the shell does not when the pattern
     /// is quoted — and in an MCP config or an SSH command line there is no
     /// shell at all.
     #[test]
-    fn a_glob_expands_without_a_shell() {
+    fn a_glob_expands_without_a_shell() -> Result<(), TestError> {
         let pattern = format!("{}/sip-rtp-*.pcap", samples().display());
-        let out = resolve(&[pattern], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[pattern], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert!(
             out.len() >= 3,
             "sip-rtp-g711/g722/g729a at least, got {}",
             out.len()
         );
+        Ok(())
     }
 
     /// A directory resolves to the captures inside it, skipping whatever else
     /// is there — including the NetMon file libpcap cannot open.
     #[test]
-    fn a_directory_resolves_to_its_captures() {
-        let out = resolve(&[spec(&samples())], &ResolveOptions::default()).expect("resolve");
+    fn a_directory_resolves_to_its_captures() -> Result<(), TestError> {
+        let out = resolve(&[spec(&samples())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert!(
             out.len() > 20,
             "sample dir has many captures, got {}",
@@ -1164,60 +1175,63 @@ mod tests {
             "the NetMon capture cannot be opened by libpcap and must be skipped, \
              not carried into the read set"
         );
+        Ok(())
     }
 
     /// Naming that same unreadable file directly is an error, because the
     /// operator asked for it specifically.
     #[test]
-    fn an_explicitly_named_unreadable_file_is_an_error() {
+    fn an_explicitly_named_unreadable_file_is_an_error() -> Result<(), TestError> {
         let f = samples().join("c07-sip-r2.cap");
         let err = resolve(&[spec(&f)], &ResolveOptions::default())
-            .expect_err("NetMon must not resolve silently");
+            .err()
+            .ok_or("NetMon must not resolve silently")?;
         let msg = format!("{err:#}");
         assert!(
             msg.contains("cannot read capture"),
             "the error must name the file and say it was requested: {msg}"
         );
+        Ok(())
     }
 
     /// The name glob narrows a directory.
     #[test]
-    fn a_name_glob_narrows_a_directory() {
+    fn a_name_glob_narrows_a_directory() -> Result<(), TestError> {
         let opts = ResolveOptions {
             name_glob: Some("sip-rtp-g7*.pcap".to_string()),
             ..Default::default()
         };
-        let out = resolve(&[spec(&samples())], &opts).expect("resolve");
+        let out = resolve(&[spec(&samples())], &opts).map_err(|e| format!("resolve: {e:?}"))?;
         assert!(!out.is_empty());
         assert!(
             out.iter().all(|r| r
                 .path
                 .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("sip-rtp-g7")),
+                .is_some_and(|n| n.to_string_lossy().starts_with("sip-rtp-g7"))),
             "every match must satisfy the pattern: {out:?}"
         );
+        Ok(())
     }
 
     /// Recursion is off unless asked for.
     #[test]
-    fn recursion_is_opt_in() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn recursion_is_opt_in() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let sub = root.path().join("archive");
-        std::fs::create_dir(&sub).expect("mkdir");
+        std::fs::create_dir(&sub).map_err(|e| format!("mkdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("top.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g729a.pcap"),
             sub.join("buried.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
-        let shallow = resolve(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let shallow = resolve(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(
             shallow.len(),
             1,
@@ -1231,70 +1245,81 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("resolve");
+        .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(deep.len(), 2, "recursive must reach the subdirectory");
+        Ok(())
     }
 
     /// Ordering follows the packets, not the names. Built to mirror the
     /// wrapped ring buffer that motivated this: the file whose name sorts
     /// first holds the LATER traffic.
     #[test]
-    fn ordering_is_chronological_not_alphabetical() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn ordering_is_chronological_not_alphabetical() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         // sip-rtp-g711.pcap is from 2016; register-invite-reinvite-bye is not.
         // Whichever is older, name them so that alphabetical order is the
         // OPPOSITE of chronological, then assert resolve() ignores the names.
         let a = samples().join("sip-rtp-g711.pcap");
         let b = samples().join("sip-register.pcap");
-        let ta = first_packet_time(&a).expect("open").expect("packets");
-        let tb = first_packet_time(&b).expect("open").expect("packets");
+        let ta = first_packet_time(&a)
+            .map_err(|e| format!("open: {e:?}"))?
+            .ok_or("packets")?;
+        let tb = first_packet_time(&b)
+            .map_err(|e| format!("open: {e:?}"))?
+            .ok_or("packets")?;
         let (older, newer) = if ta < tb { (&a, &b) } else { (&b, &a) };
 
         // "zzz" holds the older traffic, "aaa" the newer.
         let zzz = root.path().join("zzz-first-in-time.pcap");
         let aaa = root.path().join("aaa-second-in-time.pcap");
-        std::fs::copy(older, &zzz).expect("copy");
-        std::fs::copy(newer, &aaa).expect("copy");
+        std::fs::copy(older, &zzz).map_err(|e| format!("copy: {e:?}"))?;
+        std::fs::copy(newer, &aaa).map_err(|e| format!("copy: {e:?}"))?;
 
-        let out = resolve(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 2);
         assert_eq!(
             out[0].path, zzz,
             "the file holding the EARLIER packets must be read first even though \
              its name sorts last; got {out:?}"
         );
+        Ok(())
     }
 
     /// A gzip member sits in the same set as a plain one, ordered by content.
     #[test]
-    fn compressed_and_uncompressed_mix_in_one_set() {
+    fn compressed_and_uncompressed_mix_in_one_set() -> Result<(), TestError> {
         use std::io::Write;
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
 
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("plain.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
-        let raw = std::fs::read(samples().join("sip-register.pcap")).expect("read");
+        let raw = std::fs::read(samples().join("sip-register.pcap"))
+            .map_err(|e| format!("read: {e:?}"))?;
         let gz_path = root.path().join("squeezed.pcap.gz");
         let mut enc = flate2::write::GzEncoder::new(
-            std::fs::File::create(&gz_path).expect("create"),
+            std::fs::File::create(&gz_path).map_err(|e| format!("create: {e:?}"))?,
             flate2::Compression::fast(),
         );
-        enc.write_all(&raw).expect("compress");
-        enc.finish().expect("finish");
+        enc.write_all(&raw)
+            .map_err(|e| format!("compress: {e:?}"))?;
+        enc.finish().map_err(|e| format!("finish: {e:?}"))?;
 
         // `resolve_set`, not `resolve`: the gzip member is inflated to a file
         // the set owns, and `resolve` would hand that file to the run-long
         // holder a test process never releases.
-        let out = resolve_set(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let out = resolve_set(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 2, "both members must resolve: {out:?}");
         assert!(
             out.iter().all(|r| r.first_packet.is_some()),
             "the gzip member must be probed through the decompressor, not skipped: {out:?}"
         );
+        Ok(())
     }
 
     /// A one-packet classic pcap whose packet is stamped `secs`.
@@ -1319,11 +1344,11 @@ mod tests {
         out
     }
 
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
         use std::io::Write;
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(data).expect("gzip");
-        enc.finish().expect("gzip")
+        enc.write_all(data).map_err(|e| format!("gzip: {e:?}"))?;
+        Ok(enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
     }
 
     fn tar_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -1335,17 +1360,17 @@ mod tests {
     /// A `.tgz` resolves to its capture members, ordered by their packets and
     /// not by where they sit in the archive, each named `<archive>/<member>`.
     #[test]
-    fn an_archive_resolves_to_its_members_in_timestamp_order() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn an_archive_resolves_to_its_members_in_timestamp_order() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let tar = tar_of(&[
             ("set/later.pcap", &pcap_at(2_000, b"b")),
             ("set/earlier.pcap", &pcap_at(1_000, b"a")),
         ]);
         let tgz = root.path().join("set.tgz");
-        std::fs::write(&tgz, gzip(&tar)).expect("write");
+        std::fs::write(&tgz, gzip(&tar)?).map_err(|e| format!("write: {e:?}"))?;
 
-        let (set, tally) =
-            resolve_counting(&[spec(&tgz)], &ResolveOptions::default()).expect("resolve");
+        let (set, tally) = resolve_counting(&[spec(&tgz)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         let names: Vec<String> = set.inputs.iter().map(|r| r.name().to_string()).collect();
         let root_name = tgz.display().to_string();
         assert_eq!(
@@ -1360,14 +1385,16 @@ mod tests {
             set.inputs.iter().all(|r| r.path.is_file() && r.path != tgz),
             "each member is read from a file of its own"
         );
+        Ok(())
     }
 
     /// An archive found by walking a directory joins that directory's set,
     /// the same way any other capture in it does.
     #[test]
-    fn an_archive_inside_a_directory_joins_its_set() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::write(root.path().join("loose.pcap"), pcap_at(3_000, b"c")).expect("write");
+    fn an_archive_inside_a_directory_joins_its_set() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(root.path().join("loose.pcap"), pcap_at(3_000, b"c"))
+            .map_err(|e| format!("write: {e:?}"))?;
         std::fs::write(
             root.path().join("bundle.tar"),
             tar_of(&[
@@ -1375,9 +1402,9 @@ mod tests {
                 ("y.pcap", &pcap_at(2_000, b"y")),
             ]),
         )
-        .expect("write");
-        let (set, _) =
-            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        .map_err(|e| format!("write: {e:?}"))?;
+        let (set, _) = resolve_counting(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         let names: Vec<String> = set
             .inputs
             .iter()
@@ -1390,22 +1417,23 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["x.pcap", "y.pcap", "loose.pcap"]);
+        Ok(())
     }
 
     /// Members that are not captures are counted and named, never silently
     /// dropped, and never cost the rest of the archive.
     #[test]
-    fn non_capture_members_are_counted_in_the_reconciling_line() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn non_capture_members_are_counted_in_the_reconciling_line() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let tar = tar_of(&[
             ("empty.pcap", b""),
             ("notes.txt", b"a note, not a capture"),
             ("ok.pcap", &pcap_at(1_000, b"ok")),
         ]);
         let path = root.path().join("mixed.tar");
-        std::fs::write(&path, tar).expect("write");
-        let (set, tally) =
-            resolve_counting(&[spec(&path)], &ResolveOptions::default()).expect("resolve");
+        std::fs::write(&path, tar).map_err(|e| format!("write: {e:?}"))?;
+        let (set, tally) = resolve_counting(&[spec(&path)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(set.inputs.len(), 1);
         assert_eq!(tally.members_skipped, 2, "{tally:?}");
         assert!(
@@ -1414,6 +1442,7 @@ mod tests {
         );
         let line = tally.summary(set.inputs.len(), false);
         assert!(line.contains("2 archive member(s)"), "{line}");
+        Ok(())
     }
 
     /// An unpacked member at `path` with the given encryption.
@@ -1658,55 +1687,65 @@ mod tests {
     /// `--input-name` filters an archive's members the way it filters a
     /// directory's files; it still refuses a single file named directly.
     #[test]
-    fn input_name_filters_archive_members() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn input_name_filters_archive_members() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let tar = tar_of(&[
             ("keep-1.pcap", &pcap_at(1_000, b"1")),
             ("drop.pcap", &pcap_at(2_000, b"2")),
             ("keep-2.pcap", &pcap_at(3_000, b"3")),
         ]);
         let path = root.path().join("ring.tgz");
-        std::fs::write(&path, gzip(&tar)).expect("write");
+        std::fs::write(&path, gzip(&tar)?).map_err(|e| format!("write: {e:?}"))?;
         let opts = ResolveOptions {
             name_glob: Some("keep-*".to_string()),
             ..ResolveOptions::default()
         };
-        let (set, tally) = resolve_counting(&[spec(&path)], &opts).expect("resolve");
+        let (set, tally) =
+            resolve_counting(&[spec(&path)], &opts).map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(set.inputs.len(), 2);
         assert_eq!(tally.filtered_out, 1);
 
         let single = root.path().join("one.pcap.gz");
-        std::fs::write(&single, gzip(&pcap_at(1_000, b"1"))).expect("write");
-        let err = resolve_counting(&[spec(&single)], &opts).expect_err("refused");
+        std::fs::write(&single, gzip(&pcap_at(1_000, b"1"))?)
+            .map_err(|e| format!("write: {e:?}"))?;
+        let err = resolve_counting(&[spec(&single)], &opts)
+            .err()
+            .ok_or("refused")?;
         assert!(
             format!("{err:#}").contains("names a file directly"),
             "{err:#}"
         );
+        Ok(())
     }
 
     /// An archive with nothing readable in it, named on its own, is an error
     /// naming why, not an empty analysis.
     #[test]
-    fn an_archive_with_no_capture_in_it_fails_the_run() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn an_archive_with_no_capture_in_it_fails_the_run() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = root.path().join("docs.tar");
-        std::fs::write(&path, tar_of(&[("README", b"nothing to see")])).expect("write");
+        std::fs::write(&path, tar_of(&[("README", b"nothing to see")]))
+            .map_err(|e| format!("write: {e:?}"))?;
         let err = resolve_counting(&[spec(&path)], &ResolveOptions::default())
-            .expect_err("nothing readable");
+            .err()
+            .ok_or("nothing readable")?;
         assert!(
             format!("{err:#}").contains("no readable capture"),
             "{err:#}"
         );
+        Ok(())
     }
 
     /// Readers name a member by its label, not by the file it was extracted
     /// to, for as long as the set that extracted it is alive.
     #[test]
-    fn readers_see_the_member_label_while_the_set_lives() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn readers_see_the_member_label_while_the_set_lives() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = root.path().join("a.tar");
-        std::fs::write(&path, tar_of(&[("m.pcap", &pcap_at(1_000, b"m"))])).expect("write");
-        let set = resolve_set(&[spec(&path)], &ResolveOptions::default()).expect("resolve");
+        std::fs::write(&path, tar_of(&[("m.pcap", &pcap_at(1_000, b"m"))]))
+            .map_err(|e| format!("write: {e:?}"))?;
+        let set = resolve_set(&[spec(&path)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         let member = set.inputs[0].path.clone();
         let label = format!("{}/m.pcap", path.display());
         assert_eq!(crate::capture::archive::source_name(&member), label);
@@ -1716,26 +1755,33 @@ mod tests {
             crate::capture::archive::source_name(&member),
             member.display().to_string()
         );
+        Ok(())
     }
 
     /// A compressed format sipnab does not unwrap, named directly, is refused
     /// with its name rather than libpcap's "unknown file format".
     #[test]
-    fn an_unsupported_wrapper_is_named_in_the_refusal() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn an_unsupported_wrapper_is_named_in_the_refusal() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = root.path().join("cap.pcap.zst");
-        std::fs::write(&path, [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0]).expect("write");
-        let err =
-            resolve_counting(&[spec(&path)], &ResolveOptions::default()).expect_err("refused");
+        std::fs::write(&path, [0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0])
+            .map_err(|e| format!("write: {e:?}"))?;
+        let err = resolve_counting(&[spec(&path)], &ResolveOptions::default())
+            .err()
+            .ok_or("refused")?;
         assert!(format!("{err:#}").contains("Zstandard"), "{err:#}");
+        Ok(())
     }
 
     /// A glob matching nothing is an error rather than an empty analysis.
     #[test]
-    fn a_glob_matching_nothing_is_an_error() {
+    fn a_glob_matching_nothing_is_an_error() -> Result<(), TestError> {
         let pattern = format!("{}/definitely-no-such-*.pcap", samples().display());
-        let err = resolve(&[pattern], &ResolveOptions::default()).expect_err("must fail");
+        let err = resolve(&[pattern], &ResolveOptions::default())
+            .err()
+            .ok_or("must fail")?;
         assert!(format!("{err:#}").contains("matched no files"));
+        Ok(())
     }
 
     /// A glob whose every match the `--input-name` filter left out fails
@@ -1751,7 +1797,9 @@ mod tests {
             ..Default::default()
         };
         let pattern = format!("{}/*.pcap", dir.path().display());
-        let err = resolve(std::slice::from_ref(&pattern), &opts).expect_err("must fail");
+        let err = resolve(std::slice::from_ref(&pattern), &opts)
+            .err()
+            .ok_or("must fail")?;
         assert!(
             format!("{err:#}")
                 .contains(&format!("glob '{pattern}' matched no files named 'keep-*'")),
@@ -1772,13 +1820,13 @@ mod tests {
     /// Run with:
     /// `SIPNAB_CORPUS=/path/to/pcaps cargo test --features full corpus`
     #[test]
-    fn corpus_directory_resolves_in_timestamp_order() {
+    fn corpus_directory_resolves_in_timestamp_order() -> Result<(), TestError> {
         let Ok(dir) = std::env::var("SIPNAB_CORPUS") else {
             stderr_line!("SIPNAB_CORPUS not set — skipping");
-            return;
+            return Ok(());
         };
         let out = resolve(std::slice::from_ref(&dir), &ResolveOptions::default())
-            .unwrap_or_else(|e| panic!("resolve '{dir}': {e:#}"));
+            .map_err(|e| format!("resolve '{dir}': {e:#}"))?;
         assert!(
             out.len() > 1,
             "corpus needs several files, got {}",
@@ -1819,6 +1867,7 @@ mod tests {
                 "matches"
             }
         );
+        Ok(())
     }
 
     /// A capture reached through a symlink inside a directory must be read.
@@ -1831,43 +1880,49 @@ mod tests {
     /// agree.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_capture_in_a_directory_is_not_dropped() {
-        let store = tempfile::tempdir().expect("tempdir");
-        let view = tempfile::tempdir().expect("tempdir");
+    fn a_symlinked_capture_in_a_directory_is_not_dropped() -> Result<(), TestError> {
+        let store = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let view = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let real = store.path().join("real.pcap");
-        std::fs::copy(samples().join("sip-rtp-g711.pcap"), &real).expect("copy");
-        std::os::unix::fs::symlink(&real, view.path().join("link.pcap")).expect("symlink");
+        std::fs::copy(samples().join("sip-rtp-g711.pcap"), &real)
+            .map_err(|e| format!("copy: {e:?}"))?;
+        std::os::unix::fs::symlink(&real, view.path().join("link.pcap"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
 
-        let out = resolve(&[spec(view.path())], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(view.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(
             out.len(),
             1,
             "a symlinked capture is a capture; it must not vanish because \
              walkdir reported the link's own type: {out:?}"
         );
+        Ok(())
     }
 
     /// The same, one level up: `-I` given a symlink that IS the capture
     /// directory.
     #[cfg(unix)]
     #[test]
-    fn a_capture_directory_reached_through_a_symlink_resolves() {
-        let store = tempfile::tempdir().expect("tempdir");
-        let outer = tempfile::tempdir().expect("tempdir");
+    fn a_capture_directory_reached_through_a_symlink_resolves() -> Result<(), TestError> {
+        let store = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let outer = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             store.path().join("real.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         let link = outer.path().join("latest");
-        std::os::unix::fs::symlink(store.path(), &link).expect("symlink");
+        std::os::unix::fs::symlink(store.path(), &link).map_err(|e| format!("symlink: {e:?}"))?;
 
-        let out = resolve(&[spec(&link)], &ResolveOptions::default()).expect("resolve");
+        let out = resolve(&[spec(&link)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(
             out.len(),
             1,
             "'-I latest' where latest -> /storage: {out:?}"
         );
+        Ok(())
     }
 
     /// An explicitly named unreadable file stays an error even when the same
@@ -1880,19 +1935,20 @@ mod tests {
     /// named was skipped with a warning instead of failing the run — exactly
     /// backwards from the contract in the module docs.
     #[test]
-    fn an_explicitly_named_file_reached_by_another_spelling_still_fails_loudly() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(root.path().join("sub")).expect("mkdir");
+    fn an_explicitly_named_file_reached_by_another_spelling_still_fails_loudly()
+    -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::create_dir(root.path().join("sub")).map_err(|e| format!("mkdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("good.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("c07-sip-r2.cap"),
             root.path().join("bad.cap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
         // Same file, different spelling: `<root>/sub/../bad.cap` is not equal
         // to `<root>/bad.cap` as a `Path` (`..` is a component), but both
@@ -1908,11 +1964,13 @@ mod tests {
             &[spec(root.path()), spec(&spelled)],
             &ResolveOptions::default(),
         )
-        .expect_err("an explicitly named unreadable capture must fail the run");
+        .err()
+        .ok_or("an explicitly named unreadable capture must fail the run")?;
         assert!(
             format!("{err:#}").contains("cannot read capture"),
             "got {err:#}"
         );
+        Ok(())
     }
 
     /// Two captures starting 100 microseconds apart are the same instant.
@@ -1966,25 +2024,25 @@ mod tests {
     /// `-I '/caps/*.pcap' --input-name 'keep-*'` was accepted by clap and did
     /// nothing: the operator believes they filtered and did not.
     #[test]
-    fn the_name_glob_applies_to_a_glob_spec() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_name_glob_applies_to_a_glob_spec() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             dir.path().join("keep-me.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-register.pcap"),
             dir.path().join("skip-me.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
         let opts = ResolveOptions {
             name_glob: Some("keep-*".to_string()),
             ..Default::default()
         };
         let (out, tally) = resolve_counting(&[format!("{}/*.pcap", dir.path().display())], &opts)
-            .expect("resolve");
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "the filter must narrow a glob too: {out:?}");
         assert!(out[0].path.ends_with("keep-me.pcap"), "{out:?}");
         assert_eq!(
@@ -1992,6 +2050,7 @@ mod tests {
             "the glob branch has its own copy of the filter, so it needs its \
              own accounting: {tally:?}"
         );
+        Ok(())
     }
 
     /// `--input-name` against a directly named file is a contradiction, and it
@@ -2001,18 +2060,21 @@ mod tests {
     /// pattern would leave them believing they filtered. Both are silent, so
     /// neither is allowed.
     #[test]
-    fn the_name_glob_cannot_silently_ignore_an_explicitly_named_file() {
+    fn the_name_glob_cannot_silently_ignore_an_explicitly_named_file() -> Result<(), TestError> {
         let f = samples().join("sip-rtp-g711.pcap");
         let opts = ResolveOptions {
             name_glob: Some("tg.pcap*".to_string()),
             ..Default::default()
         };
-        let err = resolve(&[spec(&f)], &opts).expect_err("the combination must be refused");
+        let err = resolve(&[spec(&f)], &opts)
+            .err()
+            .ok_or("the combination must be refused")?;
         let msg = format!("{err:#}");
         assert!(
             msg.contains("--input-name") && msg.contains("tg.pcap*"),
             "the error must name the pattern that does not match: {msg}"
         );
+        Ok(())
     }
 
     /// A glob matching DIRECTORIES expands them instead of dropping them.
@@ -2021,23 +2083,27 @@ mod tests {
     /// nothing and say nothing, because the glob branch kept only
     /// `path.is_file()`.
     #[test]
-    fn a_glob_matching_directories_expands_them() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn a_glob_matching_directories_expands_them() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         for (sub, sample) in [
             ("host-a", "sip-rtp-g711.pcap"),
             ("host-b", "sip-register.pcap"),
         ] {
             let dir = root.path().join(sub);
-            std::fs::create_dir(&dir).expect("mkdir");
-            std::fs::copy(samples().join(sample), dir.join("cap.pcap")).expect("copy");
+            std::fs::create_dir(&dir).map_err(|e| format!("mkdir: {e:?}"))?;
+            std::fs::copy(samples().join(sample), dir.join("cap.pcap"))
+                .map_err(|e| format!("copy: {e:?}"))?;
         }
 
         let out = resolve(
             &[format!("{}/*", root.path().display())],
             &ResolveOptions::default(),
         )
-        .expect("a glob over per-host directories must resolve their captures");
+        .map_err(|e| {
+            format!("a glob over per-host directories must resolve their captures: {e:?}")
+        })?;
         assert_eq!(out.len(), 2, "both subdirectories must contribute: {out:?}");
+        Ok(())
     }
 
     /// An unreadable subdirectory must not take the readable files with it.
@@ -2048,23 +2114,24 @@ mod tests {
     /// `tests/multi_input_test.rs`, where the operator would actually see it.
     #[cfg(unix)]
     #[test]
-    fn an_unreadable_subdirectory_does_not_hide_the_readable_files() {
+    fn an_unreadable_subdirectory_does_not_hide_the_readable_files() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("top.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         let locked = root.path().join("locked");
-        std::fs::create_dir(&locked).expect("mkdir");
+        std::fs::create_dir(&locked).map_err(|e| format!("mkdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-register.pcap"),
             locked.join("buried.pcap"),
         )
-        .expect("copy");
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+        .map_err(|e| format!("copy: {e:?}"))?;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .map_err(|e| format!("chmod: {e:?}"))?;
 
         let out = resolve_counting(
             &[spec(root.path())],
@@ -2074,9 +2141,10 @@ mod tests {
             },
         );
         // Restore before asserting so a failure still leaves a removable dir.
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
 
-        let (out, tally) = out.expect("resolve");
+        let (out, tally) = out.map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(
             out.len(),
             1,
@@ -2088,6 +2156,7 @@ mod tests {
              count is what tells the reader the set is short: {tally:?}"
         );
         assert!(tally.lossy(), "{tally:?}");
+        Ok(())
     }
 
     /// A symlinked directory is never followed, and that is counted separately.
@@ -2097,20 +2166,21 @@ mod tests {
     /// has to be told which directory the request did not apply to.
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_directory_under_recursive_is_counted_separately() {
-        let store = tempfile::tempdir().expect("tempdir");
-        let root = tempfile::tempdir().expect("tempdir");
+    fn a_symlinked_directory_under_recursive_is_counted_separately() -> Result<(), TestError> {
+        let store = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("top.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-register.pcap"),
             store.path().join("buried.pcap"),
         )
-        .expect("copy");
-        std::os::unix::fs::symlink(store.path(), root.path().join("elsewhere")).expect("symlink");
+        .map_err(|e| format!("copy: {e:?}"))?;
+        std::os::unix::fs::symlink(store.path(), root.path().join("elsewhere"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
 
         let (out, tally) = resolve_counting(
             &[spec(root.path())],
@@ -2119,7 +2189,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("resolve");
+        .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "the link is not followed: {out:?}");
         assert_eq!(
             tally.link_to_dir, 1,
@@ -2130,14 +2200,18 @@ mod tests {
             tally.not_descended, 0,
             "recursion IS on, so this is not the recursion-is-off case: {tally:?}"
         );
+        Ok(())
     }
 
     /// Lay out `root/top.pcap` and `root/archive/buried.pcap`.
-    fn dir_with_a_buried_capture(root: &Path) {
+    fn dir_with_a_buried_capture(root: &Path) -> Result<(), TestError> {
         let sub = root.join("archive");
-        std::fs::create_dir(&sub).expect("mkdir");
-        std::fs::copy(samples().join("sip-rtp-g711.pcap"), root.join("top.pcap")).expect("copy");
-        std::fs::copy(samples().join("sip-register.pcap"), sub.join("buried.pcap")).expect("copy");
+        std::fs::create_dir(&sub).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::copy(samples().join("sip-rtp-g711.pcap"), root.join("top.pcap"))
+            .map_err(|e| format!("copy: {e:?}"))?;
+        std::fs::copy(samples().join("sip-register.pcap"), sub.join("buried.pcap"))
+            .map_err(|e| format!("copy: {e:?}"))?;
+        Ok(())
     }
 
     /// A subdirectory the walk declined to enter is COUNTED.
@@ -2150,12 +2224,12 @@ mod tests {
     /// Recursion staying opt-in is right; being unable to tell the two
     /// directories apart is not.
     #[test]
-    fn a_subdirectory_the_walk_did_not_enter_is_counted() {
-        let root = tempfile::tempdir().expect("tempdir");
-        dir_with_a_buried_capture(root.path());
+    fn a_subdirectory_the_walk_did_not_enter_is_counted() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        dir_with_a_buried_capture(root.path())?;
 
-        let (out, tally) =
-            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let (out, tally) = resolve_counting(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "recursion is opt-in and stays so: {out:?}");
         assert_eq!(
             tally.not_descended, 1,
@@ -2168,6 +2242,7 @@ mod tests {
              capture missing from this run is a loss the reader must be told \
              about: {tally:?}"
         );
+        Ok(())
     }
 
     /// …and is NOT counted when `--recursive` did enter it.
@@ -2175,9 +2250,9 @@ mod tests {
     /// The counter has to distinguish "not read" from "read", or the warning
     /// fires on every recursive run and stops meaning anything.
     #[test]
-    fn a_descended_subdirectory_is_not_counted_as_dropped() {
-        let root = tempfile::tempdir().expect("tempdir");
-        dir_with_a_buried_capture(root.path());
+    fn a_descended_subdirectory_is_not_counted_as_dropped() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        dir_with_a_buried_capture(root.path())?;
 
         let (out, tally) = resolve_counting(
             &[spec(root.path())],
@@ -2186,7 +2261,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .expect("resolve");
+        .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(
             out.len(),
             2,
@@ -2197,6 +2272,7 @@ mod tests {
             "a directory that WAS read is not a drop: {tally:?}"
         );
         assert!(!tally.dropped_any(), "nothing was left out: {tally:?}");
+        Ok(())
     }
 
     /// The line the operator reads names the flag that would have read them.
@@ -2223,28 +2299,29 @@ mod tests {
     /// the set through the one branch that said nothing at all.
     #[cfg(unix)]
     #[test]
-    fn an_entry_that_is_not_a_file_is_counted() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn an_entry_that_is_not_a_file_is_counted() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("real.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         let fifo = root.path().join("live.pcap");
         let status = std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()
-            .expect("run mkfifo");
+            .map_err(|e| format!("run mkfifo: {e:?}"))?;
         assert!(status.success(), "mkfifo failed");
 
-        let (out, tally) =
-            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let (out, tally) = resolve_counting(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "the real capture still resolves: {out:?}");
         assert_eq!(
             tally.unusable, 1,
             "a fifo named like a capture must be accounted for, not dropped \
              through the silent branch: {tally:?}"
         );
+        Ok(())
     }
 
     /// What `--input-name` excluded is counted, and is not called a loss.
@@ -2252,38 +2329,40 @@ mod tests {
     /// The operator typed the filter, so this is data declined rather than data
     /// missing — but the count still reconciles the set against the directory.
     #[test]
-    fn what_the_name_pattern_excluded_is_counted_but_not_a_loss() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn what_the_name_pattern_excluded_is_counted_but_not_a_loss() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("keep-me.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-register.pcap"),
             root.path().join("drop-me.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
         let opts = ResolveOptions {
             name_glob: Some("keep-*".to_string()),
             ..Default::default()
         };
-        let (out, tally) = resolve_counting(&[spec(root.path())], &opts).expect("resolve");
+        let (out, tally) =
+            resolve_counting(&[spec(root.path())], &opts).map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(tally.filtered_out, 1, "{tally:?}");
         assert!(
             tally.dropped_any() && !tally.lossy(),
             "a filter the operator typed is reported, not warned about: {tally:?}"
         );
+        Ok(())
     }
 
     /// A path reached twice is read once, and the collapse is counted.
     #[test]
-    fn a_path_reached_twice_is_counted_as_a_duplicate() {
+    fn a_path_reached_twice_is_counted_as_a_duplicate() -> Result<(), TestError> {
         let a = samples().join("sip-rtp-g711.pcap");
-        let (out, tally) =
-            resolve_counting(&[spec(&a), spec(&a)], &ResolveOptions::default()).expect("resolve");
+        let (out, tally) = resolve_counting(&[spec(&a), spec(&a)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(
             tally.duplicates, 1,
@@ -2291,25 +2370,26 @@ mod tests {
              close: {tally:?}"
         );
         assert!(!tally.lossy(), "nothing was lost: {tally:?}");
+        Ok(())
     }
 
     /// A discovered file that will not open as a capture is counted.
     #[test]
-    fn a_discovered_file_that_is_not_a_capture_is_counted() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn a_discovered_file_that_is_not_a_capture_is_counted() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::copy(
             samples().join("sip-rtp-g711.pcap"),
             root.path().join("good.pcap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
         std::fs::copy(
             samples().join("c07-sip-r2.cap"),
             root.path().join("netmon.cap"),
         )
-        .expect("copy");
+        .map_err(|e| format!("copy: {e:?}"))?;
 
-        let (out, tally) =
-            resolve_counting(&[spec(root.path())], &ResolveOptions::default()).expect("resolve");
+        let (out, tally) = resolve_counting(&[spec(root.path())], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(
             tally.unreadable, 1,
@@ -2317,20 +2397,22 @@ mod tests {
              accounting, not only in a passing warning: {tally:?}"
         );
         assert!(tally.lossy(), "{tally:?}");
+        Ok(())
     }
 
     /// A clean run says nothing, so the line means something when it appears.
     #[test]
-    fn a_run_that_dropped_nothing_reports_nothing() {
+    fn a_run_that_dropped_nothing_reports_nothing() -> Result<(), TestError> {
         let f = samples().join("sip-rtp-g711.pcap");
-        let (out, tally) =
-            resolve_counting(&[spec(&f)], &ResolveOptions::default()).expect("resolve");
+        let (out, tally) = resolve_counting(&[spec(&f)], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
         assert_eq!(out.len(), 1);
         assert!(
             !tally.dropped_any(),
             "a single named file drops nothing, and a line on every run is a \
              line nobody reads: {tally:?}"
         );
+        Ok(())
     }
 
     /// A directory of nothing but subdirectories says where the captures are.
@@ -2339,30 +2421,38 @@ mod tests {
     /// "no files in '/pcaps'" reads as "that directory is empty" when 122
     /// captures sit one level down.
     #[test]
-    fn a_directory_of_only_subdirectories_says_the_captures_are_deeper() {
-        let root = tempfile::tempdir().expect("tempdir");
+    fn a_directory_of_only_subdirectories_says_the_captures_are_deeper() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let sub = root.path().join("host-a");
-        std::fs::create_dir(&sub).expect("mkdir");
-        std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap")).expect("copy");
+        std::fs::create_dir(&sub).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap"))
+            .map_err(|e| format!("copy: {e:?}"))?;
 
-        let err = resolve(&[spec(root.path())], &ResolveOptions::default()).expect_err("must fail");
+        let err = resolve(&[spec(root.path())], &ResolveOptions::default())
+            .err()
+            .ok_or("must fail")?;
         let msg = format!("{err:#}");
         assert!(
             msg.contains("not descended") && msg.contains("--recursive"),
             "an empty-looking directory with captures one level down must say \
              so: {msg}"
         );
+        Ok(())
     }
 
     /// A directory holding no capture at all is an error, not silence.
     #[test]
-    fn a_directory_with_no_captures_is_an_error() {
-        let root = tempfile::tempdir().expect("tempdir");
-        std::fs::write(root.path().join("README.md"), "not a capture").expect("write");
-        let err = resolve(&[spec(root.path())], &ResolveOptions::default()).expect_err("must fail");
+    fn a_directory_with_no_captures_is_an_error() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(root.path().join("README.md"), "not a capture")
+            .map_err(|e| format!("write: {e:?}"))?;
+        let err = resolve(&[spec(root.path())], &ResolveOptions::default())
+            .err()
+            .ok_or("must fail")?;
         assert!(
             format!("{err:#}").contains("no readable capture"),
             "got {err:#}"
         );
+        Ok(())
     }
 }

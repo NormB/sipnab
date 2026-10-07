@@ -676,14 +676,21 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// `10.0.0.<last>` as an `IpAddr`.
     fn ip(last: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
     }
 
     /// A fixed base timestamp, so every fixture is deterministic.
-    fn base_ts() -> chrono::DateTime<chrono::Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("the timestamp is a single valid UTC instant")?,
+        )
     }
 
     /// Parse `raw` as SIP from `src` to `dst` at `ts`.
@@ -692,8 +699,8 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
-        parse_sip(
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_sip(
             raw,
             ts,
             src,
@@ -702,7 +709,7 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("the fixture parses")
+        .map_err(|e| format!("the fixture parses: {e:?}"))?)
     }
 
     /// An INVITE from `user` to `bob`, sent `src` -> `dst`.
@@ -713,7 +720,7 @@ mod tests {
         dst: IpAddr,
         ua: &str,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -738,7 +745,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{number}@example.com SIP/2.0"),
             &[
@@ -764,7 +771,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {code} {reason}"),
             &[
@@ -789,7 +796,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "REGISTER sip:example.com SIP/2.0",
             &[
@@ -819,7 +826,7 @@ mod tests {
     }
 
     /// The JSON block of a tool result.
-    fn json_of(result: &CallToolResult) -> serde_json::Value {
+    fn json_of(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -827,16 +834,16 @@ mod tests {
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the provenance note");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block that is not the provenance note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// One phone at 10.0.0.1 placing two calls through a proxy at 10.0.0.2:
     /// one answered, one rejected 403. Plus an unrelated call between two other
     /// addresses, which must never appear in the phone's answer.
-    fn two_call_capture() -> SipnabMcp {
-        server_with(vec![
-            invite("ok@test", "alice", ip(1), ip(2), "Phone/1.0", base_ts()),
+    fn two_call_capture() -> Result<SipnabMcp, TestError> {
+        Ok(server_with(vec![
+            invite("ok@test", "alice", ip(1), ip(2), "Phone/1.0", base_ts()?)?,
             response(
                 "ok@test",
                 200,
@@ -844,16 +851,16 @@ mod tests {
                 "INVITE",
                 ip(2),
                 ip(1),
-                base_ts() + chrono::Duration::seconds(1),
-            ),
+                base_ts()? + chrono::Duration::seconds(1),
+            )?,
             invite(
                 "bad@test",
                 "alice",
                 ip(1),
                 ip(2),
                 "Phone/1.0",
-                base_ts() + chrono::Duration::seconds(10),
-            ),
+                base_ts()? + chrono::Duration::seconds(10),
+            )?,
             response(
                 "bad@test",
                 403,
@@ -861,21 +868,21 @@ mod tests {
                 "INVITE",
                 ip(2),
                 ip(1),
-                base_ts() + chrono::Duration::seconds(11),
-            ),
+                base_ts()? + chrono::Duration::seconds(11),
+            )?,
             invite(
                 "other@test",
                 "carol",
                 ip(7),
                 ip(8),
                 "Other/2.0",
-                base_ts() + chrono::Duration::seconds(20),
-            ),
-        ])
+                base_ts()? + chrono::Duration::seconds(20),
+            )?,
+        ]))
     }
 
     /// Call the tool with an `ip` selector.
-    async fn by_ip(srv: &SipnabMcp, addr: &str) -> serde_json::Value {
+    async fn by_ip(srv: &SipnabMcp, addr: &str) -> Result<serde_json::Value, TestError> {
         json_of(
             &srv.describe_endpoint(Parameters(DescribeEndpointParams {
                 ip: Some(addr.to_string()),
@@ -883,7 +890,7 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
         )
     }
 
@@ -895,7 +902,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -926,7 +933,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -947,8 +954,10 @@ mod tests {
     /// RFC 5737 documentation space. `ip(n)` yields `10.0.0.n`, which is
     /// private -- and a private source needs nothing rewritten, so a fixture
     /// built on it cannot exercise this rule at all.
-    fn public() -> IpAddr {
-        "203.0.113.5".parse().expect("documentation address")
+    fn public() -> Result<IpAddr, TestError> {
+        Ok("203.0.113.5"
+            .parse()
+            .map_err(|e| format!("documentation address: {e:?}"))?)
     }
 
     /// A REGISTER carrying a chosen `Contact`, from a chosen source.
@@ -958,7 +967,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "REGISTER sip:example.com SIP/2.0",
             &[
@@ -984,27 +993,28 @@ mod tests {
     /// case from the broken one is which address the rest of the estate then
     /// used.
     #[tokio::test]
-    async fn a_rewritten_private_contact_is_reported_and_is_not_a_finding() {
+    async fn a_rewritten_private_contact_is_reported_and_is_not_a_finding() -> Result<(), TestError>
+    {
         let srv = server_with(vec![
             register_with_contact(
                 "reg@test",
                 "<sip:alice@192.168.1.50:5060>",
-                public(),
+                public()?,
                 ip(9),
-                base_ts(),
-            ),
+                base_ts()?,
+            )?,
             // The registrar rewrote: the later INVITE goes to the address the
             // REGISTER arrived from, not to the header's private host.
             invite_to(
                 "call@test",
                 "alice",
                 ip(9),
-                public(),
-                base_ts() + chrono::Duration::seconds(30),
-            ),
+                public()?,
+                base_ts()? + chrono::Duration::seconds(30),
+            )?,
         ]);
 
-        let e = by_ip(&srv, "203.0.113.5").await;
+        let e = by_ip(&srv, "203.0.113.5").await?;
         let cr = &e["contact_rewrite"];
         assert_eq!(cr["observation"]["contact_host_private"], true);
         assert_eq!(
@@ -1018,19 +1028,20 @@ mod tests {
             "a rewrite that happened is not a fault, however private the \
              Contact was"
         );
+        Ok(())
     }
 
     /// A private `Contact` nobody rewrote is the finding.
     #[tokio::test]
-    async fn a_private_contact_later_requests_still_use_is_a_finding() {
+    async fn a_private_contact_later_requests_still_use_is_a_finding() -> Result<(), TestError> {
         let srv = server_with(vec![
             register_with_contact(
                 "reg@test",
                 "<sip:alice@192.168.1.50:5060>",
-                public(),
+                public()?,
                 ip(9),
-                base_ts(),
-            ),
+                base_ts()?,
+            )?,
             // The proxy addressed the later INVITE to the header's private
             // host. Nobody on the public internet routes to it, so the phone
             // never rings.
@@ -1038,27 +1049,32 @@ mod tests {
                 "call@test",
                 "alice",
                 ip(9),
-                "192.168.1.50".parse().expect("private contact address"),
-                base_ts() + chrono::Duration::seconds(30),
-            ),
+                "192.168.1.50"
+                    .parse()
+                    .map_err(|e| format!("private contact address: {e:?}"))?,
+                base_ts()? + chrono::Duration::seconds(30),
+            )?,
         ]);
 
-        let e = by_ip(&srv, "203.0.113.5").await;
+        let e = by_ip(&srv, "203.0.113.5").await?;
         let cr = &e["contact_rewrite"];
         assert_eq!(cr["verdict"], "not-rewritten");
         assert_eq!(cr["is_finding"], true);
         assert_eq!(cr["requests_to_contact"], 1);
+        Ok(())
     }
 
     /// An endpoint that never registered carries no block at all.
     #[tokio::test]
-    async fn an_endpoint_that_never_registered_reports_no_contact_rewrite() {
-        let e = by_ip(&two_call_capture(), "10.0.0.1").await;
+    async fn an_endpoint_that_never_registered_reports_no_contact_rewrite() -> Result<(), TestError>
+    {
+        let e = by_ip(&two_call_capture()?, "10.0.0.1").await?;
         assert!(
             e.get("contact_rewrite").is_none(),
             "absent, not null: there is no REGISTER to have observed, and a \
              null would read as an observation that found nothing"
         );
+        Ok(())
     }
 
     /// Two endpoints behind one banner report different stacks.
@@ -1069,7 +1085,7 @@ mod tests {
     /// Both endpoints below send `Asterisk PBX 20.15.2`, which is what
     /// `top_talkers by=ua` sees as one row at 100% share.
     #[tokio::test]
-    async fn describe_endpoint_tells_two_stacks_apart_behind_one_banner() {
+    async fn describe_endpoint_tells_two_stacks_apart_behind_one_banner() -> Result<(), TestError> {
         let srv = server_with(vec![
             invite_with_stack(
                 "pj@test",
@@ -1077,19 +1093,19 @@ mod tests {
                 "5f2c9e1a-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
                 ip(1),
                 ip(9),
-                base_ts(),
-            ),
+                base_ts()?,
+            )?,
             invite_with_stack(
                 "cs@test.example",
                 "z9hG4bK1a2b3c4d",
                 "as1a2b3c4d",
                 ip(2),
                 ip(9),
-                base_ts() + chrono::Duration::seconds(5),
-            ),
+                base_ts()? + chrono::Duration::seconds(5),
+            )?,
         ]);
 
-        let pj = by_ip(&srv, "10.0.0.1").await;
+        let pj = by_ip(&srv, "10.0.0.1").await?;
         assert_eq!(pj["stack"]["inference"], "pjproject");
         assert_eq!(pj["stack"]["branch_cookie"], "z9hG4bKPj");
         assert_eq!(pj["stack"]["tag_shape"], "uuid");
@@ -1099,7 +1115,7 @@ mod tests {
         );
         assert_eq!(pj["stack"]["mixed"], false);
 
-        let cs = by_ip(&srv, "10.0.0.2").await;
+        let cs = by_ip(&srv, "10.0.0.2").await?;
         assert_eq!(cs["stack"]["inference"], "chan_sip");
         assert_eq!(cs["stack"]["branch_cookie"], "z9hG4bK");
         assert_eq!(cs["stack"]["tag_shape"], "as-hex");
@@ -1110,6 +1126,7 @@ mod tests {
             "both endpoints must carry the identical banner, or this fixture \
              is not the case the fingerprint was written for"
         );
+        Ok(())
     }
 
     /// The fingerprint is taken from requests, never from responses.
@@ -1120,7 +1137,7 @@ mod tests {
     /// two different stacks. The proxy below answers pjproject-shaped requests
     /// and originates none of its own.
     #[tokio::test]
-    async fn the_stack_fingerprint_is_taken_from_requests_only() {
+    async fn the_stack_fingerprint_is_taken_from_requests_only() -> Result<(), TestError> {
         let srv = server_with(vec![
             invite_with_stack(
                 "pj@test",
@@ -1128,8 +1145,8 @@ mod tests {
                 "5f2c9e1a-3b4d-4e5f-8a9b-0c1d2e3f4a5b",
                 ip(1),
                 ip(9),
-                base_ts(),
-            ),
+                base_ts()?,
+            )?,
             response(
                 "pj@test",
                 200,
@@ -1137,11 +1154,11 @@ mod tests {
                 "INVITE",
                 ip(9),
                 ip(1),
-                base_ts() + chrono::Duration::seconds(1),
-            ),
+                base_ts()? + chrono::Duration::seconds(1),
+            )?,
         ]);
 
-        let answerer = by_ip(&srv, "10.0.0.9").await;
+        let answerer = by_ip(&srv, "10.0.0.9").await?;
         assert_eq!(
             answerer["stack"]["requests_read"], 0,
             "the answering party sent no requests, so there is nothing to \
@@ -1154,15 +1171,16 @@ mod tests {
             answerer["stack"]
         );
         // And the caller, who really did send one, is fingerprinted.
-        let caller = by_ip(&srv, "10.0.0.1").await;
+        let caller = by_ip(&srv, "10.0.0.1").await?;
         assert_eq!(caller["stack"]["requests_read"], 1);
         assert_eq!(caller["stack"]["inference"], "pjproject");
+        Ok(())
     }
 
     /// The endpoint's own traffic is counted and nobody else's is.
     #[tokio::test]
-    async fn describe_endpoint_by_ip_counts_only_that_endpoints_dialogs() {
-        let v = by_ip(&two_call_capture(), "10.0.0.1").await;
+    async fn describe_endpoint_by_ip_counts_only_that_endpoints_dialogs() -> Result<(), TestError> {
+        let v = by_ip(&two_call_capture()?, "10.0.0.1").await?;
         assert_eq!(
             v["dialogs"], 2,
             "the third call is between two other addresses and must not be \
@@ -1174,12 +1192,14 @@ mod tests {
             "the phone sent two INVITEs and received two responses: {v}"
         );
         assert_eq!(v["messages_received"], 2, "{v}");
+        Ok(())
     }
 
     /// The failure rate is a real ratio over completed calls.
     #[tokio::test]
-    async fn describe_endpoint_reports_a_failure_rate_over_completed_calls() {
-        let v = by_ip(&two_call_capture(), "10.0.0.1").await;
+    async fn describe_endpoint_reports_a_failure_rate_over_completed_calls() -> Result<(), TestError>
+    {
+        let v = by_ip(&two_call_capture()?, "10.0.0.1").await?;
         assert_eq!(v["calls"]["invites"], 2, "{v}");
         assert_eq!(v["calls"]["with_final_status"], 2, "{v}");
         assert_eq!(v["calls"]["failed"], 1, "{v}");
@@ -1191,11 +1211,13 @@ mod tests {
             v["calls"]["by_final_status"]["403"], 1,
             "the dominant cause has to be visible without fetching a dialog: {v}"
         );
+        Ok(())
     }
 
     /// A rate over nothing is `null`, never `0`.
     #[tokio::test]
-    async fn describe_endpoint_withholds_a_failure_rate_when_nothing_completed() {
+    async fn describe_endpoint_withholds_a_failure_rate_when_nothing_completed()
+    -> Result<(), TestError> {
         // One INVITE, no final response: nothing has an outcome yet.
         let srv = server_with(vec![invite(
             "pending@test",
@@ -1203,9 +1225,9 @@ mod tests {
             ip(1),
             ip(2),
             "Phone/1.0",
-            base_ts(),
-        )]);
-        let v = by_ip(&srv, "10.0.0.1").await;
+            base_ts()?,
+        )?]);
+        let v = by_ip(&srv, "10.0.0.1").await?;
         assert_eq!(v["calls"]["invites"], 1, "{v}");
         assert_eq!(v["calls"]["with_final_status"], 0, "{v}");
         assert!(
@@ -1213,15 +1235,17 @@ mod tests {
             "0% over an empty denominator reads as a healthy endpoint; there is \
              no measurement here to report: {v}"
         );
+        Ok(())
     }
 
     /// Banners are attributed to the SENDER, so the proxy's `Server` banner
     /// does not become the phone's.
     #[tokio::test]
-    async fn describe_endpoint_attributes_a_banner_to_the_endpoint_that_sent_it() {
-        let srv = two_call_capture();
-        let phone = by_ip(&srv, "10.0.0.1").await;
-        let uas = phone["user_agents"].as_array().expect("an array");
+    async fn describe_endpoint_attributes_a_banner_to_the_endpoint_that_sent_it()
+    -> Result<(), TestError> {
+        let srv = two_call_capture()?;
+        let phone = by_ip(&srv, "10.0.0.1").await?;
+        let uas = phone["user_agents"].as_array().ok_or("an array")?;
         assert_eq!(uas.len(), 1, "the phone sent exactly one banner: {phone}");
         assert_eq!(uas[0]["header"], "User-Agent", "{phone}");
         assert_eq!(
@@ -1231,8 +1255,8 @@ mod tests {
         );
         assert_eq!(uas[0]["count"], 2, "{phone}");
 
-        let proxy = by_ip(&srv, "10.0.0.2").await;
-        let proxy_uas = proxy["user_agents"].as_array().expect("an array");
+        let proxy = by_ip(&srv, "10.0.0.2").await?;
+        let proxy_uas = proxy["user_agents"].as_array().ok_or("an array")?;
         assert!(
             proxy_uas
                 .iter()
@@ -1241,13 +1265,14 @@ mod tests {
             "the proxy only ever sent responses, so the phone's User-Agent must \
              not be filed under it: {proxy}"
         );
+        Ok(())
     }
 
     /// REGISTER state is reported, and a capture with no REGISTER says so
     /// rather than reporting a healthy registration.
     #[tokio::test]
-    async fn describe_endpoint_separates_no_register_from_a_good_one() {
-        let none = by_ip(&two_call_capture(), "10.0.0.1").await;
+    async fn describe_endpoint_separates_no_register_from_a_good_one() -> Result<(), TestError> {
+        let none = by_ip(&two_call_capture()?, "10.0.0.1").await?;
         assert_eq!(
             none["registration"]["applicable"], false,
             "an endpoint that never registered must not read as registered: \
@@ -1255,7 +1280,7 @@ mod tests {
         );
 
         let srv = server_with(vec![
-            register("reg@test", "alice", ip(1), ip(2), base_ts()),
+            register("reg@test", "alice", ip(1), ip(2), base_ts()?)?,
             response(
                 "reg@test",
                 200,
@@ -1263,24 +1288,25 @@ mod tests {
                 "REGISTER",
                 ip(2),
                 ip(1),
-                base_ts() + chrono::Duration::seconds(1),
-            ),
+                base_ts()? + chrono::Duration::seconds(1),
+            )?,
         ]);
-        let v = by_ip(&srv, "10.0.0.1").await;
+        let v = by_ip(&srv, "10.0.0.1").await?;
         assert_eq!(v["registration"]["applicable"], true, "{v}");
         assert_eq!(v["registration"]["dialogs"], 1, "{v}");
         assert_eq!(
             v["registration"]["succeeded"], 1,
             "a REGISTER answered 200 is a successful registration: {v}"
         );
+        Ok(())
     }
 
     /// A rejected REGISTER is counted as a failure and named, so the detail is
     /// one `diagnose_registration` away.
     #[tokio::test]
-    async fn describe_endpoint_names_the_register_dialogs_that_failed() {
+    async fn describe_endpoint_names_the_register_dialogs_that_failed() -> Result<(), TestError> {
         let srv = server_with(vec![
-            register("bad-reg@test", "alice", ip(1), ip(2), base_ts()),
+            register("bad-reg@test", "alice", ip(1), ip(2), base_ts()?)?,
             response(
                 "bad-reg@test",
                 403,
@@ -1288,10 +1314,10 @@ mod tests {
                 "REGISTER",
                 ip(2),
                 ip(1),
-                base_ts() + chrono::Duration::seconds(1),
-            ),
+                base_ts()? + chrono::Duration::seconds(1),
+            )?,
         ]);
-        let v = by_ip(&srv, "10.0.0.1").await;
+        let v = by_ip(&srv, "10.0.0.1").await?;
         assert_eq!(v["registration"]["failed"], 1, "{v}");
         assert_eq!(v["registration"]["succeeded"], 0, "{v}");
         assert_eq!(
@@ -1299,13 +1325,14 @@ mod tests {
             "the failing dialog has to be nameable, or the count is a dead \
              end: {v}"
         );
+        Ok(())
     }
 
     /// The user part is case-sensitive per [RFC 3261 section 19.1.4](https://www.rfc-editor.org/rfc/rfc3261#section-19.1.4), so a differently
     /// cased name is a different endpoint.
     #[tokio::test]
-    async fn describe_endpoint_by_user_matches_the_uri_case_exactly() {
-        let srv = two_call_capture();
+    async fn describe_endpoint_by_user_matches_the_uri_case_exactly() -> Result<(), TestError> {
+        let srv = two_call_capture()?;
         let exact = json_of(
             &srv.describe_endpoint(Parameters(DescribeEndpointParams {
                 ip: None,
@@ -1313,8 +1340,8 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(exact["dialogs"], 2, "alice placed two calls: {exact}");
         assert_eq!(exact["endpoint_kind"], "user", "{exact}");
 
@@ -1325,43 +1352,45 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(
             wrong_case["dialogs"], 0,
             "RFC 3261 §19.1.4 makes the user part case-sensitive; folding it \
              would report one subscriber's traffic under another's name: \
              {wrong_case}"
         );
+        Ok(())
     }
 
     /// A user lookup says findings are not selectable rather than returning an
     /// empty list that reads as "nothing found".
     #[tokio::test]
-    async fn describe_endpoint_by_user_says_findings_are_not_selectable() {
+    async fn describe_endpoint_by_user_says_findings_are_not_selectable() -> Result<(), TestError> {
         let v = json_of(
-            &two_call_capture()
+            &two_call_capture()?
                 .describe_endpoint(Parameters(DescribeEndpointParams {
                     ip: None,
                     user: Some("alice".to_string()),
                     limit: None,
                 }))
                 .await
-                .expect("the call succeeds"),
-        );
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(
             v["findings"]["selectable"], false,
             "the alert engine files findings against a source IP; an empty list \
              here must not read as 'asked, nothing found': {v}"
         );
         assert!(v["findings"]["note"].as_str().is_some(), "{v}");
+        Ok(())
     }
 
     /// An IP lookup on a server with nothing armed carries the note that says
     /// an empty list means nobody was watching.
     #[tokio::test]
-    async fn describe_endpoint_says_when_no_detector_was_armed() {
-        let v = by_ip(&two_call_capture(), "10.0.0.1").await;
+    async fn describe_endpoint_says_when_no_detector_was_armed() -> Result<(), TestError> {
+        let v = by_ip(&two_call_capture()?, "10.0.0.1").await?;
         assert_eq!(v["findings"]["selectable"], true, "{v}");
         assert_eq!(v["findings"]["total_matched"], 0, "{v}");
         assert!(
@@ -1371,12 +1400,13 @@ mod tests {
             "an empty findings list on an unarmed server must say so, or it \
              reads as a clean endpoint: {v}"
         );
+        Ok(())
     }
 
     /// Exactly one selector. Neither and both are refused, not guessed.
     #[tokio::test]
-    async fn describe_endpoint_refuses_zero_or_two_selectors() {
-        let srv = two_call_capture();
+    async fn describe_endpoint_refuses_zero_or_two_selectors() -> Result<(), TestError> {
+        let srv = two_call_capture()?;
         for params in [
             DescribeEndpointParams::default(),
             DescribeEndpointParams {
@@ -1393,28 +1423,30 @@ mod tests {
             let err = srv
                 .describe_endpoint(Parameters(params.clone()))
                 .await
-                .expect_err("an ambiguous or unparseable selector must be refused");
+                .err()
+                .ok_or("an ambiguous or unparseable selector must be refused")?;
             assert_eq!(
                 err.code,
                 rmcp::model::ErrorCode::INVALID_PARAMS,
                 "refused with the wrong code for {params:?}"
             );
         }
+        Ok(())
     }
 
     /// The dialog page is bounded; the counts above it are not.
     #[tokio::test]
-    async fn describe_endpoint_bounds_the_page_but_not_the_counts() {
+    async fn describe_endpoint_bounds_the_page_but_not_the_counts() -> Result<(), TestError> {
         let v = json_of(
-            &two_call_capture()
+            &two_call_capture()?
                 .describe_endpoint(Parameters(DescribeEndpointParams {
                     ip: Some("10.0.0.1".to_string()),
                     user: None,
                     limit: Some(1),
                 }))
                 .await
-                .expect("the call succeeds"),
-        );
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(
             v["dialogs"], 2,
             "the count must describe every match, not the page: {v}"
@@ -1430,12 +1462,13 @@ mod tests {
             "newest first: an operator chasing a complaint wants what just \
              happened: {v}"
         );
+        Ok(())
     }
 
     // ── top_talkers ──────────────────────────────────────────────────
 
     /// Call `top_talkers` and hand back its JSON payload.
-    async fn talkers(srv: &SipnabMcp, by: &str) -> serde_json::Value {
+    async fn talkers(srv: &SipnabMcp, by: &str) -> Result<serde_json::Value, TestError> {
         json_of(
             &srv.top_talkers(Parameters(TopTalkersParams {
                 by: by.to_string(),
@@ -1444,15 +1477,15 @@ mod tests {
                 prefix_digits: None,
             }))
             .await
-            .expect("the call succeeds"),
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
         )
     }
 
     /// The rows, as `(key, dialogs)` pairs in the order they came back.
-    fn ranking(v: &serde_json::Value) -> Vec<(String, u64)> {
-        v["talkers"]
+    fn ranking(v: &serde_json::Value) -> Result<Vec<(String, u64)>, TestError> {
+        Ok(v["talkers"]
             .as_array()
-            .expect("talkers is an array")
+            .ok_or("talkers is an array")?
             .iter()
             .map(|row| {
                 (
@@ -1460,15 +1493,15 @@ mod tests {
                     row["dialogs"].as_u64().unwrap_or_default(),
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// The busiest address is first, and an address that only RECEIVED is not
     /// ranked above one that sent.
     #[tokio::test]
-    async fn top_talkers_by_ip_ranks_the_busiest_sender_first() {
-        let v = talkers(&two_call_capture(), "ip").await;
-        let rows = ranking(&v);
+    async fn top_talkers_by_ip_ranks_the_busiest_sender_first() -> Result<(), TestError> {
+        let v = talkers(&two_call_capture()?, "ip").await?;
+        let rows = ranking(&v)?;
         assert_eq!(
             rows.first().map(|(k, _)| k.as_str()),
             Some("10.0.0.1"),
@@ -1479,15 +1512,16 @@ mod tests {
             Some(2),
             "two dialogs, not four messages: a talker counts a dialog once: {v}"
         );
+        Ok(())
     }
 
     /// A dialog counts for BOTH ends, which is what separates this tool from
     /// `aggregate_dialogs`. The phone and the proxy each carry the same two
     /// dialogs, so the rows sum above `total_matched`.
     #[tokio::test]
-    async fn top_talkers_credits_a_dialog_to_every_participant() {
-        let v = talkers(&two_call_capture(), "ip").await;
-        let rows = ranking(&v);
+    async fn top_talkers_credits_a_dialog_to_every_participant() -> Result<(), TestError> {
+        let v = talkers(&two_call_capture()?, "ip").await?;
+        let rows = ranking(&v)?;
         let phone = rows.iter().find(|(k, _)| k == "10.0.0.1").map(|(_, n)| *n);
         let proxy = rows.iter().find(|(k, _)| k == "10.0.0.2").map(|(_, n)| *n);
         assert_eq!(phone, Some(2), "the phone sent in both of its calls: {v}");
@@ -1502,30 +1536,32 @@ mod tests {
             summed > 3,
             "the rows must NOT partition the dialogs -- a call has two ends: {v}"
         );
+        Ok(())
     }
 
     /// INVITE outcomes are attributed per talker: one answered, one 403.
     #[tokio::test]
-    async fn top_talkers_reports_invite_outcomes_per_talker() {
-        let v = talkers(&two_call_capture(), "ip").await;
+    async fn top_talkers_reports_invite_outcomes_per_talker() -> Result<(), TestError> {
+        let v = talkers(&two_call_capture()?, "ip").await?;
         let row = v["talkers"]
             .as_array()
-            .expect("talkers is an array")
+            .ok_or("talkers is an array")?
             .iter()
             .find(|r| r["key"] == "10.0.0.1")
             .cloned()
-            .expect("the phone is ranked");
+            .ok_or("the phone is ranked")?;
         assert_eq!(row["invites"], 2, "{row}");
         assert_eq!(row["answered"], 1, "one call reached 200: {row}");
         assert_eq!(row["failed"], 1, "the other reached 403: {row}");
+        Ok(())
     }
 
     /// Banners rank by the software that sent them, and the value is fenced
     /// because a `User-Agent` is a string a stranger chose.
     #[tokio::test]
-    async fn top_talkers_by_ua_ranks_banners_and_fences_them() {
-        let v = talkers(&two_call_capture(), "ua").await;
-        let rows = ranking(&v);
+    async fn top_talkers_by_ua_ranks_banners_and_fences_them() -> Result<(), TestError> {
+        let v = talkers(&two_call_capture()?, "ua").await?;
+        let rows = ranking(&v)?;
         let phone = rows
             .iter()
             .find(|(k, _)| k.contains("Phone/1.0"))
@@ -1540,40 +1576,41 @@ mod tests {
             fenced, "Phone/1.0",
             "a banner reaches a model fenced, exactly as a row fences it: {v}"
         );
+        Ok(())
     }
 
     /// The dialed number's leading digits make one bucket per dialog, and a
     /// destination that is a name rather than a number is named rather than
     /// dropped.
     #[tokio::test]
-    async fn top_talkers_by_prefix_buckets_the_dialed_number() {
+    async fn top_talkers_by_prefix_buckets_the_dialed_number() -> Result<(), TestError> {
         let srv = server_with(vec![
-            numeric_invite("n1@test", "15551234", ip(1), ip(2), base_ts()),
+            numeric_invite("n1@test", "15551234", ip(1), ip(2), base_ts()?)?,
             numeric_invite(
                 "n2@test",
                 "+15559999",
                 ip(1),
                 ip(2),
-                base_ts() + chrono::Duration::seconds(1),
-            ),
+                base_ts()? + chrono::Duration::seconds(1),
+            )?,
             numeric_invite(
                 "n3@test",
                 "16135551212",
                 ip(1),
                 ip(2),
-                base_ts() + chrono::Duration::seconds(2),
-            ),
+                base_ts()? + chrono::Duration::seconds(2),
+            )?,
             invite(
                 "named@test",
                 "alice",
                 ip(1),
                 ip(2),
                 "Phone/1.0",
-                base_ts() + chrono::Duration::seconds(3),
-            ),
+                base_ts()? + chrono::Duration::seconds(3),
+            )?,
         ]);
-        let v = talkers(&srv, "prefix").await;
-        let rows = ranking(&v);
+        let v = talkers(&srv, "prefix").await?;
+        let rows = ranking(&v)?;
 
         assert_eq!(
             rows.first().map(|(k, n)| (k.as_str(), *n)),
@@ -1595,13 +1632,14 @@ mod tests {
             v["total_matched"].as_u64().unwrap_or_default(),
             "a dialog has ONE dialed number, so prefix rows do partition: {v}"
         );
+        Ok(())
     }
 
     /// `limit` bounds the rows and says so, while `distinct_talkers` keeps
     /// describing every talker.
     #[tokio::test]
-    async fn top_talkers_limit_bounds_rows_without_hiding_the_total() {
-        let srv = two_call_capture();
+    async fn top_talkers_limit_bounds_rows_without_hiding_the_total() -> Result<(), TestError> {
+        let srv = two_call_capture()?;
         let v = json_of(
             &srv.top_talkers(Parameters(TopTalkersParams {
                 by: "ip".to_string(),
@@ -1610,20 +1648,21 @@ mod tests {
                 prefix_digits: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(v["talkers"].as_array().map(Vec::len), Some(1), "{v}");
         assert_eq!(v["truncated"], true, "{v}");
         assert!(
             v["distinct_talkers"].as_u64().unwrap_or_default() > 1,
             "the count above the page describes every talker: {v}"
         );
+        Ok(())
     }
 
     /// A filter narrows which dialogs count, so "who is failing" is one call.
     #[tokio::test]
-    async fn top_talkers_honors_the_filter() {
-        let srv = two_call_capture();
+    async fn top_talkers_honors_the_filter() -> Result<(), TestError> {
+        let srv = two_call_capture()?;
         let v = json_of(
             &srv.top_talkers(Parameters(TopTalkersParams {
                 by: "ip".to_string(),
@@ -1632,27 +1671,28 @@ mod tests {
                 prefix_digits: None,
             }))
             .await
-            .expect("the call succeeds"),
-        );
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
         assert_eq!(
             v["total_matched"], 1,
             "only the rejected call matches the filter: {v}"
         );
         assert_eq!(
-            ranking(&v)
+            ranking(&v)?
                 .iter()
                 .find(|(k, _)| k == "10.0.0.1")
                 .map(|(_, n)| *n),
             Some(1),
             "and the phone is credited with exactly that one: {v}"
         );
+        Ok(())
     }
 
     /// An unknown dimension is refused by name rather than silently ranked by
     /// something else.
     #[tokio::test]
-    async fn top_talkers_refuses_an_unknown_dimension() {
-        let err = two_call_capture()
+    async fn top_talkers_refuses_an_unknown_dimension() -> Result<(), TestError> {
+        let err = two_call_capture()?
             .top_talkers(Parameters(TopTalkersParams {
                 by: "codec".to_string(),
                 limit: None,
@@ -1660,19 +1700,21 @@ mod tests {
                 prefix_digits: None,
             }))
             .await
-            .expect_err("an unknown dimension is refused");
+            .err()
+            .ok_or("an unknown dimension is refused")?;
         assert!(
             err.message.contains("ip, ua, prefix"),
             "the refusal must name the vocabulary: {}",
             err.message
         );
+        Ok(())
     }
 
     /// A zero-digit prefix is refused: it is one bucket for every
     /// destination, so the ranking would have a single meaningless row.
     #[tokio::test]
-    async fn top_talkers_refuses_a_zero_width_prefix() {
-        let err = two_call_capture()
+    async fn top_talkers_refuses_a_zero_width_prefix() -> Result<(), TestError> {
+        let err = two_call_capture()?
             .top_talkers(Parameters(TopTalkersParams {
                 by: "prefix".to_string(),
                 limit: None,
@@ -1680,19 +1722,21 @@ mod tests {
                 prefix_digits: Some(0),
             }))
             .await
-            .expect_err("a zero-width prefix is refused");
+            .err()
+            .ok_or("a zero-width prefix is refused")?;
         assert!(
             err.message.contains("prefix_digits"),
             "the refusal must name the parameter: {}",
             err.message
         );
+        Ok(())
     }
 
     /// `share_pct` is null rather than zero on an empty capture: a zero there
     /// reads as a talker that was measured and found idle.
     #[tokio::test]
-    async fn top_talkers_on_an_empty_capture_ranks_nobody() {
-        let v = talkers(&server_with(vec![]), "ip").await;
+    async fn top_talkers_on_an_empty_capture_ranks_nobody() -> Result<(), TestError> {
+        let v = talkers(&server_with(vec![]), "ip").await?;
         assert_eq!(v["total_matched"], 0, "{v}");
         assert_eq!(v["distinct_talkers"], 0, "{v}");
         assert_eq!(v["truncated"], false, "{v}");
@@ -1701,5 +1745,6 @@ mod tests {
             Some(0),
             "nothing to rank: {v}"
         );
+        Ok(())
     }
 }
