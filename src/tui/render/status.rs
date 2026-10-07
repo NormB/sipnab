@@ -746,12 +746,14 @@ mod tests {
     };
     use crossterm::event::KeyEvent;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The auto-generated default is summarized, never drawn as its raw
     /// thousand-column expression -- the whole point of the display fix. A
     /// truncated prefix of the generated filter reads as a complete filter that
     /// captures less than it does.
     #[test]
-    fn a_generated_default_is_summarized_not_shown_raw() {
+    fn a_generated_default_is_summarized_not_shown_raw() -> Result<(), TestError> {
         let raw = "udp and (portrange 5060-5061 or ip proto 41) or ".repeat(40);
         let out = bpf_display(true, &raw, false, 200);
         assert_eq!(out, default_summary(&raw));
@@ -759,6 +761,7 @@ mod tests {
             !out.contains("portrange"),
             "the raw generated expression must not leak into the slot: {out}"
         );
+        Ok(())
     }
 
     /// The summary says what the generated filter admits, read from the filter
@@ -766,7 +769,7 @@ mod tests {
     /// default admitted no RTP at all (LIVE-MEDIA-1); with `--no-rtp` it still
     /// admits none, and on a composite it admits RTP and no SIP.
     #[test]
-    fn the_summary_names_what_the_generated_filter_admits() {
+    fn the_summary_names_what_the_generated_filter_admits() -> Result<(), TestError> {
         use crate::app::bootstrap::{MEDIA_FILTER_ARM, auto_capture_filter};
         let both = bpf_display(
             true,
@@ -784,22 +787,24 @@ mod tests {
         assert!(sip.contains("SIP") && !sip.contains("RTP"), "{sip}");
         let rtp = bpf_display(true, MEDIA_FILTER_ARM, false, 200);
         assert!(rtp.contains("RTP only"), "{rtp}");
+        Ok(())
     }
 
     /// An operator's own filter is shown verbatim when it fits -- pasteable into
     /// tcpdump, unchanged.
     #[test]
-    fn an_operator_filter_is_shown_verbatim() {
+    fn an_operator_filter_is_shown_verbatim() -> Result<(), TestError> {
         assert_eq!(
             bpf_display(false, "udp port 5060", false, 40),
             "udp port 5060"
         );
+        Ok(())
     }
 
     /// A long operator filter is still cut with `…`, the existing behavior for
     /// an expression the operator authored.
     #[test]
-    fn a_long_operator_filter_is_cut_with_an_ellipsis() {
+    fn a_long_operator_filter_is_cut_with_an_ellipsis() -> Result<(), TestError> {
         let out = bpf_display(
             false,
             "udp port 5060 and host 192.0.2.5 and portrange 10000-20000",
@@ -810,12 +815,13 @@ mod tests {
             out.ends_with('…'),
             "a long operator filter is truncated: {out}"
         );
+        Ok(())
     }
 
     /// The `[live capture]` marker rides on the summary too, so the
     /// offline-after-`O` case reads correctly for a generated default.
     #[test]
-    fn the_live_marker_rides_on_the_summary() {
+    fn the_live_marker_rides_on_the_summary() -> Result<(), TestError> {
         let out = bpf_display(true, "anything", true, 200);
         assert!(
             out.starts_with(default_summary("anything")),
@@ -825,46 +831,51 @@ mod tests {
             out.contains("[live capture]"),
             "the live marker travels: {out}"
         );
+        Ok(())
     }
 
     /// An empty filter (nothing compiled) stays empty -- blank means "nothing
     /// was filtered", never a summary.
     #[test]
-    fn an_empty_filter_stays_empty() {
+    fn an_empty_filter_stays_empty() -> Result<(), TestError> {
         assert_eq!(bpf_display(false, "", false, 40), "");
         assert_eq!(bpf_display(false, "", true, 40), "");
+        Ok(())
     }
 
     /// A live capture is named by its interface, in words: the old
     /// `Current Mode: Online (any)` made the reader decode "mode" and
     /// "online" into "which traffic am I looking at".
     #[test]
-    fn a_live_capture_is_named_by_its_interface() {
+    fn a_live_capture_is_named_by_its_interface() -> Result<(), TestError> {
         assert_eq!(capture_source_phrase("Online (eth0)"), "Live capture: eth0");
         assert_eq!(capture_source_phrase("Online (any)"), "Live capture: any");
+        Ok(())
     }
 
     /// An offline capture is named by its file, non-ASCII names intact.
     #[test]
-    fn an_offline_capture_is_named_by_its_file() {
+    fn an_offline_capture_is_named_by_its_file() -> Result<(), TestError> {
         assert_eq!(
             capture_source_phrase("Offline (café.pcap)"),
             "File: café.pcap"
         );
+        Ok(())
     }
 
     /// A label in neither shape is shown verbatim rather than mangled.
     #[test]
-    fn an_unrecognized_capture_label_is_shown_as_is() {
+    fn an_unrecognized_capture_label_is_shown_as_is() -> Result<(), TestError> {
         assert_eq!(capture_source_phrase("HEP listener"), "HEP listener");
+        Ok(())
     }
 
     /// Status line 1 reads as words: the source, the dialog counts as
     /// "N shown of M", and autoscroll spelled out rather than a bare `[A]`.
     #[test]
-    fn status_line1_reads_as_words() {
+    fn status_line1_reads_as_words() -> Result<(), TestError> {
         let app = App::new_test();
-        let row = status_row(&app, 100, render_status_line1);
+        let row = status_row(&app, 100, render_status_line1)?;
         assert!(row.contains("Live capture: any"), "source missing: {row:?}");
         assert!(
             row.contains("Dialogs: 0 shown of 0"),
@@ -876,18 +887,19 @@ mod tests {
         );
         assert!(!row.contains("[A]"), "the bare [A] marker is back: {row:?}");
         assert!(!row.contains("Current Mode"), "old label is back: {row:?}");
+        Ok(())
     }
 
     /// Line 2 carries the capture (BPF) filter and ONLY that; the view
     /// filter lives on line 3. Both lines used to print the view filter, so
     /// the header said the same thing twice and the BPF slot was easy to miss.
     #[test]
-    fn the_view_filter_is_on_line3_and_not_on_line2() {
+    fn the_view_filter_is_on_line3_and_not_on_line2() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_filter_text = "method == 'BYE'".to_string();
         app.bpf_filter = "udp port 5060".to_string();
-        let line2 = status_row(&app, 100, render_status_line2);
-        let line3 = status_row(&app, 100, render_status_line3);
+        let line2 = status_row(&app, 100, render_status_line2)?;
+        let line3 = status_row(&app, 100, render_status_line3)?;
         assert!(
             line2.contains("Capture filter (BPF): udp port 5060"),
             "capture filter missing from line 2: {line2:?}"
@@ -900,119 +912,146 @@ mod tests {
             line3.contains("View filter: method == 'BYE'"),
             "view filter missing from line 3: {line3:?}"
         );
+        Ok(())
     }
 
     /// With no view filter and no capture filter, both slots say `none`
     /// instead of ending on a bare label.
     #[test]
-    fn unset_filters_read_none() {
+    fn unset_filters_read_none() -> Result<(), TestError> {
         let app = App::new_test();
-        let line2 = status_row(&app, 100, render_status_line2);
-        let line3 = status_row(&app, 100, render_status_line3);
+        let line2 = status_row(&app, 100, render_status_line2)?;
+        let line3 = status_row(&app, 100, render_status_line3)?;
         assert!(
             line2.trim_end().ends_with("Capture filter (BPF): none"),
             "{line2:?}"
         );
         assert!(line3.trim_end().ends_with("View filter: none"), "{line3:?}");
+        Ok(())
     }
 
     /// The color of the first message column on status line 3.
-    fn status_message_fg(app: &App) -> ratatui::style::Color {
-        let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
-        terminal
-            .draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), app))
-            .unwrap();
-        terminal.backend().buffer().cell((1, 0)).unwrap().fg
+    fn status_message_fg(app: &App) -> Result<ratatui::style::Color, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(60, 2))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), app))?;
+        Ok(terminal
+            .backend()
+            .buffer()
+            .cell((1, 0))
+            .ok_or("cell() returned None")?
+            .fg)
     }
 
     /// A message raised as an error draws in the error color, whatever its
     /// words. "File not found" contains neither "error" nor "fail", and the
     /// old substring test drew it as plain information.
     #[test]
-    fn a_raised_error_draws_in_the_error_color() {
+    fn a_raised_error_draws_in_the_error_color() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.set_status_error("File not found: /nope.pcap");
-        assert_eq!(status_message_fg(&app), app.theme.bad);
+        assert_eq!(status_message_fg(&app)?, app.theme.bad);
+        Ok(())
     }
 
     /// Information draws as information even when its words contain "fail":
     /// severity is what the code said, not what the sentence happens to say.
     #[test]
-    fn information_that_mentions_failure_is_not_drawn_as_an_error() {
+    fn information_that_mentions_failure_is_not_drawn_as_an_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.status_error = Some("Cleared 3 failed dialogs".to_string());
-        assert_ne!(status_message_fg(&app), app.theme.bad);
+        assert_ne!(status_message_fg(&app)?, app.theme.bad);
+        Ok(())
     }
 
     /// A later information message replaces an error without inheriting its
     /// color: severity belongs to the message it was raised with.
     #[test]
-    fn an_error_does_not_color_the_message_that_replaces_it() {
+    fn an_error_does_not_color_the_message_that_replaces_it() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.set_status_error("Save failed: disk full");
         app.status_error = Some("Saved 3 packets".to_string());
-        assert_ne!(status_message_fg(&app), app.theme.bad);
+        assert_ne!(status_message_fg(&app)?, app.theme.bad);
+        Ok(())
     }
 
     /// The default body text follows the terminal's own foreground, so a
     /// light terminal gets dark text. Hardcoded white was near-invisible on
     /// a white background.
     #[test]
-    fn the_default_foreground_follows_the_terminal() {
+    fn the_default_foreground_follows_the_terminal() -> Result<(), TestError> {
         assert_eq!(Theme::default().foreground, ratatui::style::Color::Reset);
+        Ok(())
     }
 
     /// The status rows and the key bar paint their own background, so their
     /// text takes the color chosen against that background, never the
     /// terminal default (dark text on the dark band on a light terminal).
     #[test]
-    fn status_bar_text_contrasts_with_its_background() {
+    fn status_bar_text_contrasts_with_its_background() -> Result<(), TestError> {
         let app = App::new_test();
         let want = crate::tui::call_list::header_foreground(app.theme.status_bg)
-            .expect("the default status band is a real color");
-        let mut terminal = Terminal::new(TestBackend::new(80, 2)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_fkey_bar(
-                    frame,
-                    Rect::new(0, 0, 80, 1),
-                    &View::CallList,
-                    &None,
-                    false,
-                    &app.theme,
-                );
-                render_status_line1(frame, Rect::new(0, 1, 80, 1), &app);
-            })
-            .unwrap();
+            .ok_or("the default status band is a real color")?;
+        let mut terminal = Terminal::new(TestBackend::new(80, 2))?;
+        terminal.draw(|frame| {
+            render_fkey_bar(
+                frame,
+                Rect::new(0, 0, 80, 1),
+                &View::CallList,
+                &None,
+                false,
+                &app.theme,
+            );
+            render_status_line1(frame, Rect::new(0, 1, 80, 1), &app);
+        })?;
         let buf = terminal.backend().buffer();
-        assert_eq!(buf.cell((0, 0)).unwrap().fg, want, "key bar key");
-        assert_eq!(buf.cell((4, 0)).unwrap().fg, want, "key bar label");
+        assert_eq!(
+            buf.cell((0, 0)).ok_or("cell() returned None")?.fg,
+            want,
+            "key bar key"
+        );
+        assert_eq!(
+            buf.cell((4, 0)).ok_or("cell() returned None")?.fg,
+            want,
+            "key bar label"
+        );
         // Column 0 of line 1 is the indent, drawn in the row's own style.
-        assert_eq!(buf.cell((0, 1)).unwrap().fg, want, "status line 1");
+        assert_eq!(
+            buf.cell((0, 1)).ok_or("cell() returned None")?.fg,
+            want,
+            "status line 1"
+        );
+        Ok(())
     }
 
     /// Draw one status row with `render` into a `width`-wide backend and
     /// return it as text.
-    fn status_row(app: &App, width: u16, render: fn(&mut ratatui::Frame, Rect, &App)) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
-        terminal
-            .draw(|frame| render(frame, Rect::new(0, 0, width, 1), app))
-            .unwrap();
+    fn status_row(
+        app: &App,
+        width: u16,
+        render: fn(&mut ratatui::Frame, Rect, &App),
+    ) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(width, 2))?;
+        terminal.draw(|frame| render(frame, Rect::new(0, 0, width, 1), app))?;
         let buf = terminal.backend().buffer();
-        (0..width)
-            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
-            .collect()
+        Ok((0..width)
+            .map(|x| {
+                buf.cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .ok_or("cell outside the buffer")
+            })
+            .collect::<Result<_, _>>()?)
     }
 
     /// A filter that fits the row is left exactly as the capture compiled
     /// it. The operator pastes this text into `tcpdump`, so a marker on a
     /// complete expression would send them after traffic that is not missing.
     #[test]
-    fn a_filter_that_fits_the_row_is_left_verbatim() {
+    fn a_filter_that_fits_the_row_is_left_verbatim() -> Result<(), TestError> {
         assert_eq!(fit_bpf_to_cols("udp port 5060", 40), "udp port 5060");
         // Exactly filling the row is still a whole expression.
         assert_eq!(fit_bpf_to_cols("udp port 5060", 13), "udp port 5060");
         assert_eq!(fit_bpf_to_cols("", 0), "");
+        Ok(())
     }
 
     /// A filter wider than the row is cut with a visible marker rather than
@@ -1020,33 +1059,37 @@ mod tests {
     /// than any terminal, and an expression that appears to end where the
     /// screen ends understates what the kernel is dropping.
     #[test]
-    fn a_filter_wider_than_the_row_is_cut_with_a_visible_marker() {
+    fn a_filter_wider_than_the_row_is_cut_with_a_visible_marker() -> Result<(), TestError> {
         let long = "portrange 5060-5061 or ((ether proto 0x8100) and (udp))";
         let fitted = fit_bpf_to_cols(long, 20);
         assert_eq!(display_cols(&fitted), 20, "cut text overruns the row");
         assert!(fitted.ends_with('…'), "no cut marker: {fitted:?}");
         let head = fitted.trim_end_matches('…');
         assert!(long.starts_with(head), "cut text is not a prefix: {head:?}");
+        Ok(())
     }
 
     /// The cut counts rendered columns, so a wide grapheme cannot push the
     /// text one column past the row it was measured into.
     #[test]
-    fn the_cut_counts_columns_so_a_wide_character_cannot_overrun_the_row() {
+    fn the_cut_counts_columns_so_a_wide_character_cannot_overrun_the_row() -> Result<(), TestError>
+    {
         let fitted = fit_bpf_to_cols("日本語です", 5);
         assert!(
             display_cols(&fitted) <= 5,
             "wide text overran the row: {fitted:?}"
         );
         assert!(fitted.ends_with('…'), "no cut marker: {fitted:?}");
+        Ok(())
     }
 
     /// With one column left there is still room to say a filter exists.
     /// Blank is reserved for "no filter was compiled", so it must not be the
     /// rendering of a filter that had nowhere to go.
     #[test]
-    fn a_single_free_column_still_marks_that_a_filter_is_in_force() {
+    fn a_single_free_column_still_marks_that_a_filter_is_in_force() -> Result<(), TestError> {
         assert_eq!(fit_bpf_to_cols("udp port 5060", 1), "…");
+        Ok(())
     }
 
     /// A non-ASCII offline filename renders intact and the styled
@@ -1054,40 +1097,45 @@ mod tests {
     /// the first source column), proving the styled segment is not shifted by
     /// byte/char index skew.
     #[test]
-    fn render_status_line1_non_ascii_filename_alignment() {
+    fn render_status_line1_non_ascii_filename_alignment() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.set_capture_mode("Offline (café.pcap)".to_string());
         let w = 80u16;
-        let mut terminal = Terminal::new(TestBackend::new(w, 4)).unwrap();
-        terminal
-            .draw(|frame| render_status_line1(frame, Rect::new(0, 0, w, 1), &app))
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(w, 4))?;
+        terminal.draw(|frame| render_status_line1(frame, Rect::new(0, 0, w, 1), &app))?;
         let buf = terminal.backend().buffer();
         let row: String = (0..w)
-            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
-            .collect();
+            .map(|x| {
+                buf.cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .ok_or("cell outside the buffer")
+            })
+            .collect::<Result<_, _>>()?;
         assert!(row.contains("File: café.pcap"), "filename missing: {row:?}");
         let src_col = L1_INDENT.len() as u16;
-        let cell = buf.cell((src_col, 0)).unwrap();
+        let cell = buf.cell((src_col, 0)).ok_or("cell() returned None")?;
         assert_eq!(cell.symbol(), "F", "source span misaligned: {row:?}");
         assert_eq!(cell.fg, app.theme.bad, "source span not styled");
+        Ok(())
     }
 
     /// A wide-character (CJK) capture filter renders intact under status
     /// line 2 without truncation or panic.
     #[test]
-    fn render_status_line2_wide_char_filter() {
+    fn render_status_line2_wide_char_filter() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.bpf_filter = "日本語".to_string();
         let w = 80u16;
-        let mut terminal = Terminal::new(TestBackend::new(w, 4)).unwrap();
-        terminal
-            .draw(|frame| render_status_line2(frame, Rect::new(0, 0, w, 1), &app))
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(w, 4))?;
+        terminal.draw(|frame| render_status_line2(frame, Rect::new(0, 0, w, 1), &app))?;
         let buf = terminal.backend().buffer();
         let row: String = (0..w)
-            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
-            .collect();
+            .map(|x| {
+                buf.cell((x, 0))
+                    .map(|c| c.symbol().to_string())
+                    .ok_or("cell outside the buffer")
+            })
+            .collect::<Result<_, _>>()?;
         // Reading per cell interleaves the wide-grapheme skip cells, so
         // assert each ideograph is present rather than the joined string.
         assert!(
@@ -1098,79 +1146,77 @@ mod tests {
             row.contains("Capture filter (BPF):"),
             "bpf label missing: {row:?}"
         );
+        Ok(())
     }
 
     /// Outside call flow, status line 3 shows the display filter.
     #[test]
-    fn render_status_line3_display_filter_default() {
+    fn render_status_line3_display_filter_default() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_filter_text = "from.user =~ '1001'".to_string();
-        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = Rect::new(0, 0, 80, 1);
-                render_status_line3(frame, area, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 4))?;
+        terminal.draw(|frame| {
+            let area = Rect::new(0, 0, 80, 1);
+            render_status_line3(frame, area, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(buf.cell((x, 0)).ok_or("cell() returned None")?.symbol());
         }
         assert!(row.contains("View filter"));
+        Ok(())
     }
 
     /// While mouse capture is toggled off (F12), status line 3 shows the
     /// persistent re-enable reminder instead of the display filter.
     #[test]
-    fn render_status_line3_mouse_capture_off_reminder() {
+    fn render_status_line3_mouse_capture_off_reminder() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.mouse_capture_enabled = false;
-        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = Rect::new(0, 0, 80, 1);
-                render_status_line3(frame, area, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 4))?;
+        terminal.draw(|frame| {
+            let area = Rect::new(0, 0, 80, 1);
+            render_status_line3(frame, area, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(buf.cell((x, 0)).ok_or("cell() returned None")?.symbol());
         }
         assert!(
             row.contains("Mouse capture OFF") && row.contains("F12"),
             "missing persistent reminder: {row:?}"
         );
+        Ok(())
     }
 
     /// In the call-flow view, status line 3 shows the mode hints
     /// including the split percentage.
     #[test]
-    fn render_status_line3_call_flow_branch() {
+    fn render_status_line3_call_flow_branch() -> Result<(), TestError> {
         let mut app = app_with_dialog();
         app.current_view = View::CallFlow("call-1@test".to_string());
         app.flow.raw_preview = true;
-        let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = Rect::new(0, 0, 100, 1);
-                render_status_line3(frame, area, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 4))?;
+        terminal.draw(|frame| {
+            let area = Rect::new(0, 0, 100, 1);
+            render_status_line3(frame, area, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(buf.cell((x, 0)).ok_or("cell() returned None")?.symbol());
         }
         assert!(row.contains("Detail: "), "{row:?}");
+        Ok(())
     }
 
     // ── render_fkey_bar across views ───────────────────────────────
 
     /// Every view's f-key bar includes the Esc hint.
     #[test]
-    fn render_fkey_bar_views() {
+    fn render_fkey_bar_views() -> Result<(), TestError> {
         let theme = Theme::default();
         for view in [
             View::CallList,
@@ -1188,49 +1234,47 @@ mod tests {
             View::Help,
             View::BpfFilter,
         ] {
-            let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
-            terminal
-                .draw(|frame| {
-                    let area = Rect::new(0, 0, 120, 1);
-                    render_fkey_bar(frame, area, &view, &None, false, &theme);
-                })
-                .unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(120, 3))?;
+            terminal.draw(|frame| {
+                let area = Rect::new(0, 0, 120, 1);
+                render_fkey_bar(frame, area, &view, &None, false, &theme);
+            })?;
             let buf = terminal.backend().buffer();
             let mut row = String::new();
             for x in 0..buf.area.width {
-                row.push_str(buf.cell((x, 0)).unwrap().symbol());
+                row.push_str(buf.cell((x, 0)).ok_or("cell() returned None")?.symbol());
             }
             assert!(
                 row.contains("Esc"),
                 "view {view:?} bar missing Esc: {row:?}"
             );
         }
+        Ok(())
     }
 
     /// An active popup's bar (save dialog) replaces the view's bar.
     #[test]
-    fn render_fkey_bar_popup_overrides_view() {
+    fn render_fkey_bar_popup_overrides_view() -> Result<(), TestError> {
         let theme = Theme::default();
-        let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = Rect::new(0, 0, 120, 1);
-                render_fkey_bar(
-                    frame,
-                    area,
-                    &View::CallList,
-                    &Some(Popup::SaveDialog),
-                    false,
-                    &theme,
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 3))?;
+        terminal.draw(|frame| {
+            let area = Rect::new(0, 0, 120, 1);
+            render_fkey_bar(
+                frame,
+                area,
+                &View::CallList,
+                &Some(Popup::SaveDialog),
+                false,
+                &theme,
+            );
+        })?;
         let buf = terminal.backend().buffer();
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(buf.cell((x, 0)).ok_or("cell() returned None")?.symbol());
         }
         assert!(row.contains("Format"));
+        Ok(())
     }
 
     /// The file-open dialog's bar names the keys of the mode it is in. It
@@ -1238,7 +1282,7 @@ mod tests {
     /// arrows) over the typed-path field, where Backspace edits the path
     /// rather than going up a directory.
     #[test]
-    fn the_file_open_bar_follows_the_dialog_mode() {
+    fn the_file_open_bar_follows_the_dialog_mode() -> Result<(), TestError> {
         let popup = Some(Popup::FileOpenDialog);
         let manual = fkey_bar_items(&View::CallList, &popup, 120, true);
         assert!(manual.contains(&("Tab", "Browse")), "{manual:?}");
@@ -1253,6 +1297,7 @@ mod tests {
             !browse.iter().any(|(k, _)| k.contains('\u{21E7}')),
             "plain arrows drawn as Shift-arrows: {browse:?}"
         );
+        Ok(())
     }
 
     // ── The f-key bar must not misrepresent the keymap ──────────────
@@ -1268,7 +1313,7 @@ mod tests {
     /// entry pass unverified, which is precisely the failure the gate
     /// below exists to prevent: the gate would stay green while covering
     /// less and less. Adding a bar entry must force a decision here.
-    fn bar_legend_keys(legend: &str) -> Vec<KeyEvent> {
+    fn bar_legend_keys(legend: &str) -> Result<Vec<KeyEvent>, TestError> {
         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
         let plain = |c: KeyCode| KeyEvent::new(c, KeyModifiers::NONE);
@@ -1276,15 +1321,16 @@ mod tests {
         // Glyph legends are single entries that name a pair of keys.
         match legend {
             "\u{2191}\u{2193}" | "Up/Down" => {
-                return vec![plain(KeyCode::Up), plain(KeyCode::Down)];
+                return Ok(vec![plain(KeyCode::Up), plain(KeyCode::Down)]);
             }
-            "PgUp/Dn" => return vec![plain(KeyCode::PageUp), plain(KeyCode::PageDown)],
+            "PgUp/Dn" => return Ok(vec![plain(KeyCode::PageUp), plain(KeyCode::PageDown)]),
             _ => {}
         }
 
         legend
             .split('/')
-            .map(|tok| match tok {
+            .map(|tok| -> Result<KeyEvent, TestError> {
+                Ok(match tok {
                 "Esc" => plain(KeyCode::Esc),
                 "Enter" => plain(KeyCode::Enter),
                 "Tab" => plain(KeyCode::Tab),
@@ -1302,14 +1348,13 @@ mod tests {
                         let mut chars = tok.chars();
                         match (chars.next(), chars.next()) {
                             (Some(c), None) => plain(KeyCode::Char(c)),
-                            _ => panic!(
-                                "f-key bar legend {legend:?} has an unrecognized token {tok:?}. \
+                            _ => return Err(format!("f-key bar legend {legend:?} has an unrecognized token {tok:?}. \
                                  Teach bar_legend_keys what key it names — an unparsed legend \
-                                 is an unverified promise to the operator."
-                            ),
+                                 is an unverified promise to the operator.").into()),
                         }
                     }
                 }
+                })
             })
             .collect()
     }
@@ -1320,20 +1365,19 @@ mod tests {
     /// Every view with an f-key bar, paired with its pure key-to-action
     /// mapper. One list, so the bound gate, the width gate and the help gate
     /// cannot cover different views.
-    fn bar_views() -> Vec<(View, Bound)> {
+    fn bar_views() -> Result<Vec<(View, Bound)>, TestError> {
         use crate::rtp::stream::StreamKey;
         use crate::tui::tfps_observe::TfpsMode;
         use std::net::SocketAddr;
 
-        let addr =
-            |s: &str| -> SocketAddr { s.parse().expect("test-local literal socket address") };
+        let addr = |s: &str| -> Result<SocketAddr, TestError> { Ok(s.parse()?) };
         let key = StreamKey {
             ssrc: 1,
-            src: addr("192.0.2.1:5004"),
-            dst: addr("192.0.2.2:5004"),
+            src: addr("192.0.2.1:5004")?,
+            dst: addr("192.0.2.2:5004")?,
         };
         let id = || String::from("call-id");
-        vec![
+        Ok(vec![
             (View::CallList, |km, k| call_list_action(km, k).is_some()),
             (View::CallFlow(id()), |km, k| {
                 call_flow_action(km, k).is_some()
@@ -1422,16 +1466,16 @@ mod tests {
             (View::StreamLossMap(key), |km, k| {
                 loss_map_action(km, k).is_some()
             }),
-        ]
+        ])
     }
 
     /// **Every view's bar names the help key**, at every width. The bar is
     /// where an operator looks for a way out of not knowing; eleven views had
     /// a bar with no F1 on it, and in most of those F1 did nothing either.
     #[test]
-    fn every_view_bar_offers_help_at_every_width() {
+    fn every_view_bar_offers_help_at_every_width() -> Result<(), TestError> {
         let mut missing = Vec::new();
-        for (view, _) in bar_views() {
+        for (view, _) in bar_views()? {
             if view == View::Help {
                 continue; // F1 closes help; the bar says Esc Close instead.
             }
@@ -1446,6 +1490,7 @@ mod tests {
             "bars without F1 Help:\n  {}",
             missing.join("\n  ")
         );
+        Ok(())
     }
 
     /// **Every key the f-key bar advertises must be bound in the view that
@@ -1466,17 +1511,17 @@ mod tests {
     /// building an `App`. Named here so the gap is a known limit rather
     /// than a silent one.
     #[test]
-    fn every_advertised_fkey_is_bound_in_its_view() {
+    fn every_advertised_fkey_is_bound_in_its_view() -> Result<(), TestError> {
         let km = Keymap::default();
         // Widths straddle every tier boundary in `fkey_bar_items`.
         let widths = [60u16, 79, 95, 96, 111, 112, 125, 126, 141, 142, 200];
-        let views = bar_views();
+        let views = bar_views()?;
 
         let mut unbound: Vec<String> = Vec::new();
         for (view, is_bound) in &views {
             for width in widths {
                 for (legend, label) in fkey_bar_items(view, &None, width, false) {
-                    for key in bar_legend_keys(legend) {
+                    for key in bar_legend_keys(legend)? {
                         // The help key is also answered globally, for every
                         // view that does not bind it itself.
                         let global_help =
@@ -1498,6 +1543,7 @@ mod tests {
             "the f-key bar promises keys the view ignores:\n  {}",
             unbound.join("\n  ")
         );
+        Ok(())
     }
 
     /// Rendered column span of one f-key bar item set, matching
@@ -1514,11 +1560,12 @@ mod tests {
     /// terminal too: the narrowest tier used to be 62 columns wide, and at 60
     /// the last entry was cut to `F7 Filt`.
     #[test]
-    fn the_call_list_bar_fits_a_60_column_terminal() {
+    fn the_call_list_bar_fits_a_60_column_terminal() -> Result<(), TestError> {
         for width in [60u16, 66] {
             let items = fkey_bar_items(&View::CallList, &None, width, false);
             assert!(bar_cols(&items) <= width as usize, "{width}: {items:?}");
         }
+        Ok(())
     }
 
     /// **A bar tier must fit the narrowest terminal that selects it.**
@@ -1533,8 +1580,8 @@ mod tests {
     /// The widths below sit at each tier's lower edge, which is where a
     /// tier is at its tightest relative to its budget.
     #[test]
-    fn every_fkey_bar_tier_fits_the_width_that_selects_it() {
-        let views: Vec<View> = bar_views().into_iter().map(|(v, _)| v).collect();
+    fn every_fkey_bar_tier_fits_the_width_that_selects_it() -> Result<(), TestError> {
+        let views: Vec<View> = bar_views()?.into_iter().map(|(v, _)| v).collect();
 
         let mut overflow: Vec<String> = Vec::new();
         for view in &views {
@@ -1556,12 +1603,15 @@ mod tests {
             "f-key bar tiers that do not fit their own width:\n  {}",
             overflow.join("\n  ")
         );
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod live_only_bpf_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// After an in-session file open the BPF slot says which source its filter
     /// belongs to (#190).
@@ -1575,7 +1625,7 @@ mod live_only_bpf_tests {
     /// and the filter still applies to it, so blanking would claim no filter
     /// was compiled — a different and false thing to say.
     #[test]
-    fn an_offline_load_marks_the_bpf_slot_as_the_live_captures() {
+    fn an_offline_load_marks_the_bpf_slot_as_the_live_captures() -> Result<(), TestError> {
         let plain = "udp port 5060";
         let marked = format!("{plain} [live capture]");
         assert!(
@@ -1599,5 +1649,6 @@ mod live_only_bpf_tests {
             display_cols(&narrow) <= 10,
             "the fit must respect the budget: {narrow}"
         );
+        Ok(())
     }
 }

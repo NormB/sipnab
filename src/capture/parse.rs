@@ -3624,6 +3624,8 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
+    type TestError = Box<dyn std::error::Error>;
+
     // Multi-core sharding (--cores): the cheap host-pair peek must extract the
     // outer src/dst IPs from the link+IP headers — for plain Ethernet, VLAN-tagged
     // frames, and gracefully return None for non-IP / truncated input (those
@@ -3631,7 +3633,7 @@ mod tests {
     /// `peek_host_pair` matches the full parse for plain and VLAN-tagged
     /// Ethernet, and returns `None` for non-IP or truncated frames.
     #[test]
-    fn peek_host_pair_extracts_endpoints() {
+    fn peek_host_pair_extracts_endpoints() -> Result<(), TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -3640,10 +3642,10 @@ mod tests {
         let pkt = make_packet(
             build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x"),
             DLT_EN10MB,
-        );
+        )?;
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
         // and it agrees with the full parse
-        let parsed = parse_packet(&pkt).expect("parses");
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -3655,19 +3657,23 @@ mod tests {
         vlan.extend_from_slice(&[0x81, 0x00, 0x00, 0x64]); // VLAN tag, VID 100
         vlan.extend_from_slice(&base[12..]); // ethertype 0x0800 + IPv4 …
         assert_eq!(
-            peek_host_pair(&make_packet(vlan, DLT_EN10MB)),
+            peek_host_pair(&make_packet(vlan, DLT_EN10MB)?),
             Some((IpAddr::V4(a), IpAddr::V4(b)))
         );
 
         // non-IP / truncated → None (caller shards these to worker 0)
-        assert_eq!(peek_host_pair(&make_packet(vec![0u8; 8], DLT_EN10MB)), None);
-        assert_eq!(peek_host_pair(&make_packet(vec![], DLT_EN10MB)), None);
+        assert_eq!(
+            peek_host_pair(&make_packet(vec![0u8; 8], DLT_EN10MB)?),
+            None
+        );
+        assert_eq!(peek_host_pair(&make_packet(vec![], DLT_EN10MB)?), None);
+        Ok(())
     }
 
     /// After reassembly, a UDP buffer yields its ports and the 8-byte
     /// header offset.
     #[test]
-    fn reparse_transport_udp_recovers_ports_and_strips_header() {
+    fn reparse_transport_udp_recovers_ports_and_strips_header() -> Result<(), TestError> {
         // After IP reassembly the buffer is the IP payload = UDP header + body.
         // reparse must recover the ports and the offset past the 8-byte header.
         let mut buf = Vec::new();
@@ -3676,33 +3682,36 @@ mod tests {
         buf.extend_from_slice(&0u16.to_be_bytes()); // len (ignored)
         buf.extend_from_slice(&0u16.to_be_bytes()); // cksum
         buf.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n");
-        let (sp, dp, tp, hdr) = reparse_transport(17, &buf).expect("udp reparse");
+        let (sp, dp, tp, hdr) = reparse_transport(17, &buf).ok_or("udp reparse")?;
         assert_eq!((sp, dp), (5060, 5062));
         assert_eq!(tp, TransportProto::Udp);
         assert_eq!(&buf[hdr..hdr + 7], b"OPTIONS");
+        Ok(())
     }
 
     /// A TCP buffer's header length comes from the data-offset nibble.
     #[test]
-    fn reparse_transport_tcp_uses_data_offset() {
+    fn reparse_transport_tcp_uses_data_offset() -> Result<(), TestError> {
         let mut buf = vec![0u8; 20];
         buf[0..2].copy_from_slice(&5060u16.to_be_bytes());
         buf[2..4].copy_from_slice(&40000u16.to_be_bytes());
         buf[12] = 5 << 4; // data offset = 5 words = 20 bytes, no options
         buf.extend_from_slice(b"INVITE");
-        let (sp, dp, tp, hdr) = reparse_transport(6, &buf).expect("tcp reparse");
+        let (sp, dp, tp, hdr) = reparse_transport(6, &buf).ok_or("tcp reparse")?;
         assert_eq!((sp, dp), (5060, 40000));
         assert_eq!(tp, TransportProto::Tcp);
         assert_eq!(hdr, 20);
+        Ok(())
     }
 
     /// Truncated UDP/TCP buffers and unhandled protocols (SCTP) yield
     /// `None`.
     #[test]
-    fn reparse_transport_rejects_truncated_and_unknown() {
+    fn reparse_transport_rejects_truncated_and_unknown() -> Result<(), TestError> {
         assert!(reparse_transport(17, &[0, 0, 0]).is_none()); // < 8 bytes
         assert!(reparse_transport(6, &[0u8; 10]).is_none()); // < 20 bytes
         assert!(reparse_transport(132, &[0u8; 40]).is_none()); // SCTP: not handled
+        Ok(())
     }
 
     /// Build a minimal Ethernet + IPv4 + UDP packet.
@@ -3961,19 +3970,25 @@ mod tests {
     /// Build an Ethernet/IPv4/SCTP packet (10.0.0.1 → 10.0.0.2, ports
     /// 5060/5062) carrying a single DATA chunk with the given fragment `flags`,
     /// TSN, stream id, and stream seq — one fragment of a message per packet.
-    fn sctp_frag_packet(flags: u8, tsn: u32, sid: u16, ssn: u16, payload: &[u8]) -> Packet {
+    fn sctp_frag_packet(
+        flags: u8,
+        tsn: u32,
+        sid: u16,
+        ssn: u16,
+        payload: &[u8],
+    ) -> Result<Packet, TestError> {
         let mut sctp = sctp_common_header(5060, 5062);
         sctp.extend_from_slice(&sctp_data_chunk_full(flags, tsn, sid, ssn, payload));
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        make_packet(data, DLT_EN10MB)
+        Ok(make_packet(data, DLT_EN10MB)?)
     }
 
     /// The association endpoints used by [`sctp_frag_packet`].
-    fn sctp_endpoints() -> (SocketAddr, SocketAddr) {
-        (
-            SocketAddr::new("10.0.0.1".parse().unwrap(), 5060),
-            SocketAddr::new("10.0.0.2".parse().unwrap(), 5062),
-        )
+    fn sctp_endpoints() -> Result<(SocketAddr, SocketAddr), TestError> {
+        Ok((
+            SocketAddr::new("10.0.0.1".parse()?, 5060),
+            SocketAddr::new("10.0.0.2".parse()?, 5062),
+        ))
     }
 
     // SCTP DATA fragment flags (RFC 4960 §3.3.1): B = beginning, E = ending.
@@ -4022,29 +4037,31 @@ mod tests {
     }
 
     /// Helper to create a [`Packet`] from raw data.
-    fn make_packet(data: Vec<u8>, link_type: i32) -> Packet {
+    fn make_packet(data: Vec<u8>, link_type: i32) -> Result<Packet, TestError> {
         let len = data.len();
-        Packet::new(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+        Ok(Packet::new(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             data,
             len,
             len,
             None,
             link_type,
-        )
+        ))
     }
 
     /// A plain Ethernet/IPv4/UDP packet parses with addresses, ports, and
     /// payload intact and no TCP fields.
     #[test]
-    fn parse_ethernet_ipv4_udp() {
+    fn parse_ethernet_ipv4_udp() -> Result<(), TestError> {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
         let data = build_eth_ipv4_udp([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, payload);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.transport, TransportProto::Udp);
@@ -4052,12 +4069,13 @@ mod tests {
         assert!(parsed.tcp_seq.is_none());
         assert!(parsed.tcp_flags.is_none());
         assert_eq!(parsed.ip_id, Some(1));
+        Ok(())
     }
 
     /// An Ethernet/IPv4/TCP packet surfaces its sequence number and the
     /// exact flag set (PSH+ACK here).
     #[test]
-    fn parse_ethernet_ipv4_tcp() {
+    fn parse_ethernet_ipv4_tcp() -> Result<(), TestError> {
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
         let data = build_eth_ipv4_tcp(
             [192, 168, 1, 10],
@@ -4068,29 +4086,30 @@ mod tests {
             0x18, // PSH + ACK
             payload,
         );
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "192.168.1.10".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "192.168.1.20".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "192.168.1.10".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "192.168.1.20".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5061);
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(parsed.tcp_seq, Some(1000));
 
-        let flags = parsed.tcp_flags.unwrap();
+        let flags = parsed.tcp_flags.ok_or("tcp_flags is None")?;
         assert!(flags.psh);
         assert!(flags.ack);
         assert!(!flags.syn);
         assert!(!flags.fin);
         assert!(!flags.rst);
+        Ok(())
     }
 
     /// An Ethernet/IPv6/UDP packet parses; IPv6 has no identification
     /// field so `ip_id` is `None`.
     #[test]
-    fn parse_ipv6_udp() {
+    fn parse_ipv6_udp() -> Result<(), TestError> {
         let payload = b"RTP data here";
         // ::1 -> ::2
         let mut src = [0u8; 16];
@@ -4099,71 +4118,75 @@ mod tests {
         dst[15] = 2;
 
         let data = build_eth_ipv6_udp(src, dst, 10000, 20000, payload);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "::1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "::2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "::1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "::2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 10000);
         assert_eq!(parsed.dst_port, 20000);
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], payload[..]);
         assert!(parsed.ip_id.is_none()); // IPv6 has no identification
+        Ok(())
     }
 
     /// A complete (B|E) SCTP DATA chunk yields its ports and the SIP
     /// payload with SCTP headers stripped.
     #[test]
-    fn parse_ethernet_ipv4_sctp_data_chunk_sip() {
+    fn parse_ethernet_ipv4_sctp_data_chunk_sip() -> Result<(), TestError> {
         let sip = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\n\r\n";
         let data = build_eth_ipv4_sctp([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5062, sip);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>()?);
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5062);
         assert_eq!(parsed.payload[..], sip[..]);
+        Ok(())
     }
 
     /// The SCTP extractor is payload-agnostic: non-SIP bytes pass through
     /// unmodified (SIP detection is downstream).
     #[test]
-    fn parse_sctp_data_chunk_is_payload_agnostic() {
+    fn parse_sctp_data_chunk_is_payload_agnostic() -> Result<(), TestError> {
         // The transport parser only extracts bytes; SIP detection is downstream.
         let raw = b"\x00\x01\x02\x03not-sip-at-all\xff\xfe";
         let data = build_eth_ipv4_sctp([10, 0, 0, 5], [10, 0, 0, 6], 9000, 9001, raw);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 9000);
         assert_eq!(parsed.dst_port, 9001);
         assert_eq!(parsed.payload[..], raw[..]);
+        Ok(())
     }
 
     /// An SCTP packet shorter than the 12-byte common header fails closed:
     /// ports 0 and an empty payload, no panic.
     #[test]
-    fn parse_sctp_common_header_truncated_yields_empty_payload() {
+    fn parse_sctp_common_header_truncated_yields_empty_payload() -> Result<(), TestError> {
         // Fewer than the 12-byte common header — must not panic, empty payload.
         let sctp = vec![0x13, 0xc4, 0x13, 0xc6, 0x00, 0x00]; // 6 bytes only
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 0);
         assert_eq!(parsed.dst_port, 0);
         assert!(parsed.payload.is_empty());
+        Ok(())
     }
 
     /// An SCTP packet containing only a SACK chunk (no DATA) yields an
     /// empty payload.
     #[test]
-    fn parse_sctp_non_data_chunk_yields_empty_payload() {
+    fn parse_sctp_non_data_chunk_yields_empty_payload() -> Result<(), TestError> {
         // A single SACK chunk (type 3), no DATA chunk present.
         let mut sctp = sctp_common_header(5060, 5062);
         let mut sack = Vec::new();
@@ -4173,19 +4196,20 @@ mod tests {
         sack.extend_from_slice(&[0u8; 12]); // cum TSN ack + a_rwnd + counts
         sctp.extend_from_slice(&sack);
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 0);
         assert_eq!(parsed.dst_port, 0);
         assert!(parsed.payload.is_empty());
+        Ok(())
     }
 
     /// A DATA chunk whose declared length overruns the buffer fails closed
     /// to an empty payload.
     #[test]
-    fn parse_sctp_data_chunk_length_past_buffer_yields_empty_payload() {
+    fn parse_sctp_data_chunk_length_past_buffer_yields_empty_payload() -> Result<(), TestError> {
         // DATA chunk header claims a length that runs past the buffer end.
         let mut sctp = sctp_common_header(5060, 5062);
         sctp.push(0); // type: DATA
@@ -4193,30 +4217,32 @@ mod tests {
         sctp.extend_from_slice(&0xFFFFu16.to_be_bytes()); // absurd length
         sctp.extend_from_slice(&[0u8; 8]); // only a few value bytes actually present
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 0);
         assert_eq!(parsed.dst_port, 0);
         assert!(parsed.payload.is_empty());
+        Ok(())
     }
 
     /// A fragmented DATA chunk (B without E) is skipped — no SCTP fragment
     /// reassembly — leaving an empty payload.
     #[test]
-    fn parse_sctp_fragmented_data_chunk_yields_empty_payload() {
+    fn parse_sctp_fragmented_data_chunk_yields_empty_payload() -> Result<(), TestError> {
         // B set, E clear → a fragment; must be skipped (no reassembly here).
         let mut sctp = sctp_common_header(5060, 5062);
         sctp.extend_from_slice(&sctp_data_chunk(0x02, b"fragment start only")); // B, no E
         let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Sctp);
         assert_eq!(parsed.src_port, 0);
         assert_eq!(parsed.dst_port, 0);
         assert!(parsed.payload.is_empty());
+        Ok(())
     }
 
     // ── SCTP cross-packet DATA fragment reassembly (RFC 4960 §3.3.1) ──────
@@ -4229,107 +4255,115 @@ mod tests {
     /// packets reassembles to the complete original message; only the E fragment
     /// completes it.
     #[test]
-    fn sctp_data_reassembles_across_three_packets() {
+    fn sctp_data_reassembles_across_three_packets() -> Result<(), TestError> {
         let sip: &[u8] =
             b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\nContent-Length: 4\r\n\r\nbody";
         let (p1, p2, p3) = (&sip[..24], &sip[24..56], &sip[56..]);
-        let (src, dst) = sctp_endpoints();
+        let (src, dst) = sctp_endpoints()?;
         let mut r = SctpReassembler::new();
 
-        let f1 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, p1)).expect("B frag");
+        let f1 =
+            parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, p1)?).ok_or("B frag")?;
         assert!(f1.begin && !f1.end, "first fragment is B, not E");
         assert!(
             r.insert(src, dst, &f1).is_none(),
             "B fragment alone does not complete a message"
         );
 
-        let f2 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, p2)).expect("middle frag");
+        let f2 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, p2)?).ok_or("middle frag")?;
         assert!(
             r.insert(src, dst, &f2).is_none(),
             "middle fragment does not complete a message"
         );
 
-        let f3 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, p3)).expect("E frag");
+        let f3 =
+            parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, p3)?).ok_or("E frag")?;
         let done = r
             .insert(src, dst, &f3)
-            .expect("E fragment completes the reassembled message");
+            .ok_or("E fragment completes the reassembled message")?;
         assert_eq!(&done[..], sip, "reassembled INVITE matches the original");
         assert_eq!(
             r.len(),
             0,
             "the completed stream is removed from the buffer"
         );
+        Ok(())
     }
 
     /// (b) Fragments of one (SID, SSN) reassemble correctly even when a fragment
     /// of an unrelated stream (different SID) is interleaved between them.
     #[test]
-    fn sctp_reassembly_is_isolated_per_stream() {
+    fn sctp_reassembly_is_isolated_per_stream() -> Result<(), TestError> {
         let msg: &[u8] = b"MESSAGE sip:a SIP/2.0\r\nCall-ID: split\r\n\r\nhello-world-body";
         let (m1, m2, m3) = (&msg[..20], &msg[20..40], &msg[40..]);
-        let (src, dst) = sctp_endpoints();
+        let (src, dst) = sctp_endpoints()?;
         let mut r = SctpReassembler::new();
 
         // Stream (sid=0, ssn=0): B fragment.
-        let b0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, m1)).expect("b0");
+        let b0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, m1)?).ok_or("b0")?;
         assert!(r.insert(src, dst, &b0).is_none());
 
         // An unrelated stream (sid=7) opens in between — must not disturb sid=0.
-        let other = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 100, 7, 0, b"unrelated"))
-            .expect("o");
+        let other = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 100, 7, 0, b"unrelated")?)
+            .ok_or("o")?;
         assert!(r.insert(src, dst, &other).is_none());
 
         // Stream (sid=0) middle then end.
-        let mid0 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, m2)).expect("mid0");
+        let mid0 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, m2)?).ok_or("mid0")?;
         assert!(r.insert(src, dst, &mid0).is_none());
-        let e0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, m3)).expect("e0");
+        let e0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, m3)?).ok_or("e0")?;
         let done = r
             .insert(src, dst, &e0)
-            .expect("sid=0 completes independently of sid=7");
+            .ok_or("sid=0 completes independently of sid=7")?;
         assert_eq!(
             &done[..],
             msg,
             "sid=0 reassembled from only its own fragments"
         );
         assert_eq!(r.len(), 1, "the unrelated sid=7 stream is still buffered");
+        Ok(())
     }
 
     /// (c) A missing middle TSN (a gap) fails closed: the ending fragment emits
     /// nothing and the partial stream is dropped rather than corruptly joined.
     #[test]
-    fn sctp_reassembly_fails_closed_on_tsn_gap() {
-        let (src, dst) = sctp_endpoints();
+    fn sctp_reassembly_fails_closed_on_tsn_gap() -> Result<(), TestError> {
+        let (src, dst) = sctp_endpoints()?;
         let mut r = SctpReassembler::new();
 
-        let b = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, b"AAAA")).expect("b");
+        let b =
+            parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, b"AAAA")?).ok_or("b")?;
         assert!(r.insert(src, dst, &b).is_none());
         assert_eq!(r.len(), 1, "the B fragment started a stream");
 
         // E arrives at TSN 3 — TSN 2 (a middle) was never seen: a gap.
-        let e = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, b"CCCC")).expect("e");
+        let e =
+            parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, b"CCCC")?).ok_or("e")?;
         assert!(
             r.insert(src, dst, &e).is_none(),
             "a TSN gap must not emit a corrupt reassembly"
         );
         assert_eq!(r.len(), 0, "the gapped partial stream is dropped");
+        Ok(())
     }
 
     /// (d) A flood of distinct incomplete fragment streams is bounded: the
     /// stream table never exceeds its cap (oldest-out eviction) and never panics.
     #[test]
-    fn sctp_reassembly_buffer_is_bounded() {
-        let (src, dst) = sctp_endpoints();
+    fn sctp_reassembly_buffer_is_bounded() -> Result<(), TestError> {
+        let (src, dst) = sctp_endpoints()?;
         let mut r = SctpReassembler::with_max_streams(4);
 
         // 32 distinct streams (distinct SSN), each only ever a B fragment, so
         // none ever completes — memory must stay bounded by the cap.
         for ssn in 0..32u16 {
-            let b = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, ssn, b"frag"))
-                .expect("b frag");
+            let b = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, ssn, b"frag")?)
+                .ok_or("b frag")?;
             assert!(r.insert(src, dst, &b).is_none());
             assert!(r.len() <= 4, "stream table must stay within its cap");
         }
         assert_eq!(r.len(), 4, "exactly the cap remains after the flood");
+        Ok(())
     }
 
     /// (e, unit) A self-contained single-packet complete (B+E) fragment fed to
@@ -4337,9 +4371,9 @@ mod tests {
     /// single-packet path never regresses. (The end-to-end `parse_packet`
     /// regression is `parse_ethernet_ipv4_sctp_data_chunk_sip`.)
     #[test]
-    fn sctp_reassembler_passes_complete_chunk_through() {
+    fn sctp_reassembler_passes_complete_chunk_through() -> Result<(), TestError> {
         let sip: &[u8] = b"OPTIONS sip:h SIP/2.0\r\n\r\n";
-        let (src, dst) = sctp_endpoints();
+        let (src, dst) = sctp_endpoints()?;
         let mut r = SctpReassembler::new();
         // A B+E chunk is complete; `parse_sctp_fragment` only surfaces *incomplete*
         // fragments, so build the fragment directly to exercise the reassembler.
@@ -4355,9 +4389,10 @@ mod tests {
         };
         let done = r
             .insert(src, dst, &frag)
-            .expect("complete chunk returns its data");
+            .ok_or("complete chunk returns its data")?;
         assert_eq!(&done[..], sip);
         assert_eq!(r.len(), 0, "a complete chunk needs no buffering");
+        Ok(())
     }
 
     /// `parse_sctp_fragment` surfaces an *incomplete* DATA fragment (B-only
@@ -4365,26 +4400,27 @@ mod tests {
     /// `None` for a complete (B+E) chunk, which the stateless `parse_packet`
     /// path already handles.
     #[test]
-    fn parse_sctp_fragment_extracts_fragment_but_skips_complete() {
-        let frag = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 9, 3, 4, b"partial"))
-            .expect("B-only fragment surfaced");
+    fn parse_sctp_fragment_extracts_fragment_but_skips_complete() -> Result<(), TestError> {
+        let frag = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 9, 3, 4, b"partial")?)
+            .ok_or("B-only fragment surfaced")?;
         assert_eq!((frag.src_port, frag.dst_port), (5060, 5062));
         assert!(frag.begin && !frag.end);
         assert_eq!((frag.tsn, frag.sid, frag.ssn), (9, 3, 4));
         assert_eq!(&frag.data[..], b"partial");
 
         // A complete B+E chunk is not a fragment for reassembly purposes.
-        let complete = sctp_frag_packet(SCTP_FLAG_B | SCTP_FLAG_E, 1, 0, 0, b"whole");
+        let complete = sctp_frag_packet(SCTP_FLAG_B | SCTP_FLAG_E, 1, 0, 0, b"whole")?;
         assert!(
             parse_sctp_fragment(&complete).is_none(),
             "complete chunks are handled by parse_packet, not reassembly"
         );
+        Ok(())
     }
 
     /// A GRE-encapsulated IPv4/UDP packet is stripped to its inner
     /// addresses, ports, and payload (outer addresses discarded).
     #[test]
-    fn parse_gre_encapsulated() {
+    fn parse_gre_encapsulated() -> Result<(), TestError> {
         let payload = b"inner payload";
         // Build inner Ethernet-less IPv4/UDP packet (raw IP)
         let inner_udp_len: u16 = 8 + payload.len() as u16;
@@ -4438,22 +4474,23 @@ mod tests {
         eth.extend_from_slice(&[0x08, 0x00]);
         eth.extend_from_slice(&outer_ip);
 
-        let pkt = make_packet(eth, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse GRE");
+        let pkt = make_packet(eth, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         // Should see inner addresses, not outer
-        assert_eq!(parsed.src_addr, "172.16.0.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "172.16.0.2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "172.16.0.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "172.16.0.2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 8000);
         assert_eq!(parsed.dst_port, 9000);
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], payload[..]);
+        Ok(())
     }
 
     /// An IP-in-IP (protocol 4) packet is stripped to the inner IPv4/UDP
     /// flow.
     #[test]
-    fn parse_ip_in_ip() {
+    fn parse_ip_in_ip() -> Result<(), TestError> {
         let payload = b"tunneled SIP";
         // Build inner IPv4/UDP
         let inner_udp_len: u16 = 8 + payload.len() as u16;
@@ -4499,19 +4536,20 @@ mod tests {
         eth.extend_from_slice(&[0x08, 0x00]);
         eth.extend_from_slice(&outer);
 
-        let pkt = make_packet(eth, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse IP-in-IP");
+        let pkt = make_packet(eth, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "192.168.10.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "192.168.10.2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "192.168.10.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "192.168.10.2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.payload[..], payload[..]);
+        Ok(())
     }
 
     /// An ARP frame returns an error rather than panicking.
     #[test]
-    fn parse_non_ip_returns_error() {
+    fn parse_non_ip_returns_error() -> Result<(), TestError> {
         // ARP packet: EtherType 0x0806
         let mut data = Vec::new();
         data.extend_from_slice(&[0xAA; 6]); // dst MAC
@@ -4519,9 +4557,10 @@ mod tests {
         data.extend_from_slice(&[0x08, 0x06]); // EtherType: ARP
         data.extend_from_slice(&[0x00; 28]); // ARP payload (enough bytes)
 
-        let pkt = make_packet(data, DLT_EN10MB);
+        let pkt = make_packet(data, DLT_EN10MB)?;
         let result = parse_packet(&pkt);
         assert!(result.is_err(), "ARP should return error, not panic");
+        Ok(())
     }
 
     // ── PPPoE (RFC 2516) ──────────────────────────────────────────────
@@ -4543,7 +4582,7 @@ mod tests {
     /// A PPPoE Session frame carrying IPv4/UDP parses to the INNER addresses,
     /// ports and payload, and the shard peek agrees with the full parse.
     #[test]
-    fn parse_pppoe_session_ipv4_udp() {
+    fn parse_pppoe_session_ipv4_udp() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -4551,8 +4590,8 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         // PPP Protocol 0x0021 = IPv4 (IANA PPP DLL Protocol Numbers).
-        let pkt = make_packet(pppoe_session(&base, &[0x00, 0x21]), DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("PPPoE session frame should parse");
+        let pkt = make_packet(pppoe_session(&base, &[0x00, 0x21]), DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.src_addr, IpAddr::V4(a));
         assert_eq!(parsed.dst_addr, IpAddr::V4(b));
@@ -4565,19 +4604,20 @@ mod tests {
         // asserting only "peek agrees with parse" would be satisfied by both
         // being None, which is precisely the regression this guards.
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// A PPPoE Session frame carrying PPP protocol 0x0057 parses as IPv6.
     #[test]
-    fn parse_pppoe_session_ipv6_udp() {
-        let a: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b: std::net::Ipv6Addr = "2001:db8::2".parse().unwrap();
+    fn parse_pppoe_session_ipv6_udp() -> Result<(), TestError> {
+        let a: std::net::Ipv6Addr = "2001:db8::1".parse()?;
+        let b: std::net::Ipv6Addr = "2001:db8::2".parse()?;
         let payload = b"OPTIONS sip:echo@example.com SIP/2.0\r\n\r\n";
         let base = build_eth_ipv6_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         // PPP Protocol 0x0057 = IPv6.
-        let pkt = make_packet(pppoe_session(&base, &[0x00, 0x57]), DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("PPPoE IPv6 session frame should parse");
+        let pkt = make_packet(pppoe_session(&base, &[0x00, 0x57]), DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.src_addr, IpAddr::V6(a));
         assert_eq!(parsed.dst_addr, IpAddr::V6(b));
@@ -4585,6 +4625,7 @@ mod tests {
         assert_eq!(parsed.dst_port, 5062);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V6(a), IpAddr::V6(b))));
+        Ok(())
     }
 
     /// A 1-byte (protocol-field-compressed) PPP Protocol field is accepted.
@@ -4596,15 +4637,15 @@ mod tests {
     /// most significant octet always even, so an odd first byte means a 1-byte
     /// field and nothing else can alias it.
     #[test]
-    fn parse_pppoe_protocol_field_compression() {
+    fn parse_pppoe_protocol_field_compression() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x");
 
         // 0x0021 compressed to a single 0x21 octet.
-        let pkt = make_packet(pppoe_session(&base, &[0x21]), DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("PFC PPPoE frame should parse");
+        let pkt = make_packet(pppoe_session(&base, &[0x21]), DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -4613,11 +4654,11 @@ mod tests {
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
 
         // And the IPv6 twin, 0x0057 compressed to 0x57.
-        let a6: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b6: std::net::Ipv6Addr = "2001:db8::2".parse().unwrap();
+        let a6: std::net::Ipv6Addr = "2001:db8::1".parse()?;
+        let b6: std::net::Ipv6Addr = "2001:db8::2".parse()?;
         let base6 = build_eth_ipv6_udp(a6.octets(), b6.octets(), 5060, 5062, b"x");
-        let pkt6 = make_packet(pppoe_session(&base6, &[0x57]), DLT_EN10MB);
-        let parsed6 = parse_packet(&pkt6).expect("PFC IPv6 PPPoE frame should parse");
+        let pkt6 = make_packet(pppoe_session(&base6, &[0x57]), DLT_EN10MB)?;
+        let parsed6 = parse_packet(&pkt6)?;
         assert_eq!(
             (parsed6.src_addr, parsed6.dst_addr),
             (IpAddr::V6(a6), IpAddr::V6(b6))
@@ -4626,6 +4667,7 @@ mod tests {
             peek_host_pair(&pkt6),
             Some((IpAddr::V6(a6), IpAddr::V6(b6)))
         );
+        Ok(())
     }
 
     /// PPP control protocols carry no IP, so their payload must never be
@@ -4635,7 +4677,7 @@ mod tests {
     /// would parse as a plausible-looking IP header if the decapsulator skipped
     /// a fixed number of bytes without inspecting the PPP Protocol field.
     #[test]
-    fn pppoe_rejects_non_ip_ppp_protocols() {
+    fn pppoe_rejects_non_ip_ppp_protocols() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -4645,13 +4687,14 @@ mod tests {
             b"x",
         );
         for proto in [[0xC0u8, 0x21], [0x80, 0x21]] {
-            let pkt = make_packet(pppoe_session(&base, &proto), DLT_EN10MB);
+            let pkt = make_packet(pppoe_session(&base, &proto), DLT_EN10MB)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "PPP protocol {proto:02X?} carries no IP and must not parse"
             );
             assert_eq!(peek_host_pair(&pkt), None, "PPP protocol {proto:02X?}");
         }
+        Ok(())
     }
 
     /// A PPPoE **Discovery** frame is never treated as session data.
@@ -4662,7 +4705,7 @@ mod tests {
     /// check can reject it — and if it were accepted, sipnab would report a
     /// host pair and a SIP message that the wire never carried.
     #[test]
-    fn pppoe_discovery_is_never_session_data() {
+    fn pppoe_discovery_is_never_session_data() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -4672,12 +4715,13 @@ mod tests {
             b"INVITE sip:echo@example.com SIP/2.0\r\n\r\n",
         );
         let discovery = wrap_in_pppoe(&base, 0x8863, 0x11, 0x00, &[0x00, 0x21]);
-        let pkt = make_packet(discovery, DLT_EN10MB);
+        let pkt = make_packet(discovery, DLT_EN10MB)?;
         assert!(
             parse_packet(&pkt).is_err(),
             "PPPoE Discovery (0x8863) must not be decapsulated as a session"
         );
         assert_eq!(peek_host_pair(&pkt), None);
+        Ok(())
     }
 
     /// A session-EtherType frame whose PPPoE header is malformed is rejected.
@@ -4690,7 +4734,7 @@ mod tests {
     /// makes an over-long LENGTH ordinary, so it must never bound a slice —
     /// a frame whose LENGTH lies still parses from the bytes actually present.
     #[test]
-    fn pppoe_malformed_session_header_rejected() {
+    fn pppoe_malformed_session_header_rejected() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -4700,7 +4744,7 @@ mod tests {
         let pkt = make_packet(
             wrap_in_pppoe(&base, 0x8864, 0x11, 0x09, &[0x00, 0x21]),
             DLT_EN10MB,
-        );
+        )?;
         assert!(parse_packet(&pkt).is_err(), "CODE != 0x00 is not a session");
         assert_eq!(peek_host_pair(&pkt), None, "CODE != 0x00 is not a session");
 
@@ -4708,7 +4752,7 @@ mod tests {
         let pkt = make_packet(
             wrap_in_pppoe(&base, 0x8864, 0x21, 0x00, &[0x00, 0x21]),
             DLT_EN10MB,
-        );
+        )?;
         assert!(
             parse_packet(&pkt).is_err(),
             "VER/TYPE != 0x11 is not a session"
@@ -4716,13 +4760,14 @@ mod tests {
         assert_eq!(peek_host_pair(&pkt), None, "VER/TYPE != 0x11");
 
         // LENGTH claiming 65535 bytes of payload: advisory only, still parses.
-        let pkt = make_packet(pppoe_lying_length(&base), DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("an over-long LENGTH must not block the parse");
+        let pkt = make_packet(pppoe_lying_length(&base), DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
         );
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// Every truncation point in a PPPoE frame yields an error / `None`,
@@ -4733,7 +4778,7 @@ mod tests {
     /// its tail, the PPP Protocol field, and the IP header behind it — has to
     /// be independently bounds-checked.
     #[test]
-    fn pppoe_truncated_frames_yield_none_not_panic() {
+    fn pppoe_truncated_frames_yield_none_not_panic() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -4748,7 +4793,7 @@ mod tests {
         // 20 = header but no PPP Protocol field; 21 = half of one;
         // 22 = protocol field but no IP header; 23 = one IP byte.
         for cut in 14..=23usize {
-            let pkt = make_packet(full[..cut].to_vec(), DLT_EN10MB);
+            let pkt = make_packet(full[..cut].to_vec(), DLT_EN10MB)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "PPPoE frame truncated to {cut} bytes must not parse"
@@ -4759,6 +4804,7 @@ mod tests {
                 "PPPoE frame truncated to {cut} bytes must peek None"
             );
         }
+        Ok(())
     }
 
     /// VLAN-then-PPPoE unwraps in that order — the real DSL access shape.
@@ -4768,7 +4814,7 @@ mod tests {
     /// that walk. A PPPoE check placed ahead of the VLAN loop sees 0x8100 and
     /// gives up.
     #[test]
-    fn vlan_then_pppoe_unwraps_in_order() {
+    fn vlan_then_pppoe_unwraps_in_order() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -4778,8 +4824,8 @@ mod tests {
 
         // 802.1Q (VID 100) then PPPoE.
         let tagged = prepend_vlan_tag(&pppoe, 0x8100, 100);
-        let pkt = make_packet(tagged, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("VLAN + PPPoE should parse");
+        let pkt = make_packet(tagged, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -4789,13 +4835,14 @@ mod tests {
 
         // QinQ: 802.1ad outer (VID 200) + 802.1Q inner (VID 100), then PPPoE.
         let qinq = prepend_vlan_tag(&prepend_vlan_tag(&pppoe, 0x8100, 100), 0x88A8, 200);
-        let pkt = make_packet(qinq, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("QinQ + PPPoE should parse");
+        let pkt = make_packet(qinq, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
         );
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     // ── BSD loopback (DLT_NULL / DLT_LOOP) ────────────────────────────
@@ -4829,7 +4876,7 @@ mod tests {
     /// A DLT_NULL frame parses to the addresses, ports and payload it carries,
     /// and the shard peek agrees with the full parse.
     #[test]
-    fn parse_null_loopback_ipv4_udp() {
+    fn parse_null_loopback_ipv4_udp() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(127, 0, 0, 1);
         let b = Ipv4Addr::new(127, 0, 0, 1);
@@ -4837,8 +4884,8 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 13764, 5060, payload);
 
         // AF_INET = 2 on every BSD, macOS and Linux alike.
-        let pkt = make_packet(bsd_loopback(&base, 2, false), DLT_NULL);
-        let parsed = parse_packet(&pkt).expect("DLT_NULL frame should parse");
+        let pkt = make_packet(bsd_loopback(&base, 2, false), DLT_NULL)?;
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.src_addr, IpAddr::V4(a));
         assert_eq!(parsed.dst_addr, IpAddr::V4(b));
@@ -4850,6 +4897,7 @@ mod tests {
         // Asserting only "peek agrees with parse" would be satisfied by both
         // being None, which is the split-brain this guards against.
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// DLT_NULL reads the family in either byte order; DLT_LOOP only in
@@ -4860,7 +4908,7 @@ mod tests {
     /// not AF_INET — and must be refused rather than "helpfully" swapped, or
     /// DLT_LOOP stops being distinguishable from DLT_NULL at all.
     #[test]
-    fn null_reads_either_byte_order_and_loop_reads_only_network_order() {
+    fn null_reads_either_byte_order_and_loop_reads_only_network_order() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -4868,9 +4916,9 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x");
 
         for big_endian in [false, true] {
-            let pkt = make_packet(bsd_loopback(&base, 2, big_endian), DLT_NULL);
+            let pkt = make_packet(bsd_loopback(&base, 2, big_endian), DLT_NULL)?;
             let parsed = parse_packet(&pkt)
-                .unwrap_or_else(|e| panic!("DLT_NULL, big_endian={big_endian}: {e}"));
+                .map_err(|e| format!("DLT_NULL, big_endian={big_endian}: {e}"))?;
             assert_eq!(
                 (parsed.src_addr, parsed.dst_addr),
                 (IpAddr::V4(a), IpAddr::V4(b))
@@ -4882,17 +4930,18 @@ mod tests {
             );
         }
 
-        let network_order = make_packet(bsd_loopback(&base, 2, true), DLT_LOOP);
-        let parsed = parse_packet(&network_order).expect("DLT_LOOP is big-endian AF_INET");
+        let network_order = make_packet(bsd_loopback(&base, 2, true), DLT_LOOP)?;
+        let parsed = parse_packet(&network_order)?;
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(peek_host_pair(&network_order), want);
 
-        let host_order = make_packet(bsd_loopback(&base, 2, false), DLT_LOOP);
+        let host_order = make_packet(bsd_loopback(&base, 2, false), DLT_LOOP)?;
         assert!(
             parse_packet(&host_order).is_err(),
             "DLT_LOOP carries AF in network order only; 02 00 00 00 is not AF_INET"
         );
         assert_eq!(peek_host_pair(&host_order), None);
+        Ok(())
     }
 
     /// Every AF_INET6 value a real OS writes is accepted.
@@ -4902,17 +4951,17 @@ mod tests {
     /// routinely read on another, so a decoder that hard-codes its own host's
     /// value drops the other three platforms' loopback traffic in silence.
     #[test]
-    fn null_loopback_accepts_every_os_af_inet6_value() {
-        let a: std::net::Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b: std::net::Ipv6Addr = "2001:db8::2".parse().unwrap();
+    fn null_loopback_accepts_every_os_af_inet6_value() -> Result<(), TestError> {
+        let a: std::net::Ipv6Addr = "2001:db8::1".parse()?;
+        let b: std::net::Ipv6Addr = "2001:db8::2".parse()?;
         let want = Some((IpAddr::V6(a), IpAddr::V6(b)));
         let payload = b"OPTIONS sip:echo@example.com SIP/2.0\r\n\r\n";
         let base = build_eth_ipv6_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         for af in [10u32, 24, 28, 30] {
-            let pkt = make_packet(bsd_loopback(&base, af, false), DLT_NULL);
+            let pkt = make_packet(bsd_loopback(&base, af, false), DLT_NULL)?;
             let parsed =
-                parse_packet(&pkt).unwrap_or_else(|e| panic!("AF_INET6 = {af} rejected: {e}"));
+                parse_packet(&pkt).map_err(|e| format!("AF_INET6 = {af} rejected: {e}"))?;
             assert_eq!(
                 (parsed.src_addr, parsed.dst_addr),
                 (IpAddr::V6(a), IpAddr::V6(b))
@@ -4920,6 +4969,7 @@ mod tests {
             assert_eq!(parsed.payload[..], payload[..]);
             assert_eq!(peek_host_pair(&pkt), want, "AF_INET6 = {af}");
         }
+        Ok(())
     }
 
     /// A family that is not an IP family is never sliced as IP.
@@ -4929,7 +4979,7 @@ mod tests {
     /// did not, sipnab would report a host pair and a SIP message out of bytes
     /// that were an AppleTalk or IPX frame.
     #[test]
-    fn null_loopback_rejects_a_non_ip_address_family() {
+    fn null_loopback_rejects_a_non_ip_address_family() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -4942,7 +4992,7 @@ mod tests {
         // value no BSD assigns at all.
         for af in [0u32, 7, 16, 23, 99] {
             for link_type in [DLT_NULL, DLT_LOOP] {
-                let pkt = make_packet(bsd_loopback(&base, af, true), link_type);
+                let pkt = make_packet(bsd_loopback(&base, af, true), link_type)?;
                 assert!(
                     parse_packet(&pkt).is_err(),
                     "AF {af} on link type {link_type} is not IP and must not parse"
@@ -4954,12 +5004,13 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Every truncation point in a loopback frame yields an error / `None`,
     /// never a panic and never a read past the captured bytes.
     #[test]
-    fn null_loopback_truncated_frames_yield_none_not_panic() {
+    fn null_loopback_truncated_frames_yield_none_not_panic() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -4974,7 +5025,7 @@ mod tests {
         // behind it; 5..=23 is a partial IPv4 header.
         for cut in 0..=23usize {
             for link_type in [DLT_NULL, DLT_LOOP] {
-                let pkt = make_packet(full[..cut].to_vec(), link_type);
+                let pkt = make_packet(full[..cut].to_vec(), link_type)?;
                 assert!(
                     parse_packet(&pkt).is_err(),
                     "loopback frame truncated to {cut} bytes must not parse"
@@ -4986,6 +5037,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     // ── Legacy QinQ (0x9100) and the bounded tag walk ─────────────────
@@ -5010,7 +5062,7 @@ mod tests {
     /// the tag and never reached the PPPoE arm. Legacy carrier gear that still
     /// emits 0x9100 is exactly the gear that still runs PPPoE, so the two meet.
     #[test]
-    fn legacy_qinq_tag_is_walked_before_pppoe() {
+    fn legacy_qinq_tag_is_walked_before_pppoe() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -5019,8 +5071,8 @@ mod tests {
         let pppoe = pppoe_session(&base, &[0x00, 0x21]);
 
         let tagged = prepend_vlan_tag(&pppoe, 0x9100, 100);
-        let pkt = make_packet(tagged, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("0x9100 + PPPoE should parse");
+        let pkt = make_packet(tagged, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -5028,6 +5080,7 @@ mod tests {
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// A 0x9100 tag never makes the shard peek invent a host pair.
@@ -5040,14 +5093,14 @@ mod tests {
     /// source). Both halves are asserted: the pair is right, and it is
     /// specifically not that fabrication.
     #[test]
-    fn legacy_qinq_peek_does_not_invent_a_host_pair() {
+    fn legacy_qinq_peek_does_not_invent_a_host_pair() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x");
 
         // TCI 0x4064 = PCP 2, DEI 0, VID 100.
-        let pkt = make_packet(prepend_vlan_tag(&base, 0x9100, 0x4064), DLT_EN10MB);
+        let pkt = make_packet(prepend_vlan_tag(&base, 0x9100, 0x4064), DLT_EN10MB)?;
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
         assert_ne!(
             peek_host_pair(&pkt),
@@ -5059,11 +5112,12 @@ mod tests {
         );
 
         // The full parse and the peek must also still agree.
-        let parsed = parse_packet(&pkt).expect("0x9100 + IPv4 should parse");
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
         );
+        Ok(())
     }
 
     /// The tag walk stops at a fixed depth instead of following whatever the
@@ -5075,7 +5129,7 @@ mod tests {
     /// disagreeing, and stops a 64 KB frame of 0x8100 from costing ~16k
     /// iterations per packet.
     #[test]
-    fn the_vlan_tag_walk_is_bounded() {
+    fn the_vlan_tag_walk_is_bounded() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -5084,11 +5138,11 @@ mod tests {
         let pppoe = pppoe_session(&base, &[0x00, 0x21]);
 
         for depth in 0..=3usize {
-            let pkt = make_packet(prepend_vlan_tags(&base, depth), DLT_EN10MB);
+            let pkt = make_packet(prepend_vlan_tags(&base, depth), DLT_EN10MB)?;
             assert_eq!(peek_host_pair(&pkt), want, "{depth} tags must still peek");
-            let pkt = make_packet(prepend_vlan_tags(&pppoe, depth), DLT_EN10MB);
+            let pkt = make_packet(prepend_vlan_tags(&pppoe, depth), DLT_EN10MB)?;
             let parsed = parse_packet(&pkt)
-                .unwrap_or_else(|e| panic!("{depth} tags + PPPoE must still parse: {e}"));
+                .map_err(|e| format!("{depth} tags + PPPoE must still parse: {e}"))?;
             assert_eq!(
                 (parsed.src_addr, parsed.dst_addr),
                 (IpAddr::V4(a), IpAddr::V4(b))
@@ -5098,23 +5152,24 @@ mod tests {
         // One past the bound, and a frame that is nothing but tags: rejected,
         // not walked.
         for depth in [4usize, 4096] {
-            let pkt = make_packet(prepend_vlan_tags(&base, depth), DLT_EN10MB);
+            let pkt = make_packet(prepend_vlan_tags(&base, depth), DLT_EN10MB)?;
             assert_eq!(
                 peek_host_pair(&pkt),
                 None,
                 "{depth} tags must not be walked"
             );
-            let pkt = make_packet(prepend_vlan_tags(&pppoe, depth), DLT_EN10MB);
+            let pkt = make_packet(prepend_vlan_tags(&pppoe, depth), DLT_EN10MB)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "{depth} tags + PPPoE must not parse"
             );
         }
+        Ok(())
     }
 
     /// A DLT_RAW packet (IP header first, no Ethernet) parses correctly.
     #[test]
-    fn parse_raw_ip_link_type() {
+    fn parse_raw_ip_link_type() -> Result<(), TestError> {
         let payload = b"raw ip payload";
         let udp_len: u16 = 8 + payload.len() as u16;
         let ip_total: u16 = 20 + udp_len;
@@ -5138,11 +5193,12 @@ mod tests {
         data.extend_from_slice(&[0x00, 0x00]);
         data.extend_from_slice(payload);
 
-        let pkt = make_packet(data, DLT_RAW);
-        let parsed = parse_packet(&pkt).expect("should parse raw IP");
+        let pkt = make_packet(data, DLT_RAW)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(parsed.src_port, 4000);
         assert_eq!(parsed.dst_port, 5000);
         assert_eq!(parsed.payload[..], payload[..]);
+        Ok(())
     }
 
     /// When a packet carries pre-parsed metadata (e.g. from a HEP listener
@@ -5151,25 +5207,27 @@ mod tests {
     /// `ParsedPacket` from the metadata + payload directly. The payload
     /// bytes do NOT contain link/IP/transport headers.
     #[test]
-    fn parse_packet_short_circuits_when_pre_parsed_present_udp() {
+    fn parse_packet_short_circuits_when_pre_parsed_present_udp() -> Result<(), TestError> {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec();
         let pkt = Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             payload.clone(),
             Some("hep:0.0.0.0:9060".to_string()),
             super::super::packet::PreParsed {
-                src_addr: "192.0.2.10".parse().unwrap(),
-                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_addr: "192.0.2.10".parse()?,
+                dst_addr: "192.0.2.20".parse()?,
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 17, // UDP
                 hep: None,
             },
         );
-        let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
+        let parsed = parse_packet(&pkt)?;
 
-        assert_eq!(parsed.src_addr, "192.0.2.10".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "192.0.2.20".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "192.0.2.10".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "192.0.2.20".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.transport, TransportProto::Udp);
@@ -5179,6 +5237,7 @@ mod tests {
         assert_eq!(parsed.fragment_offset, None);
         assert!(!parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17);
+        Ok(())
     }
 
     /// The human note and the machine field name one origin identically.
@@ -5191,7 +5250,7 @@ mod tests {
     /// they were looking at the same source. The match is exhaustive, so a
     /// fourth origin fails this until it has both halves.
     #[test]
-    fn the_line_note_and_the_field_name_agree_for_every_origin() {
+    fn the_line_note_and_the_field_name_agree_for_every_origin() -> Result<(), TestError> {
         for origin in [InputOrigin::Wire, InputOrigin::Hep, InputOrigin::Uprobe] {
             match origin {
                 // Nothing to say: `wire` is what an unmarked line already
@@ -5205,7 +5264,7 @@ mod tests {
                 InputOrigin::Hep | InputOrigin::Uprobe => {
                     let note = origin
                         .line_note()
-                        .expect("a non-wire origin must be reported to a human");
+                        .ok_or("a non-wire origin must be reported to a human")?;
                     assert!(
                         note.ends_with(origin.as_str()),
                         "the human note `{note}` does not name `{}`, so one \
@@ -5215,6 +5274,7 @@ mod tests {
                 }
             }
         }
+        Ok(())
     }
 
     /// A pre-parsed packet from a uprobe must NOT be labeled HEP. Both are
@@ -5222,14 +5282,16 @@ mod tests {
     /// HEP any more. Getting this wrong would let `--hep-allow-kill` re-enable
     /// transmission for input that carries no address at all.
     #[test]
-    fn parse_packet_flags_a_uprobe_source_as_uprobe_origin() {
+    fn parse_packet_flags_a_uprobe_source_as_uprobe_origin() -> Result<(), TestError> {
         let pkt = Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
             Some("uprobe:opensips/1234".to_string()),
             super::super::packet::PreParsed {
-                src_addr: "0.0.0.0".parse().unwrap(),
-                dst_addr: "0.0.0.0".parse().unwrap(),
+                src_addr: "0.0.0.0".parse()?,
+                dst_addr: "0.0.0.0".parse()?,
                 src_port: 0,
                 dst_port: 0,
                 ip_protocol: 6,
@@ -5237,25 +5299,28 @@ mod tests {
             },
         );
         assert_eq!(
-            parse_packet(&pkt).unwrap().input_origin,
+            parse_packet(&pkt)?.input_origin,
             InputOrigin::Uprobe,
             "a uprobe read must never be labeled HEP: it has no address at \
              all, so no opt-in may make it transmit-eligible"
         );
+        Ok(())
     }
 
     /// A pre-parsed (HEP-listener-origin) packet is flagged `Hep` so
     /// downstream active responses (scanner-kill) can refuse to trust its
     /// attacker-assertable addressing by default (SN-01).
     #[test]
-    fn parse_packet_flags_pre_parsed_as_hep_origin() {
+    fn parse_packet_flags_pre_parsed_as_hep_origin() -> Result<(), TestError> {
         let pkt = Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
             Some("hep:0.0.0.0:9060".to_string()),
             super::super::packet::PreParsed {
-                src_addr: "192.0.2.10".parse().unwrap(),
-                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_addr: "192.0.2.10".parse()?,
+                dst_addr: "192.0.2.20".parse()?,
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 17,
@@ -5263,16 +5328,17 @@ mod tests {
             },
         );
         assert_eq!(
-            parse_packet(&pkt).unwrap().input_origin,
+            parse_packet(&pkt)?.input_origin,
             InputOrigin::Hep,
             "HEP-origin must be recorded, so scanner-kill can refuse it"
         );
+        Ok(())
     }
 
     /// A normally captured (link/IP/transport) packet is NOT flagged
     /// `Hep`, so scanner-kill remains eligible for live/pcap traffic.
     #[test]
-    fn parse_packet_normal_capture_is_wire_origin() {
+    fn parse_packet_normal_capture_is_wire_origin() -> Result<(), TestError> {
         let data = build_eth_ipv4_udp(
             [192, 168, 1, 10],
             [192, 168, 1, 20],
@@ -5280,35 +5346,39 @@ mod tests {
             5060,
             b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n",
         );
-        let pkt = make_packet(data, DLT_EN10MB);
+        let pkt = make_packet(data, DLT_EN10MB)?;
         assert!(
-            parse_packet(&pkt).unwrap().input_origin == InputOrigin::Wire,
+            parse_packet(&pkt)?.input_origin == InputOrigin::Wire,
             "live capture is not HEP-origin"
         );
+        Ok(())
     }
 
     /// The pre-parsed short-circuit maps `ip_protocol = 6` to
     /// `TransportProto::Tcp` and passes the payload through untouched.
     #[test]
-    fn parse_packet_short_circuits_when_pre_parsed_present_tcp() {
+    fn parse_packet_short_circuits_when_pre_parsed_present_tcp() -> Result<(), TestError> {
         let payload = b"REGISTER sip:carol@example.com SIP/2.0\r\n\r\n".to_vec();
         let pkt = Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             payload.clone(),
             None,
             super::super::packet::PreParsed {
-                src_addr: "192.168.1.10".parse().unwrap(),
-                dst_addr: "192.168.1.20".parse().unwrap(),
+                src_addr: "192.168.1.10".parse()?,
+                dst_addr: "192.168.1.20".parse()?,
                 src_port: 5060,
                 dst_port: 5061,
                 ip_protocol: 6, // TCP
                 hep: None,
             },
         );
-        let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
+        let parsed = parse_packet(&pkt)?;
 
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.payload[..], payload[..]);
+        Ok(())
     }
 
     // ── HEP's fake IP protocol numbers (issue #301) ─────────────────────
@@ -5334,14 +5404,16 @@ mod tests {
 
     /// A packet as the HEP listener builds it, with the wrapper's metadata
     /// set, so the parser knows a HEP sender asserted `ip_protocol`.
-    fn hep_packet(ip_protocol: u8, payload: &[u8]) -> Packet {
-        Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2026, 9, 23, 12, 0, 0).unwrap(),
+    fn hep_packet(ip_protocol: u8, payload: &[u8]) -> Result<Packet, TestError> {
+        Ok(Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2026, 9, 23, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             payload.to_vec(),
             Some("hep:192.0.2.1:9060".to_string()),
             super::super::packet::PreParsed {
-                src_addr: "192.0.2.10".parse().unwrap(),
-                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_addr: "192.0.2.10".parse()?,
+                dst_addr: "192.0.2.20".parse()?,
                 src_port: 5061,
                 dst_port: 5061,
                 ip_protocol,
@@ -5350,59 +5422,61 @@ mod tests {
                     correlation_id: None,
                 }),
             },
-        )
+        ))
     }
 
     /// OpenSIPS `tracer` sends 22 for a TLS leg. The message is decoded as
     /// SIP over TLS, not refused as an unsupported IP protocol.
     #[test]
-    fn hep_ip_protocol_22_is_sip_over_tls() {
+    fn hep_ip_protocol_22_is_sip_over_tls() -> Result<(), TestError> {
         let payload = traced_invite("TLS");
-        let parsed = parse_packet(&hep_packet(22, &payload))
-            .expect("HEP protocol 22 is the tracers' name for TLS, not an unsupported protocol");
+        let parsed = parse_packet(&hep_packet(22, &payload)?)?;
         assert_eq!(parsed.transport, TransportProto::Tls);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(
             parsed.ip_protocol, 22,
             "the number the sender asserted is kept as it arrived"
         );
+        Ok(())
     }
 
     /// OpenSIPS `tracer` sends 50 for a WS or WSS leg, and the top Via says
     /// which. With no WebSocket Via to read, 50 is WS.
     #[test]
-    fn hep_ip_protocol_50_is_sip_over_websocket() {
+    fn hep_ip_protocol_50_is_sip_over_websocket() -> Result<(), TestError> {
         for (via, want) in [
             ("WS", TransportProto::Ws),
             ("WSS", TransportProto::Wss),
             ("TLS", TransportProto::Ws),
         ] {
-            let parsed = parse_packet(&hep_packet(50, &traced_invite(via)))
-                .unwrap_or_else(|e| panic!("HEP protocol 50 (Via {via}) refused: {e:?}"));
+            let parsed = parse_packet(&hep_packet(50, &traced_invite(via))?)
+                .map_err(|e| format!("HEP protocol 50 (Via {via}) refused: {e:?}"))?;
             assert_eq!(parsed.transport, want, "Via {via}");
         }
+        Ok(())
     }
 
     /// Kamailio `siptrace` sends 22 for TLS, WS and WSS alike, so the number
     /// alone cannot tell them apart. The top Via of the message can: it names
     /// the transport of the hop the message travels on.
     #[test]
-    fn hep_ip_protocol_22_with_a_websocket_via_is_websocket() {
+    fn hep_ip_protocol_22_with_a_websocket_via_is_websocket() -> Result<(), TestError> {
         for (via, want) in [
             ("WS", TransportProto::Ws),
             ("WSS", TransportProto::Wss),
             ("wss", TransportProto::Wss),
         ] {
-            let parsed = parse_packet(&hep_packet(22, &traced_invite(via)))
-                .unwrap_or_else(|e| panic!("HEP protocol 22 (Via {via}) refused: {e:?}"));
+            let parsed = parse_packet(&hep_packet(22, &traced_invite(via))?)
+                .map_err(|e| format!("HEP protocol 22 (Via {via}) refused: {e:?}"))?;
             assert_eq!(parsed.transport, want, "Via {via}");
         }
         // Compact form, spacing around the slashes, and a response.
         let compact = b"SIP/2.0 200 OK\r\nv: SIP / 2.0 / WSS abc.invalid;branch=z9hG4bK1\r\n\r\n";
         assert_eq!(
-            parse_packet(&hep_packet(22, compact)).unwrap().transport,
+            parse_packet(&hep_packet(22, compact)?)?.transport,
             TransportProto::Wss
         );
+        Ok(())
     }
 
     /// Kamailio traces a message it SENDS with the protocol of the socket it
@@ -5411,7 +5485,7 @@ mod tests {
     /// Via says WebSocket. A 6 whose Via names anything else stays TCP: the
     /// Via may say WebSocket over a TCP socket and nothing more.
     #[test]
-    fn hep_ip_protocol_6_with_a_websocket_via_is_websocket() {
+    fn hep_ip_protocol_6_with_a_websocket_via_is_websocket() -> Result<(), TestError> {
         for (via, want) in [
             ("WS", TransportProto::Ws),
             ("WSS", TransportProto::Wss),
@@ -5419,16 +5493,17 @@ mod tests {
             ("TLS", TransportProto::Tcp),
             ("UDP", TransportProto::Tcp),
         ] {
-            let parsed = parse_packet(&hep_packet(6, &traced_invite(via)))
-                .unwrap_or_else(|e| panic!("HEP protocol 6 (Via {via}) refused: {e:?}"));
+            let parsed = parse_packet(&hep_packet(6, &traced_invite(via))?)
+                .map_err(|e| format!("HEP protocol 6 (Via {via}) refused: {e:?}"))?;
             assert_eq!(parsed.transport, want, "Via {via}");
         }
+        Ok(())
     }
 
     /// 22 with no Via, or a Via naming anything but WS or WSS, stays TLS:
     /// that is what both tracers mean by 22 when WebSocket is ruled out.
     #[test]
-    fn hep_ip_protocol_22_without_a_websocket_via_stays_tls() {
+    fn hep_ip_protocol_22_without_a_websocket_via_stays_tls() -> Result<(), TestError> {
         for payload in [
             traced_invite("TCP"),
             traced_invite("UDP"),
@@ -5438,7 +5513,7 @@ mod tests {
             // A header whose name merely starts with "Via" is not Via.
             b"INVITE sip:b SIP/2.0\r\nViaduct: SIP/2.0/WSS x\r\n\r\n".to_vec(),
         ] {
-            let parsed = parse_packet(&hep_packet(22, &payload)).expect("22 is TLS");
+            let parsed = parse_packet(&hep_packet(22, &payload)?)?;
             assert_eq!(
                 parsed.transport,
                 TransportProto::Tls,
@@ -5446,57 +5521,62 @@ mod tests {
                 String::from_utf8_lossy(&payload)
             );
         }
+        Ok(())
     }
 
     /// The convention belongs to HEP senders. A pre-parsed packet nothing
     /// wrapped (a uprobe read) carries a real protocol number, and 22 or 50
     /// there is still refused, never relabeled. Nor does its Via relabel a 6.
     #[test]
-    fn the_hep_transport_convention_is_not_applied_without_a_hep_wrapper() {
-        let unwrapped = |p: u8| {
-            let mut pkt = hep_packet(p, &traced_invite("WSS"));
+    fn the_hep_transport_convention_is_not_applied_without_a_hep_wrapper() -> Result<(), TestError>
+    {
+        let unwrapped = |p: u8| -> Result<Result<_, CaptureError>, TestError> {
+            let mut pkt = hep_packet(p, &traced_invite("WSS"))?;
             pkt.interface = Some("uprobe:opensips/1234".into());
-            pkt.pre_parsed.as_mut().unwrap().hep = None;
-            parse_packet(&pkt)
+            pkt.pre_parsed.as_mut().ok_or("pre_parsed is None")?.hep = None;
+            Ok(parse_packet(&pkt))
         };
         for p in [22u8, 50] {
-            let err = unwrapped(p).expect_err("no HEP wrapper, no convention");
+            let err = unwrapped(p)?.err().ok_or("no HEP wrapper, no convention")?;
             assert!(
                 matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
                 "protocol {p}: {err:?}"
             );
         }
         assert_eq!(
-            unwrapped(6).expect("TCP").transport,
+            unwrapped(6)??.transport,
             TransportProto::Tcp,
             "a Via reading is a HEP convention too"
         );
+        Ok(())
     }
 
     /// A number neither tracer uses stays undecodable and named, so the
     /// not-decoded tally still says which protocol a sender claimed.
     #[test]
-    fn hep_with_an_unknown_ip_protocol_is_still_refused_by_number() {
+    fn hep_with_an_unknown_ip_protocol_is_still_refused_by_number() -> Result<(), TestError> {
         for p in [0u8, 1, 41, 99, 255] {
-            let err = parse_packet(&hep_packet(p, &traced_invite("TLS")))
-                .expect_err("an unknown HEP protocol must not be guessed");
+            let err = parse_packet(&hep_packet(p, &traced_invite("TLS"))?)
+                .err()
+                .ok_or("an unknown HEP protocol must not be guessed")?;
             assert!(
                 matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
                 "protocol {p}: {err:?}"
             );
         }
+        Ok(())
     }
 
     /// 17 and 132 from a HEP sender mean what they always meant, whatever
     /// the Via says: no tracer runs WebSocket over them. 6 with a Via that is
     /// not WebSocket is TCP.
     #[test]
-    fn hep_real_ip_protocols_are_unchanged() {
+    fn hep_real_ip_protocols_are_unchanged() -> Result<(), TestError> {
         for (p, want) in [(17u8, TransportProto::Udp), (132, TransportProto::Sctp)] {
-            let parsed =
-                parse_packet(&hep_packet(p, &traced_invite("WSS"))).expect("real protocol");
+            let parsed = parse_packet(&hep_packet(p, &traced_invite("WSS"))?)?;
             assert_eq!(parsed.transport, want, "protocol {p}");
         }
+        Ok(())
     }
 
     /// A HEP message marked 50 is never handed to ESP decoding.
@@ -5507,28 +5587,30 @@ mod tests {
     /// whole and labeled WS. A regression guard: HEP returns from the
     /// pre-parsed branch before any ESP code, so this could not fail first.
     #[test]
-    fn a_hep_message_marked_50_is_never_esp_decoded() {
+    fn a_hep_message_marked_50_is_never_esp_decoded() -> Result<(), TestError> {
         let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, INVITE);
         let esp = esp_null(17, &dg, 12);
-        let parsed = parse_packet(&hep_packet(50, &esp)).expect("HEP 50 decodes");
+        let parsed = parse_packet(&hep_packet(50, &esp)?)?;
         assert_eq!(parsed.transport, TransportProto::Ws);
         assert_eq!(
             parsed.payload[..],
             esp[..],
             "the payload must be delivered as the sender sent it, never unwrapped as ESP"
         );
+        Ok(())
     }
 
     /// A RAW frame is not HEP. IP protocol 50 there is a real ESP packet and
     /// 22 is XNS IDP: neither becomes TLS or WS, even when the bytes behind
     /// the header are a SIP message whose Via says WSS.
     #[test]
-    fn raw_frames_never_take_the_hep_transport_convention() {
+    fn raw_frames_never_take_the_hep_transport_convention() -> Result<(), TestError> {
         let sip = traced_invite("WSS");
         for p in [22u8, 50] {
             let ip = wrap_in_ipv4(&sip, p, [192, 0, 2, 1], [192, 0, 2, 2]);
-            let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB))
-                .expect_err("a raw frame is never relabeled");
+            let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)?)
+                .err()
+                .ok_or("a raw frame is never relabeled")?;
             assert!(
                 matches!(err, CaptureError::UnsupportedIpProtocol(n) if n == p),
                 "raw protocol {p}: {err:?}"
@@ -5537,16 +5619,17 @@ mod tests {
         // Real ESP with NULL encryption still decodes, as the transport it
         // protects.
         let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, &sip);
-        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, 12))).expect("ESP-NULL UDP");
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, 12))?)?;
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], sip[..]);
+        Ok(())
     }
 
     /// A 6in4 tunnel — an outer IPv4 packet with protocol 41 carrying an
     /// inner IPv6 datagram — is stripped to the inner IPv6/UDP flow so
     /// tunneled SIP is delivered rather than dropped.
     #[test]
-    fn parse_6in4_ipv6_in_ipv4() {
+    fn parse_6in4_ipv6_in_ipv4() -> Result<(), TestError> {
         let sip = b"OPTIONS sip:bob@example.com SIP/2.0\r\n\r\n";
 
         // Inner raw IPv6 + UDP (no Ethernet): 2001::1 -> 2001::2, 5060 -> 5062.
@@ -5595,30 +5678,33 @@ mod tests {
         eth.extend_from_slice(&[0x08, 0x00]); // EtherType: IPv4
         eth.extend_from_slice(&outer);
 
-        let pkt = make_packet(eth, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("should parse 6in4 tunnel");
+        let pkt = make_packet(eth, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
 
         // Inner IPv6 endpoints, not the outer IPv4 ones.
-        assert_eq!(parsed.src_addr, "2001::1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "2001::2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_addr, "2001::1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "2001::2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5062);
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], sip[..]);
+        Ok(())
     }
 
     /// A pre-parsed (HEP) packet whose IP protocol is neither UDP, TCP, nor
     /// SCTP (here ESP = 50) is rejected rather than silently mislabeled as
     /// UDP.
     #[test]
-    fn parse_packet_rejects_unknown_ip_protocol_pre_parsed() {
+    fn parse_packet_rejects_unknown_ip_protocol_pre_parsed() -> Result<(), TestError> {
         let pkt = Packet::with_pre_parsed(
-            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             b"not-sip".to_vec(),
             Some("hep:0.0.0.0:9060".to_string()),
             super::super::packet::PreParsed {
-                src_addr: "192.0.2.10".parse().unwrap(),
-                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_addr: "192.0.2.10".parse()?,
+                dst_addr: "192.0.2.20".parse()?,
                 src_port: 5060,
                 dst_port: 5060,
                 ip_protocol: 50, // ESP — not a SIP transport
@@ -5630,6 +5716,7 @@ mod tests {
             matches!(result, Err(CaptureError::UnsupportedIpProtocol(50))),
             "ESP must be rejected, not mislabeled as UDP; got {result:?}"
         );
+        Ok(())
     }
 
     /// IGMP reaches the transport match under etherparse 0.21 (which added
@@ -5637,17 +5724,18 @@ mod tests {
     /// mislabeled as ICMP, and not a panic or a compile-time surprise the next
     /// time etherparse grows a variant.
     #[test]
-    fn igmp_is_rejected_as_not_udp_or_tcp() {
+    fn igmp_is_rejected_as_not_udp_or_tcp() -> Result<(), TestError> {
         let pkt = make_packet(
             build_eth_ipv4_igmp([192, 0, 2, 10], [224, 0, 0, 1]),
             DLT_EN10MB,
-        );
+        )?;
         let result = parse_packet(&pkt);
         assert!(
             matches!(result, Err(CaptureError::NoTransport)),
             "IGMP must be rejected as not-UDP/TCP, and must not be reported as \
              ICMP; got {result:?}"
         );
+        Ok(())
     }
 
     /// An IPv6 packet carrying a Fragment extension header (first fragment)
@@ -5655,7 +5743,7 @@ mod tests {
     /// identification. Characterizes the extension-header walk so the
     /// hot-path clone removal cannot change fragmented-IPv6 behavior.
     #[test]
-    fn parse_ipv6_fragment_header_extracts_frag_fields() {
+    fn parse_ipv6_fragment_header_extracts_frag_fields() -> Result<(), TestError> {
         let body = b"first-fragment-body";
         let mut src = [0u8; 16];
         src[15] = 1;
@@ -5683,12 +5771,13 @@ mod tests {
         pkt.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // identification
         pkt.extend_from_slice(body);
 
-        let p = make_packet(pkt, DLT_EN10MB);
-        let parsed = parse_packet(&p).expect("should parse IPv6 fragment");
+        let p = make_packet(pkt, DLT_EN10MB)?;
+        let parsed = parse_packet(&p)?;
         assert_eq!(parsed.ip_id, Some(0xDEAD_BEEF));
         assert_eq!(parsed.fragment_offset, Some(0));
         assert!(parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17); // UDP, after the fragment header
+        Ok(())
     }
 
     // ── Tunnel decapsulation ──────────────────────────────────────────
@@ -5859,153 +5948,177 @@ mod tests {
 
     /// Assert a parse recovered the INVITE with the inner five-tuple intact.
     #[track_caller]
-    fn assert_invite_recovered(parsed: &ParsedPacket) {
-        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>().unwrap());
+    fn assert_invite_recovered(parsed: &ParsedPacket) -> Result<(), TestError> {
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(&parsed.payload[..], INVITE);
+        Ok(())
     }
 
     /// EtherType 0x8847: an MPLS-labeled frame yields the labeled packet's
     /// own five-tuple, not silence.
     #[test]
-    fn parse_mpls_unicast_recovers_invite() {
+    fn parse_mpls_unicast_recovers_invite() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x8847, &mpls_label(16_000, true));
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("MPLS unicast");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// EtherType 0x8848 (RFC 5332's upstream-assigned label) walks the same
     /// stack as 0x8847.
     #[test]
-    fn parse_mpls_multicast_ethertype_recovers_invite() {
+    fn parse_mpls_multicast_ethertype_recovers_invite() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x8848, &mpls_label(16_001, true));
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("MPLS multicast");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// A two-label stack (the carrier norm: transport label over service
     /// label) is walked to the bottom of stack.
     #[test]
-    fn parse_mpls_two_label_stack_recovers_invite() {
+    fn parse_mpls_two_label_stack_recovers_invite() -> Result<(), TestError> {
         let mut stack = mpls_label(16_000, false).to_vec();
         stack.extend_from_slice(&mpls_label(16_001, true));
         let data = splice_after_macs(&invite_frame(), 0x8847, &stack);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("two-label MPLS");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// MPLS behind a VLAN tag — the ordinary shape on a carrier access port —
     /// still reaches the labeled packet.
     #[test]
-    fn parse_vlan_then_mpls_recovers_invite() {
+    fn parse_vlan_then_mpls_recovers_invite() -> Result<(), TestError> {
         let mpls = splice_after_macs(&invite_frame(), 0x8847, &mpls_label(16_000, true));
         let data = prepend_vlan_tag(&mpls, ETHERTYPE_VLAN, 0x0064);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("VLAN over MPLS");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// The Implicit NULL label (3) "should never actually appear in the
     /// encapsulation" ([RFC 3032 section 2.1](https://www.rfc-editor.org/rfc/rfc3032#section-2.1)), so a stack containing it is not a
     /// label stack and must not be walked.
     #[test]
-    fn parse_mpls_implicit_null_label_is_refused() {
+    fn parse_mpls_implicit_null_label_is_refused() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x8847, &mpls_label(3, true));
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::NotIp { .. }),
             "implicit NULL must not be decapsulated, got {err:?}"
         );
+        Ok(())
     }
 
     /// EtherType 0x894F: an NSH-encapsulated IPv4 packet is recovered.
     #[test]
-    fn parse_nsh_recovers_invite() {
+    fn parse_nsh_recovers_invite() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x894F, &nsh_md1_header(0, 0x1, 0x1));
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("NSH MD type 1");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// [RFC 8300 section 2.2](https://www.rfc-editor.org/rfc/rfc8300#section-2.2) reserves version 01b precisely because it would alias
     /// IPv4's first nibble; a non-zero version is refused.
     #[test]
-    fn parse_nsh_nonzero_version_is_refused() {
+    fn parse_nsh_nonzero_version_is_refused() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x894F, &nsh_md1_header(1, 0x1, 0x1));
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::NotIp { .. }),
             "NSH version 1 must not be decapsulated, got {err:?}"
         );
+        Ok(())
     }
 
     /// An NSH Length that contradicts its MD Type locates the payload
     /// nowhere, so the frame is refused rather than guessed at.
     #[test]
-    fn parse_nsh_md_type_length_mismatch_is_refused() {
+    fn parse_nsh_md_type_length_mismatch_is_refused() -> Result<(), TestError> {
         let mut hdr = nsh_md1_header(0, 0x1, 0x1);
         hdr[1] = 0x05; // MD Type 0x1 requires Length 0x6
         let data = splice_after_macs(&invite_frame(), 0x894F, &hdr);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::NotIp { .. }),
             "an MD-Type/Length mismatch must not be decapsulated, got {err:?}"
         );
+        Ok(())
     }
 
     /// EtherType 0x88E7: the customer frame inside a PBB I-TAG is walked as a
     /// complete Ethernet frame.
     #[test]
-    fn parse_pbb_itag_recovers_invite() {
+    fn parse_pbb_itag_recovers_invite() -> Result<(), TestError> {
         let data = wrap_in_itag(&invite_frame(), [0x00, 0x00, 0x64]);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("PBB I-TAG");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// The wildcard I-SID (0xFFFFFF) "shall not be ... transmitted in an
     /// I-TAG header" (Table 9-3), so these octets are not an I-TAG.
     #[test]
-    fn parse_pbb_itag_wildcard_isid_is_refused() {
+    fn parse_pbb_itag_wildcard_isid_is_refused() -> Result<(), TestError> {
         let data = wrap_in_itag(&invite_frame(), [0xFF, 0xFF, 0xFF]);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::NotIp { .. }),
             "a wildcard I-SID must not be decapsulated, got {err:?}"
         );
+        Ok(())
     }
 
     /// EtherType 0x88E5 with E and C clear is integrity-only MACsec: the User
     /// Data is plaintext and the walk resumes at the displaced EtherType.
     #[test]
-    fn parse_macsec_integrity_only_recovers_invite() {
+    fn parse_macsec_integrity_only_recovers_invite() -> Result<(), TestError> {
         let data = wrap_in_macsec(&invite_frame(), 0x00);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("integrity-only MACsec");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// MACsec is a transparent insertion, so the walk that resumes after the
     /// SecTAG must be the SAME walk — VLAN tags inside the Secure Data are
     /// ordinary tags ([IEEE Std 802.1AE-2018](https://standards.ieee.org/ieee/802.1AE/7154/) section 6.2), not a second dialect.
     #[test]
-    fn parse_macsec_over_inner_vlan_recovers_invite() {
+    fn parse_macsec_over_inner_vlan_recovers_invite() -> Result<(), TestError> {
         let tagged = prepend_vlan_tag(&invite_frame(), ETHERTYPE_VLAN, 0x0064);
         let data = wrap_in_macsec(&tagged, 0x00);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("MACsec over VLAN");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// With the C bit set the Secure Data cannot be recovered from the frame
     /// alone. That is a diagnosis, not a decode failure, and it must never
     /// produce a flow.
     #[test]
-    fn parse_macsec_encrypted_is_reported_not_invented() {
+    fn parse_macsec_encrypted_is_reported_not_invented() -> Result<(), TestError> {
         let data = wrap_in_macsec(&invite_frame(), TCI_E_C_SET);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::NotIp { what } if what == MACSEC_OPAQUE),
             "encrypted MACsec must be named, got {err:?}"
         );
+        Ok(())
     }
 
     /// TCI with both E (0x08) and C (0x04) set: confidentiality.
@@ -6015,54 +6128,58 @@ mod tests {
     /// the byte after the IP header, and the offset handed to the decoder is
     /// absolute within the frame.
     #[test]
-    fn parse_mpls_in_ip_recovers_invite() {
+    fn parse_mpls_in_ip_recovers_invite() -> Result<(), TestError> {
         let mut mpls = mpls_label(16_000, true).to_vec();
         mpls.extend_from_slice(&invite_packet());
         let ip = wrap_in_ipv4(&mpls, 137, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("MPLS-in-IP");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// AH (IP protocol 51) authenticates without encrypting. In tunnel mode
     /// the protected payload is a whole IP packet, and it is readable.
     #[test]
-    fn parse_ah_tunnel_mode_recovers_invite() {
+    fn parse_ah_tunnel_mode_recovers_invite() -> Result<(), TestError> {
         let mut ah = ah_header(4, 12); // Next Header 4 = IPv4-in-IPv4
         ah.extend_from_slice(&invite_packet());
         let ip = wrap_in_ipv4(&ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("AH tunnel mode");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// In transport mode AH protects the transport header of the same
     /// datagram: the addresses stay outer, the ports and payload are inner,
     /// and `ip_protocol` names what AH actually protects rather than 51.
     #[test]
-    fn parse_ah_transport_mode_recovers_invite() {
+    fn parse_ah_transport_mode_recovers_invite() -> Result<(), TestError> {
         let udp = &invite_packet()[20..]; // UDP header + INVITE
         let mut ah = ah_header(17, 12);
         ah.extend_from_slice(udp);
         let ip = wrap_in_ipv4(&ah, 51, [10, 0, 0, 1], [10, 0, 0, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("AH transport mode");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
         assert_eq!(parsed.ip_protocol, 17);
+        Ok(())
     }
 
     /// A longer ICV moves the protected payload: the Payload Length field is
     /// in 4-octet units minus 2, and reading it any other way lands on the
     /// wrong byte. A 32-octet AH (12 fixed + a 160-bit ICV) writes 6.
     #[test]
-    fn parse_ah_longer_icv_still_finds_payload() {
+    fn parse_ah_longer_icv_still_finds_payload() -> Result<(), TestError> {
         let mut ah = ah_header(4, 20);
         assert_eq!(ah[1], 6, "32-octet AH writes Payload Len 6");
         ah.extend_from_slice(&invite_packet());
         let ip = wrap_in_ipv4(&ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("AH with 160-bit ICV");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// Two stacked Authentication Headers. `etherparse` walks exactly one, so
@@ -6070,36 +6187,38 @@ mod tests {
     /// where reading Payload Len in anything but 4-octet-units-minus-2 lands
     /// in the middle of an ICV.
     #[test]
-    fn parse_nested_ah_tunnel_mode_recovers_invite() {
+    fn parse_nested_ah_tunnel_mode_recovers_invite() -> Result<(), TestError> {
         let mut inner_ah = ah_header(4, 12); // protects an IPv4 packet
         inner_ah.extend_from_slice(&invite_packet());
         let mut outer_ah = ah_header(51, 20); // protects another AH
         outer_ah.extend_from_slice(&inner_ah);
         let ip = wrap_in_ipv4(&outer_ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("stacked AH");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// Stacked AH in transport mode: the addresses stay outer, and the
     /// protocol reported is the one AH protects.
     #[test]
-    fn parse_nested_ah_transport_mode_recovers_invite() {
+    fn parse_nested_ah_transport_mode_recovers_invite() -> Result<(), TestError> {
         let mut inner_ah = ah_header(17, 12); // protects UDP
         inner_ah.extend_from_slice(&invite_packet()[20..]);
         let mut outer_ah = ah_header(51, 12);
         outer_ah.extend_from_slice(&inner_ah);
         let ip = wrap_in_ipv4(&outer_ah, 51, [10, 0, 0, 1], [10, 0, 0, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("stacked AH transport");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
         assert_eq!(parsed.ip_protocol, 17);
+        Ok(())
     }
 
     /// A Payload Len that runs past the captured bytes is refused, not
     /// followed: the field is attacker-controlled.
     #[test]
-    fn parse_nested_ah_overlong_payload_len_is_refused() {
+    fn parse_nested_ah_overlong_payload_len_is_refused() -> Result<(), TestError> {
         let mut inner_ah = ah_header(4, 12);
         inner_ah[1] = 0xFF; // 1028 octets of AH in a frame that has far less
         inner_ah.extend_from_slice(&invite_packet());
@@ -6107,7 +6226,9 @@ mod tests {
         outer_ah.extend_from_slice(&inner_ah);
         let ip = wrap_in_ipv4(&outer_ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(
                 err,
@@ -6118,13 +6239,14 @@ mod tests {
             ),
             "an overlong AH must be refused, got {err:?}"
         );
+        Ok(())
     }
 
     /// A Payload Len describing a header shorter than AH's own mandatory
     /// fields would move the walk backwards. [RFC 4302 section 2](https://www.rfc-editor.org/rfc/rfc4302#section-2) fixes those fields at
     /// 12 octets, so Payload Len 0 (an 8-octet AH) cannot be one.
     #[test]
-    fn parse_nested_ah_undersized_header_is_refused() {
+    fn parse_nested_ah_undersized_header_is_refused() -> Result<(), TestError> {
         let mut inner_ah = ah_header(4, 12);
         inner_ah[1] = 0x00; // claims an 8-octet AH
         inner_ah.extend_from_slice(&invite_packet());
@@ -6132,7 +6254,9 @@ mod tests {
         outer_ah.extend_from_slice(&inner_ah);
         let ip = wrap_in_ipv4(&outer_ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(
                 err,
@@ -6143,12 +6267,13 @@ mod tests {
             ),
             "an undersized AH must be refused, got {err:?}"
         );
+        Ok(())
     }
 
     /// A stack of Authentication Headers spends the same budget every other
     /// encapsulation does, so an attacker cannot chain them without limit.
     #[test]
-    fn stacked_ah_headers_exhaust_the_budget() {
+    fn stacked_ah_headers_exhaust_the_budget() -> Result<(), TestError> {
         let mut ah = ah_header(4, 12);
         ah.extend_from_slice(&invite_packet());
         for _ in 0..6 {
@@ -6158,7 +6283,9 @@ mod tests {
         }
         let ip = wrap_in_ipv4(&ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(
                 err,
@@ -6169,6 +6296,7 @@ mod tests {
             ),
             "stacked AH must share the frame's budget, got {err:?}"
         );
+        Ok(())
     }
 
     /// A fragment of an AH-protected datagram must key on protocol 51 — the
@@ -6180,7 +6308,7 @@ mod tests {
     /// reads payload bytes as a header. Those bytes are the middle of a
     /// datagram, and the number it recovers from them is not the datagram's.
     #[test]
-    fn ah_fragment_keys_on_the_header_protocol() {
+    fn ah_fragment_keys_on_the_header_protocol() -> Result<(), TestError> {
         let mut body = ah_header(17, 12); // bytes that *look* like an AH
         body.extend_from_slice(&invite_packet()[20..]);
         let mut data = wrap_in_eth(
@@ -6188,26 +6316,30 @@ mod tests {
             ETHERTYPE_IPV4,
         );
         data[20..22].copy_from_slice(&0x2000u16.to_be_bytes()); // MF set
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("AH fragment");
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
         assert!(parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 51, "a fragment keys on its own header");
+        Ok(())
     }
 
     /// A protected protocol that is neither an IP packet nor a transport
     /// header sipnab reads is named rather than guessed at.
     #[test]
-    fn parse_nested_ah_unknown_protected_protocol_is_named() {
+    fn parse_nested_ah_unknown_protected_protocol_is_named() -> Result<(), TestError> {
         let mut inner_ah = ah_header(50, 12); // AH over ESP
         inner_ah.extend_from_slice(&invite_packet());
         let mut outer_ah = ah_header(51, 12);
         outer_ah.extend_from_slice(&inner_ah);
         let ip = wrap_in_ipv4(&outer_ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(50)),
             "expected the protected protocol in the error, got {err:?}"
         );
+        Ok(())
     }
 
     /// ESP (protocol 50) whose payload carries no NULL-encryption trailer
@@ -6215,17 +6347,20 @@ mod tests {
     /// message — and is named by its protocol number rather than counted as
     /// an anonymous frame.
     #[test]
-    fn parse_esp_is_not_traversed() {
+    fn parse_esp_is_not_traversed() -> Result<(), TestError> {
         let mut esp = 0x1122_3344u32.to_be_bytes().to_vec(); // SPI
         esp.extend_from_slice(&1u32.to_be_bytes()); // Sequence Number
         esp.extend_from_slice(&invite_packet());
         let ip = wrap_in_ipv4(&esp, 50, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(50)),
             "ESP must stay opaque and named, got {err:?}"
         );
+        Ok(())
     }
 
     // ── ESP with NULL encryption (RFC 2410) ─────────────────────────────
@@ -6330,18 +6465,18 @@ mod tests {
     const ESP_SRC: [u8; 4] = [192, 0, 2, 10];
     const ESP_DST: [u8; 4] = [192, 0, 2, 20];
 
-    fn esp_frame_v4(esp: &[u8]) -> Packet {
+    fn esp_frame_v4(esp: &[u8]) -> Result<Packet, TestError> {
         let ip = wrap_in_ipv4(esp, 50, ESP_SRC, ESP_DST);
-        make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)
+        Ok(make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)?)
     }
 
     /// SIP over TCP inside NULL-encrypted ESP, the shape IMS Gm takes: the
     /// transport header and the SIP come out, keyed on the OUTER addresses
     /// (transport mode keeps them), with the transport's own protocol.
     #[test]
-    fn parse_esp_null_recovers_tcp_sip() {
+    fn parse_esp_null_recovers_tcp_sip() -> Result<(), TestError> {
         let seg = tcp_segment(|n| pseudo_v4(ESP_SRC, ESP_DST, 6, n), 5060, 43687, INVITE);
-        let parsed = parse_packet(&esp_frame_v4(&esp_null(6, &seg, 12))).expect("ESP-NULL TCP");
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(6, &seg, 12))?)?;
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.src_addr, IpAddr::from(ESP_SRC));
         assert_eq!(parsed.dst_addr, IpAddr::from(ESP_DST));
@@ -6349,29 +6484,31 @@ mod tests {
         assert_eq!(&parsed.payload[..], INVITE);
         assert_eq!(parsed.ip_protocol, 6, "the protected protocol, not 50");
         assert_eq!(parsed.tcp_seq, Some(1_000));
+        Ok(())
     }
 
     /// UDP inside ESP-NULL, with a 16-octet ICV (HMAC-SHA-256-128), and with
     /// a UDP checksum of zero, which IPv4 permits.
     #[test]
-    fn parse_esp_null_recovers_udp_sip_with_either_icv_length() {
+    fn parse_esp_null_recovers_udp_sip_with_either_icv_length() -> Result<(), TestError> {
         let dg = udp_datagram(|n| pseudo_v4(ESP_SRC, ESP_DST, 17, n), 5060, 5062, INVITE);
         for icv in [12, 16] {
-            let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, icv)))
-                .unwrap_or_else(|e| panic!("ESP-NULL UDP, ICV {icv}: {e:?}"));
+            let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &dg, icv))?)
+                .map_err(|e| format!("ESP-NULL UDP, ICV {icv}: {e:?}"))?;
             assert_eq!(parsed.transport, TransportProto::Udp);
             assert_eq!((parsed.src_port, parsed.dst_port), (5060, 5062));
             assert_eq!(&parsed.payload[..], INVITE);
         }
         let mut no_ck = dg.clone();
         no_ck[6..8].copy_from_slice(&[0, 0]);
-        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &no_ck, 12))).expect("zero checksum");
+        let parsed = parse_packet(&esp_frame_v4(&esp_null(17, &no_ck, 12))?)?;
         assert_eq!(&parsed.payload[..], INVITE);
+        Ok(())
     }
 
     /// ESP-NULL over IPv6, checksummed with the IPv6 pseudo-header.
     #[test]
-    fn parse_esp_null_over_ipv6() {
+    fn parse_esp_null_over_ipv6() -> Result<(), TestError> {
         let src = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         let dst = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2];
         let seg = tcp_segment(|n| pseudo_v6(src, dst, 6, n), 5060, 40000, INVITE);
@@ -6383,17 +6520,17 @@ mod tests {
         ip6.extend_from_slice(&src);
         ip6.extend_from_slice(&dst);
         ip6.extend_from_slice(&esp);
-        let parsed = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB))
-            .expect("ESP-NULL over IPv6");
+        let parsed = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB)?)?;
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(&parsed.payload[..], INVITE);
+        Ok(())
     }
 
     /// Encrypted ESP is named, never guessed at. The bytes here are what a
     /// cipher produces: nothing in them forms a NULL trailer and a transport
     /// header whose checksum holds.
     #[test]
-    fn parse_encrypted_esp_is_named_not_guessed() {
+    fn parse_encrypted_esp_is_named_not_guessed() -> Result<(), TestError> {
         let mut esp = 0x0102_0304u32.to_be_bytes().to_vec();
         esp.extend_from_slice(&9u32.to_be_bytes());
         let mut x: u32 = 0x9e37_79b9;
@@ -6403,11 +6540,14 @@ mod tests {
             x ^= x << 5;
             esp.push(x as u8);
         }
-        let err = parse_packet(&esp_frame_v4(&esp)).expect_err("ciphertext");
+        let err = parse_packet(&esp_frame_v4(&esp)?)
+            .err()
+            .ok_or("ciphertext")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(50)),
             "{err:?}"
         );
+        Ok(())
     }
 
     /// Each structural check refuses on its own: a trailer that looks right
@@ -6415,14 +6555,14 @@ mod tests {
     /// 1, 2, 3, ... sequence, and a Next Header that is not TCP or UDP. Any one
     /// of them letting a frame through would invent a SIP message.
     #[test]
-    fn parse_esp_null_refuses_when_any_check_fails() {
+    fn parse_esp_null_refuses_when_any_check_fails() -> Result<(), TestError> {
         // One octet longer than INVITE, so the trailer needs padding and the
         // padding check has something to refuse.
         let payload = [INVITE, b"X"].concat();
         let seg = tcp_segment(|n| pseudo_v4(ESP_SRC, ESP_DST, 6, n), 5060, 43687, &payload);
         let good = esp_null(6, &seg, 12);
         assert!(
-            parse_packet(&esp_frame_v4(&good)).is_ok(),
+            parse_packet(&esp_frame_v4(&good)?).is_ok(),
             "the unaltered packet decodes"
         );
 
@@ -6442,12 +6582,13 @@ mod tests {
             ("padding", bad_padding),
             ("next header", bad_next),
         ] {
-            let err = parse_packet(&esp_frame_v4(&esp)).expect_err(what);
+            let err = parse_packet(&esp_frame_v4(&esp)?).err().ok_or(what)?;
             assert!(
                 matches!(err, CaptureError::UnsupportedIpProtocol(50)),
                 "{what}: {err:?}"
             );
         }
+        Ok(())
     }
 
     /// [RFC 4303 section 2.4](https://www.rfc-editor.org/rfc/rfc4303#section-2.4) has the trailer end on a 4-octet boundary; a
@@ -6455,7 +6596,8 @@ mod tests {
     /// a UDP checksum of zero means "none" only over IPv4 -- over IPv6 it is
     /// not a checksum at all ([RFC 8200 section 8.1](https://www.rfc-editor.org/rfc/rfc8200#section-8.1)), so it proves nothing.
     #[test]
-    fn parse_esp_null_refuses_a_misaligned_trailer_and_an_unchecksummed_ipv6_datagram() {
+    fn parse_esp_null_refuses_a_misaligned_trailer_and_an_unchecksummed_ipv6_datagram()
+    -> Result<(), TestError> {
         // 58 octets of segment + Pad Length + Next Header = 60, then one more
         // octet of payload makes 61 with no padding: valid pattern, wrong end.
         let payload = [INVITE, b"X"].concat();
@@ -6465,7 +6607,9 @@ mod tests {
         misaligned.extend_from_slice(&seg);
         misaligned.extend_from_slice(&[0, 6]);
         misaligned.extend(std::iter::repeat_n(0x5a, 12));
-        let err = parse_packet(&esp_frame_v4(&misaligned)).expect_err("misaligned trailer");
+        let err = parse_packet(&esp_frame_v4(&misaligned)?)
+            .err()
+            .ok_or("misaligned trailer")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(50)),
             "{err:?}"
@@ -6483,118 +6627,131 @@ mod tests {
         ip6.extend_from_slice(&src);
         ip6.extend_from_slice(&dst);
         ip6.extend_from_slice(&esp);
-        let err = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB))
-            .expect_err("zero UDP checksum over IPv6");
+        let err = parse_packet(&make_packet(wrap_in_eth(&ip6, ETHERTYPE_IPV6), DLT_EN10MB)?)
+            .err()
+            .ok_or("zero UDP checksum over IPv6")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(50)),
             "{err:?}"
         );
+        Ok(())
     }
 
     /// An IP protocol sipnab does not read is named by its number. It used to
     /// leave as a bare "no transport", and the report could only say "IP
     /// protocol not recorded" — for every ESP frame of an IMS capture.
     #[test]
-    fn an_unread_ip_protocol_is_named_by_its_number() {
+    fn an_unread_ip_protocol_is_named_by_its_number() -> Result<(), TestError> {
         let ip = wrap_in_ipv4(b"\x02\x01\x00\x2c", 89, ESP_SRC, ESP_DST); // OSPF
-        let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB))
-            .expect_err("OSPF");
+        let err = parse_packet(&make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)?)
+            .err()
+            .ok_or("OSPF")?;
         assert!(
             matches!(err, CaptureError::UnsupportedIpProtocol(89)),
             "{err:?}"
         );
+        Ok(())
     }
 
     /// GRE Protocol Type 0x6558 is Transparent Ethernet Bridging
     /// ([RFC 7637 section 3.2](https://www.rfc-editor.org/rfc/rfc7637#section-3.2)): the payload is a whole Ethernet frame, so the Ethernet walk is
     /// re-entered rather than the IP walk.
     #[test]
-    fn parse_gre_teb_recovers_invite() {
+    fn parse_gre_teb_recovers_invite() -> Result<(), TestError> {
         let mut gre = gre_header(0x6558);
         gre.extend_from_slice(&invite_inner_frame());
         let ip = wrap_in_ipv4(&gre, 47, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("GRE-TEB");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// A GRE Protocol Type sipnab does not decode is still named in the
     /// error rather than guessed at.
     #[test]
-    fn parse_gre_unknown_protocol_is_still_named() {
+    fn parse_gre_unknown_protocol_is_still_named() -> Result<(), TestError> {
         let mut gre = gre_header(0x6559); // one past TEB
         gre.extend_from_slice(&invite_inner_frame());
         let ip = wrap_in_ipv4(&gre, 47, [192, 0, 2, 1], [192, 0, 2, 2]);
         let data = wrap_in_eth(&ip, ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::UnsupportedGreProtocol(0x6559)),
             "expected the protocol type in the error, got {err:?}"
         );
+        Ok(())
     }
 
     /// UDP 4789: the VXLAN payload is a full Ethernet frame.
     #[test]
-    fn parse_vxlan_recovers_invite() {
+    fn parse_vxlan_recovers_invite() -> Result<(), TestError> {
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx.extend_from_slice(&invite_inner_frame());
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("VXLAN");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// UDP 2152: a GTP-U G-PDU carries a bare IP packet, which is how VoLTE
     /// signaling crosses S1-U / N3.
     #[test]
-    fn parse_gtpu_recovers_invite() {
+    fn parse_gtpu_recovers_invite() -> Result<(), TestError> {
         let inner = invite_packet();
         let mut gtp = gtpu_header(0xDEAD_BEEF, inner.len());
         gtp.extend_from_slice(&inner);
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 2152, 2152, &gtp);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("GTP-U");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// A tunnel port appearing as the SOURCE port is an ordinary ephemeral
     /// port, not a tunnel. Only the destination port may claim a payload.
     #[test]
-    fn parse_udp_tunnel_port_as_source_is_not_decapsulated() {
+    fn parse_udp_tunnel_port_as_source_is_not_decapsulated() -> Result<(), TestError> {
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx.extend_from_slice(&invite_inner_frame());
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 4789, 5060, &vx);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("plain UDP");
-        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>().unwrap());
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>()?);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(&parsed.payload[..], &vx[..]);
+        Ok(())
     }
 
     /// A VXLAN header whose reserved bits are not zero is an RTP payload that
     /// happened to land on port 4789. It must stay an RTP payload.
     #[test]
-    fn parse_vxlan_nonzero_reserved_stays_plain_udp() {
+    fn parse_vxlan_nonzero_reserved_stays_plain_udp() -> Result<(), TestError> {
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx[3] = 0x01; // a reserved octet RFC 7348 §5 requires to be zero
         vx.extend_from_slice(&invite_inner_frame());
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("plain UDP");
-        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>().unwrap());
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>()?);
         assert_eq!(parsed.dst_port, 4789);
         assert_eq!(&parsed.payload[..], &vx[..]);
+        Ok(())
     }
 
     /// A non-first fragment's payload is not a tunnel header, and neither is
     /// a first fragment's tail. A fragmented datagram on a tunnel port stays
     /// a fragment, so reassembly — not decapsulation — gets it.
     #[test]
-    fn parse_fragmented_tunnel_port_is_not_decapsulated() {
+    fn parse_fragmented_tunnel_port_is_not_decapsulated() -> Result<(), TestError> {
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx.extend_from_slice(&invite_inner_frame());
         let mut data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx);
         data[20..22].copy_from_slice(&0x2000u16.to_be_bytes()); // MF set, offset 0
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("first fragment");
-        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>().unwrap());
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 0, "a fragment has no transport header");
         assert!(parsed.more_fragments);
+        Ok(())
     }
 
     /// Octets that sit inside the IP datagram but past the end of the UDP one
@@ -6609,7 +6766,7 @@ mod tests {
     /// only bound that is tight, which is why `udp.payload()` is what the
     /// dispatch is given.
     #[test]
-    fn parse_gtpu_ignores_octets_past_the_udp_length() {
+    fn parse_gtpu_ignores_octets_past_the_udp_length() -> Result<(), TestError> {
         let inner = invite_packet();
         let mut gtp = gtpu_header(7, inner.len());
         gtp.extend_from_slice(&inner);
@@ -6619,20 +6776,22 @@ mod tests {
         let total = u16::from_be_bytes([data[16], data[17]]) + TRAILER as u16;
         data[16..18].copy_from_slice(&total.to_be_bytes());
         data.resize(data.len() + TRAILER, 0x00);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("GTP-U with a trailer");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// The Ethernet payload the UDP tunnels hand back re-enters the same
     /// walk, VLAN tags and all.
     #[test]
-    fn parse_vxlan_over_inner_vlan_recovers_invite() {
+    fn parse_vxlan_over_inner_vlan_recovers_invite() -> Result<(), TestError> {
         let tagged = prepend_vlan_tag(&invite_inner_frame(), ETHERTYPE_QINQ, 0x0064);
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx.extend_from_slice(&tagged);
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("VXLAN over VLAN");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// A first fragment carries only the *head* of whatever it wraps, and a
@@ -6645,18 +6804,19 @@ mod tests {
     /// datagram across `--cores` workers and reassembles it under the wrong
     /// key.
     #[test]
-    fn parse_fragmented_ip_in_ip_is_not_decapsulated() {
+    fn parse_fragmented_ip_in_ip_is_not_decapsulated() -> Result<(), TestError> {
         let mut data = wrap_in_eth(
             &wrap_in_ipv4(&invite_packet(), 4, [192, 0, 2, 1], [192, 0, 2, 2]),
             ETHERTYPE_IPV4,
         );
         data[20..22].copy_from_slice(&0x2000u16.to_be_bytes()); // MF set, offset 0
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("first fragment");
-        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>().unwrap());
-        assert_eq!(parsed.dst_addr, "192.0.2.2".parse::<IpAddr>().unwrap());
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_eq!(parsed.src_addr, "192.0.2.1".parse::<IpAddr>()?);
+        assert_eq!(parsed.dst_addr, "192.0.2.2".parse::<IpAddr>()?);
         assert_eq!(parsed.src_port, 0, "a fragment has no transport header");
         assert!(parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 4);
+        Ok(())
     }
 
     // ── One shared recursion budget ───────────────────────────────────
@@ -6672,21 +6832,25 @@ mod tests {
 
     /// Five encapsulations of the same kind are within budget.
     #[test]
-    fn five_ip_in_ip_layers_are_within_budget() {
+    fn five_ip_in_ip_layers_are_within_budget() -> Result<(), TestError> {
         let data = wrap_in_eth(&nest_ip_in_ip(&invite_packet(), 5), ETHERTYPE_IPV4);
-        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)).expect("5 layers");
-        assert_invite_recovered(&parsed);
+        let parsed = parse_packet(&make_packet(data, DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// Six are not — attacker-controlled nesting terminates.
     #[test]
-    fn six_ip_in_ip_layers_exhaust_the_budget() {
+    fn six_ip_in_ip_layers_exhaust_the_budget() -> Result<(), TestError> {
         let data = wrap_in_eth(&nest_ip_in_ip(&invite_packet(), 6), ETHERTYPE_IPV4);
-        let err = parse_packet(&make_packet(data, DLT_EN10MB)).unwrap_err();
+        let err = parse_packet(&make_packet(data, DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
             "expected the depth limit, got {err:?}"
         );
+        Ok(())
     }
 
     /// Build MACsec → MPLS → GTP-U → `ip_layers` × IP-in-IP → the INVITE.
@@ -6706,21 +6870,24 @@ mod tests {
     /// five different kinds, and it parses — the budget is a depth limit, not
     /// a per-kind one.
     #[test]
-    fn five_mixed_encapsulations_are_within_budget() {
-        let parsed =
-            parse_packet(&make_packet(mixed_encapsulation(1), DLT_EN10MB)).expect("5 mixed layers");
-        assert_invite_recovered(&parsed);
+    fn five_mixed_encapsulations_are_within_budget() -> Result<(), TestError> {
+        let parsed = parse_packet(&make_packet(mixed_encapsulation(1), DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// A sixth layer of any kind exhausts the SAME budget: a frame cannot buy
     /// extra depth by varying the encapsulation it uses.
     #[test]
-    fn six_mixed_encapsulations_exhaust_the_budget() {
-        let err = parse_packet(&make_packet(mixed_encapsulation(2), DLT_EN10MB)).unwrap_err();
+    fn six_mixed_encapsulations_exhaust_the_budget() -> Result<(), TestError> {
+        let err = parse_packet(&make_packet(mixed_encapsulation(2), DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
             "a mixed stack must share one budget, got {err:?}"
         );
+        Ok(())
     }
 
     /// An MPLS-in-IP packet under `ip_layers` of IP-in-IP.
@@ -6746,37 +6913,45 @@ mod tests {
     /// The label stack itself costs a unit, so three IP-in-IP hops over
     /// MPLS-in-IP is exactly five layers and parses …
     #[test]
-    fn mpls_in_ip_within_budget_parses() {
-        let parsed = parse_packet(&make_packet(mpls_in_ip_under(3), DLT_EN10MB)).expect("5 layers");
-        assert_invite_recovered(&parsed);
+    fn mpls_in_ip_within_budget_parses() -> Result<(), TestError> {
+        let parsed = parse_packet(&make_packet(mpls_in_ip_under(3), DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// … and a fourth hop is a sixth layer, which is refused. Without the
     /// label stack's own charge this frame would be five and would parse.
     #[test]
-    fn mpls_in_ip_spends_from_the_shared_budget() {
-        let err = parse_packet(&make_packet(mpls_in_ip_under(4), DLT_EN10MB)).unwrap_err();
+    fn mpls_in_ip_spends_from_the_shared_budget() -> Result<(), TestError> {
+        let err = parse_packet(&make_packet(mpls_in_ip_under(4), DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
             "MPLS-in-IP must spend a unit of the frame's budget, got {err:?}"
         );
+        Ok(())
     }
 
     /// The same accounting for GRE-TEB: the bridged frame costs a unit.
     #[test]
-    fn gre_teb_within_budget_parses() {
-        let parsed = parse_packet(&make_packet(gre_teb_under(3), DLT_EN10MB)).expect("5 layers");
-        assert_invite_recovered(&parsed);
+    fn gre_teb_within_budget_parses() -> Result<(), TestError> {
+        let parsed = parse_packet(&make_packet(gre_teb_under(3), DLT_EN10MB)?)?;
+        assert_invite_recovered(&parsed)?;
+        Ok(())
     }
 
     /// One hop deeper is refused; without GRE-TEB's charge it would parse.
     #[test]
-    fn gre_teb_spends_from_the_shared_budget() {
-        let err = parse_packet(&make_packet(gre_teb_under(4), DLT_EN10MB)).unwrap_err();
+    fn gre_teb_spends_from_the_shared_budget() -> Result<(), TestError> {
+        let err = parse_packet(&make_packet(gre_teb_under(4), DLT_EN10MB)?)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
             "GRE-TEB must spend a unit of the frame's budget, got {err:?}"
         );
+        Ok(())
     }
 
     // ── peek_host_pair: the `--cores` shard key ───────────────────────
@@ -6784,14 +6959,15 @@ mod tests {
     /// The peek follows link-layer encapsulation, so an MPLS frame shards on
     /// the same host pair the full parse reports.
     #[test]
-    fn peek_follows_mpls_like_the_full_parse() {
+    fn peek_follows_mpls_like_the_full_parse() -> Result<(), TestError> {
         let data = splice_after_macs(&invite_frame(), 0x8847, &mpls_label(16_000, true));
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("MPLS");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             peek_host_pair(&pkt),
             Some((parsed.src_addr, parsed.dst_addr))
         );
+        Ok(())
     }
 
     /// An EtherType the walk does not decode yields no shard key at all —
@@ -6804,7 +6980,7 @@ mod tests {
     /// pair assembled from link-layer bytes. Those addresses were never on the
     /// wire, and they would key a shard — and every report keyed off it.
     #[test]
-    fn peek_refuses_an_undecodable_ethertype() {
+    fn peek_refuses_an_undecodable_ethertype() -> Result<(), TestError> {
         let mut data = vec![0x40; 6]; // dst MAC whose first nibble reads as IPv4
         data.extend_from_slice(&[0xBA; 6]); // src MAC
         data.extend_from_slice(&0x0806u16.to_be_bytes()); // ARP
@@ -6818,7 +6994,7 @@ mod tests {
         data.extend_from_slice(&[10, 0, 0, 1]); // sender protocol address
         data.extend_from_slice(&[0x00; 6]); // target hardware address
         data.extend_from_slice(&[10, 0, 0, 2]); // target protocol address
-        let pkt = make_packet(data, DLT_EN10MB);
+        let pkt = make_packet(data, DLT_EN10MB)?;
         assert_eq!(peek_host_pair(&pkt), None, "no key from undecoded bytes");
         // `etherparse` slices ARP into `NetSlice::Arp`, which has no IP
         // payload to walk into, so the full parse's refusal is `NoIpPayload`.
@@ -6832,19 +7008,21 @@ mod tests {
             ),
             "and the full parse agrees there is no IP layer"
         );
+        Ok(())
     }
 
     /// The peek follows MACsec too: the SecTAG is on every frame of a flow,
     /// including every fragment of one datagram.
     #[test]
-    fn peek_follows_macsec_like_the_full_parse() {
+    fn peek_follows_macsec_like_the_full_parse() -> Result<(), TestError> {
         let data = wrap_in_macsec(&invite_frame(), 0x00);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("MACsec");
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             peek_host_pair(&pkt),
             Some((parsed.src_addr, parsed.dst_addr))
         );
+        Ok(())
     }
 
     /// The peek deliberately does NOT follow a UDP tunnel: it reports the
@@ -6852,40 +7030,42 @@ mod tests {
     /// frame of the tunnel — including fragments that carry no VXLAN header
     /// at all — therefore shards to one worker.
     #[test]
-    fn peek_stays_outer_for_udp_tunnels() {
+    fn peek_stays_outer_for_udp_tunnels() -> Result<(), TestError> {
         let mut vx = vxlan_header(0x00_1234).to_vec();
         vx.extend_from_slice(&invite_inner_frame());
         let data = build_eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx);
-        let pkt = make_packet(data, DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("VXLAN");
-        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
+        let pkt = make_packet(data, DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>()?);
         assert_eq!(
             peek_host_pair(&pkt),
             Some((
-                "192.0.2.1".parse::<IpAddr>().unwrap(),
-                "192.0.2.2".parse::<IpAddr>().unwrap()
+                "192.0.2.1".parse::<IpAddr>()?,
+                "192.0.2.2".parse::<IpAddr>()?
             )),
             "the peek must key on the tunnel endpoints"
         );
+        Ok(())
     }
 
     /// The same for a network-layer tunnel: GRE's inner packet is invisible
     /// to the peek by design.
     #[test]
-    fn peek_stays_outer_for_gre() {
+    fn peek_stays_outer_for_gre() -> Result<(), TestError> {
         let mut gre = gre_header(0x0800);
         gre.extend_from_slice(&invite_packet());
         let ip = wrap_in_ipv4(&gre, 47, [192, 0, 2, 1], [192, 0, 2, 2]);
-        let pkt = make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB);
-        let parsed = parse_packet(&pkt).expect("GRE");
-        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
+        let pkt = make_packet(wrap_in_eth(&ip, ETHERTYPE_IPV4), DLT_EN10MB)?;
+        let parsed = parse_packet(&pkt)?;
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>()?);
         assert_eq!(
             peek_host_pair(&pkt),
             Some((
-                "192.0.2.1".parse::<IpAddr>().unwrap(),
-                "192.0.2.2".parse::<IpAddr>().unwrap()
+                "192.0.2.1".parse::<IpAddr>()?,
+                "192.0.2.2".parse::<IpAddr>()?
             ))
         );
+        Ok(())
     }
 
     // ── Linux cooked capture (DLT_LINUX_SLL / SLL2) ───────────────────
@@ -6951,7 +7131,7 @@ mod tests {
     /// PPPoE inside SLL — `tcpdump -i any` on a BNG — decapsulates, and the
     /// shard peek agrees with the full parse.
     #[test]
-    fn pppoe_inside_linux_sll_decapsulates() {
+    fn pppoe_inside_linux_sll_decapsulates() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -6959,8 +7139,8 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         let frame = linux_sll(&pppoe_body(&base, &[0x00, 0x21]), ARPHRD_ETHER, 0x8864);
-        let pkt = make_packet(frame, DLT_LINUX_SLL);
-        let parsed = parse_packet(&pkt).expect("PPPoE inside SLL should parse");
+        let pkt = make_packet(frame, DLT_LINUX_SLL)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(parsed.src_addr, IpAddr::V4(a));
         assert_eq!(parsed.dst_addr, IpAddr::V4(b));
         assert_eq!(parsed.src_port, 5060);
@@ -6968,11 +7148,12 @@ mod tests {
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// The same for SLL2, and for IPv6 behind PPP protocol 0x0057.
     #[test]
-    fn pppoe_inside_linux_sll2_decapsulates() {
+    fn pppoe_inside_linux_sll2_decapsulates() -> Result<(), TestError> {
         use std::net::{Ipv4Addr, Ipv6Addr};
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -6980,26 +7161,27 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         let frame = linux_sll2(&pppoe_body(&base, &[0x00, 0x21]), ARPHRD_ETHER, 0x8864);
-        let pkt = make_packet(frame, DLT_LINUX_SLL2);
-        let parsed = parse_packet(&pkt).expect("PPPoE inside SLL2 should parse");
+        let pkt = make_packet(frame, DLT_LINUX_SLL2)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(parsed.src_addr, IpAddr::V4(a));
         assert_eq!(parsed.dst_addr, IpAddr::V4(b));
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
 
-        let a6: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b6: Ipv6Addr = "2001:db8::2".parse().unwrap();
+        let a6: Ipv6Addr = "2001:db8::1".parse()?;
+        let b6: Ipv6Addr = "2001:db8::2".parse()?;
         let base6 = build_eth_ipv6_udp(a6.octets(), b6.octets(), 5060, 5062, payload);
         let frame6 = linux_sll2(&pppoe_body(&base6, &[0x00, 0x57]), ARPHRD_ETHER, 0x8864);
-        let pkt6 = make_packet(frame6, DLT_LINUX_SLL2);
-        let parsed6 = parse_packet(&pkt6).expect("PPPoE IPv6 inside SLL2 should parse");
+        let pkt6 = make_packet(frame6, DLT_LINUX_SLL2)?;
+        let parsed6 = parse_packet(&pkt6)?;
         assert_eq!(parsed6.src_addr, IpAddr::V6(a6));
         assert_eq!(parsed6.dst_addr, IpAddr::V6(b6));
         assert_eq!(
             peek_host_pair(&pkt6),
             Some((IpAddr::V6(a6), IpAddr::V6(b6)))
         );
+        Ok(())
     }
 
     /// SLL reads its protocol field at offset 14 and SLL2 reads its at offset
@@ -7011,7 +7193,7 @@ mod tests {
     /// offset sees "PPPoE" where the frame says "IPv4" and decapsulates six
     /// bytes that are not a PPPoE header.
     #[test]
-    fn sll_and_sll2_read_the_protocol_field_at_their_own_offset() {
+    fn sll_and_sll2_read_the_protocol_field_at_their_own_offset() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -7024,8 +7206,8 @@ mod tests {
         // arm that read the protocol there (the SLL2 offset) would see 0x8864.
         let mut sll = linux_sll(ip, ARPHRD_ETHER, 0x0800);
         sll[0..2].copy_from_slice(&0x8864u16.to_be_bytes());
-        let pkt = make_packet(sll, DLT_LINUX_SLL);
-        let parsed = parse_packet(&pkt).expect("SLL protocol type lives at offset 14");
+        let pkt = make_packet(sll, DLT_LINUX_SLL)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), want);
@@ -7034,11 +7216,12 @@ mod tests {
         // address, which is where the SLL offset would look.
         let mut sll2 = linux_sll2(ip, ARPHRD_ETHER, 0x0800);
         sll2[14..16].copy_from_slice(&0x8864u16.to_be_bytes());
-        let pkt2 = make_packet(sll2, DLT_LINUX_SLL2);
-        let parsed2 = parse_packet(&pkt2).expect("SLL2 protocol type lives at offset 0");
+        let pkt2 = make_packet(sll2, DLT_LINUX_SLL2)?;
+        let parsed2 = parse_packet(&pkt2)?;
         assert_eq!(parsed2.src_port, 5060);
         assert_eq!(parsed2.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt2), want);
+        Ok(())
     }
 
     /// A VLAN tag re-inserted into an SLL frame moves the payload four bytes,
@@ -7052,7 +7235,7 @@ mod tests {
     /// split brain in its quiet form: every frame on a tagged cooked capture
     /// shards to worker 0.
     #[test]
-    fn sll_vlan_tag_moves_the_payload_for_peek_and_parse_alike() {
+    fn sll_vlan_tag_moves_the_payload_for_peek_and_parse_alike() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -7067,8 +7250,8 @@ mod tests {
         let pkt = make_packet(
             linux_sll(&tagged, ARPHRD_ETHER, ETHERTYPE_VLAN),
             DLT_LINUX_SLL,
-        );
-        let parsed = parse_packet(&pkt).expect("VLAN inside SLL should parse");
+        )?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), want);
@@ -7080,14 +7263,15 @@ mod tests {
         let pkt = make_packet(
             linux_sll(&tagged_pppoe, ARPHRD_ETHER, ETHERTYPE_VLAN),
             DLT_LINUX_SLL,
-        );
-        let parsed = parse_packet(&pkt).expect("VLAN + PPPoE inside SLL should parse");
+        )?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
         );
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), want);
+        Ok(())
     }
 
     /// The protocol field is only an EtherType for the ARPHRD_ types where
@@ -7099,7 +7283,7 @@ mod tests {
     /// entirely. Reading 0x8864 there and decapsulating six bytes as a PPPoE
     /// header would manufacture a flow out of a Netlink message.
     #[test]
-    fn sll_protocol_field_is_not_an_ethertype_for_every_arphrd_type() {
+    fn sll_protocol_field_is_not_an_ethertype_for_every_arphrd_type() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -7111,20 +7295,21 @@ mod tests {
         let body = pppoe_body(&base, &[0x00, 0x21]);
 
         for arphrd in [770u16, 778, 803, 823, 824] {
-            let pkt = make_packet(linux_sll(&body, arphrd, 0x8864), DLT_LINUX_SLL);
+            let pkt = make_packet(linux_sll(&body, arphrd, 0x8864), DLT_LINUX_SLL)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "ARPHRD {arphrd} does not carry an EtherType in its protocol field"
             );
             assert_eq!(peek_host_pair(&pkt), None, "ARPHRD {arphrd} (SLL)");
 
-            let pkt2 = make_packet(linux_sll2(&body, arphrd, 0x8864), DLT_LINUX_SLL2);
+            let pkt2 = make_packet(linux_sll2(&body, arphrd, 0x8864), DLT_LINUX_SLL2)?;
             assert!(
                 parse_packet(&pkt2).is_err(),
                 "ARPHRD {arphrd} does not carry an EtherType in its protocol field"
             );
             assert_eq!(peek_host_pair(&pkt2), None, "ARPHRD {arphrd} (SLL2)");
         }
+        Ok(())
     }
 
     /// An SLL frame whose ARPHRD_ type `etherparse` refuses still parses.
@@ -7135,7 +7320,8 @@ mod tests {
     /// only thing that reads the frame. It predates this work and must
     /// survive it.
     #[test]
-    fn sll_frames_etherparse_rejects_still_parse_through_the_manual_skip() {
+    fn sll_frames_etherparse_rejects_still_parse_through_the_manual_skip() -> Result<(), TestError>
+    {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -7143,20 +7329,21 @@ mod tests {
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
         // ARPHRD_PPP = 512.
-        let pkt = make_packet(linux_sll(&base[14..], 512, ETHERTYPE_IPV4), DLT_LINUX_SLL);
-        let parsed = parse_packet(&pkt).expect("ARPHRD_PPP frame should still parse");
+        let pkt = make_packet(linux_sll(&base[14..], 512, ETHERTYPE_IPV4), DLT_LINUX_SLL)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
         );
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        Ok(())
     }
 
     /// Every truncation point in a PPPoE-in-SLL / SLL2 frame yields an error
     /// or `None`, never a panic and never a read past the captured bytes.
     #[test]
-    fn sll_pppoe_truncated_frames_yield_none_not_panic() {
+    fn sll_pppoe_truncated_frames_yield_none_not_panic() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -7182,7 +7369,7 @@ mod tests {
                 "the fixture must be longer than the truncation sweep"
             );
             for cut in 0..(ip_off + 20) {
-                let pkt = make_packet(frame[..cut].to_vec(), link_type);
+                let pkt = make_packet(frame[..cut].to_vec(), link_type)?;
                 assert!(
                     parse_packet(&pkt).is_err(),
                     "link type {link_type} truncated to {cut} bytes must not parse"
@@ -7195,14 +7382,10 @@ mod tests {
             }
             // …and the untruncated frame does parse, so the sweep above is not
             // passing on a decoder that refuses everything.
-            let whole = make_packet(frame.to_vec(), link_type);
-            assert_eq!(
-                parse_packet(&whole)
-                    .expect("the whole frame parses")
-                    .src_port,
-                5060
-            );
+            let whole = make_packet(frame.to_vec(), link_type)?;
+            assert_eq!(parse_packet(&whole)?.src_port, 5060);
         }
+        Ok(())
     }
 
     /// An offset past the end of the frame is `TooShort`, not a panic.
@@ -7214,7 +7397,7 @@ mod tests {
     /// operator: a frame shorter than its own headers is a snaplen, and bytes
     /// that are not an IP header are a framing this parser got wrong.
     #[test]
-    fn slice_ip_at_refuses_an_offset_past_the_frame() {
+    fn slice_ip_at_refuses_an_offset_past_the_frame() -> Result<(), TestError> {
         let frame = [0x45u8, 0x00, 0x00, 0x14];
         assert!(
             matches!(
@@ -7231,6 +7414,7 @@ mod tests {
             slice_ip_at(&[0x00, 0x01], 0, "test frame"),
             Err(CaptureError::PacketDecode { .. })
         ));
+        Ok(())
     }
 
     /// Stack `count` VLAN tags into a cooked frame, returning the protocol
@@ -7267,7 +7451,7 @@ mod tests {
     /// deeper stack is already invisible to the full parse and matching the
     /// bound is what keeps the peek and the parse agreeing.
     #[test]
-    fn the_cooked_capture_vlan_walk_is_bounded() {
+    fn the_cooked_capture_vlan_walk_is_bounded() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -7277,13 +7461,13 @@ mod tests {
 
         for depth in 0..=3usize {
             let (proto, payload) = sll_vlan_stack(&base[14..], ETHERTYPE_IPV4, depth);
-            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL);
+            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL)?;
             assert_eq!(peek_host_pair(&pkt), want, "{depth} tags must still peek");
 
             let (proto, payload) = sll_vlan_stack(&pppoe, 0x8864, depth);
-            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL);
+            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL)?;
             let parsed = parse_packet(&pkt)
-                .unwrap_or_else(|e| panic!("{depth} tags + PPPoE must still parse: {e}"));
+                .map_err(|e| format!("{depth} tags + PPPoE must still parse: {e}"))?;
             assert_eq!(
                 (parsed.src_addr, parsed.dst_addr),
                 (IpAddr::V4(a), IpAddr::V4(b))
@@ -7294,7 +7478,7 @@ mod tests {
         // One past the bound, and a frame that is nothing but tags.
         for depth in [4usize, 4096] {
             let (proto, payload) = sll_vlan_stack(&base[14..], ETHERTYPE_IPV4, depth);
-            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL);
+            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL)?;
             assert_eq!(
                 peek_host_pair(&pkt),
                 None,
@@ -7302,13 +7486,14 @@ mod tests {
             );
 
             let (proto, payload) = sll_vlan_stack(&pppoe, 0x8864, depth);
-            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL);
+            let pkt = make_packet(linux_sll(&payload, ARPHRD_ETHER, proto), DLT_LINUX_SLL)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "{depth} tags + PPPoE must not parse"
             );
             assert_eq!(peek_host_pair(&pkt), None, "{depth} tags + PPPoE");
         }
+        Ok(())
     }
 
     /// PPPoE inside a cooked frame spends from the same per-frame
@@ -7321,22 +7506,25 @@ mod tests {
     /// the charge a frame could buy an extra layer of nesting simply by
     /// arriving cooked instead of on the wire.
     #[test]
-    fn pppoe_inside_a_cooked_frame_spends_from_the_frame_budget() {
+    fn pppoe_inside_a_cooked_frame_spends_from_the_frame_budget() -> Result<(), TestError> {
         let deep = nest_ip_in_ip(&invite_packet(), 5);
 
         let plain = make_packet(
             linux_sll(&deep, ARPHRD_ETHER, ETHERTYPE_IPV4),
             DLT_LINUX_SLL,
-        );
-        parse_packet(&plain).expect("five IP-in-IP layers are within the budget");
+        )?;
+        parse_packet(&plain)?;
 
         let body = pppoe_body(&wrap_in_eth(&deep, ETHERTYPE_IPV4), &[0x00, 0x21]);
-        let via_pppoe = make_packet(linux_sll(&body, ARPHRD_ETHER, 0x8864), DLT_LINUX_SLL);
-        let err = parse_packet(&via_pppoe).unwrap_err();
+        let via_pppoe = make_packet(linux_sll(&body, ARPHRD_ETHER, 0x8864), DLT_LINUX_SLL)?;
+        let err = parse_packet(&via_pppoe)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(
             matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
             "PPPoE must cost a layer inside a cooked frame too, got {err:?}"
         );
+        Ok(())
     }
 
     // ── Bare-IP link types (DLT_IPV4 / DLT_IPV6) ──────────────────────
@@ -7344,14 +7532,14 @@ mod tests {
     /// DLT_IPV4 (228) and DLT_IPV6 (229) carry a bare IP datagram, and both
     /// the full parse and the shard peek read it.
     #[test]
-    fn bare_ip_link_types_parse_and_peek() {
+    fn bare_ip_link_types_parse_and_peek() -> Result<(), TestError> {
         use std::net::{Ipv4Addr, Ipv6Addr};
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
         let payload = b"INVITE sip:echo@example.com SIP/2.0\r\n\r\n";
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
-        let pkt = make_packet(base[14..].to_vec(), DLT_IPV4);
-        let parsed = parse_packet(&pkt).expect("DLT_IPV4 frame should parse");
+        let pkt = make_packet(base[14..].to_vec(), DLT_IPV4)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -7360,11 +7548,11 @@ mod tests {
         assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
 
-        let a6: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b6: Ipv6Addr = "2001:db8::2".parse().unwrap();
+        let a6: Ipv6Addr = "2001:db8::1".parse()?;
+        let b6: Ipv6Addr = "2001:db8::2".parse()?;
         let base6 = build_eth_ipv6_udp(a6.octets(), b6.octets(), 5060, 5062, payload);
-        let pkt6 = make_packet(base6[14..].to_vec(), DLT_IPV6);
-        let parsed6 = parse_packet(&pkt6).expect("DLT_IPV6 frame should parse");
+        let pkt6 = make_packet(base6[14..].to_vec(), DLT_IPV6)?;
+        let parsed6 = parse_packet(&pkt6)?;
         assert_eq!(
             (parsed6.src_addr, parsed6.dst_addr),
             (IpAddr::V6(a6), IpAddr::V6(b6))
@@ -7374,6 +7562,7 @@ mod tests {
             peek_host_pair(&pkt6),
             Some((IpAddr::V6(a6), IpAddr::V6(b6)))
         );
+        Ok(())
     }
 
     /// Each bare-IP link type refuses the version it does not declare.
@@ -7383,7 +7572,7 @@ mod tests {
     /// errors", and LINKTYPE_IPV6 says the same with the versions swapped.
     /// DLT_RAW (12) is the mixed framing and keeps taking both.
     #[test]
-    fn bare_ip_link_types_refuse_the_version_they_do_not_declare() {
+    fn bare_ip_link_types_refuse_the_version_they_do_not_declare() -> Result<(), TestError> {
         use std::net::{Ipv4Addr, Ipv6Addr};
         let payload = b"INVITE sip:echo@example.com SIP/2.0\r\n\r\n";
         let v4 = build_eth_ipv4_udp(
@@ -7394,12 +7583,12 @@ mod tests {
             payload,
         )[14..]
             .to_vec();
-        let a6: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        let b6: Ipv6Addr = "2001:db8::2".parse().unwrap();
+        let a6: Ipv6Addr = "2001:db8::1".parse()?;
+        let b6: Ipv6Addr = "2001:db8::2".parse()?;
         let v6 = build_eth_ipv6_udp(a6.octets(), b6.octets(), 5060, 5062, payload)[14..].to_vec();
 
         for (data, link_type) in [(&v6, DLT_IPV4), (&v4, DLT_IPV6)] {
-            let pkt = make_packet(data.clone(), link_type);
+            let pkt = make_packet(data.clone(), link_type)?;
             assert!(
                 parse_packet(&pkt).is_err(),
                 "link type {link_type} declares one IP version and must refuse the other"
@@ -7409,21 +7598,17 @@ mod tests {
 
         // DLT_RAW takes either, unchanged.
         for data in [&v4, &v6] {
-            let pkt = make_packet(data.clone(), DLT_RAW);
-            assert_eq!(
-                parse_packet(&pkt)
-                    .expect("DLT_RAW takes both versions")
-                    .src_port,
-                5060
-            );
+            let pkt = make_packet(data.clone(), DLT_RAW)?;
+            assert_eq!(parse_packet(&pkt)?.src_port, 5060);
         }
 
         // An empty frame is short, not mis-versioned.
         for link_type in [DLT_IPV4, DLT_IPV6] {
-            let pkt = make_packet(Vec::new(), link_type);
+            let pkt = make_packet(Vec::new(), link_type)?;
             assert!(parse_packet(&pkt).is_err());
             assert_eq!(peek_host_pair(&pkt), None);
         }
+        Ok(())
     }
 
     // ── PPP link types (DLT_PPP / DLT_PPP_SERIAL / DLT_PPP_ETHER) ─────
@@ -7435,15 +7620,15 @@ mod tests {
     /// RFC 2516" — so it is the PPPoE decapsulator sipnab already owns,
     /// pointed at offset 0.
     #[test]
-    fn ppp_ether_frames_start_at_the_pppoe_header() {
+    fn ppp_ether_frames_start_at_the_pppoe_header() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
         let payload = b"INVITE sip:echo@example.com SIP/2.0\r\n\r\n";
         let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, payload);
 
-        let pkt = make_packet(pppoe_body(&base, &[0x00, 0x21]), DLT_PPP_ETHER);
-        let parsed = parse_packet(&pkt).expect("DLT_PPP_ETHER frame should parse");
+        let pkt = make_packet(pppoe_body(&base, &[0x00, 0x21]), DLT_PPP_ETHER)?;
+        let parsed = parse_packet(&pkt)?;
         assert_eq!(
             (parsed.src_addr, parsed.dst_addr),
             (IpAddr::V4(a), IpAddr::V4(b))
@@ -7454,9 +7639,10 @@ mod tests {
 
         // A Discovery-stage frame is not session data here either.
         let discovery = wrap_in_pppoe(&base, 0x8863, 0x11, 0x09, &[0x00, 0x21])[14..].to_vec();
-        let pkt = make_packet(discovery, DLT_PPP_ETHER);
+        let pkt = make_packet(discovery, DLT_PPP_ETHER)?;
         assert!(parse_packet(&pkt).is_err());
         assert_eq!(peek_host_pair(&pkt), None);
+        Ok(())
     }
 
     /// DLT_PPP (9) takes the HDLC address/control octets or their absence;
@@ -7468,7 +7654,7 @@ mod tests {
     /// "include the address and control fields as specified by Section 3.1 of
     /// RFC1662".
     #[test]
-    fn ppp_link_types_handle_the_hdlc_address_and_control_octets() {
+    fn ppp_link_types_handle_the_hdlc_address_and_control_octets() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let a = Ipv4Addr::new(192, 0, 2, 10);
         let b = Ipv4Addr::new(198, 51, 100, 20);
@@ -7487,9 +7673,9 @@ mod tests {
             (&bare, DLT_PPP),
             (&framed, DLT_PPP_SERIAL),
         ] {
-            let pkt = make_packet(frame.clone(), link_type);
+            let pkt = make_packet(frame.clone(), link_type)?;
             let parsed = parse_packet(&pkt)
-                .unwrap_or_else(|e| panic!("link type {link_type} frame should parse: {e}"));
+                .map_err(|e| format!("link type {link_type} frame should parse: {e}"))?;
             assert_eq!(
                 (parsed.src_addr, parsed.dst_addr),
                 (IpAddr::V4(a), IpAddr::V4(b))
@@ -7501,9 +7687,10 @@ mod tests {
 
         // DLT_PPP_SERIAL without the address and control fields is not a
         // frame of that link type, and is refused rather than guessed at.
-        let pkt = make_packet(bare.clone(), DLT_PPP_SERIAL);
+        let pkt = make_packet(bare.clone(), DLT_PPP_SERIAL)?;
         assert!(parse_packet(&pkt).is_err());
         assert_eq!(peek_host_pair(&pkt), None);
+        Ok(())
     }
 
     /// A PPP frame carrying something that is not IP is never read as IP.
@@ -7512,7 +7699,7 @@ mod tests {
     /// (0x00FD) are all real PPP traffic on a live link, and each would slice
     /// as a plausible IPv4 header if the protocol field were not checked.
     #[test]
-    fn ppp_link_types_reject_non_ip_protocols() {
+    fn ppp_link_types_reject_non_ip_protocols() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let ip = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -7528,7 +7715,7 @@ mod tests {
             frame.extend_from_slice(&proto);
             frame.extend_from_slice(&ip);
             for link_type in [DLT_PPP, DLT_PPP_SERIAL] {
-                let pkt = make_packet(frame.clone(), link_type);
+                let pkt = make_packet(frame.clone(), link_type)?;
                 assert!(
                     parse_packet(&pkt).is_err(),
                     "PPP protocol {proto:02X?} on link type {link_type} is not IP"
@@ -7536,12 +7723,13 @@ mod tests {
                 assert_eq!(peek_host_pair(&pkt), None, "PPP protocol {proto:02X?}");
             }
         }
+        Ok(())
     }
 
     /// Every truncation point in a PPP-framed frame yields an error or
     /// `None`, never a panic.
     #[test]
-    fn ppp_link_type_truncated_frames_yield_none_not_panic() {
+    fn ppp_link_type_truncated_frames_yield_none_not_panic() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
         let base = build_eth_ipv4_udp(
             Ipv4Addr::new(192, 0, 2, 10).octets(),
@@ -7564,7 +7752,7 @@ mod tests {
             (&pppoe, DLT_PPP_ETHER, 8),
         ] {
             for cut in 0..(ip_off + 20) {
-                let pkt = make_packet(frame[..cut].to_vec(), link_type);
+                let pkt = make_packet(frame[..cut].to_vec(), link_type)?;
                 assert!(
                     parse_packet(&pkt).is_err(),
                     "link type {link_type} truncated to {cut} bytes must not parse"
@@ -7575,14 +7763,10 @@ mod tests {
                     "link type {link_type} truncated to {cut} bytes must peek None"
                 );
             }
-            let whole = make_packet(frame.to_vec(), link_type);
-            assert_eq!(
-                parse_packet(&whole)
-                    .expect("the whole frame parses")
-                    .src_port,
-                5060
-            );
+            let whole = make_packet(frame.to_vec(), link_type)?;
+            assert_eq!(parse_packet(&whole)?.src_port, 5060);
         }
+        Ok(())
     }
 }
 

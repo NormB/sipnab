@@ -1835,7 +1835,7 @@ mod tests {
     /// The bar fills exactly `width` columns, rails on both ends, label
     /// centered, using `═` — never the SIP arrows' single line.
     #[test]
-    fn rtp_bar_centers_with_double_rail() {
+    fn rtp_bar_centers_with_double_rail() -> Result<(), TestError> {
         let bar = rtp_channel_bar(" RTP \u{00B7} PCMU ", 40);
         // Exactly `width` display columns, rails on both ends, label intact.
         assert_eq!(bar.chars().count(), 40);
@@ -1854,29 +1854,32 @@ mod tests {
             !bar.contains('\u{2500}'),
             "used single line, not double rail"
         );
+        Ok(())
     }
 
     /// A label wider than the gap clamps to `width` instead of overflowing.
     #[test]
-    fn rtp_bar_truncates_instead_of_overflowing() {
+    fn rtp_bar_truncates_instead_of_overflowing() -> Result<(), TestError> {
         // Label wider than the gap → truncated to width, never left-aligned
         // overflow past the pipe. (This was the original bug.)
         let bar = rtp_channel_bar(" RTP \u{00B7} PCMA, PCMU, G722, opus \u{00B7} active ", 8);
         assert_eq!(bar.chars().count(), 8, "must clamp to width");
+        Ok(())
     }
 
     /// A label exactly as wide as the bar gets no rails.
     #[test]
-    fn rtp_bar_exact_width_is_label_only() {
+    fn rtp_bar_exact_width_is_label_only() -> Result<(), TestError> {
         let label = "RTP active"; // 10 chars
         let bar = rtp_channel_bar(label, 10);
         assert_eq!(bar, label, "exact fit should not add rails");
+        Ok(())
     }
 
     /// Empty labels, zero width, special/NUL chars and width 1 all render
     /// without panic or overflow.
     #[test]
-    fn rtp_bar_adversarial_inputs() {
+    fn rtp_bar_adversarial_inputs() -> Result<(), TestError> {
         // Empty label → pure rail.
         let b = rtp_channel_bar("", 6);
         assert_eq!(b, "\u{2550}".repeat(6));
@@ -1892,14 +1895,16 @@ mod tests {
         assert_eq!(b.chars().count(), 10);
         // Width 1, multi-char label → single truncated char, no panic.
         assert_eq!(rtp_channel_bar("xyz", 1).chars().count(), 1);
+        Ok(())
     }
 
     /// An empty dialog formats to the single "(no messages)" line.
     #[test]
-    fn format_ladder_empty_messages() {
+    fn format_ladder_empty_messages() -> Result<(), TestError> {
         let theme = crate::tui::Theme::default();
         let lines = format_ladder(&[], None, 40, &theme);
         assert_eq!(lines.len(), 1);
+        Ok(())
     }
 
     // ── Arrow DIRECTION: requests and responses point opposite ways ────
@@ -1910,20 +1915,23 @@ mod tests {
     /// request/response *src↔dst* swap makes the arrow flip, so this
     /// exercises real A→B / B→A messages, not the glyph helper in isolation.
     #[test]
-    fn ladder_request_points_right_response_points_left() {
+    fn ladder_request_points_right_response_points_left() -> Result<(), TestError> {
         let theme = crate::tui::Theme::default();
         // req() is A→B, resp() is B→A (src/dst swapped), as on a real wire.
         let msgs = vec![
-            req("INVITE", "1 INVITE", "dir-call", base_ts()),
-            resp(200, "OK", "1 INVITE", "dir-call", base_ts()),
+            req("INVITE", "1 INVITE", "dir-call", base_ts()?)?,
+            resp(200, "OK", "1 INVITE", "dir-call", base_ts()?)?,
         ];
         let lines = format_ladder(&msgs, None, 48, &theme);
         let text: Vec<String> = lines.iter().map(line_to_string).collect();
         let invite = text
             .iter()
             .find(|l| l.contains("INVITE"))
-            .expect("INVITE row");
-        let ok = text.iter().find(|l| l.contains("200")).expect("200 OK row");
+            .ok_or("INVITE row")?;
+        let ok = text
+            .iter()
+            .find(|l| l.contains("200"))
+            .ok_or("200 OK row")?;
 
         // Request: rightward only.
         assert!(
@@ -1937,6 +1945,7 @@ mod tests {
             ok.contains('\u{25C0}') && !ok.contains('\u{25B6}'),
             "response must point left (◀), got: {ok:?}"
         );
+        Ok(())
     }
 
     /// Faithful rendering: when a (malformed/synthetic) response carries the
@@ -1945,7 +1954,7 @@ mod tests {
     /// force-flipped by status code. This documents that arrow direction is
     /// wire-driven.
     #[test]
-    fn ladder_arrow_follows_actual_src_dst_not_status() {
+    fn ladder_arrow_follows_actual_src_dst_not_status() -> Result<(), TestError> {
         let theme = crate::tui::Theme::default();
         // Build a 200 OK that (wrongly) travels A→B, like perf.pcap's responses.
         let raw = build_raw(
@@ -1961,29 +1970,32 @@ mod tests {
         );
         let fwd_resp = crate::sip::parser::parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             ip_a(),
             ip_b(), // A→B, NOT swapped
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse");
-        let msgs = vec![req("INVITE", "1 INVITE", "fwd-call", base_ts()), fwd_resp];
+        )?;
+        let msgs = vec![req("INVITE", "1 INVITE", "fwd-call", base_ts()?)?, fwd_resp];
         let lines = format_ladder(&msgs, None, 48, &theme);
         let text: Vec<String> = lines.iter().map(line_to_string).collect();
-        let ok = text.iter().find(|l| l.contains("200")).expect("200 OK row");
+        let ok = text
+            .iter()
+            .find(|l| l.contains("200"))
+            .ok_or("200 OK row")?;
         // Same src→dst as the request ⇒ same (rightward) direction. Faithful to
         // the wire, not flipped by the 2xx status.
         assert!(
             ok.contains('\u{25B6}') && !ok.contains('\u{25C0}'),
             "a response that travels A→B on the wire must render forward, got: {ok:?}"
         );
+        Ok(())
     }
 
     /// A parsed single-message dialog yields header + bars + message lines.
     #[test]
-    fn format_ladder_produces_lines() {
+    fn format_ladder_produces_lines() -> Result<(), TestError> {
         use crate::sip::parser::parse_sip;
         use std::net::{IpAddr, Ipv4Addr};
 
@@ -1994,7 +2006,9 @@ mod tests {
                      CSeq: 1 INVITE\r\n\
                      Content-Length: 0\r\n\r\n";
 
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0).unwrap();
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0)
+            .single()
+            .ok_or("invalid fixture timestamp")?;
         let msg = parse_sip(
             raw,
             ts,
@@ -2003,13 +2017,13 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse ok");
+        )?;
 
         let theme = crate::tui::Theme::default();
         let lines = format_ladder(&[msg], None, 50, &theme);
         // Should have header + bar + message + closing bar
         assert!(lines.len() >= 4);
+        Ok(())
     }
 
     // ── Shared helpers for the builder/render coverage tests ───────────
@@ -2030,8 +2044,12 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
     /// Fixed base timestamp all fixture dialogs are built from.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     /// Assemble raw SIP bytes from `first_line`, `headers` and `body`,
@@ -2051,7 +2069,12 @@ mod tests {
     }
 
     /// A->B request message.
-    fn req(method: &str, cseq: &str, call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn req(
+        method: &str,
+        cseq: &str,
+        call_id: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_raw(
             &format!("{method} sip:bob@10.0.0.2 SIP/2.0"),
             &[
@@ -2063,11 +2086,25 @@ mod tests {
             ],
             "",
         );
-        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp).expect("parse request")
+        Ok(parse_sip(
+            &raw,
+            ts,
+            ip_a(),
+            ip_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     }
 
     /// B->A response message.
-    fn resp(status: u16, reason: &str, cseq: &str, call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn resp(
+        status: u16,
+        reason: &str,
+        cseq: &str,
+        call_id: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_raw(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -2079,12 +2116,19 @@ mod tests {
             ],
             "",
         );
-        parse_sip(&raw, ts, ip_b(), ip_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse response")
+        Ok(parse_sip(
+            &raw,
+            ts,
+            ip_b(),
+            ip_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     }
 
     /// INVITE A->B carrying an SDP offer.
-    fn invite_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn invite_with_sdp(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let sdp = "v=0\r\n\
                    o=- 1 1 IN IP4 10.0.0.1\r\n\
                    s=-\r\n\
@@ -2105,8 +2149,15 @@ mod tests {
             ],
             sdp,
         );
-        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse INVITE+SDP")
+        Ok(parse_sip(
+            &raw,
+            ts,
+            ip_a(),
+            ip_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     }
 
     /// Baseline `FlowDisplayOptions`: SDP off, absolute timestamps, method
@@ -2142,58 +2193,58 @@ mod tests {
     }
 
     /// Store with a complete INVITE/180/200/ACK/BYE/200 dialog.
-    fn store_full_dialog(call_id: &str) -> DialogStore {
-        let t = base_ts();
+    fn store_full_dialog(call_id: &str) -> Result<DialogStore, TestError> {
+        let t = base_ts()?;
         let mut store = DialogStore::new(100, false);
-        store.process_message(req("INVITE", "1 INVITE", call_id, t));
+        store.process_message(req("INVITE", "1 INVITE", call_id, t)?);
         store.process_message(resp(
             180,
             "Ringing",
             "1 INVITE",
             call_id,
             t + TimeDelta::seconds(1),
-        ));
+        )?);
         store.process_message(resp(
             200,
             "OK",
             "1 INVITE",
             call_id,
             t + TimeDelta::seconds(2),
-        ));
+        )?);
         store.process_message(req(
             "ACK",
             "1 ACK",
             call_id,
             t + TimeDelta::milliseconds(2100),
-        ));
-        store.process_message(req("BYE", "2 BYE", call_id, t + TimeDelta::seconds(30)));
+        )?);
+        store.process_message(req("BYE", "2 BYE", call_id, t + TimeDelta::seconds(30))?);
         store.process_message(resp(
             200,
             "OK",
             "2 BYE",
             call_id,
             t + TimeDelta::seconds(30),
-        ));
-        store
+        )?);
+        Ok(store)
     }
 
     /// A `TestBackend` terminal of the given size.
-    fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
-        Terminal::new(TestBackend::new(w, h)).unwrap()
+    fn terminal(w: u16, h: u16) -> Result<Terminal<TestBackend>, TestError> {
+        Ok(Terminal::new(TestBackend::new(w, h))?)
     }
 
     /// Dump the terminal buffer as newline-separated rows of symbols.
-    fn buffer_text(term: &Terminal<TestBackend>) -> String {
+    fn buffer_text(term: &Terminal<TestBackend>) -> Result<String, TestError> {
         let buf = term.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(buf.cell((x, y)).ok_or("cell() returned None")?.symbol());
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     // ── direct-path selection highlight (R2: no shifting marker) ────────
@@ -2205,8 +2256,8 @@ mod tests {
         state: SelectionState,
         src_col: usize,
         dst_col: usize,
-    ) -> FormattedMessage {
-        FormattedMessage {
+    ) -> Result<FormattedMessage, TestError> {
+        Ok(FormattedMessage {
             timestamp: ts.to_string(),
             timestamp_style: Style::default(),
             label: "INVITE".to_string(),
@@ -2219,7 +2270,8 @@ mod tests {
             call_id: "c@test".to_string(),
             selection_state: state,
             is_response: false,
-            raw_timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+            raw_timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
+                .ok_or("::from_timestamp() returned None")?,
             folded_count: 0,
             fold_label: None,
             is_spacer: false,
@@ -2228,7 +2280,7 @@ mod tests {
             is_rtp_bar: false,
             raw_index: None,
             diagnosis_note: None,
-        }
+        })
     }
 
     /// A dialog with ONE endpoint still shows its messages.
@@ -2244,15 +2296,15 @@ mod tests {
     /// A PBX looping through itself is ordinary, as is any hairpinned leg
     /// captured on one interface.
     #[test]
-    fn a_single_endpoint_dialog_still_paints_its_messages() {
+    fn a_single_endpoint_dialog_still_paints_its_messages() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts = vec![Participant {
             addr: "100.127.26.27:5060".into(),
             label: "100.127.26.27:5060".into(),
         }];
         // Every message leaves and arrives at the same column, as the capture does.
-        let msgs = vec![fmt_msg("11:58:49.000", SelectionState::Selected, 0, 0), {
-            let mut m = fmt_msg("11:58:49.100", SelectionState::Normal, 0, 0);
+        let msgs = vec![fmt_msg("11:58:49.000", SelectionState::Selected, 0, 0)?, {
+            let mut m = fmt_msg("11:58:49.100", SelectionState::Normal, 0, 0)?;
             m.label = "CANCEL".into();
             m
         }];
@@ -2262,12 +2314,11 @@ mod tests {
             selected_index: 0,
             noted: Vec::new(),
         };
-        let mut term = terminal(80, 24);
+        let mut term = terminal(80, 24)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
+        })?;
         let buf = term.backend().buffer().clone();
         let text: String = (0..buf.area.height)
             .map(|y| {
@@ -2286,6 +2337,7 @@ mod tests {
             text.contains("CANCEL"),
             "a self-addressed CANCEL must still appear in the ladder; got:\n{text}"
         );
+        Ok(())
     }
 
     /// The current row is marked by a full-width background highlight, never
@@ -2293,7 +2345,7 @@ mod tests {
     /// right — the selected row's timestamp still begins in column 0 (SNB UX
     /// fix R2).
     #[test]
-    fn direct_render_selection_highlights_row_without_shifting() {
+    fn direct_render_selection_highlights_row_without_shifting() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts = vec![
             Participant {
@@ -2306,8 +2358,8 @@ mod tests {
             },
         ];
         let msgs = vec![
-            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1),
-            fmt_msg("12:00:00.100", SelectionState::Normal, 1, 0),
+            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?,
+            fmt_msg("12:00:00.100", SelectionState::Normal, 1, 0)?,
         ];
         let nav = FlowNavigation {
             scroll_offset: 0,
@@ -2315,17 +2367,16 @@ mod tests {
             selected_index: 0,
             noted: Vec::new(),
         };
-        let mut term = terminal(80, 24);
+        let mut term = terminal(80, 24)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
+        })?;
         let buf = term.backend().buffer().clone();
 
         // No leading marker glyph survived anywhere.
         assert!(
-            !buffer_text(&term).contains('\u{258E}'),
+            !buffer_text(&term)?.contains('\u{258E}'),
             "marker '▎' must be gone"
         );
 
@@ -2333,7 +2384,7 @@ mod tests {
         // selected timestamp starts at column 0 (not shifted to column 1).
         let mut highlit_rows = Vec::new();
         for y in 0..buf.area.height {
-            if buf.cell((0, y)).unwrap().style().bg == Some(SELECTION_BG) {
+            if buf.cell((0, y)).ok_or("cell() returned None")?.style().bg == Some(SELECTION_BG) {
                 highlit_rows.push(y);
             }
         }
@@ -2344,12 +2395,17 @@ mod tests {
         );
         let y = highlit_rows[0];
         let row: String = (0..buf.area.width)
-            .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
-            .collect();
+            .map(|x| {
+                buf.cell((x, y))
+                    .map(|c| c.symbol().to_string())
+                    .ok_or("cell outside the buffer")
+            })
+            .collect::<Result<_, _>>()?;
         assert!(
             row.starts_with("12:00:00.000"),
             "ts at col 0, unshifted: {row:?}"
         );
+        Ok(())
     }
 
     /// The timestamp of a row that is neither selected nor related is
@@ -2368,9 +2424,9 @@ mod tests {
             },
         ];
         let msgs = vec![
-            fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1),
-            fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0),
-            fmt_msg("12:00:00.200", SelectionState::Related, 0, 1),
+            fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?,
+            fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0)?,
+            fmt_msg("12:00:00.200", SelectionState::Related, 0, 1)?,
         ];
         let nav = FlowNavigation {
             scroll_offset: 0,
@@ -2378,7 +2434,7 @@ mod tests {
             selected_index: 1,
             noted: Vec::new(),
         };
-        let mut term = terminal(80, 24);
+        let mut term = terminal(80, 24)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
@@ -2406,7 +2462,7 @@ mod tests {
     /// 80-column area the `Δ` must sit at column 71 (= width - 9), landing the
     /// badge's last glyph in the penultimate column.
     #[test]
-    fn direct_render_delta_badge_right_aligned_with_multibyte_glyph() {
+    fn direct_render_delta_badge_right_aligned_with_multibyte_glyph() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts = vec![
             Participant {
@@ -2418,10 +2474,12 @@ mod tests {
                 label: "10.0.0.2:5060".into(),
             },
         ];
-        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
-        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000).unwrap();
-        let mut m1 = fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0);
-        m1.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_100).unwrap();
+        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?;
+        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000)
+            .ok_or("::from_timestamp_millis() returned None")?;
+        let mut m1 = fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0)?;
+        m1.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_100)
+            .ok_or("::from_timestamp_millis() returned None")?;
         let msgs = vec![m0, m1];
         let nav = FlowNavigation {
             scroll_offset: 0,
@@ -2430,23 +2488,28 @@ mod tests {
             noted: Vec::new(),
         };
         let w = 80u16;
-        let mut term = terminal(w, 24);
+        let mut term = terminal(w, 24)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
+        })?;
         let buf = term.backend().buffer().clone();
 
         // The badge lives on the pipe row (area.y + 1 == row 1).
-        let dcol = (0..w)
-            .find(|&x| buf.cell((x, 1)).unwrap().symbol() == "\u{0394}")
-            .expect("Δ badge must be present on the pipe row");
+        let mut dcol = None;
+        for x in 0..w {
+            if buf.cell((x, 1)).ok_or("cell outside the buffer")?.symbol() == "\u{0394}" {
+                dcol = Some(x);
+                break;
+            }
+        }
+        let dcol = dcol.ok_or("Δ badge must be present on the pipe row")?;
         assert_eq!(
             dcol,
             w - 9,
             "badge must be flush-right (Δ at width-9), got column {dcol}"
         );
+        Ok(())
     }
 
     /// The evidence annotation actually reaches the drawn buffer.
@@ -2456,7 +2519,7 @@ mod tests {
     /// correctly and never rendered, and every test would still pass — the same
     /// unwired-code trap the JSON surface has a test for.
     #[test]
-    fn direct_render_draws_the_diagnosis_note() {
+    fn direct_render_draws_the_diagnosis_note() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts = vec![
             Participant {
@@ -2468,8 +2531,9 @@ mod tests {
                 label: "10.0.0.2:5060".into(),
             },
         ];
-        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
-        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?;
+        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000)
+            .ok_or("::from_timestamp_millis() returned None")?;
         m0.sdp_badge = None;
         m0.diagnosis_note = Some("FAILURE".to_string());
         let msgs = vec![m0];
@@ -2480,12 +2544,11 @@ mod tests {
             noted: Vec::new(),
         };
         let w = 80u16;
-        let mut term = terminal(w, 24);
+        let mut term = terminal(w, 24)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
+        })?;
         let buf = term.backend().buffer().clone();
 
         // Search every row: which row the annotation lands on depends on the
@@ -2502,6 +2565,7 @@ mod tests {
             all.contains("[FAILURE]"),
             "the evidence annotation must be drawn; buffer was:\n{all}"
         );
+        Ok(())
     }
 
     // ── participant label cells (multi-leg header/footer collisions) ────
@@ -2523,7 +2587,7 @@ mod tests {
     /// between neighbors, for every participant count and width the ladder
     /// can render — the invariant that makes label collisions impossible.
     #[test]
-    fn label_cells_disjoint_with_a_separator_at_any_geometry() {
+    fn label_cells_disjoint_with_a_separator_at_any_geometry() -> Result<(), TestError> {
         for n in 1..=6usize {
             for width in [30u16, 45, 58, 80, 98, 200] {
                 let pipes = pipes_for(n, width);
@@ -2543,12 +2607,13 @@ mod tests {
                 }
             }
         }
+        Ok(())
     }
 
     /// Every header/footer token must reconstruct to exactly one participant
     /// label (verbatim or an ellipsis truncation of it) — the shipped defect
     /// rendered "172.16.98172.16.98.101:5060" garbage instead.
-    fn assert_labels_reconstruct(row: &str, labels: &[&str]) {
+    fn assert_labels_reconstruct(row: &str, labels: &[&str]) -> Result<(), TestError> {
         let tokens: Vec<&str> = row.split_whitespace().collect();
         assert_eq!(
             tokens.len(),
@@ -2567,9 +2632,14 @@ mod tests {
             });
             match hit {
                 Some((i, _)) => used[i] = true,
-                None => panic!("token {tok:?} matches no label of {labels:?} in {row:?}"),
+                None => {
+                    return Err(
+                        format!("token {tok:?} matches no label of {labels:?} in {row:?}").into(),
+                    );
+                }
             }
         }
+        Ok(())
     }
 
     /// A ladder too narrow for its participants says so in full, both
@@ -2577,7 +2647,7 @@ mod tests {
     /// notice with no remedy, and a narrow pane is exactly where a one-row
     /// notice loses its tail.
     #[test]
-    fn a_too_narrow_ladder_names_both_remedies_in_full() {
+    fn a_too_narrow_ladder_names_both_remedies_in_full() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts: Vec<Participant> = (1..=7)
             .map(|i| Participant {
@@ -2585,31 +2655,31 @@ mod tests {
                 label: format!("10.0.0.{i}"),
             })
             .collect();
-        let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)];
+        let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?];
         let nav = FlowNavigation {
             scroll_offset: 0,
             mark_index: None,
             selected_index: 0,
             noted: Vec::new(),
         };
-        let mut term = terminal(40, 12);
+        let mut term = terminal(40, 12)?;
         term.draw(|f| {
             let a = f.area();
             render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
-        let joined = buffer_text(&term)
+        })?;
+        let joined = buffer_text(&term)?
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
         assert!(joined.contains(TOO_NARROW_NOTICE), "{joined}");
+        Ok(())
     }
 
     /// Six packed B2BUA participants with long ip:port and resolved-name
     /// labels: the header and footer rows must never paint colliding
     /// garbage, at the demo width and at much tighter ones.
     #[test]
-    fn packed_multileg_labels_never_collide() {
+    fn packed_multileg_labels_never_collide() -> Result<(), TestError> {
         let theme = Theme::default();
         let labels = [
             "172.16.98.1:44285",
@@ -2628,36 +2698,36 @@ mod tests {
                         label: truncate(l, 20),
                     })
                     .collect();
-                let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)];
+                let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?];
                 let nav = FlowNavigation {
                     scroll_offset: 0,
                     mark_index: None,
                     selected_index: 0,
                     noted: Vec::new(),
                 };
-                let mut term = terminal(width, 12);
+                let mut term = terminal(width, 12)?;
                 term.draw(|f| {
                     let a = f.area();
                     render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-                })
-                .unwrap();
-                let text = buffer_text(&term);
+                })?;
+                let text = buffer_text(&term)?;
                 let rows: Vec<&str> = text.lines().collect();
                 if text.contains("Too narrow for the ladder") {
                     continue; // legitimately refused, nothing painted
                 }
                 let truncated: Vec<String> = parts.iter().map(|p| p.label.clone()).collect();
                 let refs: Vec<&str> = truncated.iter().map(String::as_str).collect();
-                assert_labels_reconstruct(rows[0], &refs);
-                assert_labels_reconstruct(rows[11], &refs);
+                assert_labels_reconstruct(rows[0], &refs)?;
+                assert_labels_reconstruct(rows[11], &refs)?;
             }
         }
+        Ok(())
     }
 
     /// A single participant keeps its label at the pipe, and adversarial
     /// labels (multibyte, empty) never panic or collide at tiny widths.
     #[test]
-    fn label_cells_adversarial_inputs() {
+    fn label_cells_adversarial_inputs() -> Result<(), TestError> {
         let theme = Theme::default();
         for (label, width) in [
             ("übérlöng-nämé-øn-a-b2büa-lég.example.com", 34u16),
@@ -2669,24 +2739,24 @@ mod tests {
                 addr: "10.0.0.1:5060".into(),
                 label: label.to_string(),
             }];
-            let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 0)];
+            let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 0)?];
             let nav = FlowNavigation {
                 scroll_offset: 0,
                 mark_index: None,
                 selected_index: 0,
                 noted: Vec::new(),
             };
-            let mut term = terminal(width, 8);
+            let mut term = terminal(width, 8)?;
             term.draw(|f| {
                 let a = f.area();
                 render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
-            })
-            .unwrap();
+            })?;
             // Nothing may bleed past the area (set_string would have
             // clipped, but the cells must already bound it).
-            let text = buffer_text(&term);
+            let text = buffer_text(&term)?;
             assert!(!text.is_empty());
         }
+        Ok(())
     }
 
     /// Fold info must be visible INSIDE the ladder area: the retx count
@@ -2695,7 +2765,7 @@ mod tests {
     /// anything written into that region (which made folds look like silent
     /// data loss).
     #[test]
-    fn fold_count_visible_in_ladder_and_no_bleed_past_area() {
+    fn fold_count_visible_in_ladder_and_no_bleed_past_area() -> Result<(), TestError> {
         let theme = Theme::default();
         let parts = vec![
             Participant {
@@ -2707,7 +2777,7 @@ mod tests {
                 label: "10.0.0.2:5060".into(),
             },
         ];
-        let mut hdr = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
+        let mut hdr = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)?;
         hdr.folded_count = 2;
         hdr.fold_label = Some("(+2 retx) - press e to expand".to_string());
         let msgs = vec![hdr];
@@ -2717,17 +2787,16 @@ mod tests {
             selected_index: 99,
             noted: Vec::new(),
         };
-        let mut term = terminal(120, 24);
+        let mut term = terminal(120, 24)?;
         term.draw(|f| {
             let ladder = Rect::new(0, 0, 60, 24);
             render_call_flow_direct(f, ladder, &parts, &msgs, &nav, &theme);
-        })
-        .unwrap();
+        })?;
         let buf = term.backend().buffer().clone();
         let mut ladder_text = String::new();
         for y in 0..24u16 {
             for x in 0..60u16 {
-                ladder_text.push_str(buf.cell((x, y)).unwrap().symbol());
+                ladder_text.push_str(buf.cell((x, y)).ok_or("cell() returned None")?.symbol());
             }
             ladder_text.push('\n');
         }
@@ -2738,12 +2807,13 @@ mod tests {
         for y in 0..24u16 {
             for x in 60..120u16 {
                 assert_eq!(
-                    buf.cell((x, y)).unwrap().symbol(),
+                    buf.cell((x, y)).ok_or("cell() returned None")?.symbol(),
                     " ",
                     "annotation bled outside the ladder area at ({x},{y}):\n{ladder_text}"
                 );
             }
         }
+        Ok(())
     }
 
     // ── build_call_flow_lines / _with_width ────────────────────────────
@@ -2751,11 +2821,15 @@ mod tests {
     /// A full dialog builds one line per message plus header and bars, and
     /// names every method/status.
     #[test]
-    fn build_lines_full_dialog_has_methods_and_status() {
+    fn build_lines_full_dialog_has_methods_and_status() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("full@test");
-        let (count, lines) = build_call_flow_lines(&store, "full@test", &theme).expect("some");
-        let stored = store.get("full@test").unwrap().messages.len();
+        let store = store_full_dialog("full@test")?;
+        let (count, lines) = build_call_flow_lines(&store, "full@test", &theme).ok_or("some")?;
+        let stored = store
+            .get("full@test")
+            .ok_or("get() returned None")?
+            .messages
+            .len();
         assert_eq!(count, stored);
         // header + top bar + N messages + bottom bar
         assert_eq!(lines.len(), stored + 3);
@@ -2763,39 +2837,42 @@ mod tests {
         for needle in ["10.0.0.1:5060", "INVITE", "180", "200", "ACK", "BYE"] {
             assert!(text.contains(needle), "missing {needle} in:\n{text}");
         }
+        Ok(())
     }
 
     /// An unknown Call-ID yields `None`.
     #[test]
-    fn build_lines_missing_dialog_returns_none() {
+    fn build_lines_missing_dialog_returns_none() -> Result<(), TestError> {
         let theme = Theme::default();
         let store = DialogStore::new(100, false);
         assert!(build_call_flow_lines(&store, "nope@test", &theme).is_none());
+        Ok(())
     }
 
     /// The PDD annotation lands on the 180 Ringing line.
     #[test]
-    fn build_lines_pdd_annotation_on_180() {
+    fn build_lines_pdd_annotation_on_180() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("pdd@test");
+        let store = store_full_dialog("pdd@test")?;
         // 120-wide default => PDD annotated against the 180 Ringing.
-        let (_c, lines) = build_call_flow_lines(&store, "pdd@test", &theme).expect("some");
+        let (_c, lines) = build_call_flow_lines(&store, "pdd@test", &theme).ok_or("some")?;
         let text = lines_to_string(&lines);
         assert!(text.contains("PDD:"), "expected PDD annotation in:\n{text}");
+        Ok(())
     }
 
     /// A too-narrow width clamps to `MIN_ARROW_WIDTH` without changing the
     /// logical line count.
     #[test]
-    fn build_lines_narrow_width_clamps_arrow() {
+    fn build_lines_narrow_width_clamps_arrow() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("narrow@test");
+        let store = store_full_dialog("narrow@test")?;
         // width 20 forces saturating_sub to 0 -> MIN_ARROW_WIDTH path.
         let narrow = build_call_flow_lines_with_width(&store, "narrow@test", 20, &theme)
-            .expect("some")
+            .ok_or("some")?
             .1;
         let wide = build_call_flow_lines_with_width(&store, "narrow@test", 200, &theme)
-            .expect("some")
+            .ok_or("some")?
             .1;
         // Same logical line count regardless of width.
         assert_eq!(narrow.len(), wide.len());
@@ -2803,90 +2880,94 @@ mod tests {
         let nh = line_to_string(&narrow[0]).chars().count();
         let wh = line_to_string(&wide[0]).chars().count();
         assert!(nh < wh, "narrow header {nh} should be < wide {wh}");
+        Ok(())
     }
 
     /// A one-message dialog builds header + bar + message + bar.
     #[test]
-    fn build_lines_single_message_dialog() {
+    fn build_lines_single_message_dialog() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut store = DialogStore::new(100, false);
-        store.process_message(req("INVITE", "1 INVITE", "one@test", base_ts()));
-        let (count, lines) = build_call_flow_lines(&store, "one@test", &theme).expect("some");
+        store.process_message(req("INVITE", "1 INVITE", "one@test", base_ts()?)?);
+        let (count, lines) = build_call_flow_lines(&store, "one@test", &theme).ok_or("some")?;
         assert_eq!(count, 1);
         // header + bar + 1 message + bar
         assert_eq!(lines.len(), 4);
         assert!(lines_to_string(&lines).contains("INVITE"));
+        Ok(())
     }
 
     /// Provisional (100) and error-final (480) responses both render.
     #[test]
-    fn build_lines_provisional_then_error_final() {
+    fn build_lines_provisional_then_error_final() -> Result<(), TestError> {
         let theme = Theme::default();
-        let t = base_ts();
+        let t = base_ts()?;
         let mut store = DialogStore::new(100, false);
-        store.process_message(req("INVITE", "1 INVITE", "err@test", t));
+        store.process_message(req("INVITE", "1 INVITE", "err@test", t)?);
         store.process_message(resp(
             100,
             "Trying",
             "1 INVITE",
             "err@test",
             t + TimeDelta::milliseconds(50),
-        ));
+        )?);
         store.process_message(resp(
             480,
             "Temporarily Unavailable",
             "1 INVITE",
             "err@test",
             t + TimeDelta::seconds(1),
-        ));
-        let (count, lines) = build_call_flow_lines(&store, "err@test", &theme).expect("some");
+        )?);
+        let (count, lines) = build_call_flow_lines(&store, "err@test", &theme).ok_or("some")?;
         assert_eq!(count, 3);
         let text = lines_to_string(&lines);
         assert!(text.contains("100"));
         assert!(text.contains("480"));
+        Ok(())
     }
 
     // ── build_call_flow_lines_with_options ─────────────────────────────
 
     /// A selected message gains the `[SELECTED]` marker in the options path.
     #[test]
-    fn build_lines_with_options_selected_marker() {
+    fn build_lines_with_options_selected_marker() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("opt@test");
+        let store = store_full_dialog("opt@test")?;
         let mut o = opts(&theme);
         o.selected_msg = Some(2);
         let (_c, lines) =
-            build_call_flow_lines_with_options(&store, "opt@test", 120, &o).expect("some");
+            build_call_flow_lines_with_options(&store, "opt@test", 120, &o).ok_or("some")?;
         assert!(lines_to_string(&lines).contains("[SELECTED]"));
+        Ok(())
     }
 
     /// Summary SDP mode lists codecs and `show_rtp` draws the legacy
     /// "RTP stream active" line at the BYE.
     #[test]
-    fn build_lines_with_options_sdp_summary_and_rtp() {
+    fn build_lines_with_options_sdp_summary_and_rtp() -> Result<(), TestError> {
         let theme = Theme::default();
-        let t = base_ts();
+        let t = base_ts()?;
         let mut store = DialogStore::new(100, false);
-        store.process_message(invite_with_sdp("sdp@test", t));
+        store.process_message(invite_with_sdp("sdp@test", t)?);
         store.process_message(resp(
             200,
             "OK",
             "1 INVITE",
             "sdp@test",
             t + TimeDelta::seconds(1),
-        ));
+        )?);
         store.process_message(req(
             "ACK",
             "1 ACK",
             "sdp@test",
             t + TimeDelta::milliseconds(1100),
-        ));
-        store.process_message(req("BYE", "2 BYE", "sdp@test", t + TimeDelta::seconds(10)));
+        )?);
+        store.process_message(req("BYE", "2 BYE", "sdp@test", t + TimeDelta::seconds(10))?);
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Summary;
         o.show_rtp = true;
         let (_c, lines) =
-            build_call_flow_lines_with_options(&store, "sdp@test", 120, &o).expect("some");
+            build_call_flow_lines_with_options(&store, "sdp@test", 120, &o).ok_or("some")?;
         let text = lines_to_string(&lines);
         // SDP summary lists codecs; show_rtp draws an "RTP stream active" bar at BYE.
         assert!(
@@ -2897,46 +2978,50 @@ mod tests {
             text.contains("RTP stream active"),
             "expected RTP bar in:\n{text}"
         );
+        Ok(())
     }
 
     /// Full SDP mode emits the raw SDP body lines.
     #[test]
-    fn build_lines_with_options_sdp_full_emits_body_lines() {
+    fn build_lines_with_options_sdp_full_emits_body_lines() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut store = DialogStore::new(100, false);
-        store.process_message(invite_with_sdp("sdpfull@test", base_ts()));
+        store.process_message(invite_with_sdp("sdpfull@test", base_ts()?)?);
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Full;
         let (_c, lines) =
-            build_call_flow_lines_with_options(&store, "sdpfull@test", 120, &o).expect("some");
+            build_call_flow_lines_with_options(&store, "sdpfull@test", 120, &o).ok_or("some")?;
         let text = lines_to_string(&lines);
         assert!(
             text.contains("m=audio 20000"),
             "expected raw SDP body in:\n{text}"
         );
         assert!(text.contains("a=rtpmap:0 PCMU/8000"));
+        Ok(())
     }
 
     /// DeltaPrev mode renders relative "+n.nnns" timestamps.
     #[test]
-    fn build_lines_with_options_delta_prev_timestamps() {
+    fn build_lines_with_options_delta_prev_timestamps() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("delta@test");
+        let store = store_full_dialog("delta@test")?;
         let mut o = opts(&theme);
         o.ts_mode = TimestampMode::DeltaPrev;
         let (_c, lines) =
-            build_call_flow_lines_with_options(&store, "delta@test", 120, &o).expect("some");
+            build_call_flow_lines_with_options(&store, "delta@test", 120, &o).ok_or("some")?;
         // Delta-prev renders "+<n>s" relative timestamps.
         assert!(lines_to_string(&lines).contains("+"));
+        Ok(())
     }
 
     /// The options path also yields `None` for an unknown Call-ID.
     #[test]
-    fn build_lines_with_options_missing_dialog_none() {
+    fn build_lines_with_options_missing_dialog_none() -> Result<(), TestError> {
         let theme = Theme::default();
         let store = DialogStore::new(100, false);
         let o = opts(&theme);
         assert!(build_call_flow_lines_with_options(&store, "absent@test", 120, &o).is_none());
+        Ok(())
     }
 
     // ── build_extended_flow_lines ──────────────────────────────────────
@@ -2944,11 +3029,12 @@ mod tests {
     /// The extended view carries the "Extended flow" header even without
     /// correlated legs.
     #[test]
-    fn extended_flow_single_leg_header() {
+    fn extended_flow_single_leg_header() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("ext@test");
+        let store = store_full_dialog("ext@test")?;
         let o = opts(&theme);
-        let (count, lines) = build_extended_flow_lines(&store, "ext@test", 120, &o).expect("some");
+        let (count, lines) =
+            build_extended_flow_lines(&store, "ext@test", 120, &o).ok_or("some")?;
         assert_eq!(count, 6);
         let text = lines_to_string(&lines);
         assert!(
@@ -2957,106 +3043,108 @@ mod tests {
         );
         assert!(text.contains("correlated leg"));
         assert!(text.contains("INVITE"));
+        Ok(())
     }
 
     /// The extended view yields `None` for an unknown Call-ID.
     #[test]
-    fn extended_flow_missing_dialog_none() {
+    fn extended_flow_missing_dialog_none() -> Result<(), TestError> {
         let theme = Theme::default();
         let store = DialogStore::new(100, false);
         let o = opts(&theme);
         assert!(build_extended_flow_lines(&store, "gone@test", 120, &o).is_none());
+        Ok(())
     }
 
     // ── render_call_flow / render_call_flow_lines ──────────────────────
 
     /// `render_call_flow` paints the dialog's methods into the buffer.
     #[test]
-    fn render_call_flow_paints_buffer() {
+    fn render_call_flow_paints_buffer() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("render@test");
-        let mut term = terminal(100, 30);
+        let store = store_full_dialog("render@test")?;
+        let mut term = terminal(100, 30)?;
         let area = Rect::new(0, 0, 100, 30);
-        term.draw(|f| render_call_flow(f, area, &store, "render@test", 0, &theme))
-            .unwrap();
-        let text = buffer_text(&term);
+        term.draw(|f| render_call_flow(f, area, &store, "render@test", 0, &theme))?;
+        let text = buffer_text(&term)?;
         assert!(text.contains("INVITE"), "buffer:\n{text}");
         assert!(text.contains("BYE"));
         assert!(!text.contains("Dialog not found"));
+        Ok(())
     }
 
     /// A missing dialog paints the [`CALL_GONE_NOTICE`] fallback.
     #[test]
-    fn render_call_flow_missing_shows_fallback() {
+    fn render_call_flow_missing_shows_fallback() -> Result<(), TestError> {
         let theme = Theme::default();
         let store = DialogStore::new(100, false);
-        let mut term = terminal(80, 10);
+        let mut term = terminal(80, 10)?;
         let area = Rect::new(0, 0, 80, 10);
-        term.draw(|f| render_call_flow(f, area, &store, "missing@test", 0, &theme))
-            .unwrap();
+        term.draw(|f| render_call_flow(f, area, &store, "missing@test", 0, &theme))?;
         assert!(
-            buffer_text(&term)
+            buffer_text(&term)?
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
                 .contains(CALL_GONE_NOTICE)
         );
+        Ok(())
     }
 
     /// A 40-column terminal still renders (wrapped) without panicking.
     #[test]
-    fn render_call_flow_narrow_width() {
+    fn render_call_flow_narrow_width() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("rnarrow@test");
-        let mut term = terminal(40, 20);
+        let store = store_full_dialog("rnarrow@test")?;
+        let mut term = terminal(40, 20)?;
         let area = Rect::new(0, 0, 40, 20);
-        term.draw(|f| render_call_flow(f, area, &store, "rnarrow@test", 0, &theme))
-            .unwrap();
+        term.draw(|f| render_call_flow(f, area, &store, "rnarrow@test", 0, &theme))?;
         // Still renders the wrapped ladder without panicking; some content present.
-        let text = buffer_text(&term);
+        let text = buffer_text(&term)?;
         assert!(
             text.contains("INVITE") || text.contains("10.0.0.1"),
             "buffer:\n{text}"
         );
+        Ok(())
     }
 
     /// Scrolling past the header rows brings later messages into view.
     #[test]
-    fn render_call_flow_lines_scroll_offset() {
+    fn render_call_flow_lines_scroll_offset() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("scroll@test");
-        let mut term = terminal(100, 6);
+        let store = store_full_dialog("scroll@test")?;
+        let mut term = terminal(100, 6)?;
         let area = Rect::new(0, 0, 100, 6);
         // Scroll past the header rows so later messages appear at the top.
         term.draw(|f| {
             render_call_flow_lines(f, area, 4, &theme, || {
                 build_call_flow_lines_with_width(&store, "scroll@test", 100, &theme)
             })
-        })
-        .unwrap();
-        let text = buffer_text(&term);
+        })?;
+        let text = buffer_text(&term)?;
         // With offset 4 (header+bar+INVITE+180 scrolled away) the 200/ACK/BYE show.
         assert!(
             text.contains("BYE") || text.contains("ACK") || text.contains("200"),
             "buffer:\n{text}"
         );
+        Ok(())
     }
 
     /// A builder returning `None` paints the fallback message.
     #[test]
-    fn render_call_flow_lines_builder_returns_none() {
+    fn render_call_flow_lines_builder_returns_none() -> Result<(), TestError> {
         let theme = Theme::default();
-        let mut term = terminal(60, 8);
+        let mut term = terminal(60, 8)?;
         let area = Rect::new(0, 0, 60, 8);
-        term.draw(|f| render_call_flow_lines(f, area, 0, &theme, || None))
-            .unwrap();
+        term.draw(|f| render_call_flow_lines(f, area, 0, &theme, || None))?;
         assert!(
-            buffer_text(&term)
+            buffer_text(&term)?
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ")
                 .contains(CALL_GONE_NOTICE)
         );
+        Ok(())
     }
 
     // ── scrollbar / focus helpers ──────────────────────────────────────
@@ -3064,21 +3152,22 @@ mod tests {
     /// The viewport is the pane height minus the 4 header/footer rows,
     /// saturating at 0.
     #[test]
-    fn ladder_visible_rows_reserves_header_footer() {
+    fn ladder_visible_rows_reserves_header_footer() -> Result<(), TestError> {
         // 2 rows for participant labels + pipes, 2 for footer.
         assert_eq!(ladder_visible_rows(30), 26);
         assert_eq!(ladder_visible_rows(4), 0);
         assert_eq!(ladder_visible_rows(0), 0);
+        Ok(())
     }
 
     /// An overflowing message reports its row count and paints the vertical
     /// scrollbar thumb.
     #[test]
-    fn message_detail_reports_lines_and_renders_scrollbar() {
+    fn message_detail_reports_lines_and_renders_scrollbar() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("detail@test");
+        let store = store_full_dialog("detail@test")?;
         // A short pane forces the SIP message to overflow → scrollbar path.
-        let mut term = terminal(40, 6);
+        let mut term = terminal(40, 6)?;
         let area = Rect::new(0, 0, 40, 6);
         let mut lines = DetailMetrics::default();
         term.draw(|f| {
@@ -3098,28 +3187,28 @@ mod tests {
                     theme: &theme,
                 },
             );
-        })
-        .unwrap();
+        })?;
         assert!(
             lines.total_rows > 0,
             "detail panel should report its content line count"
         );
         // The thumb glyph '█' is unique to the scrollbar (the block border uses
         // box-drawing chars), so its presence proves the scrollbar painted.
-        let text = buffer_text(&term);
+        let text = buffer_text(&term)?;
         assert!(
             text.contains('\u{2588}'),
             "scrollbar thumb not painted:\n{text}"
         );
+        Ok(())
     }
 
     /// No scrollbar is painted when the whole message fits the pane.
     #[test]
-    fn message_detail_no_scrollbar_when_it_fits() {
+    fn message_detail_no_scrollbar_when_it_fits() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("detail@test");
+        let store = store_full_dialog("detail@test")?;
         // A tall pane fits the whole message → no scrollbar.
-        let mut term = terminal(60, 40);
+        let mut term = terminal(60, 40)?;
         let area = Rect::new(0, 0, 60, 40);
         term.draw(|f| {
             render_message_detail(
@@ -3138,13 +3227,13 @@ mod tests {
                     theme: &theme,
                 },
             );
-        })
-        .unwrap();
-        let text = buffer_text(&term);
+        })?;
+        let text = buffer_text(&term)?;
         assert!(
             !text.contains('\u{2588}'),
             "scrollbar should be absent when content fits:\n{text}"
         );
+        Ok(())
     }
 
     // ── Detail-pane geometry: wrap accounting, off-by-one boundaries,
@@ -3153,7 +3242,11 @@ mod tests {
     //    compared against a wrapped viewport) ──────────────────────────
 
     /// Store holding ONE request with the given extra headers and body.
-    fn store_with_message(call_id: &str, extra_headers: &[&str], body: &str) -> DialogStore {
+    fn store_with_message(
+        call_id: &str,
+        extra_headers: &[&str],
+        body: &str,
+    ) -> Result<DialogStore, TestError> {
         let mut headers: Vec<String> = vec![
             "From: <sip:a@example.com>;tag=t1".into(),
             "To: <sip:b@example.com>".into(),
@@ -3165,17 +3258,16 @@ mod tests {
         let raw = build_raw("INVITE sip:b@example.com SIP/2.0", &hdr_refs, body);
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             ip_a(),
             ip_b(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse custom INVITE");
+        )?;
         let mut store = DialogStore::new(100, false);
         store.process_message(msg);
-        store
+        Ok(store)
     }
 
     /// A `MessageDetailView` for message 0 of `call_id` with the given
@@ -3203,13 +3295,13 @@ mod tests {
     /// not [6/6] — the whole-dialog denominator made the counter look stuck
     /// on a filtered page.
     #[test]
-    fn detail_header_counts_are_relative_to_the_transaction_filter() {
+    fn detail_header_counts_are_relative_to_the_transaction_filter() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("f@test");
+        let store = store_full_dialog("f@test")?;
         let bye_key = (2u32, "BYE".to_string());
 
-        let header = |sel: usize, filter: Option<&(u32, String)>| -> String {
-            let mut term = terminal(80, 30);
+        let header = |sel: usize, filter: Option<&(u32, String)>| -> Result<String, TestError> {
+            let mut term = terminal(80, 30)?;
             let area = Rect::new(0, 0, 80, 30);
             term.draw(|f| {
                 render_message_detail(
@@ -3228,29 +3320,31 @@ mod tests {
                         theme: &theme,
                     },
                 );
-            })
-            .unwrap();
-            // The title sits on the top border row.
-            buffer_text(&term).lines().next().unwrap_or("").to_string()
+            })?;
+            Ok(
+                // The title sits on the top border row.
+                buffer_text(&term)?.lines().next().unwrap_or("").to_string(),
+            )
         };
 
         // Filtered to the BYE transaction: BYE (idx 4) is 1/2, its 200 (idx 5) is 2/2.
         assert!(
-            header(4, Some(&bye_key)).contains("[1/2]"),
+            header(4, Some(&bye_key))?.contains("[1/2]"),
             "BYE should read [1/2] under the BYE filter, got: {}",
-            header(4, Some(&bye_key))
+            header(4, Some(&bye_key))?
         );
         assert!(
-            header(5, Some(&bye_key)).contains("[2/2]"),
+            header(5, Some(&bye_key))?.contains("[2/2]"),
             "BYE's 200 should read [2/2] under the BYE filter, got: {}",
-            header(5, Some(&bye_key))
+            header(5, Some(&bye_key))?
         );
         // Unfiltered: whole-dialog counts are unchanged.
         assert!(
-            header(5, None).contains("[6/6]"),
+            header(5, None)?.contains("[6/6]"),
             "unfiltered, the BYE 200 is message 6/6, got: {}",
-            header(5, None)
+            header(5, None)?
         );
+        Ok(())
     }
 
     /// Render the detail pane at `w`x`h` and return the metrics plus the
@@ -3260,13 +3354,12 @@ mod tests {
         h: u16,
         store: &DialogStore,
         view: &MessageDetailView,
-    ) -> (DetailMetrics, String) {
-        let mut term = terminal(w, h);
+    ) -> Result<(DetailMetrics, String), TestError> {
+        let mut term = terminal(w, h)?;
         let area = Rect::new(0, 0, w, h);
         let mut m = DetailMetrics::default();
-        term.draw(|f| m = render_message_detail(f, area, store, view))
-            .unwrap();
-        (m, buffer_text(&term))
+        term.draw(|f| m = render_message_detail(f, area, store, view))?;
+        Ok((m, buffer_text(&term)?))
     }
 
     /// Bottom border row of the buffer (where the h-scrollbar paints).
@@ -3276,21 +3369,22 @@ mod tests {
 
     /// Logical (unwrapped) row count of the store's first message, learned
     /// by rendering into a pane far wider than any line.
-    fn logical_rows(call_id: &str, store: &DialogStore) -> usize {
-        let (m, _) = draw_detail(200, 50, store, &detail_view(call_id, 0, true, 0));
+    fn logical_rows(call_id: &str, store: &DialogStore) -> Result<usize, TestError> {
+        let (m, _) = draw_detail(200, 50, store, &detail_view(call_id, 0, true, 0))?;
         assert!(m.total_rows > 0, "sanity: message renders");
-        m.total_rows
+        Ok(m.total_rows)
     }
 
     /// Content exactly filling the pane clamps a stale scroll to 0 and
     /// paints no scrollbar.
     #[test]
-    fn detail_exact_fit_has_no_scrollbar_and_clamps_stale_scroll_to_zero() {
-        let store = store_with_message("fit@test", &[], "LASTBODY");
-        let rows = logical_rows("fit@test", &store);
+    fn detail_exact_fit_has_no_scrollbar_and_clamps_stale_scroll_to_zero() -> Result<(), TestError>
+    {
+        let store = store_with_message("fit@test", &[], "LASTBODY")?;
+        let rows = logical_rows("fit@test", &store)?;
         // Pane inner height == content rows: nothing to scroll.
         let h = rows as u16 + 2;
-        let (m, text) = draw_detail(60, h, &store, &detail_view("fit@test", 5, true, 0));
+        let (m, text) = draw_detail(60, h, &store, &detail_view("fit@test", 5, true, 0))?;
         assert_eq!(m.total_rows, rows);
         assert_eq!(m.scroll, 0, "stale offset must clamp to 0 on exact fit");
         assert!(
@@ -3301,17 +3395,18 @@ mod tests {
             text.contains("LASTBODY"),
             "last row visible unscrolled:\n{text}"
         );
+        Ok(())
     }
 
     /// One row of overflow shows a scrollbar and End clamps to exactly one
     /// row of scroll, revealing the last line.
     #[test]
-    fn detail_single_row_overflow_scrolls_exactly_one() {
-        let store = store_with_message("plus1@test", &[], "LASTBODY");
-        let rows = logical_rows("plus1@test", &store);
+    fn detail_single_row_overflow_scrolls_exactly_one() -> Result<(), TestError> {
+        let store = store_with_message("plus1@test", &[], "LASTBODY")?;
+        let rows = logical_rows("plus1@test", &store)?;
         // Pane one row SHORTER than the content: max scroll is exactly 1.
         let h = rows as u16 + 1;
-        let (m0, t0) = draw_detail(60, h, &store, &detail_view("plus1@test", 0, true, 0));
+        let (m0, t0) = draw_detail(60, h, &store, &detail_view("plus1@test", 0, true, 0))?;
         assert!(
             t0.contains('\u{2588}'),
             "one-row overflow needs a scrollbar:\n{t0}"
@@ -3320,42 +3415,44 @@ mod tests {
             !t0.contains("LASTBODY"),
             "unscrolled, the last row is just off-screen:\n{t0}"
         );
-        let (m1, t1) = draw_detail(60, h, &store, &detail_view("plus1@test", u16::MAX, true, 0));
+        let (m1, t1) = draw_detail(60, h, &store, &detail_view("plus1@test", u16::MAX, true, 0))?;
         assert_eq!(m1.scroll, 1, "End must clamp to exactly one row of scroll");
         assert!(
             t1.contains("LASTBODY"),
             "scrolled to bottom, the last row is visible:\n{t1}"
         );
         assert_eq!(m0.total_rows, m1.total_rows);
+        Ok(())
     }
 
     /// Wrapped row accounting counts continuation rows, not logical lines.
     #[test]
-    fn wrapped_long_header_counts_visual_rows_not_logical_lines() {
+    fn wrapped_long_header_counts_visual_rows_not_logical_lines() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(95)); // 100 cols
-        let store = store_with_message("wrapcount@test", &[&long], "LASTBODY");
-        let logical = logical_rows("wrapcount@test", &store);
+        let store = store_with_message("wrapcount@test", &[&long], "LASTBODY")?;
+        let logical = logical_rows("wrapcount@test", &store)?;
         // Inner width 33 — wider than every standard header (≤32 cols),
         // so ONLY the 100-col header wraps: 33+33+33+1 → 4 rows (+3).
-        let (m, _) = draw_detail(35, 40, &store, &detail_view("wrapcount@test", 0, true, 0));
+        let (m, _) = draw_detail(35, 40, &store, &detail_view("wrapcount@test", 0, true, 0))?;
         assert_eq!(
             m.total_rows,
             logical + 3,
             "wrapped row accounting must count continuation rows"
         );
+        Ok(())
     }
 
     /// Wrap-induced overflow shows the scrollbar and keeps a nonzero scroll
     /// even when the logical line count fits the viewport.
     #[test]
-    fn wrapped_overflow_shows_scrollbar_even_when_logical_lines_fit() {
+    fn wrapped_overflow_shows_scrollbar_even_when_logical_lines_fit() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60));
-        let store = store_with_message("wrapbar@test", &[&long], "LASTBODY");
-        let logical = logical_rows("wrapbar@test", &store);
+        let store = store_with_message("wrapbar@test", &[&long], "LASTBODY")?;
+        let logical = logical_rows("wrapbar@test", &store)?;
         // Inner height exactly == LOGICAL rows, but wrapping adds 2 more:
         // the old logical-vs-viewport comparison hid the scrollbar here.
         let h = logical as u16 + 2;
-        let (m, text) = draw_detail(26, h, &store, &detail_view("wrapbar@test", 1, true, 0));
+        let (m, text) = draw_detail(26, h, &store, &detail_view("wrapbar@test", 1, true, 0))?;
         assert!(
             text.contains('\u{2588}'),
             "wrapped overflow must show a scrollbar:\n{text}"
@@ -3364,22 +3461,23 @@ mod tests {
             m.scroll, 1,
             "scroll must not clamp to 0 while wrapped rows overflow"
         );
+        Ok(())
     }
 
     /// Under wrapping, End clamps to wrapped-rows-minus-viewport and the
     /// last row is reachable.
     #[test]
-    fn wrapped_scroll_reaches_the_last_row() {
+    fn wrapped_scroll_reaches_the_last_row() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60));
-        let store = store_with_message("wrapbottom@test", &[&long], "LASTBODY");
-        let logical = logical_rows("wrapbottom@test", &store);
+        let store = store_with_message("wrapbottom@test", &[&long], "LASTBODY")?;
+        let logical = logical_rows("wrapbottom@test", &store)?;
         let h = logical as u16 + 2; // viewport == logical rows, content == logical+2
         let (m, text) = draw_detail(
             26,
             h,
             &store,
             &detail_view("wrapbottom@test", u16::MAX, true, 0),
-        );
+        )?;
         assert_eq!(
             m.scroll as usize,
             m.total_rows - logical,
@@ -3389,16 +3487,17 @@ mod tests {
             text.contains("LASTBODY"),
             "the last row must be reachable under wrapping:\n{text}"
         );
+        Ok(())
     }
 
     /// Unwrapped mode truncates long lines (no continuation rows) and
     /// reports the widest line in display columns.
     #[test]
-    fn unwrapped_lines_truncate_and_report_max_width() {
+    fn unwrapped_lines_truncate_and_report_max_width() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60)); // 65 cols
-        let store = store_with_message("nowrap@test", &[&long], "LASTBODY");
-        let logical = logical_rows("nowrap@test", &store);
-        let (m, text) = draw_detail(26, 40, &store, &detail_view("nowrap@test", 0, false, 0));
+        let store = store_with_message("nowrap@test", &[&long], "LASTBODY")?;
+        let logical = logical_rows("nowrap@test", &store)?;
+        let (m, text) = draw_detail(26, 40, &store, &detail_view("nowrap@test", 0, false, 0))?;
         assert_eq!(m.total_rows, logical, "no wrap: rows == logical lines");
         assert_eq!(m.max_width, 65, "widest line in display columns");
         // The row after the long header must hold the NEXT line, not a
@@ -3407,25 +3506,26 @@ mod tests {
         let long_row = lines
             .iter()
             .position(|l| l.contains("X-A: aaa"))
-            .expect("long header row rendered");
+            .ok_or("long header row rendered")?;
         assert!(
             !lines[long_row + 1].contains("aaaa"),
             "line must truncate, not wrap:\n{text}"
         );
+        Ok(())
     }
 
     /// H-scroll shifts unwrapped content and clamps so the widest line's
     /// tail lands on the last column.
     #[test]
-    fn unwrapped_hscroll_shifts_content_and_clamps_at_the_widest_line() {
+    fn unwrapped_hscroll_shifts_content_and_clamps_at_the_widest_line() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60)); // 65 cols, inner width 24
-        let store = store_with_message("hscroll@test", &[&long], "LASTBODY");
+        let store = store_with_message("hscroll@test", &[&long], "LASTBODY")?;
         let (m, text) = draw_detail(
             26,
             40,
             &store,
             &detail_view("hscroll@test", 0, false, u16::MAX),
-        );
+        )?;
         assert_eq!(
             m.hscroll as usize,
             65 - 24,
@@ -3439,49 +3539,51 @@ mod tests {
             !text.contains("X-A:"),
             "line beginnings scrolled out of view:\n{text}"
         );
-        let (m0, t0) = draw_detail(26, 40, &store, &detail_view("hscroll@test", 0, false, 0));
+        let (m0, t0) = draw_detail(26, 40, &store, &detail_view("hscroll@test", 0, false, 0))?;
         assert_eq!(m0.hscroll, 0);
         assert!(t0.contains("X-A:"), "unscrolled shows line starts:\n{t0}");
+        Ok(())
     }
 
     /// The bottom h-scrollbar appears only for unwrapped horizontal
     /// overflow — never while wrapping or when lines fit.
     #[test]
-    fn horizontal_scrollbar_only_for_unwrapped_overflow() {
+    fn horizontal_scrollbar_only_for_unwrapped_overflow() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60));
-        let store = store_with_message("hbar@test", &[&long], "LASTBODY");
+        let store = store_with_message("hbar@test", &[&long], "LASTBODY")?;
         let h = 40u16;
         // Unwrapped + overflowing → thumb on the bottom border row.
-        let (_, t_off) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, false, 0));
+        let (_, t_off) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, false, 0))?;
         assert!(
             bottom_row(&t_off, h).contains('\u{2588}'),
             "h-scrollbar expected on bottom border:\n{t_off}"
         );
         // Wrapped → no horizontal overflow by definition.
-        let (_, t_on) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, true, 0));
+        let (_, t_on) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, true, 0))?;
         assert!(
             !bottom_row(&t_on, h).contains('\u{2588}'),
             "no h-scrollbar while wrapping:\n{t_on}"
         );
         // Unwrapped but everything fits → no h-scrollbar either.
-        let (_, t_wide) = draw_detail(100, h, &store, &detail_view("hbar@test", 0, false, 0));
+        let (_, t_wide) = draw_detail(100, h, &store, &detail_view("hbar@test", 0, false, 0))?;
         assert!(
             !bottom_row(&t_wide, h).contains('\u{2588}'),
             "no h-scrollbar when lines fit:\n{t_wide}"
         );
+        Ok(())
     }
 
     /// Wide (CJK) glyphs wrap and h-scroll by display columns, not chars.
     #[test]
-    fn multibyte_wide_chars_wrap_and_hscroll_by_display_width() {
+    fn multibyte_wide_chars_wrap_and_hscroll_by_display_width() -> Result<(), TestError> {
         // "X-U: " (5 cols) + 30 CJK chars (60 cols) = 65 display columns
         // in only 35 chars — the width-vs-chars distinction under test.
         let cjk = format!("X-U: {}", "好".repeat(30));
-        let store = store_with_message("cjk@test", &[&cjk], "LASTBODY");
-        let logical = logical_rows("cjk@test", &store);
+        let store = store_with_message("cjk@test", &[&cjk], "LASTBODY")?;
+        let logical = logical_rows("cjk@test", &store)?;
         // Inner width 33 — only the CJK line wraps: 5+14 glyphs (33 cols
         // exactly), then 16 glyphs (32 cols) → 2 rows (+1 vs logical).
-        let (m, _) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, true, 0));
+        let (m, _) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, true, 0))?;
         assert_eq!(
             m.total_rows,
             logical + 1,
@@ -3489,18 +3591,19 @@ mod tests {
         );
         // Unwrapped: max_width in display columns; hscroll clamps against
         // it (65 - 33 = 32, impossible if widths were counted in chars).
-        let (mh, th) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, false, u16::MAX));
+        let (mh, th) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, false, u16::MAX))?;
         assert_eq!(mh.max_width, 65);
         assert_eq!(mh.hscroll as usize, 65 - 33);
         assert!(th.contains('好'), "CJK tail renders at max h-scroll:\n{th}");
+        Ok(())
     }
 
     /// Degenerate pane sizes (down to 1x1) render without panicking and keep
     /// the clamped scroll within the content.
     #[test]
-    fn detail_tiny_panes_never_panic() {
+    fn detail_tiny_panes_never_panic() -> Result<(), TestError> {
         let long = format!("X-A: {}", "a".repeat(60));
-        let store = store_with_message("tiny@test", &[&long], "LASTBODY");
+        let store = store_with_message("tiny@test", &[&long], "LASTBODY")?;
         for (w, h) in [(2u16, 2u16), (3, 3), (1, 1), (4, 2)] {
             for wrap in [true, false] {
                 let (m, _) = draw_detail(
@@ -3508,56 +3611,57 @@ mod tests {
                     h,
                     &store,
                     &detail_view("tiny@test", u16::MAX, wrap, u16::MAX),
-                );
+                )?;
                 assert!(
                     (m.scroll as usize) <= m.total_rows,
                     "{w}x{h} wrap={wrap}: clamped scroll within content"
                 );
             }
         }
+        Ok(())
     }
 
     /// The ladder scrollbar thumb paints when rows exceed the viewport.
     #[test]
-    fn ladder_scrollbar_paints_when_overflowing() {
+    fn ladder_scrollbar_paints_when_overflowing() -> Result<(), TestError> {
         let theme = Theme::default();
         // viewport rows = 9 - 4 = 5; 20 logical rows overflow it.
-        let mut term = terminal(60, 9);
+        let mut term = terminal(60, 9)?;
         let area = Rect::new(0, 0, 60, 9);
-        term.draw(|f| render_ladder_scrollbar(f, area, 20, 0, &theme))
-            .unwrap();
-        let text = buffer_text(&term);
+        term.draw(|f| render_ladder_scrollbar(f, area, 20, 0, &theme))?;
+        let text = buffer_text(&term)?;
         assert!(
             text.contains('\u{2588}'),
             "ladder scrollbar thumb not painted:\n{text}"
         );
+        Ok(())
     }
 
     /// No ladder scrollbar is painted when the flow fits the pane.
     #[test]
-    fn ladder_scrollbar_absent_when_fits() {
+    fn ladder_scrollbar_absent_when_fits() -> Result<(), TestError> {
         let theme = Theme::default();
-        let mut term = terminal(60, 30);
+        let mut term = terminal(60, 30)?;
         let area = Rect::new(0, 0, 60, 30);
         // 3 rows into a 26-row viewport → nothing to scroll.
-        term.draw(|f| render_ladder_scrollbar(f, area, 3, 0, &theme))
-            .unwrap();
-        let text = buffer_text(&term);
+        term.draw(|f| render_ladder_scrollbar(f, area, 3, 0, &theme))?;
+        let text = buffer_text(&term)?;
         assert!(text.trim().is_empty(), "no scrollbar expected:\n{text}");
+        Ok(())
     }
 
     /// Focus only changes border styling: focused and unfocused renders
     /// report identical metrics.
     #[test]
-    fn message_detail_focus_highlights_border() {
+    fn message_detail_focus_highlights_border() -> Result<(), TestError> {
         let theme = Theme::default();
-        let store = store_full_dialog("detail@test");
+        let store = store_full_dialog("detail@test")?;
         // Render focused vs unfocused; both must paint without panicking and
         // report the same line count (focus only changes styling).
         let area = Rect::new(0, 0, 50, 20);
         let mut a = DetailMetrics::default();
         let mut b = DetailMetrics::default();
-        let mut term = terminal(50, 20);
+        let mut term = terminal(50, 20)?;
         term.draw(|f| {
             a = render_message_detail(
                 f,
@@ -3575,8 +3679,7 @@ mod tests {
                     theme: &theme,
                 },
             )
-        })
-        .unwrap();
+        })?;
         term.draw(|f| {
             b = render_message_detail(
                 f,
@@ -3594,8 +3697,8 @@ mod tests {
                     theme: &theme,
                 },
             )
-        })
-        .unwrap();
+        })?;
         assert_eq!(a, b);
+        Ok(())
     }
 }

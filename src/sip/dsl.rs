@@ -2126,6 +2126,9 @@ pub fn stream_mos(stream: &RtpStream, delay: MosDelay<'_>) -> f64 {
 /// diagnostic aliases, the comparators, and the MOS approximation.
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// `in_subnet` accepts an address the HEP allowlist accepts.
     ///
     /// RTF1. `--hep-allow 198.51.100.0/24` admits an agent whose packets
@@ -2140,7 +2143,7 @@ mod tests {
     /// `[::]` carrying an IPv4 call yields a mapped address with no
     /// canonicalization anywhere in between.
     #[test]
-    fn a_v4_mapped_address_matches_a_v4_prefix() {
+    fn a_v4_mapped_address_matches_a_v4_prefix() -> Result<(), TestError> {
         assert!(
             ip_in_cidr("::ffff:198.51.100.7", "198.51.100.0/24"),
             "a mapped address is the same host as its v4 form"
@@ -2149,6 +2152,7 @@ mod tests {
             !ip_in_cidr("::ffff:203.0.113.7", "198.51.100.0/24"),
             "but a mapped address outside the prefix still does not match"
         );
+        Ok(())
     }
 
     /// A bare address is a host route, as it is on the allowlist.
@@ -2157,7 +2161,7 @@ mod tests {
     /// to write `/32`. `ip_in_cidr` returned false for the same input, so the
     /// two surfaces disagreed about what an operator had written.
     #[test]
-    fn a_bare_address_is_a_host_route() {
+    fn a_bare_address_is_a_host_route() -> Result<(), TestError> {
         assert!(
             ip_in_cidr("198.51.100.40", "198.51.100.40"),
             "the host itself"
@@ -2170,6 +2174,7 @@ mod tests {
             ip_in_cidr("2001:db8::1", "2001:db8::1"),
             "the same reading for v6"
         );
+        Ok(())
     }
 
     /// A v4-mapped CIDR still matches as IPv6 when written that way.
@@ -2178,21 +2183,23 @@ mod tests {
     /// IPv6 prefix, and folding every mapped address to v4 unconditionally
     /// would stop it matching itself.
     #[test]
-    fn a_mapped_prefix_still_matches_as_v6() {
+    fn a_mapped_prefix_still_matches_as_v6() -> Result<(), TestError> {
         assert!(
             ip_in_cidr("::ffff:198.51.100.7", "::ffff:0:0/96"),
             "the mapped range contains the mapped address"
         );
+        Ok(())
     }
 
     /// Families still do not cross where they genuinely differ.
     #[test]
-    fn an_unmapped_v6_address_does_not_match_a_v4_prefix() {
+    fn an_unmapped_v6_address_does_not_match_a_v4_prefix() -> Result<(), TestError> {
         assert!(
             !ip_in_cidr("2001:db8::1", "10.0.0.0/8"),
             "a real IPv6 host is not inside a v4 prefix"
         );
         assert!(!ip_in_cidr("10.0.0.1", "2001:db8::/32"), "and the reverse");
+        Ok(())
     }
 
     /// `in_subnet` works end to end through the parser.
@@ -2200,18 +2207,19 @@ mod tests {
     /// The unit tests above pin the arithmetic; this pins that a filter an
     /// operator actually types reaches it.
     #[test]
-    fn the_in_subnet_operator_parses_and_evaluates() {
-        FilterExpr::parse("src.ip in_subnet '198.51.100.0/24'")
-            .expect("in_subnet is a filter operator");
+    fn the_in_subnet_operator_parses_and_evaluates() -> Result<(), TestError> {
+        FilterExpr::parse("src.ip in_subnet '198.51.100.0/24'")?;
+        Ok(())
     }
 
     /// A CIDR with a non-octet-aligned prefix parses.
     ///
     /// The case the regex approach cannot express at all.
     #[test]
-    fn a_non_octet_aligned_prefix_is_expressible() {
+    fn a_non_octet_aligned_prefix_is_expressible() -> Result<(), TestError> {
         assert!(FilterExpr::parse("src.ip in_subnet '203.0.112.0/22'").is_ok());
         assert!(FilterExpr::parse("dst.ip in_subnet '2001:db8::/48'").is_ok());
+        Ok(())
     }
 
     /// A CIDR literal matches by address arithmetic, not by string prefix.
@@ -2221,7 +2229,7 @@ mod tests {
     /// written at all — it matches neighbors when the anchor is dropped, and
     /// it is unusable for IPv6, where one address has many textual forms.
     #[test]
-    fn in_subnet_matches_on_the_parsed_address() {
+    fn in_subnet_matches_on_the_parsed_address() -> Result<(), TestError> {
         for (ip, cidr, want) in [
             ("198.51.100.7", "198.51.100.0/24", true),
             ("198.51.100.7", "198.51.100.0/25", true),
@@ -2241,6 +2249,7 @@ mod tests {
                 "{ip} in {cidr} should be {want}"
             );
         }
+        Ok(())
     }
 
     /// The regex trap the CIDR operator replaces.
@@ -2250,9 +2259,10 @@ mod tests {
     /// string prefix the wrong tool. The address form cannot make that
     /// mistake because it compares integers.
     #[test]
-    fn a_neighboring_address_is_not_in_the_subnet() {
+    fn a_neighboring_address_is_not_in_the_subnet() -> Result<(), TestError> {
         assert!(!ip_in_cidr("198.51.101.7", "198.51.100.0/24"));
         assert!(!ip_in_cidr("198.51.10.7", "198.51.100.0/24"));
+        Ok(())
     }
 
     /// IPv6 works, including the zero-compression forms a string cannot equate.
@@ -2261,7 +2271,7 @@ mod tests {
     /// address and different strings. Comparing on the parsed value is the only
     /// way both match.
     #[test]
-    fn in_subnet_handles_ipv6_and_its_textual_forms() {
+    fn in_subnet_handles_ipv6_and_its_textual_forms() -> Result<(), TestError> {
         assert!(ip_in_cidr("2001:db8::1", "2001:db8::/32"));
         assert!(ip_in_cidr(
             "2001:0db8:0000:0000:0000:0000:0000:0001",
@@ -2270,6 +2280,7 @@ mod tests {
         assert!(!ip_in_cidr("2001:db9::1", "2001:db8::/32"));
         assert!(ip_in_cidr("2001:db8:1234::5", "2001:db8:1234::/48"));
         assert!(!ip_in_cidr("2001:db8:1235::5", "2001:db8:1234::/48"));
+        Ok(())
     }
 
     /// Families do not cross.
@@ -2278,9 +2289,10 @@ mod tests {
     /// answering `true` for either would silently widen every filter written
     /// on a dual-stack capture.
     #[test]
-    fn an_address_is_never_inside_a_prefix_of_the_other_family() {
+    fn an_address_is_never_inside_a_prefix_of_the_other_family() -> Result<(), TestError> {
         assert!(!ip_in_cidr("192.0.2.1", "2001:db8::/32"));
         assert!(!ip_in_cidr("2001:db8::1", "192.0.2.0/24"));
+        Ok(())
     }
 
     /// Malformed input matches nothing rather than everything.
@@ -2289,7 +2301,7 @@ mod tests {
     /// dialogs, never all of them. A prefix length past the family's width is
     /// malformed, not a synonym for "match everything".
     #[test]
-    fn a_malformed_cidr_matches_nothing() {
+    fn a_malformed_cidr_matches_nothing() -> Result<(), TestError> {
         for bad in [
             "198.51.100.0",      // no prefix length
             "198.51.100.0/",     // empty length
@@ -2305,6 +2317,7 @@ mod tests {
             );
         }
         assert!(!ip_in_cidr("not-an-address", "198.51.100.0/24"));
+        Ok(())
     }
 
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -2326,15 +2339,19 @@ mod tests {
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) so tests are
     /// deterministic.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a dialog from a single request with the given From user, To
     /// user, and method (User-Agent fixed to `TestUA/1.0`).
-    fn make_dialog(from_user: &str, to_user: &str, method: &str) -> SipDialog {
+    fn make_dialog(from_user: &str, to_user: &str, method: &str) -> Result<SipDialog, TestError> {
         let raw = build_sip(
             &format!("{method} sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -2349,30 +2366,29 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
-        SipDialog::new(&msg).expect("should create dialog")
+        )?;
+        Ok(SipDialog::new(&msg).ok_or("should create dialog")?)
     }
 
     /// Build an INVITE dialog whose timing yields a post-dial delay of
     /// `pdd_ms` milliseconds.
-    fn make_dialog_with_timing(pdd_ms: i64) -> SipDialog {
-        let mut dialog = make_dialog("1001", "2002", "INVITE");
-        dialog.timing.invite_sent = Some(base_ts());
-        dialog.timing.ringing_at = Some(base_ts() + TimeDelta::milliseconds(pdd_ms));
-        dialog
+    fn make_dialog_with_timing(pdd_ms: i64) -> Result<SipDialog, TestError> {
+        let mut dialog = make_dialog("1001", "2002", "INVITE")?;
+        dialog.timing.invite_sent = Some(base_ts()?);
+        dialog.timing.ringing_at = Some(base_ts()? + TimeDelta::milliseconds(pdd_ms));
+        Ok(dialog)
     }
 
     /// Build a one-packet RTP stream (SSRC 0xDEADBEEF), orphaned or claimed by
     /// a dialog — which is the same thing as whether `associated_dialog` is
     /// set, per [`RtpStream::orphaned`].
-    fn make_rtp_stream(orphaned: bool) -> RtpStream {
+    fn make_rtp_stream(orphaned: bool) -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc: 0xDEADBEEF,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -2390,11 +2406,11 @@ mod tests {
             ssrc: 0xDEADBEEF,
             payload_offset: 12,
         };
-        let mut stream = RtpStream::new(key, &hdr, base_ts());
+        let mut stream = RtpStream::new(key, &hdr, base_ts()?);
         if !orphaned {
             stream.associated_dialog = Some("claimed@example.invalid".to_string());
         }
-        stream
+        Ok(stream)
     }
 
     // ── Basic field matching ────────────────────────────────────────
@@ -2414,13 +2430,14 @@ mod tests {
     /// --filter 'rtp.mos < 3.0'` returned the one dialog in a capture with
     /// zero RTP streams.
     #[test]
-    fn a_dialog_with_no_rtp_does_not_match_a_mos_threshold() {
-        let dialog = make_dialog("1001", "2002", "REGISTER");
-        let filter = FilterExpr::parse("rtp.mos < 3.0").expect("should parse");
+    fn a_dialog_with_no_rtp_does_not_match_a_mos_threshold() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "REGISTER")?;
+        let filter = FilterExpr::parse("rtp.mos < 3.0")?;
         assert!(
             !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a dialog with no RTP has no MOS; it is not a bad-audio call"
         );
+        Ok(())
     }
 
     /// The same unknown does not match `!=` either.
@@ -2430,15 +2447,16 @@ mod tests {
     /// answer to whoever writes the negation, which is where a triage filter
     /// usually ends up. SQL's NULL rule, for SQL's reason.
     #[test]
-    fn an_unknown_mos_is_not_unequal_either() {
-        let dialog = make_dialog("1001", "2002", "REGISTER");
+    fn an_unknown_mos_is_not_unequal_either() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "REGISTER")?;
         for expr in ["rtp.mos != 3.0", "rtp.mos > 3.0", "rtp.mos == 0.0"] {
-            let filter = FilterExpr::parse(expr).expect("should parse");
+            let filter = FilterExpr::parse(expr)?;
             assert!(
                 !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog whose MOS was never measured"
             );
         }
+        Ok(())
     }
 
     /// Jitter and loss are unknown for the same dialog, and behave the same.
@@ -2446,15 +2464,16 @@ mod tests {
     /// Fixing `rtp.mos` alone would leave the identical trap in the two fields
     /// beside it, which is why the rule lives in one comparison helper.
     #[test]
-    fn unknown_jitter_and_loss_match_no_threshold() {
-        let dialog = make_dialog("1001", "2002", "REGISTER");
+    fn unknown_jitter_and_loss_match_no_threshold() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "REGISTER")?;
         for expr in ["rtp.jitter < 30", "rtp.loss < 5", "rtp.jitter != 1"] {
-            let filter = FilterExpr::parse(expr).expect("should parse");
+            let filter = FilterExpr::parse(expr)?;
             assert!(
                 !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog with no RTP"
             );
         }
+        Ok(())
     }
 
     /// An unmeasured `pdd` / `setup_time` matches nothing, and is not 0.
@@ -2465,8 +2484,8 @@ mod tests {
     /// real trunk capture. Nothing failed when the two disagreed, because
     /// nothing asked these two fields the question.
     #[test]
-    fn an_unknown_pdd_or_setup_time_matches_no_comparison() {
-        let dialog = make_dialog("1001", "2002", "REGISTER");
+    fn an_unknown_pdd_or_setup_time_matches_no_comparison() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "REGISTER")?;
         for expr in [
             "pdd < 1",
             "pdd > 1",
@@ -2475,7 +2494,7 @@ mod tests {
             "setup_time > 1",
             "setup_time != 1",
         ] {
-            let filter = FilterExpr::parse(expr).expect("should parse");
+            let filter = FilterExpr::parse(expr)?;
             assert!(
                 !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog whose timing was never \
@@ -2483,6 +2502,7 @@ mod tests {
                  threshold an operator would type"
             );
         }
+        Ok(())
     }
 
     /// A dialog that HAS RTP still matches on its measured values.
@@ -2490,20 +2510,21 @@ mod tests {
     /// Anti-vacuity. A helper that returned false for everything would satisfy
     /// every assertion above.
     #[test]
-    fn a_dialog_with_rtp_still_matches_on_its_measured_values() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let stream = make_rtp_stream(false);
+    fn a_dialog_with_rtp_still_matches_on_its_measured_values() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let stream = make_rtp_stream(false)?;
         let streams = [&stream];
-        let filter = FilterExpr::parse("rtp.mos > 0").expect("should parse");
+        let filter = FilterExpr::parse("rtp.mos > 0")?;
         assert!(
             filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent, MosDelay::unknown()),
             "a measured MOS must still compare; the rule is about unknowns only"
         );
-        let filter = FilterExpr::parse("rtp.jitter >= 0").expect("should parse");
+        let filter = FilterExpr::parse("rtp.jitter >= 0")?;
         assert!(
             filter.matches_dialog(&dialog, &streams, CaptureMedia::Absent, MosDelay::unknown()),
             "a measured jitter must still compare"
         );
+        Ok(())
     }
 
     /// An untimed call does not match a setup-time or PDD threshold.
@@ -2514,67 +2535,71 @@ mod tests {
     /// computing a p95 from that filter is averaging in calls that were never
     /// timed.
     #[test]
-    fn an_untimed_call_matches_no_setup_or_pdd_threshold() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn an_untimed_call_matches_no_setup_or_pdd_threshold() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         for expr in ["setup_time < 1", "pdd < 1", "setup_time != 9"] {
-            let filter = FilterExpr::parse(expr).expect("should parse");
+            let filter = FilterExpr::parse(expr)?;
             assert!(
                 !filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "`{expr}` must not match a dialog that was never timed"
             );
         }
+        Ok(())
     }
 
     /// A timed call still matches on its measured timing.
     ///
     /// The anti-vacuity partner of the test above.
     #[test]
-    fn a_timed_call_still_matches_on_its_measured_timing() {
-        let dialog = make_dialog_with_timing(1500);
-        let filter = FilterExpr::parse("pdd < 2").expect("should parse");
+    fn a_timed_call_still_matches_on_its_measured_timing() -> Result<(), TestError> {
+        let dialog = make_dialog_with_timing(1500)?;
+        let filter = FilterExpr::parse("pdd < 2")?;
         assert!(
             filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a measured 1.5 s post-dial delay must still match `pdd < 2`"
         );
 
-        let mut answered = make_dialog("1001", "2002", "INVITE");
-        answered.timing.invite_sent = Some(base_ts());
-        answered.timing.answered_at = Some(base_ts() + TimeDelta::milliseconds(2500));
-        let filter = FilterExpr::parse("setup_time > 2").expect("should parse");
+        let mut answered = make_dialog("1001", "2002", "INVITE")?;
+        answered.timing.invite_sent = Some(base_ts()?);
+        answered.timing.answered_at = Some(base_ts()? + TimeDelta::milliseconds(2500));
+        let filter = FilterExpr::parse("setup_time > 2")?;
         assert!(
             filter.matches_dialog(&answered, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a measured 2.5 s setup must still match `setup_time > 2`"
         );
+        Ok(())
     }
 
     /// `from.user ==` matches a dialog with that exact From user.
     #[test]
-    fn from_user_equals_match() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
+    fn from_user_equals_match() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse("from.user == '1001'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// `payload` greps the raw text of every message: regex matches
     /// content anywhere in the message, and equality never panics on
     /// lossily-decoded bytes.
     #[test]
-    fn payload_field_matches_raw_message_content() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn payload_field_matches_raw_message_content() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         // The raw INVITE contains the To URI.
-        let f = FilterExpr::parse("payload =~ '2002@example'").expect("should parse");
+        let f = FilterExpr::parse("payload =~ '2002@example'")?;
         assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
-        let f = FilterExpr::parse("payload =~ 'not-there'").expect("should parse");
+        let f = FilterExpr::parse("payload =~ 'not-there'")?;
         assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
         // Equality against a whole raw message: never matches here, must not
         // panic (raw bytes are lossily decoded).
-        let f = FilterExpr::parse("payload == 'x'").expect("should parse");
+        let f = FilterExpr::parse("payload == 'x'")?;
         assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// Build a dialog whose sole INVITE carries `body` verbatim (so
     /// `payload` sees those exact bytes, valid UTF-8 or not).
-    fn make_dialog_with_body(body: &[u8]) -> SipDialog {
+    fn make_dialog_with_body(body: &[u8]) -> Result<SipDialog, TestError> {
         let raw = build_sip(
             "INVITE sip:2002@example.com SIP/2.0",
             &[
@@ -2589,15 +2614,14 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
-        SipDialog::new(&msg).expect("should create dialog")
+        )?;
+        Ok(SipDialog::new(&msg).ok_or("should create dialog")?)
     }
 
     /// Item 1: quoted strings support backslash escapes so the delimiter
@@ -2607,28 +2631,28 @@ mod tests {
     /// tokenizer had no escape mechanism, so a quoted delimiter was
     /// impossible to write.
     #[test]
-    fn escaped_quotes_and_backslash_in_strings() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn escaped_quotes_and_backslash_in_strings() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
 
         // `\'` lets a single-quoted literal contain its own delimiter — the
         // whole point of item 1. The old tokenizer stopped at the first `'`.
-        let f = FilterExpr::parse(r"from.user == 'a\'b'").expect("should parse");
+        let f = FilterExpr::parse(r"from.user == 'a\'b'")?;
         match &f.root {
             Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, "a'b"),
-            other => panic!("expected string compare, got {other:?}"),
+            other => return Err(format!("expected string compare, got {other:?}").into()),
         }
 
         // `\"` likewise inside a double-quoted literal.
-        let f = FilterExpr::parse(r#"to.user == "x\"y""#).expect("should parse");
+        let f = FilterExpr::parse(r#"to.user == "x\"y""#)?;
         match &f.root {
             Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, "x\"y"),
-            other => panic!("expected string compare, got {other:?}"),
+            other => return Err(format!("expected string compare, got {other:?}").into()),
         }
 
         // Regex classes survive: `\d` is kept verbatim, so a 4-digit user
         // matches. The escaped `\'` here proves the delimiter is expressible
         // inside a regex too (matches nothing, but must parse).
-        let f = FilterExpr::parse(r"from.user =~ '^\d\d\d\d$'").expect("should parse");
+        let f = FilterExpr::parse(r"from.user =~ '^\d\d\d\d$'")?;
         assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown())); // from.user == "1001"
 
         // `\\` is preserved as two characters, so the regex engine sees one
@@ -2636,11 +2660,12 @@ mod tests {
         // the TUI filter builder, which emits `\\` for a literal backslash)
         // matching literally rather than turning into an invalid trailing
         // backslash.
-        let f = FilterExpr::parse(r"from.user == 'a\\b'").expect("should parse");
+        let f = FilterExpr::parse(r"from.user == 'a\\b'")?;
         match &f.root {
             Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, r"a\\b"),
-            other => panic!("expected string compare, got {other:?}"),
+            other => return Err(format!("expected string compare, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// Item 4: `payload =~` matches against the raw message bytes, not a
@@ -2649,28 +2674,30 @@ mod tests {
     /// byte is not that character. The old `String::from_utf8_lossy` path
     /// fabricated a match by rewriting `0xFF` to U+FFFD.
     #[test]
-    fn payload_matches_raw_bytes_not_lossy_replacement() {
-        let dialog = make_dialog_with_body(&[0xFF]);
+    fn payload_matches_raw_bytes_not_lossy_replacement() -> Result<(), TestError> {
+        let dialog = make_dialog_with_body(&[0xFF])?;
 
         // U+FFFD is absent from the true bytes → no match.
-        let f = FilterExpr::parse(r"payload =~ '\x{FFFD}'").expect("should parse");
+        let f = FilterExpr::parse(r"payload =~ '\x{FFFD}'")?;
         assert!(!f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
         // ASCII content around the invalid byte still greps fine and never
         // panics on the non-UTF-8 message.
-        let dialog2 = make_dialog_with_body(b"MARK\xffER");
-        let f = FilterExpr::parse("payload =~ 'MARK'").expect("should parse");
+        let dialog2 = make_dialog_with_body(b"MARK\xffER")?;
+        let f = FilterExpr::parse("payload =~ 'MARK'")?;
         assert!(f.matches_dialog(&dialog2, &[], CaptureMedia::Absent, MosDelay::unknown()));
-        let f = FilterExpr::parse("payload == 'nope'").expect("should parse");
+        let f = FilterExpr::parse("payload == 'nope'")?;
         assert!(!f.matches_dialog(&dialog2, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// `from.user ==` rejects a dialog with a different From user.
     #[test]
-    fn from_user_equals_no_match() {
-        let dialog = make_dialog("2002", "1001", "INVITE");
-        let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
+    fn from_user_equals_no_match() -> Result<(), TestError> {
+        let dialog = make_dialog("2002", "1001", "INVITE")?;
+        let filter = FilterExpr::parse("from.user == '1001'")?;
         assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── AND + NOT ───────────────────────────────────────────────────
@@ -2678,32 +2705,34 @@ mod tests {
     /// `AND` combined with `NOT ua =~` matches when the UA does not match
     /// the regex.
     #[test]
-    fn method_and_not_ua_regex() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter =
-            FilterExpr::parse("method == 'INVITE' AND NOT ua =~ 'scanner'").expect("should parse");
+    fn method_and_not_ua_regex() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse("method == 'INVITE' AND NOT ua =~ 'scanner'")?;
         // UA is "TestUA/1.0", does not match 'scanner', so NOT flips to true
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── PDD in seconds ─────────────────────────────────────────────
 
     /// `pdd` compares in seconds: a 4000 ms PDD satisfies `pdd > 3.0`.
     #[test]
-    fn pdd_greater_than() {
+    fn pdd_greater_than() -> Result<(), TestError> {
         // PDD of 4000ms = 4.0 seconds, filter asks > 3.0
-        let dialog = make_dialog_with_timing(4000);
-        let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
+        let dialog = make_dialog_with_timing(4000)?;
+        let filter = FilterExpr::parse("pdd > 3.0")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// A 2000 ms PDD does not satisfy `pdd > 3.0`.
     #[test]
-    fn pdd_not_greater_than() {
+    fn pdd_not_greater_than() -> Result<(), TestError> {
         // PDD of 2000ms = 2.0 seconds, filter asks > 3.0
-        let dialog = make_dialog_with_timing(2000);
-        let filter = FilterExpr::parse("pdd > 3.0").expect("should parse");
+        let dialog = make_dialog_with_timing(2000)?;
+        let filter = FilterExpr::parse("pdd > 3.0")?;
         assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── rtp.orphaned, withdrawn ─────────────────────────────────────
@@ -2722,25 +2751,28 @@ mod tests {
     /// reachable through `--report` and `/v1/streams?orphaned=true`, which
     /// model streams rather than dialogs.
     #[test]
-    fn rtp_orphaned_is_no_longer_a_field() {
+    fn rtp_orphaned_is_no_longer_a_field() -> Result<(), TestError> {
         let err = FilterExpr::parse("rtp.orphaned == true")
-            .expect_err("rtp.orphaned must not parse as a field");
+            .err()
+            .ok_or("rtp.orphaned must not parse as a field")?;
         let msg = err.to_string();
         assert!(
             msg.contains("rtp.orphaned") || msg.contains("field"),
             "the error should name what was rejected, got: {msg}"
         );
+        Ok(())
     }
 
     /// The `problems` alias no longer carries the unsatisfiable disjunct.
     #[test]
-    fn problems_alias_drops_the_unsatisfiable_disjunct() {
-        let expr = expand_alias("problems", &AliasThresholds::default()).expect("alias exists");
+    fn problems_alias_drops_the_unsatisfiable_disjunct() -> Result<(), TestError> {
+        let expr = expand_alias("problems", &AliasThresholds::default()).ok_or("alias exists")?;
         assert!(
             !expr.contains("orphaned"),
             "problems must not include a term that can never be true: {expr}"
         );
-        FilterExpr::parse(&expr).expect("the alias must still parse");
+        FilterExpr::parse(&expr)?;
+        Ok(())
     }
 
     // ── Boolean operator precedence ─────────────────────────────────
@@ -2748,7 +2780,7 @@ mod tests {
     /// Explicit parentheses change the result: `(A OR B) AND C` differs
     /// from `A OR (B AND C)` on the same dialog.
     #[test]
-    fn precedence_or_and() {
+    fn precedence_or_and() -> Result<(), TestError> {
         // (A OR B) AND C  vs  A OR (B AND C)
         // A = from.user == '1001' -> true
         // B = from.user == '9999' -> false
@@ -2757,11 +2789,10 @@ mod tests {
         // (A OR B) AND C = (true OR false) AND false = true AND false = false
         // A OR (B AND C) = true OR (false AND false) = true OR false = true
 
-        let dialog = make_dialog("1001", "2002", "INVITE");
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
 
         let filter_grouped_or =
-            FilterExpr::parse("(from.user == '1001' OR from.user == '9999') AND method == 'BYE'")
-                .expect("should parse");
+            FilterExpr::parse("(from.user == '1001' OR from.user == '9999') AND method == 'BYE'")?;
         assert!(!filter_grouped_or.matches_dialog(
             &dialog,
             &[],
@@ -2770,48 +2801,50 @@ mod tests {
         ));
 
         let filter_grouped_and =
-            FilterExpr::parse("from.user == '1001' OR (from.user == '9999' AND method == 'BYE')")
-                .expect("should parse");
+            FilterExpr::parse("from.user == '1001' OR (from.user == '9999' AND method == 'BYE')")?;
         assert!(filter_grouped_and.matches_dialog(
             &dialog,
             &[],
             CaptureMedia::Absent,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     /// Without parentheses, `AND` binds tighter than `OR`.
     #[test]
-    fn default_precedence_and_binds_tighter() {
+    fn default_precedence_and_binds_tighter() -> Result<(), TestError> {
         // Without parens: A OR B AND C
         // AND binds tighter: A OR (B AND C)
         // A = from.user == '1001' -> true
         // B = from.user == '9999' -> false
         // C = method == 'BYE'     -> false
         // = true OR (false AND false) = true
-        let dialog = make_dialog("1001", "2002", "INVITE");
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         let filter =
-            FilterExpr::parse("from.user == '1001' OR from.user == '9999' AND method == 'BYE'")
-                .expect("should parse");
+            FilterExpr::parse("from.user == '1001' OR from.user == '9999' AND method == 'BYE'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Regex matching ──────────────────────────────────────────────
 
     /// `=~` matches when the field value satisfies the regex.
     #[test]
-    fn regex_match_accepts() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
+    fn regex_match_accepts() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse("from.user =~ '100[0-9]'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// `=~` rejects when the field value does not satisfy the regex.
     #[test]
-    fn regex_match_rejects() {
-        let dialog = make_dialog("2001", "3003", "INVITE");
-        let filter = FilterExpr::parse("from.user =~ '100[0-9]'").expect("should parse");
+    fn regex_match_rejects() -> Result<(), TestError> {
+        let dialog = make_dialog("2001", "3003", "INVITE")?;
+        let filter = FilterExpr::parse("from.user =~ '100[0-9]'")?;
         assert!(!filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Nesting depth limit ─────────────────────────────────────────
@@ -2819,28 +2852,30 @@ mod tests {
     /// Parenthesis nesting past the limit fails to parse with a
     /// nesting-depth error.
     #[test]
-    fn nesting_depth_exceeded() {
+    fn nesting_depth_exceeded() -> Result<(), TestError> {
         let open_parens = "(".repeat(60);
         let close_parens = ")".repeat(60);
         let expr = format!("{open_parens}from.user == '1001'{close_parens}");
         let result = FilterExpr::parse(&expr);
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result.err().ok_or("expected an error, got Ok")?.to_string();
         assert!(
             err_msg.contains("nesting depth"),
             "expected nesting depth error, got: {err_msg}"
         );
+        Ok(())
     }
 
     /// Nesting well within the limit (10 levels) parses fine.
     #[test]
-    fn nesting_within_limit() {
+    fn nesting_within_limit() -> Result<(), TestError> {
         // 10 levels should be fine
         let open_parens = "(".repeat(10);
         let close_parens = ")".repeat(10);
         let expr = format!("{open_parens}from.user == '1001'{close_parens}");
         let result = FilterExpr::parse(&expr);
         assert!(result.is_ok());
+        Ok(())
     }
 
     // ── Parse errors ────────────────────────────────────────────────
@@ -2848,35 +2883,39 @@ mod tests {
     /// An expression ending after the operator (missing value) fails to
     /// parse.
     #[test]
-    fn parse_error_missing_value() {
+    fn parse_error_missing_value() -> Result<(), TestError> {
         let result = FilterExpr::parse("from.user ==");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// An empty expression fails to parse with an "empty" error message.
     #[test]
-    fn parse_error_empty_input() {
+    fn parse_error_empty_input() -> Result<(), TestError> {
         let result = FilterExpr::parse("");
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result.err().ok_or("expected an error, got Ok")?.to_string();
         assert!(
             err_msg.contains("empty"),
             "expected empty error, got: {err_msg}"
         );
+        Ok(())
     }
 
     /// A whitespace-only expression fails to parse.
     #[test]
-    fn parse_error_whitespace_only() {
+    fn parse_error_whitespace_only() -> Result<(), TestError> {
         let result = FilterExpr::parse("   ");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A comparison on an unknown field name fails to parse.
     #[test]
-    fn parse_error_unknown_field() {
+    fn parse_error_unknown_field() -> Result<(), TestError> {
         let result = FilterExpr::parse("bogus_field == '1001'");
         assert!(result.is_err());
+        Ok(())
     }
 
     // ── Rich parse-error rendering ──────────────────────────────────
@@ -2884,9 +2923,10 @@ mod tests {
     /// The rendered parse error echoes the expression with a caret
     /// aligned under the offending token.
     #[test]
-    fn parse_error_shows_expression_with_caret_at_position() {
+    fn parse_error_shows_expression_with_caret_at_position() -> Result<(), TestError> {
         let err = FilterExpr::parse("method == INVITE")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .to_string();
         assert!(
             err.contains("method == INVITE"),
@@ -2896,7 +2936,7 @@ mod tests {
         let caret_line = err
             .lines()
             .find(|l| l.trim_end().ends_with('^'))
-            .unwrap_or_else(|| panic!("error must contain a caret line, got:\n{err}"));
+            .ok_or_else(|| format!("error must contain a caret line, got:\n{err}"))?;
         assert_eq!(
             caret_line.find('^'),
             err.lines()
@@ -2904,14 +2944,16 @@ mod tests {
                 .and_then(|l| l.find("INVITE")),
             "caret must align under the offending token, got:\n{err}"
         );
+        Ok(())
     }
 
     /// An unquoted string value produces a quoting hint showing the
     /// corrected form.
     #[test]
-    fn parse_error_hints_quoting_for_unquoted_value() {
+    fn parse_error_hints_quoting_for_unquoted_value() -> Result<(), TestError> {
         let err = FilterExpr::parse("method == INVITE")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .to_string();
         assert!(
             err.contains("== 'INVITE'"),
@@ -2921,65 +2963,74 @@ mod tests {
             err.to_lowercase().contains("quot"),
             "error must explain that values need quotes, got:\n{err}"
         );
+        Ok(())
     }
 
     /// Every rendered parse error lists the valid operators.
     #[test]
-    fn parse_error_lists_operators() {
+    fn parse_error_lists_operators() -> Result<(), TestError> {
         let err = FilterExpr::parse("from.user @@ 'alice'")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .to_string();
         assert!(
             err.contains("==") && err.contains("=~"),
             "error must list valid operators, got:\n{err}"
         );
+        Ok(())
     }
 
     /// Caret column math counts characters, not bytes, so a multibyte
     /// prefix does not misplace the caret.
     #[test]
-    fn parse_error_caret_correct_with_multibyte_prefix() {
+    fn parse_error_caret_correct_with_multibyte_prefix() -> Result<(), TestError> {
         // 'é' is 2 bytes / 1 column: caret math must use chars, not bytes.
         let err = FilterExpr::parse("from.user == 'é' and method == INVITE")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .to_string();
         let expr_line = err
             .lines()
             .find(|l| l.contains("from.user"))
-            .expect("expression echoed");
+            .ok_or("expression echoed")?;
         let caret_line = err
             .lines()
             .find(|l| l.trim_end().ends_with('^'))
-            .expect("caret line present");
+            .ok_or("caret line present")?;
         let caret_col = caret_line.chars().take_while(|c| *c == ' ').count();
         let invite_col = expr_line
             .find("INVITE")
             .map(|byte_idx| expr_line[..byte_idx].chars().count())
-            .expect("INVITE present in echoed expression");
+            .ok_or("INVITE present in echoed expression")?;
         assert_eq!(
             caret_col, invite_col,
             "caret column must be measured in characters, not bytes, got:\n{err}"
         );
+        Ok(())
     }
 
     /// Very long expressions are windowed around the error position so
     /// the diagnostic lines stay readable, caret included.
     #[test]
-    fn parse_error_long_input_is_windowed_not_panicking() {
+    fn parse_error_long_input_is_windowed_not_panicking() -> Result<(), TestError> {
         let long = format!("from.user == '{}' and method == INVITE", "x".repeat(200));
-        let err = FilterExpr::parse(&long).unwrap_err().to_string();
+        let err = FilterExpr::parse(&long)
+            .err()
+            .ok_or("expected an error, got Ok")?
+            .to_string();
         assert!(
             err.lines().all(|l| l.chars().count() <= 120),
             "long expressions must be windowed around the error, got:\n{err}"
         );
         assert!(err.contains('^'), "caret still present, got:\n{err}");
+        Ok(())
     }
 
     // ── Diagnostic aliases ──────────────────────────────────────────
 
     /// Every documented alias expands to an expression that parses.
     #[test]
-    fn all_aliases_expand_and_parse() {
+    fn all_aliases_expand_and_parse() -> Result<(), TestError> {
         let aliases = [
             "problems",
             "slow-setup",
@@ -2994,20 +3045,22 @@ mod tests {
         ];
         for alias in &aliases {
             let expanded = expand_alias(alias, &AliasThresholds::default())
-                .unwrap_or_else(|| panic!("alias '{alias}' should exist"));
+                .ok_or_else(|| format!("alias '{alias}' should exist"))?;
             let result = FilterExpr::parse(&expanded);
             assert!(
                 result.is_ok(),
                 "alias '{alias}' expanded to '{expanded}' but failed to parse: {:?}",
-                result.unwrap_err()
+                result.err().ok_or("expected an error, got Ok")?
             );
         }
+        Ok(())
     }
 
     /// expand_alias returns None for an unrecognized alias.
     #[test]
-    fn unknown_alias_returns_none() {
+    fn unknown_alias_returns_none() -> Result<(), TestError> {
         assert!(expand_alias("nonexistent", &AliasThresholds::default()).is_none());
+        Ok(())
     }
 
     /// [`DIAGNOSTIC_ALIASES`] and the match arms are ONE vocabulary.
@@ -3018,14 +3071,14 @@ mod tests {
     /// has to catch is an arm added to the match without the list — which the
     /// membership guard turns into an alias that silently never expands.
     #[test]
-    fn the_alias_list_is_exactly_what_expand_alias_matches_on() {
+    fn the_alias_list_is_exactly_what_expand_alias_matches_on() -> Result<(), TestError> {
         const SOURCE: &str = include_str!("dsl.rs");
         let body = SOURCE
             .split_once("let expr = match alias {")
-            .expect("expand_alias still opens with a match on the alias")
+            .ok_or("expand_alias still opens with a match on the alias")?
             .1
             .split_once("_ => return None,")
-            .expect("the match still ends with the catch-all")
+            .ok_or("the match still ends with the catch-all")?
             .0;
 
         let arms: Vec<&str> = body
@@ -3049,6 +3102,7 @@ mod tests {
             DIAGNOSTIC_ALIASES.to_vec(),
             "the published alias list and the match arms have drifted apart"
         );
+        Ok(())
     }
 
     // ── Double-quoted strings ───────────────────────────────────────
@@ -3056,10 +3110,11 @@ mod tests {
     /// Double-quoted string values parse and match like single-quoted
     /// ones.
     #[test]
-    fn double_quoted_string() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter = FilterExpr::parse(r#"from.user == "1001""#).expect("should parse");
+    fn double_quoted_string() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse(r#"from.user == "1001""#)?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── State comparison ────────────────────────────────────────────
@@ -3067,27 +3122,28 @@ mod tests {
     /// `state ==` matches the dialog's current state name and rejects
     /// others.
     #[test]
-    fn state_comparison() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn state_comparison() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         // Initial state for INVITE is Trying
-        let filter = FilterExpr::parse("state == 'Trying'").expect("should parse");
+        let filter = FilterExpr::parse("state == 'Trying'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
-        let filter_fail = FilterExpr::parse("state == 'Failed'").expect("should parse");
+        let filter_fail = FilterExpr::parse("state == 'Failed'")?;
         assert!(!filter_fail.matches_dialog(
             &dialog,
             &[],
             CaptureMedia::Absent,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     // ── Dialog state with Failed ────────────────────────────────────
 
     /// A dialog driven to Failed by a 503 matches `state == 'Failed'`.
     #[test]
-    fn failed_state() {
-        let mut dialog = make_dialog("1001", "2002", "INVITE");
+    fn failed_state() -> Result<(), TestError> {
+        let mut dialog = make_dialog("1001", "2002", "INVITE")?;
         // Drive dialog to Failed via the state machine (503 response to INVITE)
         let raw_503 = build_sip(
             "SIP/2.0 503 Service Unavailable",
@@ -3102,25 +3158,25 @@ mod tests {
         );
         let fail_msg = parse_sip(
             &raw_503,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse 503");
+        )?;
         crate::sip::dialog::update_state(&mut dialog, &fail_msg);
         assert_eq!(*dialog.state(), DialogState::Failed);
-        let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");
+        let filter = FilterExpr::parse("state == 'Failed'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Response code ───────────────────────────────────────────────
 
     /// Build a dialog driven to a final INVITE response.
-    fn make_dialog_with_response(code: u16, reason: &str) -> SipDialog {
-        let mut dialog = make_dialog("1001", "2002", "INVITE");
+    fn make_dialog_with_response(code: u16, reason: &str) -> Result<SipDialog, TestError> {
+        let mut dialog = make_dialog("1001", "2002", "INVITE")?;
         let raw = build_sip(
             &format!("SIP/2.0 {code} {reason}"),
             &[
@@ -3134,19 +3190,18 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("response should parse");
+        )?;
         crate::sip::dialog::update_state(&mut dialog, &msg);
         // `update_state` drives the state machine; it does not store the
         // message, and `final_status_code` reads the stored ones.
         dialog.messages.push(msg);
-        dialog
+        Ok(dialog)
     }
 
     /// `state == 'Failed'` collapses every release cause into one bucket, so
@@ -3154,15 +3209,15 @@ mod tests {
     /// "which cause dominates", and 403, 404, 408, 486, 503 and 603 are six
     /// different answers with six different owners.
     #[test]
-    fn response_code_separates_causes_that_state_collapses() {
-        let busy = make_dialog_with_response(486, "Busy Here");
-        let unavailable = make_dialog_with_response(503, "Service Unavailable");
+    fn response_code_separates_causes_that_state_collapses() -> Result<(), TestError> {
+        let busy = make_dialog_with_response(486, "Busy Here")?;
+        let unavailable = make_dialog_with_response(503, "Service Unavailable")?;
 
         // Both are Failed, which is the whole problem.
         assert_eq!(*busy.state(), DialogState::Failed);
         assert_eq!(*unavailable.state(), DialogState::Failed);
 
-        let is_503 = FilterExpr::parse("response_code == 503").expect("should parse");
+        let is_503 = FilterExpr::parse("response_code == 503")?;
         assert!(
             is_503.matches_dialog(&unavailable, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "503 must match response_code == 503"
@@ -3173,8 +3228,7 @@ mod tests {
         );
 
         // Ranges are the point of a numeric field: 5xx as a class.
-        let server_error =
-            FilterExpr::parse("response_code >= 500 AND response_code < 600").expect("parses");
+        let server_error = FilterExpr::parse("response_code >= 500 AND response_code < 600")?;
         assert!(server_error.matches_dialog(
             &unavailable,
             &[],
@@ -3187,26 +3241,28 @@ mod tests {
             CaptureMedia::Absent,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     /// A call still in progress has no final response, and must not read as
     /// zero -- `response_code < 400` would otherwise sweep up every ringing
     /// call as a success.
     #[test]
-    fn a_dialog_with_no_final_response_matches_no_response_code() {
-        let ringing = make_dialog("1001", "2002", "INVITE");
+    fn a_dialog_with_no_final_response_matches_no_response_code() -> Result<(), TestError> {
+        let ringing = make_dialog("1001", "2002", "INVITE")?;
         assert_eq!(ringing.final_status_code(), None, "no final response yet");
         for expr in [
             "response_code < 400",
             "response_code >= 400",
             "response_code == 0",
         ] {
-            let f = FilterExpr::parse(expr).expect("should parse");
+            let f = FilterExpr::parse(expr)?;
             assert!(
                 !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "{expr} must not match a dialog with no final response"
             );
         }
+        Ok(())
     }
 
     /// The IANA registry groups every response code into six classes, and an
@@ -3214,7 +3270,7 @@ mod tests {
     /// 599". `response_code >= 500 AND response_code < 600` says it, but it
     /// says it as arithmetic, and getting the bound wrong by one is silent.
     #[test]
-    fn response_class_matches_the_iana_class_of_the_final_response() {
+    fn response_class_matches_the_iana_class_of_the_final_response() -> Result<(), TestError> {
         for (code, class) in [
             (200u16, "2xx"),
             (302, "3xx"),
@@ -3222,9 +3278,8 @@ mod tests {
             (503, "5xx"),
             (603, "6xx"),
         ] {
-            let dialog = make_dialog_with_response(code, "Reason");
-            let f =
-                FilterExpr::parse(&format!("response_class == '{class}'")).expect("should parse");
+            let dialog = make_dialog_with_response(code, "Reason")?;
+            let f = FilterExpr::parse(&format!("response_class == '{class}'"))?;
             assert!(
                 f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "{code} is {class}"
@@ -3234,25 +3289,25 @@ mod tests {
                 if other == class {
                     continue;
                 }
-                let g = FilterExpr::parse(&format!("response_class == '{other}'"))
-                    .expect("should parse");
+                let g = FilterExpr::parse(&format!("response_class == '{other}'"))?;
                 assert!(
                     !g.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                     "{code} must not also be {other}"
                 );
             }
         }
+        Ok(())
     }
 
     /// The registry names the classes, and an operator types the name as
     /// readily as the number. Accepting one and not the other would make the
     /// field's own documentation a trap.
     #[test]
-    fn a_response_class_can_be_named_the_way_iana_names_it() {
-        let busy = make_dialog_with_response(486, "Busy Here");
-        let unavailable = make_dialog_with_response(503, "Service Unavailable");
-        let ok = make_dialog_with_response(200, "OK");
-        let gone = make_dialog_with_response(603, "Decline");
+    fn a_response_class_can_be_named_the_way_iana_names_it() -> Result<(), TestError> {
+        let busy = make_dialog_with_response(486, "Busy Here")?;
+        let unavailable = make_dialog_with_response(503, "Service Unavailable")?;
+        let ok = make_dialog_with_response(200, "OK")?;
+        let gone = make_dialog_with_response(603, "Decline")?;
 
         for (dialog, spellings) in [
             (&ok, vec!["2xx", "Successful", "successful"]),
@@ -3264,8 +3319,7 @@ mod tests {
             (&gone, vec!["6xx", "Global Failures", "global failure"]),
         ] {
             for spelling in spellings {
-                let f = FilterExpr::parse(&format!("response_class == '{spelling}'"))
-                    .expect("should parse");
+                let f = FilterExpr::parse(&format!("response_class == '{spelling}'"))?;
                 assert!(
                     f.matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                     "'{spelling}' must name the same class as its number"
@@ -3276,7 +3330,7 @@ mod tests {
         // And `!=` stays honest: a 503 is NOT anything but a server failure,
         // by either spelling. Matching against two forms at once would have
         // made this true.
-        let not_server = FilterExpr::parse("response_class != 'Server Failure'").expect("parses");
+        let not_server = FilterExpr::parse("response_class != 'Server Failure'")?;
         assert!(
             !not_server.matches_dialog(
                 &unavailable,
@@ -3286,38 +3340,39 @@ mod tests {
             ),
             "503 is a server failure, so `!= 'Server Failure'` must be false"
         );
+        Ok(())
     }
 
     /// At a console "failure" means all three failure classes, and a specific
     /// class is how you ask for one. Both have to work, and `!=` has to stay
     /// honest across the union.
     #[test]
-    fn failure_names_all_three_failure_classes_and_a_class_names_one() {
-        let ok = make_dialog_with_response(200, "OK");
-        let busy = make_dialog_with_response(486, "Busy Here");
-        let unavailable = make_dialog_with_response(503, "Service Unavailable");
-        let declined = make_dialog_with_response(603, "Decline");
-        let m = |d: &SipDialog, e: &str| {
-            FilterExpr::parse(e).expect("should parse").matches_dialog(
+    fn failure_names_all_three_failure_classes_and_a_class_names_one() -> Result<(), TestError> {
+        let ok = make_dialog_with_response(200, "OK")?;
+        let busy = make_dialog_with_response(486, "Busy Here")?;
+        let unavailable = make_dialog_with_response(503, "Service Unavailable")?;
+        let declined = make_dialog_with_response(603, "Decline")?;
+        let m = |d: &SipDialog, e: &str| -> Result<_, TestError> {
+            Ok(FilterExpr::parse(e)?.matches_dialog(
                 d,
                 &[],
                 CaptureMedia::Absent,
                 MosDelay::unknown(),
-            )
+            ))
         };
 
         // The union.
         for d in [&busy, &unavailable, &declined] {
             assert!(
-                m(d, "response_class == 'failure'"),
+                m(d, "response_class == 'failure'")?,
                 "4xx/5xx/6xx are failures"
             );
         }
         assert!(
-            !m(&ok, "response_class == 'failure'"),
+            !m(&ok, "response_class == 'failure'")?,
             "200 is not a failure"
         );
-        assert!(m(&ok, "response_class != 'failure'"), "and != says so");
+        assert!(m(&ok, "response_class != 'failure'")?, "and != says so");
 
         // One class at a time still means one class, and the number and the
         // registry's name are interchangeable for EACH of the three -- not
@@ -3328,11 +3383,11 @@ mod tests {
             (&declined, "6xx", "Global Failures", "603"),
         ] {
             assert!(
-                m(dialog, &format!("response_class == '{number}'")),
+                m(dialog, &format!("response_class == '{number}'"))?,
                 "{label} is {number}"
             );
             assert!(
-                m(dialog, &format!("response_class == '{name}'")),
+                m(dialog, &format!("response_class == '{name}'"))?,
                 "{label} is '{name}'"
             );
             // And it is in no OTHER class, by either spelling.
@@ -3345,11 +3400,11 @@ mod tests {
                     continue;
                 }
                 assert!(
-                    !m(dialog, &format!("response_class == '{other_num}'")),
+                    !m(dialog, &format!("response_class == '{other_num}'"))?,
                     "{label} must not be {other_num}"
                 );
                 assert!(
-                    !m(dialog, &format!("response_class == '{other_name}'")),
+                    !m(dialog, &format!("response_class == '{other_name}'"))?,
                     "{label} must not be '{other_name}'"
                 );
             }
@@ -3357,9 +3412,10 @@ mod tests {
 
         // `!=` against a single class does not leak through a second spelling.
         assert!(
-            !m(&unavailable, "response_class != 'Server Failure'"),
+            !m(&unavailable, "response_class != 'Server Failure'")?,
             "503 IS a server failure, so != must be false whichever spelling"
         );
+        Ok(())
     }
 
     /// A dialog is never `1xx`, and that is not an omission.
@@ -3369,8 +3425,8 @@ mod tests {
     /// yet, so it has no class, the same as a call that has heard nothing.
     /// Anyone reaching for `response_class == '1xx'` wants `state`.
     #[test]
-    fn a_ringing_call_is_in_no_class_rather_than_in_1xx() {
-        let mut ringing = make_dialog("1001", "2002", "INVITE");
+    fn a_ringing_call_is_in_no_class_rather_than_in_1xx() -> Result<(), TestError> {
+        let mut ringing = make_dialog("1001", "2002", "INVITE")?;
         let raw = build_sip(
             "SIP/2.0 183 Session Progress",
             &[
@@ -3384,14 +3440,13 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("183 should parse");
+        )?;
         crate::sip::dialog::update_state(&mut ringing, &msg);
         ringing.messages.push(msg);
 
@@ -3400,24 +3455,26 @@ mod tests {
             None,
             "a provisional response is not an outcome"
         );
-        let f = FilterExpr::parse("response_class == '1xx'").expect("parses");
+        let f = FilterExpr::parse("response_class == '1xx'")?;
         assert!(
             !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "183 gives no class, because it is not final"
         );
+        Ok(())
     }
 
     /// A call with no final response has no class, exactly as it has no code.
     #[test]
-    fn a_dialog_with_no_final_response_has_no_response_class() {
-        let ringing = make_dialog("1001", "2002", "INVITE");
+    fn a_dialog_with_no_final_response_has_no_response_class() -> Result<(), TestError> {
+        let ringing = make_dialog("1001", "2002", "INVITE")?;
         for class in ["1xx", "4xx", "5xx"] {
-            let f = FilterExpr::parse(&format!("response_class == '{class}'")).expect("parses");
+            let f = FilterExpr::parse(&format!("response_class == '{class}'"))?;
             assert!(
                 !f.matches_dialog(&ringing, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "an in-progress call is in no class, not in {class}"
             );
         }
+        Ok(())
     }
 
     // ── Complex compound expression ─────────────────────────────────
@@ -3425,92 +3482,97 @@ mod tests {
     /// A compound expression mixing AND, parentheses, and OR evaluates
     /// correctly.
     #[test]
-    fn complex_compound_expr() {
-        let dialog = make_dialog_with_timing(4000);
-        let filter = FilterExpr::parse("from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')")
-            .expect("should parse");
+    fn complex_compound_expr() -> Result<(), TestError> {
+        let dialog = make_dialog_with_timing(4000)?;
+        let filter = FilterExpr::parse("from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Msg count ───────────────────────────────────────────────────
 
     /// `msg_count` reflects the number of stored messages.
     #[test]
-    fn msg_count() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn msg_count() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         // Dialog has exactly 1 message (the initial INVITE)
-        let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
+        let filter = FilterExpr::parse("msg_count == 1")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
 
-        let filter_more = FilterExpr::parse("msg_count > 5").expect("should parse");
+        let filter_more = FilterExpr::parse("msg_count > 5")?;
         assert!(!filter_more.matches_dialog(
             &dialog,
             &[],
             CaptureMedia::Absent,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     // ── RTP packets count ───────────────────────────────────────────
 
     /// `rtp.packets` sums packet counts across associated streams.
     #[test]
-    fn rtp_packets_count() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let stream = make_rtp_stream(false);
+    fn rtp_packets_count() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let stream = make_rtp_stream(false)?;
         let streams: Vec<&RtpStream> = vec![&stream];
         // Stream has 1 packet from construction
-        let filter = FilterExpr::parse("rtp.packets >= 1").expect("should parse");
+        let filter = FilterExpr::parse("rtp.packets >= 1")?;
         assert!(filter.matches_dialog(
             &dialog,
             &streams,
             CaptureMedia::Observed,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     // ── Retransmits ─────────────────────────────────────────────────
 
     /// `retransmits` compares against the dialog's total retransmit count.
     #[test]
-    fn retransmits_comparison() {
-        let mut dialog = make_dialog("1001", "2002", "INVITE");
+    fn retransmits_comparison() -> Result<(), TestError> {
+        let mut dialog = make_dialog("1001", "2002", "INVITE")?;
         dialog
             .timing
             .retransmit_counts
             .insert("1 INVITE".to_string(), 5);
-        let filter = FilterExpr::parse("retransmits > 3").expect("should parse");
+        let filter = FilterExpr::parse("retransmits > 3")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Not-equal operator ──────────────────────────────────────────
 
     /// `!=` matches when the field value differs from the literal.
     #[test]
-    fn not_equal_operator() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter = FilterExpr::parse("method != 'BYE'").expect("should parse");
+    fn not_equal_operator() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse("method != 'BYE'")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── Integer numeric values ──────────────────────────────────────
 
     /// Integer literals (no decimal point) parse as numbers.
     #[test]
-    fn integer_numeric_value() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
+    fn integer_numeric_value() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let filter = FilterExpr::parse("msg_count == 1")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── expand_alias: every alias maps to its documented expression ─────
 
     /// Each alias expands to exactly its documented DSL expression.
     #[test]
-    fn expand_alias_returns_exact_expansions() {
+    fn expand_alias_returns_exact_expansions() -> Result<(), TestError> {
         assert!(
             expand_alias("problems", &AliasThresholds::default())
-                .unwrap()
+                .ok_or("expand_alias() returned None")?
                 .contains("state == 'Failed'")
         );
         // 11.0, not the 3.0 this asserted before: `slow-setup` now reads the
@@ -3562,6 +3624,7 @@ mod tests {
             expand_alias("late-media", &AliasThresholds::default()).as_deref(),
             Some("late_media == true")
         );
+        Ok(())
     }
 
     /// Tuning a threshold changes which calls an alias SELECTS.
@@ -3571,7 +3634,7 @@ mod tests {
     /// this closes was that tuning `[diagnosis]` to an SLA left the filter
     /// selecting on figures nobody chose, so what must move is the answer.
     #[test]
-    fn tuning_a_threshold_changes_which_calls_an_alias_selects() {
+    fn tuning_a_threshold_changes_which_calls_an_alias_selects() -> Result<(), TestError> {
         let shipped = AliasThresholds::default();
 
         // A post-dial delay between the tuned and the shipped threshold: not a
@@ -3583,20 +3646,23 @@ mod tests {
             "the fixture must start BELOW the shipped threshold, or this proves nothing"
         );
 
-        let by_shipped = FilterExpr::parse(&expand_alias("problems", &shipped).unwrap())
-            .expect("the shipped expansion must parse");
+        let by_shipped = FilterExpr::parse(
+            &expand_alias("problems", &shipped).ok_or("expand_alias() returned None")?,
+        )?;
 
         let tuned = AliasThresholds {
             pdd_secs: 3.0,
             ..shipped
         };
-        let by_tuned = FilterExpr::parse(&expand_alias("problems", &tuned).unwrap())
-            .expect("the tuned expansion must parse");
+        let by_tuned = FilterExpr::parse(
+            &expand_alias("problems", &tuned).ok_or("expand_alias() returned None")?,
+        )?;
 
         // Compare the compiled PDD term directly: the shipped set must not
         // select this call and the tuned set must.
-        let shipped_expr = expand_alias("problems", &shipped).unwrap();
-        let tuned_expr = expand_alias("problems", &tuned).unwrap();
+        let shipped_expr =
+            expand_alias("problems", &shipped).ok_or("expand_alias() returned None")?;
+        let tuned_expr = expand_alias("problems", &tuned).ok_or("expand_alias() returned None")?;
         assert!(
             shipped_expr.contains(&format!("pdd > {}", dsl_num(shipped.pdd_secs))),
             "the shipped expansion must carry the shipped threshold: {shipped_expr}"
@@ -3613,6 +3679,7 @@ mod tests {
         // Both must remain valid DSL — a threshold that produces an
         // unparseable filter would fail closed and select nothing at all.
         drop((by_shipped, by_tuned));
+        Ok(())
     }
 
     /// Every alias number is sourced from a threshold that is already tunable.
@@ -3621,7 +3688,7 @@ mod tests {
     /// literal that only lives here, because that is precisely how
     /// `--problems` came to disagree with the diagnosis it reports.
     #[test]
-    fn every_alias_threshold_is_sourced_from_a_tunable_setting() {
+    fn every_alias_threshold_is_sourced_from_a_tunable_setting() -> Result<(), TestError> {
         let t = AliasThresholds::default();
         let bands = crate::rtp::bands::QualityBands::default();
         assert_eq!(
@@ -3634,40 +3701,47 @@ mod tests {
             t.short_call_secs,
             crate::security::fraud_detect::FraudThresholds::BUILT_IN.short_call_secs as f64
         );
+        Ok(())
     }
 
     /// Alias matching is exact and case-sensitive; near-misses return
     /// None.
     #[test]
-    fn expand_alias_empty_and_case_sensitive_are_none() {
+    fn expand_alias_empty_and_case_sensitive_are_none() -> Result<(), TestError> {
         // Alias matching is exact and case-sensitive.
         assert!(expand_alias("", &AliasThresholds::default()).is_none());
         assert!(expand_alias("Problems", &AliasThresholds::default()).is_none());
         assert!(expand_alias("PROBLEMS", &AliasThresholds::default()).is_none());
         assert!(expand_alias("slow_setup", &AliasThresholds::default()).is_none());
+        Ok(())
     }
 
     // ── check_nesting_depth: boundary behavior ─────────────────────────
 
     /// Exactly 50 nested parens passes the depth check; 51 fails it.
     #[test]
-    fn nesting_depth_exactly_at_limit_ok() {
+    fn nesting_depth_exactly_at_limit_ok() -> Result<(), TestError> {
         // Exactly MAX_NESTING_DEPTH (50) open parens is allowed; 51 is not.
         let expr = format!("{}from.user == '1001'{}", "(".repeat(50), ")".repeat(50));
         // Nesting-depth check itself passes (no "nesting depth" error).
         assert!(check_nesting_depth(&expr).is_ok());
 
         let too_deep = format!("{}from.user == '1001'{}", "(".repeat(51), ")".repeat(51));
-        let err = check_nesting_depth(&too_deep).unwrap_err().to_string();
+        let err = check_nesting_depth(&too_deep)
+            .err()
+            .ok_or("expected an error, got Ok")?
+            .to_string();
         assert!(err.contains("nesting depth"), "got: {err}");
+        Ok(())
     }
 
     /// Leading close-parens saturate the depth at zero instead of
     /// underflowing.
     #[test]
-    fn nesting_depth_unbalanced_close_parens_saturates() {
+    fn nesting_depth_unbalanced_close_parens_saturates() -> Result<(), TestError> {
         // Leading ')' must not underflow; depth saturates at 0.
         assert!(check_nesting_depth(")))(((").is_ok());
+        Ok(())
     }
 
     // ── MAX_EXPRESSION_NODES: the figures it is justified against ──────
@@ -3679,16 +3753,20 @@ mod tests {
     /// something, and if any of them grows past what the constant claims,
     /// this fails and the claim gets re-argued instead of quietly rotting.
     #[test]
-    fn node_counts_the_cap_is_justified_against() {
+    fn node_counts_the_cap_is_justified_against() -> Result<(), TestError> {
         /// Count the nodes in an expression that must parse.
-        fn nodes(expr: &str) -> usize {
-            let parsed = FilterExpr::parse(expr).unwrap_or_else(|e| panic!("{expr:?}: {e}"));
-            count_nodes(&parsed.root)
+        fn nodes(expr: &str) -> Result<usize, TestError> {
+            let parsed = FilterExpr::parse(expr).map_err(|e| format!("{expr:?}: {e}"))?;
+            Ok(count_nodes(&parsed.root))
         }
 
         let t = AliasThresholds::default();
-        let problems = expand_alias("problems", &t).expect("problems is an alias");
-        assert_eq!(nodes(&problems), 23, "--problems, the biggest single alias");
+        let problems = expand_alias("problems", &t).ok_or("problems is an alias")?;
+        assert_eq!(
+            nodes(&problems)?,
+            23,
+            "--problems, the biggest single alias"
+        );
 
         // Every diagnostic alias flag at once, joined the way
         // `app::bootstrap::build_filter_expr` joins them: the widest
@@ -3704,7 +3782,7 @@ mod tests {
         .map(|a| format!("({})", expand_alias(a, &t).unwrap_or_default()))
         .collect::<Vec<_>>()
         .join(" OR ");
-        assert_eq!(nodes(&all_flags), 33, "every alias flag at once");
+        assert_eq!(nodes(&all_flags)?, 33, "every alias flag at once");
 
         // The widest the TUI filter dialog can build: five text fields ANDed
         // with nine of the ten method checkboxes ORed (all ten emits no
@@ -3729,30 +3807,31 @@ mod tests {
              AND payload =~ 'e' AND ({methods})"
         );
         assert_eq!(
-            nodes(&dialog_max),
+            nodes(&dialog_max)?,
             27,
             "the TUI filter dialog at its widest"
         );
 
         // The largest filter written out in the user-facing documentation.
         assert_eq!(
-            nodes("dst.ip == '198.51.100.100' AND state == 'Failed' AND method == 'INVITE'"),
+            nodes("dst.ip == '198.51.100.100' AND state == 'Failed' AND method == 'INVITE'")?,
             5,
             "the biggest hand-written filter in docs/"
         );
 
         // And all of them together are still a small fraction of the cap.
         assert!(
-            nodes(&all_flags) * 30 < MAX_EXPRESSION_NODES,
+            nodes(&all_flags)? * 30 < MAX_EXPRESSION_NODES,
             "the cap must stay at least 30x the widest expression sipnab builds"
         );
+        Ok(())
     }
 
     /// A flat chain past the cap is refused, and the refusal names both the
     /// limit and the size — the guard `check_nesting_depth` cannot see,
     /// because a chain nests no parentheses.
     #[test]
-    fn flat_chain_past_the_node_cap_is_refused_with_both_figures() {
+    fn flat_chain_past_the_node_cap_is_refused_with_both_figures() -> Result<(), TestError> {
         let chain = vec!["state == 'Completed'"; 513].join(" OR ");
         assert!(check_nesting_depth(&chain).is_ok(), "no parens to count");
         let err = FilterExpr::parse(&chain)
@@ -3761,26 +3840,27 @@ mod tests {
             .unwrap_or_else(|| "accepted".to_string());
         assert!(err.contains("1024"), "must name the limit: {err}");
         assert!(err.contains("1025"), "must name the size: {err}");
+        Ok(())
     }
 
     /// `count_nodes` agrees with the shape it is counting.
     #[test]
-    fn count_nodes_counts_every_node_kind() {
-        let one = FilterExpr::parse("state == 'Failed'").expect("parses");
+    fn count_nodes_counts_every_node_kind() -> Result<(), TestError> {
+        let one = FilterExpr::parse("state == 'Failed'")?;
         assert_eq!(count_nodes(&one.root), 1);
 
-        let not = FilterExpr::parse("NOT state == 'Failed'").expect("parses");
+        let not = FilterExpr::parse("NOT state == 'Failed'")?;
         assert_eq!(count_nodes(&not.root), 2);
 
-        let mixed = FilterExpr::parse("state == 'Failed' AND (pdd > 1.0 OR NOT one_way == true)")
-            .expect("parses");
+        let mixed = FilterExpr::parse("state == 'Failed' AND (pdd > 1.0 OR NOT one_way == true)")?;
         // 3 leaves + Not + Or + And.
         assert_eq!(count_nodes(&mixed.root), 6);
 
         // Parentheses add no node: the two spellings count the same.
-        let bare = FilterExpr::parse("state == 'Failed' AND pdd > 1.0").expect("parses");
-        let parens = FilterExpr::parse("(state == 'Failed') AND ((pdd > 1.0))").expect("parses");
+        let bare = FilterExpr::parse("state == 'Failed' AND pdd > 1.0")?;
+        let parens = FilterExpr::parse("(state == 'Failed') AND ((pdd > 1.0))")?;
         assert_eq!(count_nodes(&bare.root), count_nodes(&parens.root));
+        Ok(())
     }
 
     /// Freeing a chain far past the point the recursive drop glue died on
@@ -3790,13 +3870,14 @@ mod tests {
     /// only thing under test — and out of allocation-free leaves, so what the
     /// test costs is the tree's shape rather than 60,000 heap strings.
     #[test]
-    fn dropping_a_deep_tree_does_not_recurse() {
+    fn dropping_a_deep_tree_does_not_recurse() -> Result<(), TestError> {
         let mut root = placeholder_leaf();
         for _ in 0..60_000 {
             root = Expr::Or(Box::new(root), Box::new(placeholder_leaf()));
         }
         assert_eq!(count_nodes(&root), 120_001);
         drop(root);
+        Ok(())
     }
 
     // ── render_parse_error: direct unit coverage ────────────────────────
@@ -3804,7 +3885,7 @@ mod tests {
     /// render_parse_error emits the headline, echoed expression, caret,
     /// operator list, and docs pointer.
     #[test]
-    fn render_parse_error_basic_caret_and_footer() {
+    fn render_parse_error_basic_caret_and_footer() -> Result<(), TestError> {
         let expr = "from.user == 'x'";
         let out = render_parse_error(expr, 0, "unexpected input");
         assert!(out.starts_with("unexpected input at position 0"));
@@ -3812,136 +3893,148 @@ mod tests {
         assert!(out.contains('^'));
         assert!(out.contains("valid operators:"));
         assert!(out.contains("docs/filter-dsl.md"));
+        Ok(())
     }
 
     /// A position at end-of-string yields no offending token, so the
     /// ": '...'" suffix is omitted.
     #[test]
-    fn render_parse_error_empty_offending_omits_token() {
+    fn render_parse_error_empty_offending_omits_token() -> Result<(), TestError> {
         // pos at end-of-string => no offending token => no ": '...'" suffix.
         let expr = "from.user == 'x'";
         let out = render_parse_error(expr, expr.len(), "unexpected trailing input");
-        let header = out.lines().next().unwrap();
+        let header = out.lines().next().ok_or("next() returned None")?;
         assert!(header.ends_with("position 16"), "got: {header}");
         assert!(!header.contains(": '"), "got: {header}");
+        Ok(())
     }
 
     /// Keyword values like `true` after an operator do not trigger the
     /// quoting hint.
     #[test]
-    fn render_parse_error_no_quote_hint_for_keyword_value() {
+    fn render_parse_error_no_quote_hint_for_keyword_value() -> Result<(), TestError> {
         // "true" after an operator is a valid boolean, so no quoting hint.
         let out = render_parse_error("one_way == true", 11, "x");
         assert!(!out.contains("must be quoted"), "got: {out}");
+        Ok(())
     }
 
     /// Uppercase keyword values like `TRUE` after an operator do not trigger
     /// the quoting hint — the parser matches booleans/`AND`/`OR`
     /// case-insensitively, so the hint exclusion must be case-insensitive too.
     #[test]
-    fn render_parse_error_no_quote_hint_for_uppercase_keyword() {
+    fn render_parse_error_no_quote_hint_for_uppercase_keyword() -> Result<(), TestError> {
         // `TRUE` parses as a boolean literal (tag_no_case), so a "quote this"
         // hint would be misleading.
         let out = render_parse_error("method == TRUE", 10, "x");
         assert!(!out.contains("must be quoted"), "got: {out}");
+        Ok(())
     }
 
     /// An out-of-range error position is clamped to the input length
     /// instead of panicking.
     #[test]
-    fn render_parse_error_pos_past_end_is_clamped() {
+    fn render_parse_error_pos_past_end_is_clamped() -> Result<(), TestError> {
         // An out-of-range position must not panic; it is clamped to len.
         let expr = "method == 'X'";
         let out = render_parse_error(expr, 9999, "boom");
         assert!(out.contains("boom at position"));
+        Ok(())
     }
 
     // ── parse_value / parse_operator error arms via FilterExpr::parse ───
 
     /// A string literal with no closing quote fails to parse.
     #[test]
-    fn parse_unterminated_string_errors() {
+    fn parse_unterminated_string_errors() -> Result<(), TestError> {
         // Missing closing quote hits the ErrorKind::Char failure arm.
         let result = FilterExpr::parse("from.user == 'unterminated");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// An `=~` value that fails regex compilation fails to parse.
     #[test]
-    fn parse_invalid_regex_errors() {
+    fn parse_invalid_regex_errors() -> Result<(), TestError> {
         // An unbalanced group fails RegexBuilder::build -> Verify failure arm.
         let result = FilterExpr::parse("from.user =~ '(unclosed'");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A bare unquoted word where a number or string is expected fails to
     /// parse.
     #[test]
-    fn parse_non_numeric_value_for_number_errors() {
+    fn parse_non_numeric_value_for_number_errors() -> Result<(), TestError> {
         // A bare unquoted word where a number/string is expected.
         let result = FilterExpr::parse("msg_count == abc");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// An unknown operator token fails to parse.
     #[test]
-    fn parse_unknown_operator_errors() {
+    fn parse_unknown_operator_errors() -> Result<(), TestError> {
         let result = FilterExpr::parse("from.user ?? '1001'");
         assert!(result.is_err());
+        Ok(())
     }
 
     /// Unparsed trailing input after a valid expression fails with a
     /// "trailing" error.
     #[test]
-    fn parse_trailing_input_errors() {
+    fn parse_trailing_input_errors() -> Result<(), TestError> {
         let result = FilterExpr::parse("from.user == '1001' garbage");
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = result.err().ok_or("expected an error, got Ok")?.to_string();
         assert!(err.contains("trailing"), "got: {err}");
+        Ok(())
     }
 
     /// The `false` boolean literal parses and evaluates correctly.
     #[test]
-    fn parse_false_boolean_literal() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn parse_false_boolean_literal() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
         // one_way is false with no streams, so == false matches.
-        let filter = FilterExpr::parse("one_way == false").expect("should parse");
+        let filter = FilterExpr::parse("one_way == false")?;
         assert!(filter.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// A partial method selection (OR of method equalities) hides dialogs
     /// whose method is not listed and shows those that are.
     #[test]
-    fn partial_method_filter_excludes_unlisted_method() {
+    fn partial_method_filter_excludes_unlisted_method() -> Result<(), TestError> {
         // C1: a dialog whose initial method is not one of the filter checkboxes
         // (e.g. BYE) must be HIDDEN by a partial method selection — only the
         // explicitly-checked methods are shown. (All-checked yields no filter at
         // the dialog layer, so such dialogs are shown then.)
-        let bye = make_dialog("1001", "2002", "BYE");
-        let partial = FilterExpr::parse("(method == 'REGISTER' OR method == 'INVITE')")
-            .expect("should parse");
+        let bye = make_dialog("1001", "2002", "BYE")?;
+        let partial = FilterExpr::parse("(method == 'REGISTER' OR method == 'INVITE')")?;
         assert!(
             !partial.matches_dialog(&bye, &[], CaptureMedia::Absent, MosDelay::unknown()),
             "a partial method selection must not match an unlisted-method dialog"
         );
         // And it does match a dialog whose method IS in the selection.
-        let invite = make_dialog("1001", "2002", "INVITE");
+        let invite = make_dialog("1001", "2002", "INVITE")?;
         assert!(partial.matches_dialog(&invite, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// FilterExpr::never() rejects every dialog regardless of method.
     #[test]
-    fn never_matches_no_dialog() {
+    fn never_matches_no_dialog() -> Result<(), TestError> {
         // `FilterExpr::never()` represents "show nothing" — it must reject every
         // dialog regardless of method, users, or RTP state.
         let never = FilterExpr::never();
         for method in ["INVITE", "REGISTER", "BYE", "OPTIONS"] {
-            let dialog = make_dialog("1001", "2002", method);
+            let dialog = make_dialog("1001", "2002", method)?;
             assert!(
                 !never.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()),
                 "never() must not match a {method} dialog"
             );
         }
+        Ok(())
     }
 
     // ── compare_str: every operator + type mismatch ─────────────────────
@@ -3949,7 +4042,7 @@ mod tests {
     /// compare_str handles every operator, including lexicographic
     /// ordering and regex matching.
     #[test]
-    fn compare_str_all_operators() {
+    fn compare_str_all_operators() -> Result<(), TestError> {
         assert!(compare_str("b", &Operator::Eq, &Value::Str("b".into())));
         assert!(!compare_str("b", &Operator::Eq, &Value::Str("a".into())));
         assert!(compare_str("b", &Operator::Ne, &Value::Str("a".into())));
@@ -3957,19 +4050,21 @@ mod tests {
         assert!(compare_str("b", &Operator::Gt, &Value::Str("a".into())));
         assert!(compare_str("a", &Operator::Le, &Value::Str("a".into())));
         assert!(compare_str("b", &Operator::Ge, &Value::Str("b".into())));
-        let re = regex::Regex::new("^b").unwrap();
+        let re = regex::Regex::new("^b")?;
         assert!(compare_str("bee", &Operator::Regex, &Value::Re(re)));
+        Ok(())
     }
 
     /// compare_str returns false for non-string literals and for `=~`
     /// without a compiled regex.
     #[test]
-    fn compare_str_type_mismatch_is_false() {
+    fn compare_str_type_mismatch_is_false() -> Result<(), TestError> {
         // String field compared against a numeric/bool literal => false.
         assert!(!compare_str("b", &Operator::Eq, &Value::Num(1.0)));
         assert!(!compare_str("b", &Operator::Eq, &Value::Bool(true)));
         // Regex operator without a compiled regex value => false.
         assert!(!compare_str("b", &Operator::Regex, &Value::Str("b".into())));
+        Ok(())
     }
 
     // ── compare_num: every operator + type mismatch ─────────────────────
@@ -3977,7 +4072,7 @@ mod tests {
     /// compare_num handles every ordering operator; regex is never
     /// applicable to numbers.
     #[test]
-    fn compare_num_all_operators() {
+    fn compare_num_all_operators() -> Result<(), TestError> {
         assert!(compare_num(3.0, &Operator::Eq, &Value::Num(3.0)));
         assert!(!compare_num(3.0, &Operator::Eq, &Value::Num(4.0)));
         assert!(compare_num(3.0, &Operator::Ne, &Value::Num(4.0)));
@@ -3987,6 +4082,7 @@ mod tests {
         assert!(compare_num(3.0, &Operator::Ge, &Value::Num(3.0)));
         // Regex is never applicable to numbers.
         assert!(!compare_num(3.0, &Operator::Regex, &Value::Num(3.0)));
+        Ok(())
     }
 
     /// The ordering operators agree with equality on the tolerance boundary. A
@@ -3994,7 +4090,7 @@ mod tests {
     /// hold while `<` and `>` do not — the exact-comparison ordering made a
     /// value read as both `== 30` and `> 30`.
     #[test]
-    fn compare_num_ordering_agrees_with_equality_at_the_boundary() {
+    fn compare_num_ordering_agrees_with_equality_at_the_boundary() -> Result<(), TestError> {
         let v = 30.000_4; // within 5e-4 of 30
         assert!(compare_num(v, &Operator::Eq, &Value::Num(30.0)));
         assert!(compare_num(v, &Operator::Le, &Value::Num(30.0)));
@@ -4004,49 +4100,53 @@ mod tests {
         // A clearly larger value still orders correctly.
         assert!(compare_num(35.0, &Operator::Gt, &Value::Num(30.0)));
         assert!(!compare_num(35.0, &Operator::Le, &Value::Num(30.0)));
+        Ok(())
     }
 
     /// A non-finite numeric literal (`nan`, `inf`, `infinity`) is rejected at
     /// parse rather than silently matching nothing (every comparison against
     /// NaN is false) or everything.
     #[test]
-    fn a_non_finite_numeric_literal_is_rejected() {
+    fn a_non_finite_numeric_literal_is_rejected() -> Result<(), TestError> {
         assert!(FilterExpr::parse("msg_count == nan").is_err());
         assert!(FilterExpr::parse("rtp.mos > inf").is_err());
         assert!(FilterExpr::parse("rtp.loss < infinity").is_err());
         // A finite number still parses.
         assert!(FilterExpr::parse("msg_count == 5").is_ok());
+        Ok(())
     }
 
     /// compare_num returns false for non-numeric literals.
     #[test]
-    fn compare_num_type_mismatch_is_false() {
+    fn compare_num_type_mismatch_is_false() -> Result<(), TestError> {
         assert!(!compare_num(3.0, &Operator::Eq, &Value::Str("3".into())));
         assert!(!compare_num(3.0, &Operator::Lt, &Value::Bool(false)));
+        Ok(())
     }
 
     /// Equality tolerates float-computation noise (a computed 5.0000001
     /// equals a literal 5) but still rejects genuinely different values;
     /// `!=` mirrors `==` exactly.
     #[test]
-    fn compare_num_eq_tolerates_computed_float_noise() {
+    fn compare_num_eq_tolerates_computed_float_noise() -> Result<(), TestError> {
         assert!(compare_num(5.000_000_1, &Operator::Eq, &Value::Num(5.0)));
         assert!(!compare_num(5.000_000_1, &Operator::Ne, &Value::Num(5.0)));
         assert!(!compare_num(5.6, &Operator::Eq, &Value::Num(5.0)));
         assert!(compare_num(5.6, &Operator::Ne, &Value::Num(5.0)));
         // Adjacent millisecond-domain values stay distinct.
         assert!(!compare_num(5.001, &Operator::Eq, &Value::Num(5.0)));
+        Ok(())
     }
 
     /// `rtp.jitter == 30` matches a stream whose computed jitter carries
     /// float noise (30 + 1e-7) — end-to-end through eval_compare.
     #[test]
-    fn rtp_jitter_eq_matches_computed_float() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let mut stream = make_rtp_stream(false);
+    fn rtp_jitter_eq_matches_computed_float() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
         stream.jitter = 30.0 + 1e-7;
         let streams: Vec<&RtpStream> = vec![&stream];
-        let f = FilterExpr::parse("rtp.jitter == 30").expect("parse");
+        let f = FilterExpr::parse("rtp.jitter == 30")?;
         assert!(f.matches_dialog(
             &dialog,
             &streams,
@@ -4061,6 +4161,7 @@ mod tests {
             CaptureMedia::Observed,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     // ── src.port/dst.port: stable across idle compaction ────────────────
@@ -4070,7 +4171,7 @@ mod tests {
     /// evaluate to the initial message's ports — not the ports of whatever
     /// message happens to be first now (a response has them swapped).
     #[test]
-    fn src_dst_port_stable_after_compaction() {
+    fn src_dst_port_stable_after_compaction() -> Result<(), TestError> {
         let invite = build_sip(
             "INVITE sip:2002@example.com SIP/2.0",
             &[
@@ -4084,15 +4185,14 @@ mod tests {
         );
         let msg = parse_sip(
             &invite,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5080,
             TransportProto::Udp,
-        )
-        .expect("should parse");
-        let mut dialog = SipDialog::new(&msg).expect("should create dialog");
+        )?;
+        let mut dialog = SipDialog::new(&msg).ok_or("should create dialog")?;
 
         // 200 OK travels the reverse direction: ports swapped.
         let ok = build_sip(
@@ -4108,23 +4208,23 @@ mod tests {
         );
         let reply = parse_sip(
             &ok,
-            base_ts() + TimeDelta::seconds(1),
+            base_ts()? + TimeDelta::seconds(1),
             localhost(),
             localhost(),
             5080,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
+        )?;
         dialog.messages.push(reply);
 
         // Simulate DialogStore::compact_idle evicting the oldest message.
         dialog.messages.drain(..1);
 
-        let src = FilterExpr::parse("src.port == 5060").expect("parse");
-        let dst = FilterExpr::parse("dst.port == 5080").expect("parse");
+        let src = FilterExpr::parse("src.port == 5060")?;
+        let dst = FilterExpr::parse("dst.port == 5080")?;
         assert!(src.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
         assert!(dst.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     // ── compare_bool: operators + type mismatch ─────────────────────────
@@ -4132,7 +4232,7 @@ mod tests {
     /// compare_bool supports only ==/!=; ordering and regex operators
     /// return false.
     #[test]
-    fn compare_bool_eq_ne_and_unsupported_operators() {
+    fn compare_bool_eq_ne_and_unsupported_operators() -> Result<(), TestError> {
         assert!(compare_bool(true, &Operator::Eq, &Value::Bool(true)));
         assert!(!compare_bool(true, &Operator::Eq, &Value::Bool(false)));
         assert!(compare_bool(true, &Operator::Ne, &Value::Bool(false)));
@@ -4142,24 +4242,26 @@ mod tests {
         assert!(!compare_bool(true, &Operator::Le, &Value::Bool(false)));
         assert!(!compare_bool(true, &Operator::Ge, &Value::Bool(false)));
         assert!(!compare_bool(true, &Operator::Regex, &Value::Bool(true)));
+        Ok(())
     }
 
     /// compare_bool returns false for non-boolean literals.
     #[test]
-    fn compare_bool_type_mismatch_is_false() {
+    fn compare_bool_type_mismatch_is_false() -> Result<(), TestError> {
         assert!(!compare_bool(true, &Operator::Eq, &Value::Num(1.0)));
         assert!(!compare_bool(
             true,
             &Operator::Eq,
             &Value::Str("true".into())
         ));
+        Ok(())
     }
 
     // ── state_to_str: all DialogState variants ──────────────────────────
 
     /// state_to_str maps every DialogState variant to its expected name.
     #[test]
-    fn state_to_str_covers_all_variants() {
+    fn state_to_str_covers_all_variants() -> Result<(), TestError> {
         let cases = [
             (DialogState::Trying, "Trying"),
             (DialogState::Ringing, "Ringing"),
@@ -4177,53 +4279,58 @@ mod tests {
         for (state, expected) in cases {
             assert_eq!(state_to_str(&state), expected);
         }
+        Ok(())
     }
 
     // ── approximate_mos ─────────────────────────────────────────────────
 
     /// A clean stream (no loss, no jitter) scores a MOS in the ~4.4 range.
     #[test]
-    fn approximate_mos_clean_stream_is_high() {
+    fn approximate_mos_clean_stream_is_high() -> Result<(), TestError> {
         // No loss, no jitter => R near 93 => MOS in the ~4.4 range.
-        let stream = make_rtp_stream(false);
+        let stream = make_rtp_stream(false)?;
         let mos = stream_mos(&stream, MosDelay::unknown());
         assert!(mos > 4.0 && mos <= 4.5, "got {mos}");
+        Ok(())
     }
 
     /// Heavy jitter and loss lower the MOS below a clean stream's, but
     /// never below the 1.0 floor.
     #[test]
-    fn approximate_mos_degrades_with_jitter_and_loss() {
-        let mut stream = make_rtp_stream(false);
+    fn approximate_mos_degrades_with_jitter_and_loss() -> Result<(), TestError> {
+        let mut stream = make_rtp_stream(false)?;
         stream.jitter = 80.0;
         stream.lost_packets = 50;
         // packet_count is 1 from construction; make loss heavy.
         let degraded = stream_mos(&stream, MosDelay::unknown());
-        let clean = stream_mos(&make_rtp_stream(false), MosDelay::unknown());
+        let clean = stream_mos(&make_rtp_stream(false)?, MosDelay::unknown());
         assert!(degraded < clean, "degraded {degraded} < clean {clean}");
         assert!(degraded >= 1.0, "MOS floor is 1.0, got {degraded}");
+        Ok(())
     }
 
     /// Worst-case jitter and loss floor the MOS at exactly 1.0.
     #[test]
-    fn approximate_mos_worst_case_floored_at_one() {
-        let mut stream = make_rtp_stream(false);
+    fn approximate_mos_worst_case_floored_at_one() -> Result<(), TestError> {
+        let mut stream = make_rtp_stream(false)?;
         stream.jitter = 100.0;
         stream.lost_packets = 1_000_000;
         let mos = stream_mos(&stream, MosDelay::unknown());
         assert!((mos - 1.0).abs() < 1e-9, "expected floor 1.0, got {mos}");
+        Ok(())
     }
 
     /// Zero packets means zero loss percentage (no division by zero) and
     /// a high MOS.
     #[test]
-    fn approximate_mos_no_packets_no_loss() {
+    fn approximate_mos_no_packets_no_loss() -> Result<(), TestError> {
         // total == 0 path: loss_pct stays 0.0, no division by zero.
-        let mut stream = make_rtp_stream(false);
+        let mut stream = make_rtp_stream(false)?;
         stream.packet_count = 0;
         stream.lost_packets = 0;
         let mos = stream_mos(&stream, MosDelay::unknown());
         assert!(mos > 4.0, "got {mos}");
+        Ok(())
     }
 
     // ── eval_compare numeric field paths via matches_dialog ─────────────
@@ -4231,15 +4338,15 @@ mod tests {
     /// rtp.mos, rtp.jitter, and rtp.loss evaluate against the worst value
     /// across the associated streams.
     #[test]
-    fn rtp_mos_loss_jitter_fields_evaluate() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let mut stream = make_rtp_stream(false);
+    fn rtp_mos_loss_jitter_fields_evaluate() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
         stream.jitter = 60.0;
         stream.lost_packets = 4; // with packet_count 1 => high loss%
         let streams: Vec<&RtpStream> = vec![&stream];
 
         // MOS should be degraded below 4.0.
-        let mos_filter = FilterExpr::parse("rtp.mos < 4.0").expect("parse");
+        let mos_filter = FilterExpr::parse("rtp.mos < 4.0")?;
         assert!(mos_filter.matches_dialog(
             &dialog,
             &streams,
@@ -4248,7 +4355,7 @@ mod tests {
         ));
 
         // Jitter worst-case across streams is 60.0.
-        let jitter_filter = FilterExpr::parse("rtp.jitter > 50.0").expect("parse");
+        let jitter_filter = FilterExpr::parse("rtp.jitter > 50.0")?;
         assert!(jitter_filter.matches_dialog(
             &dialog,
             &streams,
@@ -4257,25 +4364,26 @@ mod tests {
         ));
 
         // Loss percentage is high.
-        let loss_filter = FilterExpr::parse("rtp.loss > 50.0").expect("parse");
+        let loss_filter = FilterExpr::parse("rtp.loss > 50.0")?;
         assert!(loss_filter.matches_dialog(
             &dialog,
             &streams,
             CaptureMedia::Observed,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     /// rtp.codec matches a stream's codec; rtp.ssrc matches the
     /// 0x-prefixed lowercase hex rendering.
     #[test]
-    fn rtp_codec_and_ssrc_string_fields() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let mut stream = make_rtp_stream(false);
+    fn rtp_codec_and_ssrc_string_fields() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let mut stream = make_rtp_stream(false)?;
         stream.codec = Some("PCMU".to_string());
         let streams: Vec<&RtpStream> = vec![&stream];
 
-        let codec_filter = FilterExpr::parse("rtp.codec == 'PCMU'").expect("parse");
+        let codec_filter = FilterExpr::parse("rtp.codec == 'PCMU'")?;
         assert!(codec_filter.matches_dialog(
             &dialog,
             &streams,
@@ -4284,31 +4392,24 @@ mod tests {
         ));
 
         // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
-        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
+        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'")?;
         assert!(ssrc_filter.matches_dialog(
             &dialog,
             &streams,
             CaptureMedia::Observed,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     /// Item 3: the parse-time `needs_diagnosis` flag is set iff the
     /// expression references a diagnosis-derived field, so `matches_dialog`
     /// can skip the media/asymmetry diagnosis when none appears.
     #[test]
-    fn needs_diagnosis_flag_reflects_field_use() {
+    fn needs_diagnosis_flag_reflects_field_use() -> Result<(), TestError> {
         // No diagnosis field → flag clear.
-        assert!(
-            !FilterExpr::parse("from.user == '1001'")
-                .unwrap()
-                .needs_diagnosis
-        );
-        assert!(
-            !FilterExpr::parse("rtp.mos < 3.0 AND rtp.packets > 0")
-                .unwrap()
-                .needs_diagnosis
-        );
+        assert!(!FilterExpr::parse("from.user == '1001'")?.needs_diagnosis);
+        assert!(!FilterExpr::parse("rtp.mos < 3.0 AND rtp.packets > 0")?.needs_diagnosis);
 
         // Each diagnosis field trips the flag.
         for field in [
@@ -4323,23 +4424,23 @@ mod tests {
         ] {
             let expr = format!("{field} == true");
             assert!(
-                FilterExpr::parse(&expr).unwrap().needs_diagnosis,
+                FilterExpr::parse(&expr)?.needs_diagnosis,
                 "{field} must set needs_diagnosis"
             );
         }
 
         // Nested under boolean combinators still trips it.
         assert!(
-            FilterExpr::parse("method == 'INVITE' AND (state == 'InCall' OR late_media == true)")
-                .unwrap()
+            FilterExpr::parse("method == 'INVITE' AND (state == 'InCall' OR late_media == true)")?
                 .needs_diagnosis
         );
 
         // A filter without diagnosis fields evaluates the same whether or not
         // streams are present (the skipped diagnosis changes nothing).
-        let dialog = make_dialog("1001", "2002", "INVITE");
-        let f = FilterExpr::parse("from.user == '1001'").unwrap();
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
+        let f = FilterExpr::parse("from.user == '1001'")?;
         assert!(f.matches_dialog(&dialog, &[], CaptureMedia::Absent, MosDelay::unknown()));
+        Ok(())
     }
 
     /// Item 2: `rtp.codec` / `rtp.ssrc` match if ANY linked stream matches,
@@ -4347,20 +4448,20 @@ mod tests {
     /// SSRC carried only by the *second* stream must still match. The old
     /// code inspected only the first stream and missed these.
     #[test]
-    fn rtp_codec_and_ssrc_match_any_stream() {
-        let dialog = make_dialog("1001", "2002", "INVITE");
+    fn rtp_codec_and_ssrc_match_any_stream() -> Result<(), TestError> {
+        let dialog = make_dialog("1001", "2002", "INVITE")?;
 
         // Two streams: first PCMU (SSRC 0xDEADBEEF), second G722 with a
         // distinct SSRC.
-        let mut first = make_rtp_stream(false);
+        let mut first = make_rtp_stream(false)?;
         first.codec = Some("PCMU".to_string());
-        let mut second = make_rtp_stream(false);
+        let mut second = make_rtp_stream(false)?;
         second.codec = Some("G722".to_string());
         second.key.ssrc = 0x0000_0001;
         let streams: Vec<&RtpStream> = vec![&first, &second];
 
         // Codec carried only by the second stream matches.
-        let codec_filter = FilterExpr::parse("rtp.codec == 'G722'").expect("parse");
+        let codec_filter = FilterExpr::parse("rtp.codec == 'G722'")?;
         assert!(codec_filter.matches_dialog(
             &dialog,
             &streams,
@@ -4369,7 +4470,7 @@ mod tests {
         ));
 
         // SSRC carried only by the second stream matches.
-        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0x00000001'").expect("parse");
+        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0x00000001'")?;
         assert!(ssrc_filter.matches_dialog(
             &dialog,
             &streams,
@@ -4378,19 +4479,20 @@ mod tests {
         ));
 
         // A codec present on no stream still does not match.
-        let miss = FilterExpr::parse("rtp.codec == 'opus'").expect("parse");
+        let miss = FilterExpr::parse("rtp.codec == 'opus'")?;
         assert!(!miss.matches_dialog(
             &dialog,
             &streams,
             CaptureMedia::Observed,
             MosDelay::unknown()
         ));
+        Ok(())
     }
 
     // ── select_dialogs ──────────────────────────────────────────────
 
     /// Build a store holding one INVITE dialog per Call-ID given.
-    fn store_with(call_ids: &[&str]) -> crate::sip::dialog_store::DialogStore {
+    fn store_with(call_ids: &[&str]) -> Result<crate::sip::dialog_store::DialogStore, TestError> {
         let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
         for id in call_ids {
             let raw = build_sip(
@@ -4406,24 +4508,23 @@ mod tests {
             );
             let msg = parse_sip(
                 &raw,
-                base_ts(),
+                base_ts()?,
                 localhost(),
                 localhost(),
                 5060,
                 5060,
                 TransportProto::Udp,
-            )
-            .expect("should parse");
+            )?;
             store.process_message(msg);
         }
-        store
+        Ok(store)
     }
 
     /// No filter selects every dialog, in store order — the post-capture
     /// outputs must be unchanged when `--filter` is absent.
     #[test]
-    fn select_dialogs_without_a_filter_selects_everything() {
-        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"]);
+    fn select_dialogs_without_a_filter_selects_everything() -> Result<(), TestError> {
+        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"])?;
         let streams = crate::rtp::stream_store::StreamStore::new(16);
 
         let selection = select_dialogs(None, &dialogs, &streams);
@@ -4434,15 +4535,16 @@ mod tests {
             .map(|(d, _)| d.call_id.as_str())
             .collect();
         assert_eq!(ids, ["a@example.com", "b@example.com", "c@example.com"]);
+        Ok(())
     }
 
     /// A filter selects the matching dialogs and only those. The defect it
     /// guards: the whole store came back for every expression.
     #[test]
-    fn select_dialogs_with_a_filter_selects_only_matches() {
-        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"]);
+    fn select_dialogs_with_a_filter_selects_only_matches() -> Result<(), TestError> {
+        let dialogs = store_with(&["a@example.com", "b@example.com", "c@example.com"])?;
         let streams = crate::rtp::stream_store::StreamStore::new(16);
-        let expr = FilterExpr::parse("call_id == 'b@example.com'").expect("should parse");
+        let expr = FilterExpr::parse("call_id == 'b@example.com'")?;
 
         let selection = select_dialogs(Some(&expr), &dialogs, &streams);
 
@@ -4452,13 +4554,14 @@ mod tests {
             .map(|(d, _)| d.call_id.as_str())
             .collect();
         assert_eq!(ids, ["b@example.com"]);
+        Ok(())
     }
 
     /// An unsatisfiable filter selects nothing — an empty result is an
     /// answer, and must not degrade into "show everything".
     #[test]
-    fn select_dialogs_with_an_unsatisfiable_filter_selects_nothing() {
-        let dialogs = store_with(&["a@example.com", "b@example.com"]);
+    fn select_dialogs_with_an_unsatisfiable_filter_selects_nothing() -> Result<(), TestError> {
+        let dialogs = store_with(&["a@example.com", "b@example.com"])?;
         let streams = crate::rtp::stream_store::StreamStore::new(16);
 
         let selection = select_dialogs(Some(&FilterExpr::never()), &dialogs, &streams);
@@ -4468,15 +4571,16 @@ mod tests {
             selection.streams.is_empty(),
             "no dialog selected leaves no stream to show"
         );
+        Ok(())
     }
 
     /// An empty store yields an empty selection under both arms rather than
     /// panicking on the missing-Call-ID lookups.
     #[test]
-    fn select_dialogs_on_an_empty_store_is_empty() {
-        let dialogs = store_with(&[]);
+    fn select_dialogs_on_an_empty_store_is_empty() -> Result<(), TestError> {
+        let dialogs = store_with(&[])?;
         let streams = crate::rtp::stream_store::StreamStore::new(16);
-        let expr = FilterExpr::parse("state == 'Failed'").expect("should parse");
+        let expr = FilterExpr::parse("state == 'Failed'")?;
 
         assert!(select_dialogs(None, &dialogs, &streams).dialogs.is_empty());
         assert!(
@@ -4484,6 +4588,7 @@ mod tests {
                 .dialogs
                 .is_empty()
         );
+        Ok(())
     }
 }
 
@@ -4493,11 +4598,13 @@ mod tests {
 mod unknown_field_hint_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// An unknown field used to render as a generic "unexpected input" —
     /// no field named, no valid list, no suggestion.
     #[test]
-    fn unknown_field_error_names_field_and_suggests_closest() {
-        let err = FilterExpr::parse("rtp.mso > 3").expect_err("must fail");
+    fn unknown_field_error_names_field_and_suggests_closest() -> Result<(), TestError> {
+        let err = FilterExpr::parse("rtp.mso > 3").err().ok_or("must fail")?;
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field 'rtp.mso'"),
@@ -4508,35 +4615,43 @@ mod unknown_field_hint_tests {
             "must suggest the closest field: {msg}"
         );
         assert!(msg.contains("valid fields:"), "must list fields: {msg}");
+        Ok(())
     }
 
     /// A field with no near match still gets the valid-fields list.
     #[test]
-    fn unknown_field_without_close_match_lists_fields() {
-        let err = FilterExpr::parse("zzzzqqq == 'x'").expect_err("must fail");
+    fn unknown_field_without_close_match_lists_fields() -> Result<(), TestError> {
+        let err = FilterExpr::parse("zzzzqqq == 'x'")
+            .err()
+            .ok_or("must fail")?;
         let msg = err.to_string();
         assert!(msg.contains("unknown field 'zzzzqqq'"), "{msg}");
         assert!(msg.contains("valid fields:"), "{msg}");
+        Ok(())
     }
 
     /// FIELD_NAMES must stay in sync with the parser's accepted set.
     #[test]
-    fn field_names_const_matches_parser() {
+    fn field_names_const_matches_parser() -> Result<(), TestError> {
         for name in FIELD_NAMES {
             assert!(
                 parse_field(name).is_ok(),
                 "FIELD_NAMES lists '{name}' but parse_field rejects it"
             );
         }
+        Ok(())
     }
 
     /// The quoting hint must still win for the classic unquoted-value case.
     #[test]
-    fn quoting_hint_not_replaced_by_field_hint() {
-        let err = FilterExpr::parse("method == INVITE").expect_err("must fail");
+    fn quoting_hint_not_replaced_by_field_hint() -> Result<(), TestError> {
+        let err = FilterExpr::parse("method == INVITE")
+            .err()
+            .ok_or("must fail")?;
         let msg = err.to_string();
         assert!(msg.contains("must be quoted"), "{msg}");
         assert!(!msg.contains("unknown field"), "{msg}");
+        Ok(())
     }
 }
 
@@ -4546,12 +4661,14 @@ mod unknown_field_hint_tests {
 mod parse_error_render_robustness_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// proptest (filter_dsl_parse_is_total) found: with whitespace before a
     /// multibyte token at the error position, `pos + token.len()` sliced the
     /// expression mid-character and panicked. Parsing must be total —
     /// adversarial input yields Err, never a panic.
     #[test]
-    fn parse_error_rendering_survives_multibyte_and_whitespace() {
+    fn parse_error_rendering_survives_multibyte_and_whitespace() -> Result<(), TestError> {
         for expr in [
             " \u{6b31b}\u{6b31b}\u{6b31b}",
             "method ==\t\u{6b31b}",
@@ -4573,6 +4690,7 @@ mod parse_error_render_robustness_tests {
         ] {
             let _ = FilterExpr::parse(expr); // must not panic
         }
+        Ok(())
     }
 }
 
@@ -4583,13 +4701,19 @@ mod parse_error_render_robustness_tests {
 mod header_field_tests {
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     use super::*;
     use crate::net::TransportProto;
     use crate::sip::parser::parse_sip;
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Parse one message carrying the standard dialog headers plus `extra`.
-    fn message(first_line: &str, cseq: &str, extra: &[&str]) -> crate::sip::SipMessage {
+    fn message(
+        first_line: &str,
+        cseq: &str,
+        extra: &[&str],
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let mut headers = vec![
             "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bKhdr",
             "From: <sip:1001@example.com>;tag=t1",
@@ -4601,189 +4725,201 @@ mod header_field_tests {
         headers.push("Content-Length: 0");
         let raw = build_sip(first_line, &headers, b"");
         let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, 22, 12, 0, 0).unwrap(),
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 9, 22, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
             ip,
             ip,
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("the test message parses")
+        )?)
     }
 
     /// A dialog whose INVITE carries `invite_extra` and whose 200 OK carries
     /// `ok_extra`, so a test can put a header on either message.
-    fn dialog(invite_extra: &[&str], ok_extra: &[&str]) -> SipDialog {
+    fn dialog(invite_extra: &[&str], ok_extra: &[&str]) -> Result<SipDialog, TestError> {
         let invite = message(
             "INVITE sip:2002@example.com SIP/2.0",
             "CSeq: 1 INVITE",
             invite_extra,
-        );
-        let mut dialog = SipDialog::new(&invite).expect("an INVITE opens a dialog");
+        )?;
+        let mut dialog = SipDialog::new(&invite).ok_or("an INVITE opens a dialog")?;
         dialog
             .messages
-            .push(message("SIP/2.0 200 OK", "CSeq: 1 INVITE", ok_extra));
-        dialog
+            .push(message("SIP/2.0 200 OK", "CSeq: 1 INVITE", ok_extra)?);
+        Ok(dialog)
     }
 
     /// Whether `expr` parses and selects `dialog`.
-    fn selects(expr: &str, dialog: &SipDialog) -> bool {
-        FilterExpr::parse(expr)
-            .unwrap_or_else(|e| panic!("{expr:?} must parse: {e}"))
-            .matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown())
+    fn selects(expr: &str, dialog: &SipDialog) -> Result<bool, TestError> {
+        Ok(FilterExpr::parse(expr)
+            .map_err(|e| format!("{expr:?} must parse: {e}"))?
+            .matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()))
     }
 
     /// Header names compare case-insensitively ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1));
     /// values compare the way every other string field does, exactly.
     #[test]
-    fn a_header_name_matches_in_any_case_and_the_value_exactly() {
-        let d = dialog(&["X-Trunk: north-east"], &[]);
-        assert!(selects("header.X-Trunk == 'north-east'", &d));
-        assert!(selects("header.x-trunk == 'north-east'", &d));
-        assert!(selects("header.X-TRUNK == \"north-east\"", &d));
-        assert!(!selects("header.X-Trunk == 'south'", &d));
+    fn a_header_name_matches_in_any_case_and_the_value_exactly() -> Result<(), TestError> {
+        let d = dialog(&["X-Trunk: north-east"], &[])?;
+        assert!(selects("header.X-Trunk == 'north-east'", &d)?);
+        assert!(selects("header.x-trunk == 'north-east'", &d)?);
+        assert!(selects("header.X-TRUNK == \"north-east\"", &d)?);
+        assert!(!selects("header.X-Trunk == 'south'", &d)?);
         assert!(
-            !selects("header.X-Trunk == 'NORTH-EAST'", &d),
+            !selects("header.X-Trunk == 'NORTH-EAST'", &d)?,
             "a value comparison is case-sensitive, as on every string field"
         );
-        assert!(selects("header.X-Trunk =~ '(?i)NORTH'", &d));
+        assert!(selects("header.X-Trunk =~ '(?i)NORTH'", &d)?);
+        Ok(())
     }
 
     /// A header on ANY message of the dialog counts — the `payload` rule —
     /// so a header only the answer carries still selects the call.
     #[test]
-    fn a_header_on_any_message_of_the_dialog_counts() {
-        let d = dialog(&[], &["P-Charge-Info: <sip:+15551230000@example.com>"]);
-        assert!(selects("header.P-Charge-Info =~ '5551230000'", &d));
+    fn a_header_on_any_message_of_the_dialog_counts() -> Result<(), TestError> {
+        let d = dialog(&[], &["P-Charge-Info: <sip:+15551230000@example.com>"])?;
+        assert!(selects("header.P-Charge-Info =~ '5551230000'", &d)?);
+        Ok(())
     }
 
     /// Every instance of a repeated header is its own candidate, and a value
     /// is the whole header line: a comma-combined line is one value.
     #[test]
-    fn every_repeated_header_is_considered() {
-        let d = dialog(&["Foo-Bar: first", "Foo-Bar: second"], &["Foo-Bar: third"]);
+    fn every_repeated_header_is_considered() -> Result<(), TestError> {
+        let d = dialog(&["Foo-Bar: first", "Foo-Bar: second"], &["Foo-Bar: third"])?;
         for v in ["first", "second", "third"] {
-            assert!(selects(&format!("header.Foo-Bar == '{v}'"), &d), "{v}");
+            assert!(selects(&format!("header.Foo-Bar == '{v}'"), &d)?, "{v}");
         }
-        let combined = dialog(&["Foo-Bar: a, b"], &[]);
-        assert!(!selects("header.Foo-Bar == 'a'", &combined));
-        assert!(selects("header.Foo-Bar == 'a, b'", &combined));
-        assert!(selects("header.Foo-Bar =~ '(^|,\\s*)b(,|$)'", &combined));
+        let combined = dialog(&["Foo-Bar: a, b"], &[])?;
+        assert!(!selects("header.Foo-Bar == 'a'", &combined)?);
+        assert!(selects("header.Foo-Bar == 'a, b'", &combined)?);
+        assert!(selects("header.Foo-Bar =~ '(^|,\\s*)b(,|$)'", &combined)?);
+        Ok(())
     }
 
     /// A compact form names the same header as its long form, in the filter
     /// and on the wire, in all four combinations ([RFC 3261 section 7.3.3](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.3)).
     #[test]
-    fn compact_forms_are_honored_on_both_sides() {
-        let compact_wire = dialog(&["k: 100rel"], &[]);
-        assert!(selects("header.Supported == '100rel'", &compact_wire));
-        assert!(selects("header.k == '100rel'", &compact_wire));
-        assert!(selects("header.K == '100rel'", &compact_wire));
-        let long_wire = dialog(&["Supported: timer"], &[]);
-        assert!(selects("header.k == 'timer'", &long_wire));
-        assert!(selects("header.supported == 'timer'", &long_wire));
+    fn compact_forms_are_honored_on_both_sides() -> Result<(), TestError> {
+        let compact_wire = dialog(&["k: 100rel"], &[])?;
+        assert!(selects("header.Supported == '100rel'", &compact_wire)?);
+        assert!(selects("header.k == '100rel'", &compact_wire)?);
+        assert!(selects("header.K == '100rel'", &compact_wire)?);
+        let long_wire = dialog(&["Supported: timer"], &[])?;
+        assert!(selects("header.k == 'timer'", &long_wire)?);
+        assert!(selects("header.supported == 'timer'", &long_wire)?);
+        Ok(())
     }
 
     /// `x` alone is the compact form of `Session-Expires` (RFC 4028), not an
     /// `X-` anything: the letter is a registered name, and the prefix is not a
     /// category.
     #[test]
-    fn the_compact_x_is_session_expires_and_not_a_prefix() {
-        let d = dialog(&["X-Foo: 1800"], &["Session-Expires: 1800"]);
-        assert!(selects("header.x == '1800'", &d));
-        let only_x_foo = dialog(&["X-Foo: 1800"], &[]);
-        assert!(!selects("header.x == '1800'", &only_x_foo));
+    fn the_compact_x_is_session_expires_and_not_a_prefix() -> Result<(), TestError> {
+        let d = dialog(&["X-Foo: 1800"], &["Session-Expires: 1800"])?;
+        assert!(selects("header.x == '1800'", &d)?);
+        let only_x_foo = dialog(&["X-Foo: 1800"], &[])?;
+        assert!(!selects("header.x == '1800'", &only_x_foo)?);
+        Ok(())
     }
 
     /// An absent header matches no comparison, `!=` included — the rule every
     /// optional field here follows. Presence and absence have idioms of their
     /// own: an empty regex matches any value.
     #[test]
-    fn an_absent_header_matches_no_comparison() {
-        let d = dialog(&["X-Trunk: north"], &[]);
-        assert!(!selects("header.X-Missing != 'anything'", &d));
-        assert!(!selects("header.X-Missing == ''", &d));
-        assert!(!selects("header.X-Missing =~ ''", &d));
-        assert!(selects("NOT header.X-Missing =~ ''", &d));
-        assert!(selects("header.X-Trunk =~ ''", &d));
+    fn an_absent_header_matches_no_comparison() -> Result<(), TestError> {
+        let d = dialog(&["X-Trunk: north"], &[])?;
+        assert!(!selects("header.X-Missing != 'anything'", &d)?);
+        assert!(!selects("header.X-Missing == ''", &d)?);
+        assert!(!selects("header.X-Missing =~ ''", &d)?);
+        assert!(selects("NOT header.X-Missing =~ ''", &d)?);
+        assert!(selects("header.X-Trunk =~ ''", &d)?);
+        Ok(())
     }
 
     /// A header with an empty value is present, and its value is the empty
     /// string.
     #[test]
-    fn an_empty_value_is_present_and_empty() {
-        let d = dialog(&["X-Empty:"], &[]);
-        assert!(selects("header.X-Empty == ''", &d));
-        assert!(selects("header.X-Empty =~ ''", &d));
+    fn an_empty_value_is_present_and_empty() -> Result<(), TestError> {
+        let d = dialog(&["X-Empty:"], &[])?;
+        assert!(selects("header.X-Empty == ''", &d)?);
+        assert!(selects("header.X-Empty =~ ''", &d)?);
+        Ok(())
     }
 
     /// [RFC 6648 section 2](https://www.rfc-editor.org/rfc/rfc6648#section-2): nothing is read into the `X-` prefix. `Foo` and
     /// `X-Foo` are two unrelated names — neither is stripped to the other —
     /// and one filter on each selects symmetrically.
     #[test]
-    fn an_x_prefix_is_part_of_the_name_and_nothing_more() {
-        let plain = dialog(&["Foo: v"], &[]);
-        let prefixed = dialog(&["X-Foo: v"], &[]);
-        assert!(selects("header.Foo == 'v'", &plain));
-        assert!(selects("header.X-Foo == 'v'", &prefixed));
-        assert!(!selects("header.Foo == 'v'", &prefixed));
-        assert!(!selects("header.X-Foo == 'v'", &plain));
+    fn an_x_prefix_is_part_of_the_name_and_nothing_more() -> Result<(), TestError> {
+        let plain = dialog(&["Foo: v"], &[])?;
+        let prefixed = dialog(&["X-Foo: v"], &[])?;
+        assert!(selects("header.Foo == 'v'", &plain)?);
+        assert!(selects("header.X-Foo == 'v'", &prefixed)?);
+        assert!(!selects("header.Foo == 'v'", &prefixed)?);
+        assert!(!selects("header.X-Foo == 'v'", &plain)?);
+        Ok(())
     }
 
     /// The quoted form takes any RFC 3261 token, including the characters the
     /// bare form stops at.
     #[test]
-    fn a_quoted_name_takes_any_token() {
+    fn a_quoted_name_takes_any_token() -> Result<(), TestError> {
         let d = dialog(
             &[
                 "P-Asserted-Identity: <sip:alice@example.com>",
                 "Odd!Name: yes",
             ],
             &[],
-        );
-        assert!(selects("header.\"P-Asserted-Identity\" =~ 'alice'", &d));
-        assert!(selects("header.'P-Asserted-Identity' =~ 'alice'", &d));
-        assert!(selects("header.\"Odd!Name\" == 'yes'", &d));
+        )?;
+        assert!(selects("header.\"P-Asserted-Identity\" =~ 'alice'", &d)?);
+        assert!(selects("header.'P-Asserted-Identity' =~ 'alice'", &d)?);
+        assert!(selects("header.\"Odd!Name\" == 'yes'", &d)?);
+        Ok(())
     }
 
     /// Ordering and `in_subnet` read a header value the way they read any
     /// string field.
     #[test]
-    fn every_string_operator_applies() {
-        let d = dialog(&["Real-Source: 198.51.100.7"], &[]);
+    fn every_string_operator_applies() -> Result<(), TestError> {
+        let d = dialog(&["Real-Source: 198.51.100.7"], &[])?;
         assert!(selects(
             "header.Real-Source in_subnet '198.51.100.0/24'",
             &d
-        ));
+        )?);
         assert!(!selects(
             "header.Real-Source in_subnet '203.0.113.0/24'",
             &d
-        ));
-        assert!(selects("header.Real-Source > '198'", &d));
-        assert!(selects("header.Real-Source != '10.0.0.1'", &d));
+        )?);
+        assert!(selects("header.Real-Source > '198'", &d)?);
+        assert!(selects("header.Real-Source != '10.0.0.1'", &d)?);
+        Ok(())
     }
 
     /// Composes with the rest of the language.
     #[test]
-    fn composes_with_boolean_combinators() {
-        let d = dialog(&["X-Trunk: north"], &[]);
+    fn composes_with_boolean_combinators() -> Result<(), TestError> {
+        let d = dialog(&["X-Trunk: north"], &[])?;
         assert!(selects(
             "method == 'INVITE' AND header.X-Trunk == 'north'",
             &d
-        ));
+        )?);
         assert!(selects(
             "(header.X-Trunk == 'south' OR header.X-Trunk == 'north')",
             &d
-        ));
-        assert!(!selects("NOT header.X-Trunk == 'north'", &d));
+        )?);
+        assert!(!selects("NOT header.X-Trunk == 'north'", &d)?);
+        Ok(())
     }
 
     /// A malformed name is refused at parse time with a message that says what
     /// is wrong, rather than a filter that silently matches nothing.
     #[test]
-    fn a_malformed_name_is_refused_and_named() {
+    fn a_malformed_name_is_refused_and_named() -> Result<(), TestError> {
         for bad in [
             "header. == 'x'",
             "header.\"\" == 'x'",
@@ -4792,7 +4928,9 @@ mod header_field_tests {
             "header.'unterminated == 'x'",
         ] {
             let msg = FilterExpr::parse(bad)
-                .expect_err(&format!("{bad:?} must not parse"))
+                .err()
+                .ok_or(&format!("{bad:?} must not parse"))
+                .map_err(|e| format!("{e:?}"))?
                 .to_string();
             assert!(
                 msg.contains("header name"),
@@ -4803,41 +4941,48 @@ mod header_field_tests {
                 "{bad:?} is not an unknown field: {msg}"
             );
         }
+        Ok(())
     }
 
     /// The name is bounded: a name past `MAX_HEADER_NAME_LEN` is refused and
     /// the limit is named, and one at the limit parses.
     #[test]
-    fn the_name_length_is_bounded() {
+    fn the_name_length_is_bounded() -> Result<(), TestError> {
         let at = "A".repeat(MAX_HEADER_NAME_LEN);
         assert!(FilterExpr::parse(&format!("header.{at} == 'x'")).is_ok());
         let over = "A".repeat(MAX_HEADER_NAME_LEN + 1);
         let msg = FilterExpr::parse(&format!("header.{over} == 'x'"))
-            .expect_err("over the cap")
+            .err()
+            .ok_or("over the cap")?
             .to_string();
         assert!(msg.contains(&MAX_HEADER_NAME_LEN.to_string()), "{msg}");
         let quoted = FilterExpr::parse(&format!("header.\"{over}\" == 'x'"))
-            .expect_err("over the cap when quoted too")
+            .err()
+            .ok_or("over the cap when quoted too")?
             .to_string();
         assert!(
             quoted.contains(&MAX_HEADER_NAME_LEN.to_string()),
             "{quoted}"
         );
+        Ok(())
     }
 
     /// A header filter reads no diagnosis, so it must not pay for one.
     #[test]
-    fn a_header_filter_needs_no_diagnosis() {
-        let f = FilterExpr::parse("header.X-Trunk == 'north'").expect("parses");
+    fn a_header_filter_needs_no_diagnosis() -> Result<(), TestError> {
+        let f = FilterExpr::parse("header.X-Trunk == 'north'")?;
         assert!(!f.needs_diagnosis);
+        Ok(())
     }
 
     /// The unknown-field hint lists the header family beside the fixed names.
     #[test]
-    fn the_field_hint_names_the_header_family() {
+    fn the_field_hint_names_the_header_family() -> Result<(), TestError> {
         let msg = FilterExpr::parse("zzzzqqq == 'x'")
-            .expect_err("unknown")
+            .err()
+            .ok_or("unknown")?
             .to_string();
         assert!(msg.contains("header.<name>"), "{msg}");
+        Ok(())
     }
 }

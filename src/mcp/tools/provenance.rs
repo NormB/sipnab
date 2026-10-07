@@ -533,6 +533,8 @@ mod tests {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A server with empty stores and a file root, which is all these tools use.
     fn server_rooted(root: &std::path::Path) -> SipnabMcp {
         SipnabMcp::new(
@@ -571,7 +573,8 @@ mod tests {
     /// point, so a hint about live capture would be printed for a mistyped
     /// filename just as readily.
     #[test]
-    fn a_live_pointer_without_a_ring_is_refused_without_the_rings_vocabulary() {
+    fn a_live_pointer_without_a_ring_is_refused_without_the_rings_vocabulary()
+    -> Result<(), TestError> {
         let server = server_rooted(std::path::Path::new("/nonexistent"));
         let value = decode_one(&server, "eth0#7", None);
         assert_eq!(
@@ -584,6 +587,7 @@ mod tests {
             !reason.contains("moved past") && !reason.contains("has not reached"),
             "the refusal claims a ring looked when none did: {reason}"
         );
+        Ok(())
     }
 
     /// A retained live frame comes back, labeled for what it is.
@@ -593,7 +597,7 @@ mod tests {
     /// That is a weaker claim than a file seek and the response says so rather
     /// than leaving a reader to assume they are the same thing.
     #[test]
-    fn a_retained_live_frame_is_answered_and_labeled_retained() {
+    fn a_retained_live_frame_is_answered_and_labeled_retained() -> Result<(), TestError> {
         let server = server_with_ring(4096, &[("eth0", 7, b"\x45\x00 a frame")]);
         let value = decode_one(&server, "eth0#7", None);
         assert_eq!(
@@ -609,6 +613,7 @@ mod tests {
                 .is_some_and(|n| n.contains("cannot be read again")),
             "the weaker claim is not stated: {value}"
         );
+        Ok(())
     }
 
     /// An evicted frame says so, and says how far it missed by.
@@ -617,7 +622,7 @@ mod tests {
     /// and the window is too small, which is a different instruction from every
     /// other miss this can produce.
     #[test]
-    fn an_evicted_live_frame_says_the_window_was_too_small() {
+    fn an_evicted_live_frame_says_the_window_was_too_small() -> Result<(), TestError> {
         let frames: Vec<(&'static str, u64, &[u8])> = (0..20u64)
             .map(|o| ("eth0", o, &b"0123456789012345678901234567890123456789"[..]))
             .collect();
@@ -628,6 +633,7 @@ mod tests {
             reason.contains("moved past it") && reason.contains("oldest"),
             "an evicted frame must say the pointer was good: {reason}"
         );
+        Ok(())
     }
 
     /// An ordinal the ring has not reached is a different answer entirely.
@@ -635,7 +641,7 @@ mod tests {
     /// Reporting this as evicted would tell an operator to spend memory on a
     /// frame that never existed.
     #[test]
-    fn an_unreached_ordinal_is_not_reported_as_evicted() {
+    fn an_unreached_ordinal_is_not_reported_as_evicted() -> Result<(), TestError> {
         let server = server_with_ring(4096, &[("eth0", 3, b"frame")]);
         let value = decode_one(&server, "eth0#900", None);
         let reason = value["reason"].as_str().unwrap_or_default();
@@ -647,6 +653,7 @@ mod tests {
             !reason.contains("moved past"),
             "and it must not borrow the eviction story: {reason}"
         );
+        Ok(())
     }
 
     /// A source the ring never saw is left to the file path, not claimed.
@@ -656,7 +663,7 @@ mod tests {
     /// capture file. Answering here would take a question the ring is not
     /// entitled to answer.
     #[test]
-    fn a_source_the_ring_never_saw_is_left_to_the_file_path() {
+    fn a_source_the_ring_never_saw_is_left_to_the_file_path() -> Result<(), TestError> {
         let server = server_with_ring(4096, &[("eth0", 3, b"frame")]);
         let value = decode_one(&server, "eth9#3", None);
         let reason = value["reason"].as_str().unwrap_or_default();
@@ -668,6 +675,7 @@ mod tests {
             reason.contains("file root") || reason.contains("file tools"),
             "and the file path must have had its turn: {reason}"
         );
+        Ok(())
     }
 
     /// A private directory named for the test using it.
@@ -686,13 +694,13 @@ mod tests {
     }
 
     /// Copy one of the repo's sample captures into `root` and return its path.
-    fn seed(root: &std::path::Path, sample: &str) -> std::path::PathBuf {
+    fn seed(root: &std::path::Path, sample: &str) -> Result<std::path::PathBuf, TestError> {
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples")
             .join(sample);
         let dst = root.join(sample);
-        std::fs::copy(&src, &dst).expect("seed the capture");
-        dst
+        std::fs::copy(&src, &dst)?;
+        Ok(dst)
     }
 
     /// The bytes of frame `ordinal` in a classic little-endian pcap.
@@ -700,23 +708,23 @@ mod tests {
     /// Read here, independently of everything under test, so an assertion can
     /// compare the tool's byte range against the capture on disk rather than
     /// against a number this file wrote down.
-    fn frame_bytes(path: &std::path::Path, ordinal: usize) -> Vec<u8> {
-        let data = std::fs::read(path).expect("read the capture");
+    fn frame_bytes(path: &std::path::Path, ordinal: usize) -> Result<Vec<u8>, TestError> {
+        let data = std::fs::read(path)?;
         let mut offset = 24;
         for index in 0.. {
-            let header: [u8; 16] = data[offset..offset + 16].try_into().expect("record header");
-            let caplen = u32::from_le_bytes(header[8..12].try_into().expect("caplen")) as usize;
+            let header: [u8; 16] = data[offset..offset + 16].try_into()?;
+            let caplen = u32::from_le_bytes(header[8..12].try_into()?) as usize;
             let body = data[offset + 16..offset + 16 + caplen].to_vec();
             if index == ordinal {
-                return body;
+                return Ok(body);
             }
             offset += 16 + caplen;
         }
-        unreachable!()
+        Err(format!("pcap holds no record {ordinal}").into())
     }
 
     /// The JSON payload of a tool result.
-    fn payload(result: &CallToolResult) -> Value {
+    fn payload(result: &CallToolResult) -> Result<Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -724,20 +732,23 @@ mod tests {
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block")?;
+        Ok(serde_json::from_str(&text)?)
     }
 
     /// Call the tool for one pointer.
-    async fn decode(server: &SipnabMcp, pointer: &str, field: Option<&str>) -> Value {
+    async fn decode(
+        server: &SipnabMcp,
+        pointer: &str,
+        field: Option<&str>,
+    ) -> Result<Value, TestError> {
         let result = server
             .decode_evidence(Parameters(DecodeEvidenceParams {
                 frame_ref: pointer.to_string(),
                 field: field.map(str::to_string),
             }))
-            .await
-            .expect("the call succeeds");
-        payload(&result)
+            .await?;
+        Ok(payload(&result)?)
     }
 
     /// THE test: the byte range must land on the header's bytes in the capture.
@@ -749,17 +760,17 @@ mod tests {
     /// coordinates. Nothing here is a pinned offset: a recompiled fixture moves
     /// both sides together.
     #[tokio::test]
-    async fn a_field_range_lands_on_that_header_in_the_capture() {
+    async fn a_field_range_lands_on_that_header_in_the_capture() -> Result<(), TestError> {
         let root = scratch("field-range");
-        let capture = seed(&root, "sip-register.pcap");
-        let frame = frame_bytes(&capture, 0);
+        let capture = seed(&root, "sip-register.pcap")?;
+        let frame = frame_bytes(&capture, 0)?;
 
         let value = decode(
             &server_rooted(&root),
             &format!("{}#0", capture.display()),
             Some("Contact"),
         )
-        .await;
+        .await?;
 
         assert_eq!(
             value["sip"]["headers_returned"], 1,
@@ -786,6 +797,7 @@ mod tests {
              by the length of the link/IP/transport headers, not equal it: {value}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A pointer carrying a digest reports `verified`; the same pointer without
@@ -795,13 +807,13 @@ mod tests {
     /// exists to prevent, so it is asserted here and not inherited from
     /// `show_evidence`.
     #[tokio::test]
-    async fn a_digest_separates_verified_from_unverified() {
+    async fn a_digest_separates_verified_from_unverified() -> Result<(), TestError> {
         let root = scratch("digest");
-        let capture = seed(&root, "sip-register.pcap");
-        let digest = crate::capture::packet::frame_digest(&frame_bytes(&capture, 0));
+        let capture = seed(&root, "sip-register.pcap")?;
+        let digest = crate::capture::packet::frame_digest(&frame_bytes(&capture, 0)?);
         let server = server_rooted(&root);
 
-        let bare = decode(&server, &format!("{}#0", capture.display()), None).await;
+        let bare = decode(&server, &format!("{}#0", capture.display()), None).await?;
         assert_eq!(
             bare["status"], "unverified",
             "a pointer with no digest was checked against nothing and must say \
@@ -813,12 +825,13 @@ mod tests {
             &format!("{}#0@{digest:016x}", capture.display()),
             None,
         )
-        .await;
+        .await?;
         assert_eq!(
             sealed["status"], "verified",
             "a pointer whose digest matches the frame must report it: {sealed}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The link type comes from the capture, not from an assumption.
@@ -829,16 +842,16 @@ mod tests {
     /// bytes — which is why this asserts the decoded addresses rather than the
     /// absence of an error.
     #[tokio::test]
-    async fn the_link_type_comes_from_the_capture_not_from_ethernet() {
+    async fn the_link_type_comes_from_the_capture_not_from_ethernet() -> Result<(), TestError> {
         let root = scratch("link-type");
-        let capture = seed(&root, "linux-sll-pppoe.pcap");
+        let capture = seed(&root, "linux-sll-pppoe.pcap")?;
 
         let value = decode(
             &server_rooted(&root),
             &format!("{}#0", capture.display()),
             None,
         )
-        .await;
+        .await?;
 
         assert_eq!(
             value["link_type"], 113,
@@ -853,6 +866,7 @@ mod tests {
             "the payload must decode as the INVITE it is: {value}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A pointer whose source escapes the file root returns no decode.
@@ -863,24 +877,24 @@ mod tests {
     /// so a reworded refusal cannot turn this green while the read succeeds.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_pointer_escaping_the_file_root_decodes_nothing() {
+    async fn a_pointer_escaping_the_file_root_decodes_nothing() -> Result<(), TestError> {
         let base = scratch("escape");
         let root = base.join("root");
         let outside = base.join("outside");
-        std::fs::create_dir_all(&root).expect("mkdir root");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::create_dir_all(&root)?;
+        std::fs::create_dir_all(&outside)?;
         // A REAL capture outside the root, so a bypass would actually succeed.
         let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples/sip-register.pcap");
         let hidden = outside.join("hidden.pcap");
-        std::fs::copy(&src, &hidden).expect("seed outside the root");
+        std::fs::copy(&src, &hidden)?;
 
         let value = decode(
             &server_rooted(&root),
             &format!("{}#0", hidden.display()),
             None,
         )
-        .await;
+        .await?;
 
         assert_eq!(value["status"], "unresolvable", "{value}");
         assert!(
@@ -888,6 +902,7 @@ mod tests {
             "a refused pointer must return no decode at all: {value}"
         );
         let _ = std::fs::remove_dir_all(&base);
+        Ok(())
     }
 
     /// A frame that is not SIP says so, and offers no SIP object.
@@ -897,16 +912,17 @@ mod tests {
     /// header, so this separates "the frame would not decode" from "the frame
     /// decoded and carries no message".
     #[tokio::test]
-    async fn a_frame_that_is_not_sip_says_so_rather_than_showing_an_empty_message() {
+    async fn a_frame_that_is_not_sip_says_so_rather_than_showing_an_empty_message()
+    -> Result<(), TestError> {
         let root = scratch("not-sip");
-        let capture = seed(&root, "rtp-protocol.pcap");
+        let capture = seed(&root, "rtp-protocol.pcap")?;
 
         let value = decode(
             &server_rooted(&root),
             &format!("{}#7", capture.display()),
             None,
         )
-        .await;
+        .await?;
 
         assert!(
             value.get("sip").is_none(),
@@ -922,11 +938,12 @@ mod tests {
              {value}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A blank pointer is refused rather than answered with an empty decode.
     #[tokio::test]
-    async fn a_blank_pointer_is_refused() {
+    async fn a_blank_pointer_is_refused() -> Result<(), TestError> {
         let root = scratch("blank");
         let err = server_rooted(&root)
             .decode_evidence(Parameters(DecodeEvidenceParams {
@@ -934,26 +951,29 @@ mod tests {
                 field: None,
             }))
             .await
-            .expect_err("a blank pointer must be refused");
+            .err()
+            .ok_or("a blank pointer must be refused")?;
         assert!(
             err.message.contains("frame_ref"),
             "the refusal must name the parameter at fault: {}",
             err.message
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A malformed pointer is a result with a reason, not a failed call.
     #[tokio::test]
-    async fn a_malformed_pointer_answers_with_its_reason() {
+    async fn a_malformed_pointer_answers_with_its_reason() -> Result<(), TestError> {
         let root = scratch("malformed");
-        let value = decode(&server_rooted(&root), "not a pointer at all", None).await;
+        let value = decode(&server_rooted(&root), "not a pointer at all", None).await?;
         assert_eq!(value["status"], "unresolvable", "{value}");
         assert!(
             value["reason"].as_str().is_some_and(|r| !r.is_empty()),
             "an unfollowable pointer must say why: {value}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A folded header's range covers the continuation line too.
@@ -962,7 +982,7 @@ mod tests {
     /// a header, and half a header still resolves — which is what makes it read
     /// as evidence.
     #[test]
-    fn a_folded_header_is_one_range_covering_both_lines() {
+    fn a_folded_header_is_one_range_covering_both_lines() -> Result<(), TestError> {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     Contact: <sip:alice@192.0.2.1>\r\n \
@@ -971,19 +991,18 @@ mod tests {
         let message = crate::sip::parser::parse_sip(
             raw,
             chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            "192.0.2.1".parse().expect("ip"),
-            "192.0.2.2".parse().expect("ip"),
+            "192.0.2.1".parse()?,
+            "192.0.2.2".parse()?,
             5060,
             5060,
             crate::net::TransportProto::Udp,
-        )
-        .expect("a valid REGISTER");
+        )?;
 
         assert_eq!(message.headers.len(), 3, "three headers, folding included");
         let span = message.headers[1]
             .line_span
             .clone()
-            .expect("a parsed header names its own bytes");
+            .ok_or("a parsed header names its own bytes")?;
         let contact = &message.raw[span.start as usize..span.end as usize];
         assert!(
             contact.ends_with(b";expires=180"),
@@ -991,6 +1010,7 @@ mod tests {
              at the first CRLF: {:?}",
             std::str::from_utf8(contact)
         );
+        Ok(())
     }
 
     /// A line the parser drops costs no other header its range.
@@ -1005,7 +1025,7 @@ mod tests {
     /// There is one walk now, so the junk line simply produces no header and
     /// the three real ones each name their own bytes.
     #[test]
-    fn a_line_the_parser_drops_costs_no_other_header_its_range() {
+    fn a_line_the_parser_drops_costs_no_other_header_its_range() -> Result<(), TestError> {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     this line carries no colon\r\n\
@@ -1014,13 +1034,12 @@ mod tests {
         let message = crate::sip::parser::parse_sip(
             raw,
             chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            "192.0.2.1".parse().expect("ip"),
-            "192.0.2.2".parse().expect("ip"),
+            "192.0.2.1".parse()?,
+            "192.0.2.2".parse()?,
             5060,
             5060,
             crate::net::TransportProto::Udp,
-        )
-        .expect("a REGISTER with one junk line still parses");
+        )?;
 
         assert_eq!(
             message.headers.len(),
@@ -1031,10 +1050,10 @@ mod tests {
             let span = header
                 .line_span
                 .clone()
-                .expect("every parsed header names its bytes, junk line or not");
+                .ok_or("every parsed header names its bytes, junk line or not")?;
             let line = &message.raw[span.start as usize..span.end as usize];
-            let text = std::str::from_utf8(line).expect("utf-8");
-            let (name, value) = text.split_once(':').expect("a header line");
+            let text = std::str::from_utf8(line)?;
+            let (name, value) = text.split_once(':').ok_or("a header line")?;
             assert!(
                 name.trim().eq_ignore_ascii_case(header.name.as_ref()),
                 "the range cites {name:?} for the header the parser called {:?}",
@@ -1054,6 +1073,7 @@ mod tests {
                 .is_some_and(|rows| rows.iter().all(|r| r.get("frame_byte_start").is_some())),
             "every header must carry a frame-relative range: {view:?}"
         );
+        Ok(())
     }
 
     /// A header that came from no bytes gets no range, and the view says so.
@@ -1063,7 +1083,7 @@ mod tests {
     /// would point at bytes that never said it. The count of them is reported
     /// rather than left to be inferred from a missing key.
     #[test]
-    fn a_header_that_came_from_no_bytes_is_reported_without_a_range() {
+    fn a_header_that_came_from_no_bytes_is_reported_without_a_range() -> Result<(), TestError> {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     Contact: <sip:alice@192.0.2.1>\r\n\
@@ -1071,13 +1091,12 @@ mod tests {
         let mut message = crate::sip::parser::parse_sip(
             raw,
             chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            "192.0.2.1".parse().expect("ip"),
-            "192.0.2.2".parse().expect("ip"),
+            "192.0.2.1".parse()?,
+            "192.0.2.2".parse()?,
             5060,
             5060,
             crate::net::TransportProto::Udp,
-        )
-        .expect("a valid REGISTER");
+        )?;
 
         message.headers.push(crate::sip::SipHeader {
             name: "X-Added-Later".into(),
@@ -1088,9 +1107,9 @@ mod tests {
         let view = sip_view(&message, Some(42), None);
         let why = view["ranges_unavailable"]
             .as_str()
-            .expect("the view must say a header carries no range");
+            .ok_or("the view must say a header carries no range")?;
         assert!(why.contains('1'), "the reason must name how many: {why}");
-        let rows = view["headers"].as_array().expect("rows");
+        let rows = view["headers"].as_array().ok_or("rows")?;
         assert!(
             rows.last()
                 .is_some_and(|r| r.get("frame_byte_start").is_none()),
@@ -1102,6 +1121,7 @@ mod tests {
                 .all(|r| r.get("frame_byte_start").is_some()),
             "and it must cost the real headers nothing: {rows:?}"
         );
+        Ok(())
     }
 
     /// Every parsed header's range reproduces the value the parser read.
@@ -1112,7 +1132,7 @@ mod tests {
     /// continuation lines and a span that stopped at the first one would still
     /// look plausible.
     #[test]
-    fn every_range_reproduces_the_value_the_parser_read() {
+    fn every_range_reproduces_the_value_the_parser_read() -> Result<(), TestError> {
         let raw = b"REGISTER sip:example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK1\r\n\
                     Contact: <sip:alice@192.0.2.1>\r\n\
@@ -1121,20 +1141,18 @@ mod tests {
         let message = crate::sip::parser::parse_sip(
             raw,
             chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-            "192.0.2.1".parse().expect("ip"),
-            "192.0.2.2".parse().expect("ip"),
+            "192.0.2.1".parse()?,
+            "192.0.2.2".parse()?,
             5060,
             5060,
             crate::net::TransportProto::Udp,
-        )
-        .expect("a valid REGISTER");
+        )?;
 
         assert!(!message.headers.is_empty());
         for header in &message.headers {
-            let span = header.line_span.clone().expect("a span");
-            let text = std::str::from_utf8(&message.raw[span.start as usize..span.end as usize])
-                .expect("utf-8");
-            let (_, value) = text.split_once(':').expect("a header line");
+            let span = header.line_span.clone().ok_or("a span")?;
+            let text = std::str::from_utf8(&message.raw[span.start as usize..span.end as usize])?;
+            let (_, value) = text.split_once(':').ok_or("a header line")?;
             assert_eq!(
                 value.trim(),
                 header.value,
@@ -1142,11 +1160,12 @@ mod tests {
                 header.name
             );
         }
+        Ok(())
     }
 
     /// An ambiguous anchor produces no frame-relative range.
     #[test]
-    fn an_ambiguous_payload_offset_is_no_offset() {
+    fn an_ambiguous_payload_offset_is_no_offset() -> Result<(), TestError> {
         assert_eq!(unique_offset(b"abcXYZdef", b"XYZ"), Some(3));
         assert_eq!(
             unique_offset(b"XYZabcXYZ", b"XYZ"),
@@ -1159,5 +1178,6 @@ mod tests {
             None,
             "an empty needle is nowhere"
         );
+        Ok(())
     }
 }
