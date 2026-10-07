@@ -693,13 +693,38 @@ fn b9_a_compose_service_name_is_not_a_machine() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The invented machine name CONTRIBUTING.md shows as the thing not to write.
+///
+/// Invented, not taken from the lab: CONTRIBUTING.md publishes to sipnab.com as
+/// `website/content/docs/contributing.md`, and A1, B1 and D1 ban every real lab
+/// name and address from `website/`. The guide used to show `opensips-1`
+/// itself, which this test required, so the guide could not publish.
+const FICTIONAL_HOST: &str = "sbc-east-2";
+
 /// B10. The guide names the role form to use instead.
+///
+/// It shows a machine name to avoid in the same table row as the role form
+/// that replaces it, and that name is invented: no lab machine, host or
+/// address appears anywhere in the guide.
 #[test]
 fn b10_the_guide_names_the_role_alternative() -> Result<(), TestError> {
+    let guide = contributing()?;
+    let row = guide.lines().find(|line| word(line, FICTIONAL_HOST));
     assert!(
-        contributing()?.contains("opensips-1"),
-        "CONTRIBUTING.md must show the machine names it is asking writers to \
-         avoid, or the rule is abstract and gets guessed at"
+        row.is_some_and(|line| line.contains("what the machine is")),
+        "CONTRIBUTING.md must show an invented machine name ({FICTIONAL_HOST}) \
+         in the row that gives the role form, or the rule is abstract and gets \
+         guessed at"
+    );
+    let real: Vec<&str> = guide
+        .lines()
+        .filter(|line| rule::lab_host(line) || rule::lab_machine(line) || rule::lab_address(line))
+        .collect();
+    assert!(
+        real.is_empty(),
+        "CONTRIBUTING.md publishes to the site, so its examples must be \
+         invented, not lab machines or lab addresses:\n{}",
+        real.join("\n")
     );
     assert!(
         guidance::MACHINE.contains("x86_64 OpenSIPS VM"),
@@ -1648,7 +1673,8 @@ fn the_guide_names_every_class_the_gate_enforces() -> Result<(), TestError> {
     // somebody wrote that row.
     for (class, clause) in [
         ("A hostnames", "hostname"),
-        ("B lab machines", "opensips-1"),
+        // An invented name, not a lab one: see FICTIONAL_HOST.
+        ("B lab machines", FICTIONAL_HOST),
         ("C private domain", "example.com"),
         ("D addresses", "rfc 5737"),
         ("E accounts", "$home"),

@@ -255,6 +255,12 @@ DOCS_TO_SITE = {
     "fail2ban-sipnab.md": "fail2ban-sipnab.md",
     "first-cli-triage.md": "first-cli-triage.md",
     "glossary.md": "glossary.md",
+    # Two site pages whose sources sit outside docs/ (SITE-CONTRIB). The keys
+    # are still docs-relative, so a docs page linking `../CONTRIBUTING.md`
+    # reaches the site page; build-site-pages.py resolves every link to that
+    # form before it looks here.
+    "../CONTRIBUTING.md": "contributing.md",
+    "../contrib/README.md": "contrib.md",
 }
 
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")

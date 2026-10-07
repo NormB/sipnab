@@ -43,6 +43,24 @@ entry that carries them.
   `--redact` rather than rewritten. The container on disk never changes, and each change is
   logged. [Send sipnab's vCons to vcon.store](docs/vcon-store.md) has the
   measurements.
+- **sipnab.com publishes the `contrib/` index (SITE-CONTRIB).** `/docs/contrib/`
+  is generated from `contrib/README.md` by `scripts/build-site-pages.py` and is
+  listed in the docs navigation, `llms.txt` and `llms-full.txt`. The generator
+- **sipnab.com publishes the contributor guide and the `contrib/` index
+  (SITE-CONTRIB).** `/docs/contributing/` is generated from `CONTRIBUTING.md`
+  and `/docs/contrib/` from `contrib/README.md` by
+  `scripts/build-site-pages.py`, and both are listed in the docs navigation,
+  `llms.txt` and `llms-full.txt`. The guide's private-identity examples are
+  now invented (`buildbox-7`, `sbc-east-2`, `192.0.2.40`) rather than lab
+  names, which `private_identity_test` bans from every site page, and
+  `b10_the_guide_names_the_role_alternative` requires the invented name. The generator
+  now resolves a page's relative links from that page's own directory rather
+  than from `docs/`, and rewrites links to repo files that are neither pages
+  nor code to GitHub URLs. `contributor_docs_are_generated_site_pages` requires
+  both pages, their generated banners, and links that resolve;
+  `site_pages_mirror_is_current` holds them equal to their sources. The
+  `contrib/README.md` link to the MCP walkthrough, renamed earlier to
+  `docs/mcp-deploy.md`, now points at that page.
 
 - **The call report and the vCon carry MOS (CMP6).** Wherever a stream's MOS
   is computed from the capture, it is now reported. The call report's text

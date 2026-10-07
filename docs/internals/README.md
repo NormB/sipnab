@@ -225,7 +225,9 @@ process, so the floor is not optional.
   The same arrangement covers the operator
   pages: [`build-site-pages.py`](../../scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](../../website/content/docs/),
-  gated by `site_pages_mirror_is_current`. That same script also writes
+  gated by `site_pages_mirror_is_current`. Two entries' sources sit outside
+  `docs/` ([`CONTRIBUTING.md`](../../CONTRIBUTING.md) and [`contrib/README.md`](../../contrib/README.md)), and the script resolves each page's relative
+  links from that page's own directory. That same script also writes
   `llms.txt` and `llms-full.txt` into `website/static/`, from ALL the published
   pages — `docs/internals/` included — and `llms_aggregates_are_current` gates
   them.

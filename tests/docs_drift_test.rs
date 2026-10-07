@@ -380,6 +380,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "check-update-from",
         &[
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
             "docs/internals/walkthroughs.md",
@@ -921,6 +922,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/mcp-deploy.md",
             "website/content/docs/mcp-deploy.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -935,6 +937,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/examples.md",
             "website/content/docs/mcp.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     // useradd / systemctl / certbot / claude-cli, in the deployment scenarios
@@ -988,6 +991,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/testing.md",
             "website/content/docs/internals/tui-testing.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1000,6 +1004,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
             "website/content/docs/internals/testing.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1012,6 +1017,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
             "website/content/docs/internals/testing.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1036,6 +1042,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1085,6 +1092,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1114,6 +1122,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/testing.md",
             "website/content/docs/internals/testing.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1153,6 +1162,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             // whose whole point is the `--tests` cargo flag: without it the
             // matrix compiles no test file and passes over nothing.
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1169,6 +1179,7 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/README.md",
             "website/content/docs/internals/_index.md",
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
     ),
     (
@@ -1185,18 +1196,32 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "all",
         &[
             "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
-    ("install", &["README.md", "CONTRIBUTING.md"]),
+    (
+        "install",
+        &[
+            "README.md",
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
+        ],
+    ),
     // cargo-audit's flags, not sipnab's. CONTRIBUTING's Dependencies section
     // quotes the exact `cargo audit` lines ci.yml runs — `--ignore` for the
     // accepted rsa advisory, `--file` for the separate fuzz lockfile — so a
     // contributor reproduces the gate rather than an approximation of it.
     // dependency_policy_doc_test holds those lines equal to ci.yml's.
-    ("file", &["CONTRIBUTING.md"]),
-    ("ignore", &["CONTRIBUTING.md"]),
+    (
+        "file",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "ignore",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // docker run flags (install docs)
     (
         "net",
@@ -4226,7 +4251,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 268 -> 265: the three agent planning documents under docs/superpowers/
     // were removed (agent_planning_documents_are_never_committed).
     // 265 -> 267: docs/vcon-store.md and its generated site page.
-    const EXPECTED_MARKDOWN_FILES: usize = 267;
+    // 267 -> 268: website/content/docs/contrib.md, the generated site page
+    // for contrib/README.md.
+    // 268 -> 269: website/content/docs/contributing.md, the generated site
+    // page for CONTRIBUTING.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 269;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4739,7 +4768,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1058 -> 1066: the vCon forwarder (VCON-FWD). Attributed by counting
     // added separator rows per file: docs/vcon.md 1, docs/vcon-store.md 2,
     // docs/cli-reference.md 1, and the same 1, 2, 1 in their site copies.
-    const EXPECTED_TABLES: usize = 1066;
+    // 1066 -> 1067: the site copy of contrib/README.md's one table,
+    // website/content/docs/contrib.md. Attributed by counting separator rows
+    // in the added file: 1.
+    // 1067 -> 1072: the site copy of CONTRIBUTING.md's five tables,
+    // website/content/docs/contributing.md. Attributed by counting separator
+    // rows in the added file: 5.
+    const EXPECTED_TABLES: usize = 1072;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
