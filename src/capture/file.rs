@@ -1766,7 +1766,7 @@ mod tests {
     fn tgz(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         let specs: Vec<Spec<'_>> = entries.iter().map(|(n, d)| Spec::file(n, d)).collect();
-        Ok(gzip(&build(&specs))?)
+        gzip(&build(&specs))
     }
 
     /// A packet read out of an archive member is stamped with the member's

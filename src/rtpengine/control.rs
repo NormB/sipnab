@@ -1622,7 +1622,7 @@ mod query_reply_tests {
     fn parsed() -> Result<CallView, TestError> {
         match parse_query_reply(REAL_QUERY, "1-9582@172.28.0.21") {
             Ok(ControlReply::Call(c)) => Ok(c),
-            other => return Err(format!("expected a call view, got {other:?}").into()),
+            other => Err(format!("expected a call view, got {other:?}").into()),
         }
     }
 

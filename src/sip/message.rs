@@ -732,7 +732,7 @@ mod tests {
 
     /// A complete, well-formed OPTIONS request.
     fn well_formed() -> Result<SipMessage, TestError> {
-        Ok(parse_msg(
+        parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
@@ -743,7 +743,7 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        )?)
+        )
     }
 
     /// `cseq()` returns only the single method token per RFC 3261, dropping
@@ -1217,11 +1217,7 @@ mod tests {
             "CSeq: 1 OPTIONS",
             "Content-Length: 0",
         ]);
-        Ok(parse_msg(
-            "OPTIONS sip:b@example.com SIP/2.0",
-            &headers,
-            b"",
-        )?)
+        parse_msg("OPTIONS sip:b@example.com SIP/2.0", &headers, b"")
     }
 
     /// A single Via with a branch param yields that branch.

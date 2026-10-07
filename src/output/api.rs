@@ -13381,11 +13381,7 @@ mod tests {
     }
 
     fn test_get_with_key(uri: &str, key: &str) -> Result<Request<Body>, TestError> {
-        Ok(test_request_with_header(
-            uri,
-            "authorization",
-            &format!("Bearer {key}"),
-        )?)
+        test_request_with_header(uri, "authorization", &format!("Bearer {key}"))
     }
 
     async fn json_of(resp: axum::response::Response) -> Result<Value, TestError> {
