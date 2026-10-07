@@ -216,14 +216,24 @@ mod tests {
     use crate::test_utils::build_sip_message as build_sip;
     use chrono::{TimeZone, Utc};
     use std::net::{IpAddr, Ipv4Addr};
+    type TestError = Box<dyn std::error::Error>;
 
-    fn ts() -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<chrono::DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("a valid UTC time")?)
     }
 
     /// An INVITE dialog from `src` to `to_user`, ending at `final_code`, with a
     /// `User-Agent` banner. Built through the ingest path so the accessors agree.
-    fn call(call_id: &str, src: IpAddr, to_user: &str, ua: &str, final_code: u16) -> SipDialog {
+    fn call(
+        call_id: &str,
+        src: IpAddr,
+        to_user: &str,
+        ua: &str,
+        final_code: u16,
+    ) -> Result<SipDialog, TestError> {
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
         let inv = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
@@ -237,9 +247,9 @@ mod tests {
             ],
             b"",
         );
-        let invite =
-            parse_sip(&inv, ts(), src, dst, 5060, 5060, TransportProto::Udp).expect("parse");
-        let mut d = SipDialog::new(&invite).expect("dialog");
+        let invite = parse_sip(&inv, ts()?, src, dst, 5060, 5060, TransportProto::Udp)
+            .map_err(|e| format!("parse: {e:?}"))?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
         let rsp = build_sip(
             &format!("SIP/2.0 {final_code} X"),
             &[
@@ -251,22 +261,23 @@ mod tests {
             ],
             b"",
         );
-        let resp = parse_sip(&rsp, ts(), dst, src, 5060, 5060, TransportProto::Udp).expect("parse");
+        let resp = parse_sip(&rsp, ts()?, dst, src, 5060, 5060, TransportProto::Udp)
+            .map_err(|e| format!("parse: {e:?}"))?;
         update_state(&mut d, &resp);
         d.messages.push(resp);
-        d
+        Ok(d)
     }
 
     /// By ip, the busiest SENDER ranks first and a dialog counts once for it,
     /// with INVITE outcomes credited: an answered call and a failed one from one
     /// address give it 2 dialogs, 2 invites, 1 answered, 1 failed.
     #[test]
-    fn credit_by_ip_counts_the_sender_and_its_outcomes() {
+    fn credit_by_ip_counts_the_sender_and_its_outcomes() -> Result<(), TestError> {
         let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         let mut tally = BTreeMap::new();
-        TalkerDimension::Ip.credit(&call("c1", a, "15551234000", "UA/1", 200), &mut tally);
-        TalkerDimension::Ip.credit(&call("c2", a, "15551234001", "UA/1", 486), &mut tally);
-        let acc = tally.get("192.0.2.1").expect("the sender is a talker");
+        TalkerDimension::Ip.credit(&call("c1", a, "15551234000", "UA/1", 200)?, &mut tally);
+        TalkerDimension::Ip.credit(&call("c2", a, "15551234001", "UA/1", 486)?, &mut tally);
+        let acc = tally.get("192.0.2.1").ok_or("the sender is a talker")?;
         assert_eq!(acc.dialogs, 2);
         assert_eq!(acc.invites, 2);
         assert_eq!(acc.answered, 1);
@@ -296,15 +307,15 @@ mod tests {
         );
         let inv = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             sender,
             never_sends,
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
-        TalkerDimension::Ip.credit(&SipDialog::new(&inv).expect("dialog"), &mut tally);
+        .map_err(|e| format!("parse: {e:?}"))?;
+        TalkerDimension::Ip.credit(&SipDialog::new(&inv).ok_or("dialog")?, &mut tally);
         assert!(
             tally.contains_key("192.0.2.9"),
             "the INVITE sender is a talker"
@@ -313,16 +324,17 @@ mod tests {
             !tally.contains_key("203.0.113.5"),
             "the destination never sent, so crediting it would be wrong"
         );
+        Ok(())
     }
 
     /// By ua, the key is the banner the sender wrote, and that dimension is the
     /// only one a surface fences.
     #[test]
-    fn credit_by_ua_keys_on_the_banner_and_is_fenced() {
+    fn credit_by_ua_keys_on_the_banner_and_is_fenced() -> Result<(), TestError> {
         let a = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
         let mut tally = BTreeMap::new();
         TalkerDimension::Ua.credit(
-            &call("c1", a, "15551234000", "Sipnabophone/9", 200),
+            &call("c1", a, "15551234000", "Sipnabophone/9", 200)?,
             &mut tally,
         );
         assert!(
@@ -331,23 +343,25 @@ mod tests {
         );
         assert!(TalkerDimension::Ua.fences_key(), "ua is sender-authored");
         assert!(!TalkerDimension::Ip.fences_key(), "ip is sipnab's own read");
+        Ok(())
     }
 
     /// By prefix, the dialed number buckets on its leading digits, a `+` is
     /// ignored so one destination is not split, and a non-numeric or absent
     /// destination gets a named literal rather than vanishing.
     #[test]
-    fn prefix_buckets_on_leading_digits() {
+    fn prefix_buckets_on_leading_digits() -> Result<(), TestError> {
         assert_eq!(prefix_key(Some("15551234000"), 4), "1555");
         assert_eq!(prefix_key(Some("+15551234000"), 4), "1555");
         assert_eq!(prefix_key(Some("support"), 4), NON_NUMERIC_DESTINATION);
         assert_eq!(prefix_key(None, 4), NO_DESTINATION);
+        Ok(())
     }
 
     /// The dimension is validated at the edge: an unknown `by` and a zero-width
     /// prefix are refused with a reason, and a bare `prefix` takes the default.
     #[test]
-    fn parse_refuses_unknown_and_zero_width_prefix() {
+    fn parse_refuses_unknown_and_zero_width_prefix() -> Result<(), TestError> {
         assert_eq!(TalkerDimension::parse("ip", None), Ok(TalkerDimension::Ip));
         assert_eq!(
             TalkerDimension::parse("prefix", None),
@@ -359,5 +373,6 @@ mod tests {
         );
         assert!(TalkerDimension::parse("prefix", Some(0)).is_err());
         assert!(TalkerDimension::parse("pairs", None).is_err());
+        Ok(())
     }
 }
