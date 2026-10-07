@@ -14,32 +14,41 @@ mod support;
 mod source_scan;
 
 use source_scan::production_source;
-use support::normalize;
+use support::normalize_or_panic;
 
 /// An RFC3339 Z-suffixed timestamp is replaced with `<TS>`.
 #[test]
 fn scrubs_rfc3339_timestamp() {
-    assert_eq!(normalize("at 2024-06-15T12:00:00Z done"), "at <TS> done");
+    assert_eq!(
+        normalize_or_panic("at 2024-06-15T12:00:00Z done"),
+        "at <TS> done"
+    );
 }
 
 /// A timestamp with fractional seconds and a numeric offset is fully replaced with `<TS>`.
 #[test]
 fn scrubs_timestamp_with_fraction_and_offset() {
-    assert_eq!(normalize("2024-06-15T12:00:00.123456+02:00"), "<TS>");
+    assert_eq!(
+        normalize_or_panic("2024-06-15T12:00:00.123456+02:00"),
+        "<TS>"
+    );
 }
 
 /// A fail2ban-style space-separated timestamp is replaced with `<TS>`.
 #[test]
 fn scrubs_space_separated_timestamp() {
     // fail2ban-style "%Y-%m-%d %H:%M:%S".
-    assert_eq!(normalize("ban 2024-06-15 12:00:00 ip"), "ban <TS> ip");
+    assert_eq!(
+        normalize_or_panic("ban 2024-06-15 12:00:00 ip"),
+        "ban <TS> ip"
+    );
 }
 
 /// Second and millisecond durations (with or without a space) become `<DUR>`.
 #[test]
 fn scrubs_durations_with_units() {
     assert_eq!(
-        normalize("setup 1.234s and 12.3 ms"),
+        normalize_or_panic("setup 1.234s and 12.3 ms"),
         "setup <DUR> and <DUR>"
     );
 }
@@ -47,7 +56,10 @@ fn scrubs_durations_with_units() {
 /// A `/tmp/...` path is replaced with `<TMP>`.
 #[test]
 fn scrubs_temp_paths() {
-    assert_eq!(normalize("wrote /tmp/abc123/out.pcap ok"), "wrote <TMP> ok");
+    assert_eq!(
+        normalize_or_panic("wrote /tmp/abc123/out.pcap ok"),
+        "wrote <TMP> ok"
+    );
 }
 
 /// ...and so is a path under the temp directory this platform ACTUALLY uses.
@@ -74,9 +86,9 @@ fn scrubs_paths_under_the_platform_temp_directory() {
     let f = std::env::temp_dir().join(format!("sipnab-selftest-{}.pcap", std::process::id()));
     let line = format!("wrote {} ok", f.display());
     assert_eq!(
-        normalize(&line),
+        normalize_or_panic(&line),
         "wrote <TMP> ok",
-        "normalize() left a real temp path in place; the determinism contract \
+        "normalize_or_panic() left a real temp path in place; the determinism contract \
          does not hold on this platform. The path was {}",
         f.display()
     );
@@ -85,15 +97,18 @@ fn scrubs_paths_under_the_platform_temp_directory() {
 /// `pid=N` and `PID: N` both normalize to `pid=<PID>`.
 #[test]
 fn scrubs_pids_any_case() {
-    assert_eq!(normalize("pid=12345"), "pid=<PID>");
-    assert_eq!(normalize("PID: 678"), "pid=<PID>");
+    assert_eq!(normalize_or_panic("pid=12345"), "pid=<PID>");
+    assert_eq!(normalize_or_panic("PID: 678"), "pid=<PID>");
 }
 
 /// Loopback IPv4/IPv6 ports become `<PORT>` while the host part is kept.
 #[test]
 fn scrubs_loopback_ports_keeping_host() {
-    assert_eq!(normalize("bound 127.0.0.1:54321"), "bound 127.0.0.1:<PORT>");
-    assert_eq!(normalize("mcp [::1]:8731"), "mcp [::1]:<PORT>");
+    assert_eq!(
+        normalize_or_panic("bound 127.0.0.1:54321"),
+        "bound 127.0.0.1:<PORT>"
+    );
+    assert_eq!(normalize_or_panic("mcp [::1]:8731"), "mcp [::1]:<PORT>");
 }
 
 /// SIP URIs, version numbers, and codec clock-rates pass through unscrubbed.
@@ -101,26 +116,26 @@ fn scrubs_loopback_ports_keeping_host() {
 fn preserves_non_volatile_text() {
     // SIP, version numbers, and codec clock-rates must NOT be scrubbed.
     let s = "INVITE sip:alice@example.com SIP/2.0 v0.4.2 PCMU/8000";
-    assert_eq!(normalize(s), s);
+    assert_eq!(normalize_or_panic(s), s);
 }
 
 /// Normalizing an empty string yields an empty string.
 #[test]
 fn empty_input_is_empty() {
-    assert_eq!(normalize(""), "");
+    assert_eq!(normalize_or_panic(""), "");
 }
 
 /// Backslashes (Windows paths) survive normalization unchanged.
 #[test]
 fn backslashes_are_preserved() {
     let s = r"a\b\c windows\path";
-    assert_eq!(normalize(s), s);
+    assert_eq!(normalize_or_panic(s), s);
 }
 
 /// An embedded NUL byte is preserved and does not panic the normalizer.
 #[test]
 fn nul_byte_is_preserved_without_panic() {
-    let out = normalize("a\u{0}b");
+    let out = normalize_or_panic("a\u{0}b");
     assert!(out.contains('\u{0}'));
     assert_eq!(out, "a\u{0}b");
 }
@@ -146,7 +161,7 @@ fn deterministic_env_sets_contract_vars() {
 fn multiple_tokens_on_one_line() {
     let input = "2024-06-15T12:00:00Z call took 0.05s via 127.0.0.1:5060 pid=42 -> /tmp/x";
     assert_eq!(
-        normalize(input),
+        normalize_or_panic(input),
         "<TS> call took <DUR> via 127.0.0.1:<PORT> pid=<PID> -> <TMP>",
     );
 }

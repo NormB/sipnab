@@ -31,7 +31,7 @@ use std::process::Command;
 /// the fix, which is how the same race would have come back through the other
 /// door.
 fn call_tool(pcap: &str, tool: &str, args: serde_json::Value) -> serde_json::Value {
-    let msg = call_tool_with_args(pcap, &[], tool, args);
+    let msg = call_tool_with_args_or_panic(pcap, &[], tool, args);
     let text = msg["result"]["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("tool {tool} returned no text: {msg}"));
@@ -382,7 +382,7 @@ fn capture_status_names_the_real_source() {
 // fixed in one of two helpers once already.
 #[path = "support/mcp.rs"]
 mod support;
-use support::{McpSession, call_tool_with_args, ok_payload};
+use support::{McpSession, call_tool_with_args_or_panic, ok_payload_or_panic};
 
 fn tmp_root(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}-{}", std::process::id()));
@@ -395,13 +395,13 @@ fn tmp_root(name: &str) -> std::path::PathBuf {
 #[test]
 fn export_capture_writes_a_real_pcap() {
     let root = tmp_root("export");
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         G711,
         &["--mcp-file-root", root.to_str().unwrap()],
         "export_capture",
         serde_json::json!({"filename": "out.pcap"}),
     );
-    let v = ok_payload(&msg);
+    let v = ok_payload_or_panic(&msg);
     assert!(
         v["messages"].as_u64().unwrap_or(0) > 0,
         "exported nothing: {v}"
@@ -449,7 +449,7 @@ fn file_tools_refuse_anything_that_is_not_a_bare_filename() {
         "..",
         "a/../../b.pcap",
     ] {
-        let msg = call_tool_with_args(
+        let msg = call_tool_with_args_or_panic(
             G711,
             &["--mcp-file-root", root.to_str().unwrap()],
             "export_capture",
@@ -491,7 +491,7 @@ fn export_capture_refuses_to_overwrite_the_capture_being_read() {
     std::fs::copy(&src, &input).expect("stage the input inside the file root");
     let before = std::fs::read(&input).expect("read input");
 
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         input.to_str().expect("utf8 path"),
         &["--mcp-file-root", root.to_str().unwrap()],
         "export_capture",
@@ -513,7 +513,7 @@ fn export_capture_refuses_to_overwrite_the_capture_being_read() {
 /// Without `--mcp-file-root` the file tools refuse rather than guessing a path.
 #[test]
 fn file_tools_are_disabled_without_a_configured_root() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         G711,
         &[],
         "export_capture",
@@ -529,7 +529,7 @@ fn file_tools_are_disabled_without_a_configured_root() {
 /// `shutdown_server` is refused unless the operator opted in.
 #[test]
 fn shutdown_is_refused_without_the_opt_in_flag() {
-    let msg = call_tool_with_args(G711, &[], "shutdown_server", serde_json::json!({}));
+    let msg = call_tool_with_args_or_panic(G711, &[], "shutdown_server", serde_json::json!({}));
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("--mcp-allow-shutdown"),
@@ -540,13 +540,13 @@ fn shutdown_is_refused_without_the_opt_in_flag() {
 /// Even when permitted, the default call is a dry run that stops nothing.
 #[test]
 fn shutdown_defaults_to_a_dry_run() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         G711,
         &["--mcp-allow-shutdown"],
         "shutdown_server",
         serde_json::json!({}),
     );
-    let v = ok_payload(&msg);
+    let v = ok_payload_or_panic(&msg);
     assert_eq!(
         v["dry_run"], true,
         "omitting dry_run must NOT stop the server"
@@ -565,7 +565,7 @@ fn list_captures_lists_only_captures() {
     .expect("copy fixture");
     std::fs::write(root.join("notes.txt"), b"not a capture").expect("write decoy");
 
-    let v = ok_payload(&call_tool_with_args(
+    let v = ok_payload_or_panic(&call_tool_with_args_or_panic(
         G711,
         &["--mcp-file-root", root.to_str().unwrap()],
         "list_captures",
@@ -688,7 +688,7 @@ fn list_dialogs_says_so_when_the_page_is_the_whole_answer() {
 /// dialog dropped at a page boundary and none returned twice.
 #[test]
 fn list_dialogs_cursor_reaches_every_dialog_exactly_once() {
-    let mut session = McpSession::start(BRANCH, &[]);
+    let mut session = McpSession::start_or_panic(BRANCH, &[]);
     let mut seen: Vec<String> = Vec::new();
     let mut cursor = serde_json::Value::Null;
     let mut pages = 0;
@@ -698,7 +698,7 @@ fn list_dialogs_cursor_reaches_every_dialog_exactly_once() {
         if let Some(c) = cursor.as_str() {
             args["cursor"] = serde_json::json!(c);
         }
-        let v = session.ok("list_dialogs", args);
+        let v = session.ok_or_panic("list_dialogs", args);
         for d in v["dialogs"].as_array().expect("dialogs array") {
             seen.push(d["call_id"].as_str().expect("call_id").to_string());
         }
@@ -753,7 +753,7 @@ fn list_dialogs_cursor_past_the_end_returns_an_empty_page() {
 /// A malformed cursor is refused by name rather than treated as absent.
 #[test]
 fn list_dialogs_refuses_a_cursor_that_is_not_a_timestamp() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         BRANCH,
         &[],
         "list_dialogs",
@@ -840,9 +840,9 @@ fn find_problems_says_what_its_matches_are_made_of() {
 /// reasonably have thought some of them were calls.
 #[test]
 fn the_method_breakdown_follows_the_filter() {
-    let mut session = McpSession::start(BRANCH, &[]);
+    let mut session = McpSession::start_or_panic(BRANCH, &[]);
 
-    let all = session.ok("find_problems", serde_json::json!({"limit": 1}));
+    let all = session.ok_or_panic("find_problems", serde_json::json!({"limit": 1}));
     let rows = all["by_method"].as_array().expect("by_method present");
     assert_eq!(
         rows.len(),
@@ -854,7 +854,7 @@ fn the_method_breakdown_follows_the_filter() {
 
     // Filtering TO the method that is there leaves the population intact and
     // the breakdown naming it.
-    let kept = session.ok(
+    let kept = session.ok_or_panic(
         "find_problems",
         serde_json::json!({"filter": format!("method == \"{present}\""), "limit": 1}),
     );
@@ -872,7 +872,7 @@ fn the_method_breakdown_follows_the_filter() {
 
     // Filtering AWAY from it empties both the population and the breakdown.
     // A breakdown that survived its own filter would be describing the store.
-    let gone = session.ok(
+    let gone = session.ok_or_panic(
         "find_problems",
         serde_json::json!({"filter": format!("method != \"{present}\""), "limit": 1}),
     );
@@ -948,12 +948,12 @@ fn the_method_breakdown_puts_the_dominant_method_first() {
 /// ignored returns the unfiltered 127 and looks like it worked.
 #[test]
 fn find_problems_filter_narrows_the_matching_kinds() {
-    let mut session = McpSession::start(BRANCH, &[]);
+    let mut session = McpSession::start_or_panic(BRANCH, &[]);
 
-    let all = session.ok("find_problems", serde_json::json!({"limit": 1000}));
+    let all = session.ok_or_panic("find_problems", serde_json::json!({"limit": 1000}));
     assert_eq!(all["total_matched"], 127, "unfiltered baseline: {all}");
 
-    let narrowed = session.ok(
+    let narrowed = session.ok_or_panic(
         "find_problems",
         serde_json::json!({"filter": "msg_count > 5", "limit": 1000}),
     );
@@ -976,7 +976,7 @@ fn find_problems_filter_narrows_the_matching_kinds() {
 /// An unparseable filter on `find_problems` is refused, not ignored.
 #[test]
 fn find_problems_refuses_an_unparseable_filter() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         BRANCH,
         &[],
         "find_problems",
@@ -992,17 +992,17 @@ fn find_problems_refuses_an_unparseable_filter() {
 /// `search_by_time` must accept a filter so a window and a symptom are one call.
 #[test]
 fn search_by_time_filter_narrows_the_window() {
-    let mut session = McpSession::start(BRANCH, &[]);
+    let mut session = McpSession::start_or_panic(BRANCH, &[]);
     let window = serde_json::json!({
         "start": "2016-11-17T21:52:35Z", "end": "2016-11-17T21:53:00Z", "limit": 1000
     });
 
-    let all = session.ok("search_by_time", window.clone());
+    let all = session.ok_or_panic("search_by_time", window.clone());
     assert_eq!(all["total_matched"], 247, "unfiltered window: {all}");
 
     let mut filtered = window.clone();
     filtered["filter"] = serde_json::json!("state == 'Failed'");
-    let v = session.ok("search_by_time", filtered);
+    let v = session.ok_or_panic("search_by_time", filtered);
     assert_eq!(
         v["total_matched"], 16,
         "16 of the 247 dialogs in this window failed; 247 here means the \
@@ -1131,7 +1131,7 @@ fn rtp_stats_capture_wide_excludes_nothing_without_a_mos_bound() {
 #[test]
 fn rtp_stats_refuses_a_mos_bound_on_a_single_call() {
     let call_id = first_call_id(G711);
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         G711,
         &[],
         "rtp_stats",
@@ -1147,7 +1147,7 @@ fn rtp_stats_refuses_a_mos_bound_on_a_single_call() {
 /// Capture-wide `rtp_stats` pages, and the pages cover every stream once.
 #[test]
 fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
-    let mut session = McpSession::start(CODECS, &[]);
+    let mut session = McpSession::start_or_panic(CODECS, &[]);
     let mut seen: Vec<String> = Vec::new();
     let mut cursor = serde_json::Value::Null;
 
@@ -1156,7 +1156,7 @@ fn rtp_stats_capture_wide_cursor_reaches_every_stream_exactly_once() {
         if let Some(c) = cursor.as_str() {
             args["cursor"] = serde_json::json!(c);
         }
-        let v = session.ok("rtp_stats", args);
+        let v = session.ok_or_panic("rtp_stats", args);
         assert_eq!(v["total_matched"], 4, "page {page}: {v}");
         for s in v["streams"].as_array().expect("streams") {
             seen.push(format!(
@@ -1254,13 +1254,15 @@ fn the_method_breakdown_sums_to_total_matched() {
 /// looked internally consistent.
 #[test]
 fn the_method_breakdown_does_not_move_between_pages() {
-    let mut session = McpSession::start(BRANCH, &[]);
-    let first = ok_payload(&session.call("list_dialogs", serde_json::json!({ "limit": 2 })));
+    let mut session = McpSession::start_or_panic(BRANCH, &[]);
+    let first = ok_payload_or_panic(
+        &session.call_or_panic("list_dialogs", serde_json::json!({ "limit": 2 })),
+    );
     let cursor = first["next_cursor"]
         .as_str()
         .expect("1334 dialogs do not fit in one page of 2")
         .to_string();
-    let second = ok_payload(&session.call(
+    let second = ok_payload_or_panic(&session.call_or_panic(
         "list_dialogs",
         serde_json::json!({ "limit": 2, "cursor": cursor }),
     ));

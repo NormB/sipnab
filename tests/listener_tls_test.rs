@@ -99,7 +99,9 @@ include!("support/timeout.rs");
 /// MCP over HTTP with `--mcp-tls-cert` / `--mcp-tls-key`.
 #[cfg(feature = "mcp-http")]
 mod mcp {
-    use super::tls_pki::{HttpsResponse, TestPki, https_exchange, plain_http_get, test_pki};
+    use super::tls_pki::{
+        HttpsResponse, TestPki, https_exchange, plain_http_get_or_panic, test_pki_or_panic,
+    };
     use super::{assert_refused, test_timeout};
 
     use super::mcp_support as support;
@@ -154,7 +156,8 @@ mod mcp {
         let mut args = vec!["--mcp-bind", "127.0.0.1:0"];
         args.extend(pki.args(CERT, KEY));
         args.extend_from_slice(extra);
-        let (child, addr) = support::spawn_http(&args).expect("the HTTPS MCP server starts");
+        let (child, addr) =
+            support::spawn_http_or_panic(&args).expect("the HTTPS MCP server starts");
         (Running(Some(child)), addr)
     }
 
@@ -187,7 +190,7 @@ mod mcp {
     /// issuing CA completes `initialize` and reads `/health`.
     #[test]
     fn mcp_tls_flags_serve_https() {
-        let pki = test_pki("mcp");
+        let pki = test_pki_or_panic("mcp");
         let (child, addr) = spawn_tls(&pki, &[]);
         let init = initialize(&addr, &pki.ca, None).expect("HTTPS initialize");
         assert_eq!(init.status, 200, "initialize over HTTPS: {}", init.body);
@@ -209,7 +212,7 @@ mod mcp {
     /// one is 200.
     #[test]
     fn mcp_tls_keeps_the_bearer_guard() {
-        let pki = test_pki("mcp-token");
+        let pki = test_pki_or_panic("mcp-token");
         let (child, addr) = spawn_tls(&pki, &["--mcp-token", "tls-test-token"]);
         let refused = initialize(&addr, &pki.ca, None).expect("HTTPS exchange");
         assert_eq!(refused.status, 401, "no token over HTTPS must be 401");
@@ -221,9 +224,9 @@ mod mcp {
     /// A plain-HTTP request to the HTTPS port is not served.
     #[test]
     fn mcp_plain_http_to_the_tls_port_is_not_served() {
-        let pki = test_pki("mcp-plain");
+        let pki = test_pki_or_panic("mcp-plain");
         let (child, addr) = spawn_tls(&pki, &[]);
-        let text = plain_http_get(&addr, "/health", test_timeout(10));
+        let text = plain_http_get_or_panic(&addr, "/health", test_timeout(10));
         assert!(
             !text.starts_with("HTTP/1.1 200") && !text.starts_with("HTTP/1.0 200"),
             "plain HTTP must not be answered on the TLS port: {text}"
@@ -235,8 +238,8 @@ mod mcp {
     /// the server goes on serving a client that does.
     #[test]
     fn mcp_an_untrusting_client_fails_the_handshake() {
-        let pki = test_pki("mcp-trust");
-        let other = test_pki("mcp-other");
+        let pki = test_pki_or_panic("mcp-trust");
+        let other = test_pki_or_panic("mcp-other");
         let (child, addr) = spawn_tls(&pki, &[]);
         let err = initialize(&addr, &other.ca, None)
             .expect_err("a client trusting another CA must not complete the handshake");
@@ -253,7 +256,7 @@ mod mcp {
     /// client's handshake.
     #[test]
     fn mcp_a_silent_client_does_not_block_other_handshakes() {
-        let pki = test_pki("mcp-silent");
+        let pki = test_pki_or_panic("mcp-silent");
         let (child, addr) = spawn_tls(&pki, &[]);
         let _silent = std::net::TcpStream::connect(&addr).expect("silent connect");
         let started = std::time::Instant::now();
@@ -273,7 +276,7 @@ mod mcp {
     #[test]
     fn mcp_the_non_loopback_warning_fires_only_without_tls() {
         const WARNING: &str = "without TLS";
-        let pki = test_pki("mcp-warn");
+        let pki = test_pki_or_panic("mcp-warn");
         let mut plain_args = base_on(&fixture(), "0.0.0.0:0");
         plain_args.extend(["--mcp-token", "t"].map(String::from));
         let plain_refs: Vec<&str> = plain_args.iter().map(String::as_str).collect();
@@ -301,7 +304,7 @@ mod mcp {
     /// HTTPS.
     #[test]
     fn mcp_one_tls_flag_alone_is_refused_naming_it() {
-        let pki = test_pki("mcp-alone");
+        let pki = test_pki_or_panic("mcp-alone");
         for (flag, file, missing) in [(CERT, &pki.cert, KEY), (KEY, &pki.key, CERT)] {
             let mut args = base(&fixture());
             args.extend([flag.to_string(), file.clone()]);
@@ -313,7 +316,7 @@ mod mcp {
     /// A missing certificate file stops the run naming it.
     #[test]
     fn mcp_a_missing_tls_file_is_refused_naming_it() {
-        let pki = test_pki("mcp-missing");
+        let pki = test_pki_or_panic("mcp-missing");
         let missing = pki.dir.path().join("no-such-cert.pem");
         let missing = missing.to_string_lossy().into_owned();
         let mut args = base(&fixture());
@@ -325,8 +328,8 @@ mod mcp {
     /// A key any user on the host can read stops the run naming it.
     #[test]
     fn mcp_a_world_readable_key_is_refused_naming_it() {
-        let pki = test_pki("mcp-perm");
-        pki.make_key_world_readable();
+        let pki = test_pki_or_panic("mcp-perm");
+        pki.make_key_world_readable_or_panic();
         let mut args = base(&fixture());
         args.extend(pki.args(CERT, KEY).map(String::from));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -336,8 +339,8 @@ mod mcp {
     /// A key that is not the certificate's stops the run naming both files.
     #[test]
     fn mcp_a_key_that_is_not_the_certificates_is_refused() {
-        let pki = test_pki("mcp-pair");
-        let other = test_pki("mcp-pair-other");
+        let pki = test_pki_or_panic("mcp-pair");
+        let other = test_pki_or_panic("mcp-pair-other");
         let mut args = base(&fixture());
         args.extend([CERT, &pki.cert, KEY, &other.key].map(String::from));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -349,7 +352,7 @@ mod mcp {
     /// transport they need.
     #[test]
     fn mcp_tls_flags_without_the_http_transport_are_refused() {
-        let pki = test_pki("mcp-stdio");
+        let pki = test_pki_or_panic("mcp-stdio");
         let fixture = fixture();
         let mut args = vec!["-N", "-I", &fixture, "--mcp", "--quiet"];
         args.extend(pki.args(CERT, KEY));
@@ -360,7 +363,9 @@ mod mcp {
 /// The metrics endpoint with `--metrics-tls-cert` / `--metrics-tls-key`.
 #[cfg(feature = "metrics")]
 mod metrics {
-    use super::tls_pki::{TestPki, https_exchange, https_get, plain_http_get, test_pki};
+    use super::tls_pki::{
+        TestPki, https_exchange, https_get, plain_http_get_or_panic, test_pki_or_panic,
+    };
     use super::{assert_refused, test_timeout};
 
     use super::headless_metrics as headless;
@@ -430,7 +435,7 @@ mod metrics {
     /// the issuing CA, in the Prometheus text format.
     #[test]
     fn metrics_tls_flags_serve_https() {
-        let pki = test_pki("metrics");
+        let pki = test_pki_or_panic("metrics");
         let run = spawn_tls(&pki, &[]);
         let (status, body) =
             https_get(&run.addr, "/metrics", &pki.ca, test_timeout(10)).expect("HTTPS /metrics");
@@ -447,7 +452,7 @@ mod metrics {
     #[test]
     fn metrics_tls_keeps_basic_auth() {
         use base64::Engine as _;
-        let pki = test_pki("metrics-auth");
+        let pki = test_pki_or_panic("metrics-auth");
         let run = spawn_tls(&pki, &["--metrics-auth", "scrape:s3cret"]);
         let (status, _) =
             https_get(&run.addr, "/metrics", &pki.ca, test_timeout(10)).expect("HTTPS exchange");
@@ -472,9 +477,9 @@ mod metrics {
     /// A plain-HTTP request to the HTTPS port is not served.
     #[test]
     fn metrics_plain_http_to_the_tls_port_is_not_served() {
-        let pki = test_pki("metrics-plain");
+        let pki = test_pki_or_panic("metrics-plain");
         let run = spawn_tls(&pki, &[]);
-        let text = plain_http_get(&run.addr, "/metrics", test_timeout(10));
+        let text = plain_http_get_or_panic(&run.addr, "/metrics", test_timeout(10));
         assert!(
             !text.starts_with("HTTP/1.1 200") && !text.starts_with("HTTP/1.0 200"),
             "plain HTTP must not be answered on the TLS port: {text}"
@@ -486,8 +491,8 @@ mod metrics {
     /// the server goes on serving a client that does.
     #[test]
     fn metrics_an_untrusting_client_fails_the_handshake() {
-        let pki = test_pki("metrics-trust");
-        let other = test_pki("metrics-other");
+        let pki = test_pki_or_panic("metrics-trust");
+        let other = test_pki_or_panic("metrics-other");
         let run = spawn_tls(&pki, &[]);
         let err = https_get(&run.addr, "/metrics", &other.ca, test_timeout(10))
             .expect_err("a client trusting another CA must not complete the handshake");
@@ -505,7 +510,7 @@ mod metrics {
     /// client's handshake.
     #[test]
     fn metrics_a_silent_client_does_not_block_other_handshakes() {
-        let pki = test_pki("metrics-silent");
+        let pki = test_pki_or_panic("metrics-silent");
         let run = spawn_tls(&pki, &[]);
         let _silent = std::net::TcpStream::connect(&run.addr).expect("silent connect");
         let started = std::time::Instant::now();
@@ -525,7 +530,7 @@ mod metrics {
     #[test]
     fn metrics_the_plaintext_credential_warning_fires_only_without_tls() {
         const WARNING: &str = "not encrypted";
-        let pki = test_pki("metrics-warn");
+        let pki = test_pki_or_panic("metrics-warn");
         let wide: Vec<String> = [
             "-N",
             "--hep-listen",
@@ -558,7 +563,7 @@ mod metrics {
     /// the flag missing.
     #[test]
     fn metrics_one_tls_flag_alone_is_refused_naming_it() {
-        let pki = test_pki("metrics-alone");
+        let pki = test_pki_or_panic("metrics-alone");
         for (flag, file, missing) in [(CERT, &pki.cert, KEY), (KEY, &pki.key, CERT)] {
             let mut args = base();
             args.extend([flag.to_string(), file.clone()]);
@@ -570,7 +575,7 @@ mod metrics {
     /// A missing certificate file stops the run naming it.
     #[test]
     fn metrics_a_missing_tls_file_is_refused_naming_it() {
-        let pki = test_pki("metrics-missing");
+        let pki = test_pki_or_panic("metrics-missing");
         let missing = pki.dir.path().join("no-such-cert.pem");
         let missing = missing.to_string_lossy().into_owned();
         let mut args = base();
@@ -582,8 +587,8 @@ mod metrics {
     /// A key any user on the host can read stops the run naming it.
     #[test]
     fn metrics_a_world_readable_key_is_refused_naming_it() {
-        let pki = test_pki("metrics-perm");
-        pki.make_key_world_readable();
+        let pki = test_pki_or_panic("metrics-perm");
+        pki.make_key_world_readable_or_panic();
         let mut args = base();
         args.extend(pki.args(CERT, KEY).map(String::from));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -593,8 +598,8 @@ mod metrics {
     /// A key that is not the certificate's stops the run naming both files.
     #[test]
     fn metrics_a_key_that_is_not_the_certificates_is_refused() {
-        let pki = test_pki("metrics-pair");
-        let other = test_pki("metrics-pair-other");
+        let pki = test_pki_or_panic("metrics-pair");
+        let other = test_pki_or_panic("metrics-pair-other");
         let mut args = base();
         args.extend([CERT, &pki.cert, KEY, &other.key].map(String::from));
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -607,7 +612,7 @@ mod metrics {
     /// and clap's usage line names `--metrics <ADDR>` for any parse error.
     #[test]
     fn metrics_tls_flags_without_metrics_are_refused() {
-        let pki = test_pki("metrics-orphan");
+        let pki = test_pki_or_panic("metrics-orphan");
         let mut args = vec!["-N", "--hep-listen", "127.0.0.1:0", "--quiet"];
         args.extend(pki.args(CERT, KEY));
         assert_refused(
@@ -623,7 +628,7 @@ mod metrics {
 /// flag replaces its own key.
 #[cfg(all(feature = "api", feature = "mcp-http", feature = "metrics"))]
 mod config_keys {
-    use super::tls_pki::{TestPki, https_exchange, https_get, test_pki};
+    use super::tls_pki::{TestPki, https_exchange, https_get, test_pki_or_panic};
     use super::{assert_refused, mcp_support, test_timeout};
 
     use super::api_server as server;
@@ -642,9 +647,9 @@ mod config_keys {
     /// `[api] tls_cert` / `tls_key` serve the REST API over HTTPS.
     #[test]
     fn the_api_keys_serve_https() {
-        let pki = test_pki("cfg-api");
+        let pki = test_pki_or_panic("cfg-api");
         let cfg = config_file(&pki, &pair("api", &pki.cert, &pki.key));
-        let srv = server::ApiServer::spawn_unsettled(&["--config", &cfg]);
+        let srv = server::ApiServer::spawn_unsettled_or_panic(&["--config", &cfg]);
         let (status, body) =
             https_get(&srv.addr, "/health", &pki.ca, test_timeout(10)).expect("HTTPS /health");
         assert_eq!(status, 200, "{body}");
@@ -653,10 +658,10 @@ mod config_keys {
     /// `[mcp] tls_cert` / `tls_key` serve MCP over HTTPS.
     #[test]
     fn the_mcp_keys_serve_https() {
-        let pki = test_pki("cfg-mcp");
+        let pki = test_pki_or_panic("cfg-mcp");
         let cfg = config_file(&pki, &pair("mcp", &pki.cert, &pki.key));
         let (child, addr) =
-            mcp_support::spawn_http(&["--mcp-bind", "127.0.0.1:0", "--config", &cfg])
+            mcp_support::spawn_http_or_panic(&["--mcp-bind", "127.0.0.1:0", "--config", &cfg])
                 .expect("MCP starts");
         let child = super::mcp::Running(Some(child));
         let resp = https_exchange(
@@ -675,7 +680,7 @@ mod config_keys {
     /// `[metrics] tls_cert` / `tls_key` serve the metrics endpoint over HTTPS.
     #[test]
     fn the_metrics_keys_serve_https() {
-        let pki = test_pki("cfg-metrics");
+        let pki = test_pki_or_panic("cfg-metrics");
         let cfg = config_file(&pki, &pair("metrics", &pki.cert, &pki.key));
         let run = super::metrics::Running::spawn(&["--config", &cfg]);
         let (status, body) =
@@ -688,7 +693,7 @@ mod config_keys {
     /// flag's certificate and the file's key.
     #[test]
     fn a_flag_replaces_its_own_key() {
-        let pki = test_pki("cfg-override");
+        let pki = test_pki_or_panic("cfg-override");
         let missing = pki.dir.path().join("absent.pem");
         let cfg = config_file(&pki, &pair("metrics", &missing.to_string_lossy(), &pki.key));
         let run =
@@ -702,7 +707,7 @@ mod config_keys {
     /// the key that was set and both ways to set the other.
     #[test]
     fn a_key_alone_is_refused_naming_both_sources_of_the_other() {
-        let pki = test_pki("cfg-alone");
+        let pki = test_pki_or_panic("cfg-alone");
         let cfg = config_file(&pki, &format!("[mcp]\ntls_cert = \"{}\"\n", pki.cert));
         let fixture = mcp_support::fixture("sip_call.pcap")
             .to_string_lossy()
@@ -737,7 +742,7 @@ mod config_keys {
 /// processes, so the keys are proven to reach both ends of the wire.
 #[cfg(feature = "hep")]
 mod hep_keys {
-    use super::tls_pki::{TestPki, test_pki};
+    use super::tls_pki::{TestPki, test_pki_or_panic};
     use super::{run_until_exit, test_timeout};
     use std::io::{BufRead, BufReader};
     use std::time::{Duration, Instant};
@@ -877,7 +882,7 @@ mod hep_keys {
     /// collector carry a call over TLS.
     #[test]
     fn the_hep_keys_carry_a_tls_feed_with_a_named_ca() {
-        let pki = test_pki("hep-ca");
+        let pki = test_pki_or_panic("hep-ca");
         let collector = Collector::spawn(&listener_config(&pki));
         let sender_cfg = config_file(
             &pki,
@@ -899,7 +904,7 @@ mod hep_keys {
     /// that refusal is asserted.
     #[test]
     fn the_hep_keys_carry_a_tls_feed_with_an_extra_ca() {
-        let pki = test_pki("hep-extra");
+        let pki = test_pki_or_panic("hep-extra");
         let collector = Collector::spawn(&listener_config(&pki));
         let sender_cfg = config_file(
             &pki,
@@ -962,7 +967,7 @@ mod hep_keys {
     /// everything.
     #[test]
     fn without_the_trust_keys_the_collector_is_refused() {
-        let pki = test_pki("hep-none");
+        let pki = test_pki_or_panic("hep-none");
         let collector = Collector::spawn(&listener_config(&pki));
         let sender_cfg = config_file(&pki, "sender.toml", "");
         let (stderr, code) = send(collector.port, &sender_cfg);

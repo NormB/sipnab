@@ -120,7 +120,7 @@ fn try_dialogs(capture: &Path, args: &[&str]) -> (Vec<serde_json::Value>, String
         "1-65535",
     ];
     argv.extend_from_slice(args);
-    let (stdout, stderr, code) = run_support::run(&argv, Some("error"));
+    let (stdout, stderr, code) = run_support::run_or_panic(&argv, Some("error"));
     let dialogs = stdout
         .lines()
         .filter(|l| l.starts_with('{'))

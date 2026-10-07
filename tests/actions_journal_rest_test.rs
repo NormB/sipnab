@@ -56,7 +56,7 @@ fn server(fake: &Fake, journal: &Path, extra: &[&str]) -> ApiServer {
         dir.as_str(),
     ];
     args.extend_from_slice(extra);
-    ApiServer::spawn(&args)
+    ApiServer::spawn_or_panic(&args)
 }
 
 fn ban_body(ip: &str) -> String {
@@ -103,13 +103,13 @@ fn of_kind<'a>(records: &'a [serde_json::Value], kind: &str) -> Vec<&'a serde_js
 
 #[test]
 fn a_ban_is_journaled_before_and_after_and_names_the_caller_by_token_id() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
-    let resp = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
+    let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
     assert_eq!(resp.status, 200, "{}", resp.body);
-    let answer = resp.json();
+    let answer = resp.json_or_panic();
     assert_eq!(answer["applied"], true, "{answer}");
     let id = answer["id"].as_str().expect("an action id").to_string();
     drop(srv);
@@ -141,13 +141,13 @@ fn a_ban_is_journaled_before_and_after_and_names_the_caller_by_token_id() {
 
 #[test]
 fn the_journal_holds_no_token_and_is_private_to_its_owner() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let dir = journal.path().join("j");
     let srv = server(&fake, &dir, &[]);
     let token = token_for("ops-console");
-    let _ = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
-    let _ = srv.post_json_bearer("/v1/tfps/ban", &ban_body("127.0.0.1"), &token);
+    let _ = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
+    let _ = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("127.0.0.1"), &token);
     drop(srv);
     let mode = |p: &Path| std::fs::metadata(p).expect("meta").permissions().mode() & 0o777;
     assert_eq!(mode(&dir), 0o700);
@@ -167,7 +167,7 @@ fn the_journal_holds_no_token_and_is_private_to_its_owner() {
 
 #[test]
 fn enabled_without_a_usable_journal_sipnab_refuses_to_start_and_names_it() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let blocker = tempfile::NamedTempFile::new().expect("a file");
     // A path under a regular file can never be a directory.
     let bad = blocker.path().join("journal");
@@ -201,7 +201,7 @@ fn enabled_without_a_usable_journal_sipnab_refuses_to_start_and_names_it() {
 
 #[test]
 fn a_second_sipnab_on_the_same_journal_refuses_to_start() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let first = server(&fake, journal.path(), &[]);
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
@@ -233,7 +233,7 @@ fn a_second_sipnab_on_the_same_journal_refuses_to_start() {
 
 #[test]
 fn the_address_and_lifetime_rules_refuse_before_tfps_runs() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
@@ -245,7 +245,7 @@ fn the_address_and_lifetime_rules_refuse_before_tfps_runs() {
         r#"{"ip":"198.51.100.20","ttl_secs":0}"#.to_string(),
         r#"{"ip":"198.51.100.20","ttl_secs":604801}"#.to_string(),
     ] {
-        let resp = srv.post_json_bearer("/v1/tfps/ban", &body, &token);
+        let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", &body, &token);
         assert_eq!(resp.status, 422, "{body}: {}", resp.body);
     }
     assert_eq!(fake.count("ban"), 0, "{}", fake.calls());
@@ -260,11 +260,11 @@ fn the_address_and_lifetime_rules_refuse_before_tfps_runs() {
 
 #[test]
 fn sipnab_will_not_lift_a_ban_it_did_not_place() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     // 198.51.100.10 is banned in TFPS's own list, by TFPS.
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/tfps/unban",
         &ban_body("198.51.100.10"),
         &token_for("ops-console"),
@@ -275,19 +275,19 @@ fn sipnab_will_not_lift_a_ban_it_did_not_place() {
 
 #[test]
 fn the_sixth_action_a_minute_from_one_caller_is_refused_with_retry_after() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
     for n in 1..=5 {
-        let resp = srv.post_json_bearer(
+        let resp = srv.post_json_bearer_or_panic(
             "/v1/tfps/ban",
             &ban_body(&format!("198.51.100.{n}")),
             &token,
         );
         assert_eq!(resp.status, 200, "ban {n}: {}", resp.body);
     }
-    let resp = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.6"), &token);
+    let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.6"), &token);
     assert_eq!(resp.status, 429, "{}", resp.body);
     let secs: u64 = resp
         .retry_after
@@ -301,7 +301,7 @@ fn the_sixth_action_a_minute_from_one_caller_is_refused_with_retry_after() {
 
 #[test]
 fn another_caller_has_its_own_allowance_until_the_server_limit() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let mut n = 0;
@@ -309,7 +309,7 @@ fn another_caller_has_its_own_allowance_until_the_server_limit() {
         let token = token_for(caller);
         for _ in 0..5 {
             n += 1;
-            let resp = srv.post_json_bearer(
+            let resp = srv.post_json_bearer_or_panic(
                 "/v1/tfps/ban",
                 &ban_body(&format!("198.51.100.{n}")),
                 &token,
@@ -318,19 +318,20 @@ fn another_caller_has_its_own_allowance_until_the_server_limit() {
         }
     }
     // Ten this minute: the server's limit, whoever asks next.
-    let resp = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.99"), &token_for("c"));
+    let resp =
+        srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.99"), &token_for("c"));
     assert_eq!(resp.status, 429, "{}", resp.body);
     assert_eq!(fake.count("ban"), 10, "{}", fake.calls());
 }
 
 #[test]
 fn a_restart_does_not_refill_the_allowance() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let token = token_for("ops-console");
     let srv = server(&fake, journal.path(), &[]);
     for n in 1..=5 {
-        let resp = srv.post_json_bearer(
+        let resp = srv.post_json_bearer_or_panic(
             "/v1/tfps/ban",
             &ban_body(&format!("198.51.100.{n}")),
             &token,
@@ -339,7 +340,7 @@ fn a_restart_does_not_refill_the_allowance() {
     }
     drop(srv);
     let srv = server(&fake, journal.path(), &[]);
-    let resp = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.6"), &token);
+    let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.6"), &token);
     assert_eq!(
         resp.status, 429,
         "a restart bought a fresh allowance: {}",
@@ -350,7 +351,7 @@ fn a_restart_does_not_refill_the_allowance() {
 
 #[test]
 fn a_ban_survives_a_restart_as_one_sipnab_may_lift() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let config_dir = tempfile::tempdir().expect("tempdir");
     let config = config_dir.path().join("sipnab.toml");
@@ -359,27 +360,27 @@ fn a_ban_survives_a_restart_as_one_sipnab_may_lift() {
     let token = token_for("ops-console");
 
     let srv = server(&fake, journal.path(), &["--config", &config]);
-    let ban = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
+    let ban = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
     assert_eq!(ban.status, 200, "{}", ban.body);
     drop(srv);
 
     let srv = server(&fake, journal.path(), &["--config", &config]);
     std::thread::sleep(Duration::from_millis(1100));
-    let unban = srv.post_json_bearer("/v1/tfps/unban", &ban_body("198.51.100.20"), &token);
+    let unban = srv.post_json_bearer_or_panic("/v1/tfps/unban", &ban_body("198.51.100.20"), &token);
     assert_eq!(unban.status, 200, "{}", unban.body);
-    assert_eq!(unban.json()["applied"], true, "{}", unban.body);
+    assert_eq!(unban.json_or_panic()["applied"], true, "{}", unban.body);
     assert_eq!(fake.count("unban"), 1, "{}", fake.calls());
 }
 
 #[test]
 fn an_unban_straight_after_a_ban_waits_out_the_address_cooldown() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
-    let ban = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
+    let ban = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
     assert_eq!(ban.status, 200, "{}", ban.body);
-    let unban = srv.post_json_bearer("/v1/tfps/unban", &ban_body("198.51.100.20"), &token);
+    let unban = srv.post_json_bearer_or_panic("/v1/tfps/unban", &ban_body("198.51.100.20"), &token);
     assert_eq!(unban.status, 429, "{}", unban.body);
     assert!(unban.retry_after.is_some(), "{}", unban.body);
     assert_eq!(fake.count("unban"), 0, "{}", fake.calls());
@@ -387,11 +388,11 @@ fn an_unban_straight_after_a_ban_waits_out_the_address_cooldown() {
 
 #[test]
 fn tfps_failing_is_a_bad_gateway_and_the_outcome_is_journaled_as_failed() {
-    let fake = Fake::new();
-    fake.fail_bans();
+    let fake = Fake::new_or_panic();
+    fake.fail_bans_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/tfps/ban",
         &ban_body("198.51.100.20"),
         &token_for("ops-console"),
@@ -409,12 +410,12 @@ fn tfps_failing_is_a_bad_gateway_and_the_outcome_is_journaled_as_failed() {
 /// the action routes too, so guessing tokens at them is throttled.
 #[test]
 fn guessing_tokens_at_the_action_routes_is_throttled_before_auth() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &["--api-rate-limit-per-peer", "2"]);
     let statuses: Vec<u16> = (0..6)
         .map(|n| {
-            srv.post_json_bearer(
+            srv.post_json_bearer_or_panic(
                 "/v1/tfps/ban",
                 &ban_body("198.51.100.20"),
                 &format!("guess-{n}"),
@@ -444,18 +445,19 @@ fn quick_cooldown() -> (tempfile::TempDir, String) {
 
 #[test]
 fn a_ban_can_be_reverted_over_rest_by_its_id() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let (_cfg, config) = quick_cooldown();
     let srv = server(&fake, journal.path(), &["--config", &config]);
     let token = token_for("ops-console");
-    let ban = srv.post_json_bearer("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
-    let id = ban.json()["id"].as_str().expect("id").to_string();
+    let ban = srv.post_json_bearer_or_panic("/v1/tfps/ban", &ban_body("198.51.100.20"), &token);
+    let id = ban.json_or_panic()["id"].as_str().expect("id").to_string();
     std::thread::sleep(Duration::from_millis(1100));
-    let resp = srv.post_json_bearer("/v1/actions/revert", &format!(r#"{{"id":"{id}"}}"#), &token);
+    let resp =
+        srv.post_json_bearer_or_panic("/v1/actions/revert", &format!(r#"{{"id":"{id}"}}"#), &token);
     assert_eq!(resp.status, 200, "{}", resp.body);
     assert_eq!(
-        resp.json()["reverted"],
+        resp.json_or_panic()["reverted"],
         serde_json::json!([id]),
         "{}",
         resp.body
@@ -471,7 +473,7 @@ fn a_ban_can_be_reverted_over_rest_by_its_id() {
 
 #[test]
 fn revert_over_rest_needs_the_actions_scope_and_rest_enabled() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let full = sipnab::auth::mint(
@@ -481,13 +483,13 @@ fn revert_over_rest_needs_the_actions_scope_and_rest_enabled() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.post_json_bearer("/v1/actions/revert", r#"{"all":true}"#, &full);
+    let resp = srv.post_json_bearer_or_panic("/v1/actions/revert", r#"{"all":true}"#, &full);
     assert_eq!(resp.status, 401, "{}", resp.body);
     drop(srv);
 
     let ctl = fake.path();
     let dir = journal.path().display().to_string();
-    let srv = ApiServer::spawn(&[
+    let srv = ApiServer::spawn_or_panic(&[
         "--api-signing-key",
         SIGNING_KEY,
         "--tfps-ctl",
@@ -497,7 +499,7 @@ fn revert_over_rest_needs_the_actions_scope_and_rest_enabled() {
         "--journal-dir",
         &dir,
     ]);
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/actions/revert",
         r#"{"all":true}"#,
         &token_for("ops-console"),
@@ -508,7 +510,7 @@ fn revert_over_rest_needs_the_actions_scope_and_rest_enabled() {
 
 #[test]
 fn a_revert_body_names_one_id_or_all_and_nothing_else() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
@@ -520,7 +522,7 @@ fn a_revert_body_names_one_id_or_all_and_nothing_else() {
         r#"{"all":true,"force":true}"#,
         "[]",
     ] {
-        let resp = srv.post_json_bearer("/v1/actions/revert", body, &token);
+        let resp = srv.post_json_bearer_or_panic("/v1/actions/revert", body, &token);
         assert_eq!(resp.status, 400, "{body}: {}", resp.body);
     }
     assert_eq!(fake.count("unban"), 0);
@@ -528,12 +530,12 @@ fn a_revert_body_names_one_id_or_all_and_nothing_else() {
 
 #[test]
 fn revert_all_over_rest_counts_against_the_callers_limit() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
     let token = token_for("ops-console");
     for n in 1..=5 {
-        let resp = srv.post_json_bearer(
+        let resp = srv.post_json_bearer_or_panic(
             "/v1/tfps/ban",
             &ban_body(&format!("198.51.100.{n}")),
             &token,
@@ -542,7 +544,7 @@ fn revert_all_over_rest_counts_against_the_callers_limit() {
     }
     // The caller's five for the minute are spent: a stolen token cannot turn
     // revert-all into a sixth, seventh, ... action.
-    let resp = srv.post_json_bearer("/v1/actions/revert", r#"{"all":true}"#, &token);
+    let resp = srv.post_json_bearer_or_panic("/v1/actions/revert", r#"{"all":true}"#, &token);
     assert_eq!(resp.status, 429, "{}", resp.body);
     assert!(resp.retry_after.is_some());
     assert_eq!(fake.count("unban"), 0, "{}", fake.calls());
@@ -550,16 +552,16 @@ fn revert_all_over_rest_counts_against_the_callers_limit() {
 
 #[test]
 fn a_server_stopped_cleanly_journals_the_stop() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path(), &[]);
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/tfps/ban",
         &ban_body("198.51.100.20"),
         &token_for("ops-console"),
     );
     assert_eq!(resp.status, 200, "{}", resp.body);
-    let status = srv.stop();
+    let status = srv.stop_or_panic();
     assert!(status.success(), "{status:?}");
     let all = records(journal.path());
     assert_eq!(
@@ -576,7 +578,7 @@ fn a_server_stopped_cleanly_journals_the_stop() {
 #[test]
 fn forged_expired_tampered_revoked_and_foreign_tokens_cannot_act() {
     use base64::Engine;
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let revoked = tempfile::NamedTempFile::new().expect("revocation file");
     std::fs::write(revoked.path(), "stolen-console\n").expect("write");
@@ -648,7 +650,7 @@ fn forged_expired_tampered_revoked_and_foreign_tokens_cannot_act() {
             ("/v1/tfps/unban", ban_body("198.51.100.20")),
             ("/v1/actions/revert", r#"{"all":true}"#.to_string()),
         ] {
-            let resp = srv.post_json_bearer(route, &body, &credential);
+            let resp = srv.post_json_bearer_or_panic(route, &body, &credential);
             assert_eq!(resp.status, 401, "{why} on {route}: {}", resp.body);
         }
     }

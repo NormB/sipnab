@@ -30,7 +30,7 @@ use sipnab::security::actions::{
 #[path = "support/fake_tfps.rs"]
 mod fake_tfps;
 
-use fake_tfps::{FakeTfps, T0, addr, enabled};
+use fake_tfps::{FakeTfps, T0, addr, enabled_or_panic};
 
 struct Rig {
     _tmp: tempfile::TempDir,
@@ -74,14 +74,14 @@ fn not_enabled_refuses_before_anything_and_journals_the_refusal() {
         .ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)
         .expect_err("not enabled");
     assert!(matches!(err, ActionError::NotEnabled(_)), "{err:?}");
-    assert!(r.tfps.calls().is_empty());
+    assert!(r.tfps.calls_or_panic().is_empty());
     assert!(r.tfps.journal_text().contains("\"action_refused\""));
 }
 
 #[test]
 fn an_enabled_ban_is_journaled_before_tfps_is_asked() {
     let r = rig();
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     let done = svc
         .ban(
             ActionSurface::Rest,
@@ -92,7 +92,7 @@ fn an_enabled_ban_is_journaled_before_tfps_is_asked() {
             r.t0,
         )
         .expect("ban");
-    assert_eq!(r.tfps.calls(), ["ban 198.51.100.20 600"]);
+    assert_eq!(r.tfps.calls_or_panic(), ["ban 198.51.100.20 600"]);
     assert_eq!(
         *r.tfps.intent_on_disk_when_called.lock().unwrap(),
         [true],
@@ -109,7 +109,7 @@ fn an_enabled_ban_is_journaled_before_tfps_is_asked() {
 #[test]
 fn an_address_that_is_never_banned_is_refused_before_tfps() {
     let r = rig();
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     let err = svc
         .ban(
             ActionSurface::Rest,
@@ -121,13 +121,13 @@ fn an_address_that_is_never_banned_is_refused_before_tfps() {
         )
         .expect_err("loopback");
     assert_eq!(err, ActionError::Rule(BanRule::Loopback));
-    assert!(r.tfps.calls().is_empty());
+    assert!(r.tfps.calls_or_panic().is_empty());
 }
 
 #[test]
 fn a_ban_that_would_never_expire_is_refused_before_tfps() {
     let r = rig();
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     let err = svc
         .ban(
             ActionSurface::Rest,
@@ -139,13 +139,13 @@ fn a_ban_that_would_never_expire_is_refused_before_tfps() {
         )
         .expect_err("forever");
     assert_eq!(err, ActionError::Rule(BanRule::Forever));
-    assert!(r.tfps.calls().is_empty());
+    assert!(r.tfps.calls_or_panic().is_empty());
 }
 
 #[test]
 fn a_flood_reaches_tfps_only_as_often_as_the_limits_allow() {
     let r = rig();
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     let mut throttled = 0;
     for i in 0..50u8 {
         if let Err(ActionError::Throttled(_)) =
@@ -154,7 +154,7 @@ fn a_flood_reaches_tfps_only_as_often_as_the_limits_allow() {
             throttled += 1;
         }
     }
-    assert_eq!(r.tfps.calls().len(), 5, "the per-caller limit");
+    assert_eq!(r.tfps.calls_or_panic().len(), 5, "the per-caller limit");
     assert_eq!(throttled, 45);
 }
 
@@ -168,18 +168,21 @@ fn an_address_sipnab_did_not_ban_cannot_be_unbanned_through_it() {
         .lock()
         .unwrap()
         .push((Ipv4Addr::new(198, 51, 100, 99), None));
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     let err = svc
         .unban(ActionSurface::Rest, "token:stolen", addr(99), T0, r.t0)
         .expect_err("not ours");
     assert_eq!(err, ActionError::NotOwned);
-    assert!(r.tfps.calls().is_empty(), "TFPS's own ban is untouched");
+    assert!(
+        r.tfps.calls_or_panic().is_empty(),
+        "TFPS's own ban is untouched"
+    );
 }
 
 #[test]
 fn an_owned_ban_can_be_unbanned_and_ownership_ends() {
     let r = rig();
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)
         .expect("ban");
     svc.unban(
@@ -192,7 +195,7 @@ fn an_owned_ban_can_be_unbanned_and_ownership_ends() {
     .expect("unban");
     assert!(svc.owned(addr(20)).is_none());
     assert_eq!(
-        r.tfps.calls(),
+        r.tfps.calls_or_panic(),
         ["ban 198.51.100.20 3600", "unban 198.51.100.20"]
     );
 }
@@ -203,13 +206,13 @@ fn an_owned_ban_can_be_unbanned_and_ownership_ends() {
 fn ownership_and_limits_survive_a_restart() {
     let r = rig();
     {
-        let svc = start(&r, enabled("tfps:rest"));
+        let svc = start(&r, enabled_or_panic("tfps:rest"));
         for i in 0..5u8 {
             svc.ban(ActionSurface::Rest, "token:stolen", addr(i), None, T0, r.t0)
                 .expect("ban");
         }
     }
-    let svc = start(&r, enabled("tfps:rest"));
+    let svc = start(&r, enabled_or_panic("tfps:rest"));
     assert!(
         svc.owned(addr(3)).is_some(),
         "ownership came back from the journal"
@@ -249,7 +252,7 @@ fn an_action_in_doubt_after_a_crash_is_resolved_against_tfps_at_start() {
         .unwrap()
         .push((Ipv4Addr::new(198, 51, 100, 20), Some(T0 + 3600)));
     let (svc, report) = ActionService::start(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         ActionLimits::default(),
         &r.dir,
         r.tfps.clone(),
@@ -286,7 +289,7 @@ fn with_tfps_unreachable_at_start_actions_stay_refused_until_it_answers() {
     });
     let t0 = Instant::now();
     let (svc, report) = ActionService::start(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         ActionLimits::default(),
         &dir,
         tfps.clone(),
@@ -306,7 +309,7 @@ fn with_tfps_unreachable_at_start_actions_stay_refused_until_it_answers() {
         )
         .expect_err("in doubt");
     assert_eq!(err, ActionError::InDoubt(1));
-    assert!(tfps.calls().is_empty());
+    assert!(tfps.calls_or_panic().is_empty());
 }
 
 // ── the journal itself ───────────────────────────────────────────────────
@@ -315,7 +318,7 @@ fn with_tfps_unreachable_at_start_actions_stay_refused_until_it_answers() {
 fn a_damaged_journal_turns_actions_off_and_says_why() {
     let r = rig();
     {
-        let svc = start(&r, enabled("tfps:rest"));
+        let svc = start(&r, enabled_or_panic("tfps:rest"));
         svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)
             .expect("ban");
         svc.ban(ActionSurface::Rest, "token:ops", addr(21), None, T0, r.t0)
@@ -325,7 +328,7 @@ fn a_damaged_journal_turns_actions_off_and_says_why() {
     let text = std::fs::read_to_string(&seg).expect("read");
     std::fs::write(&seg, text.replacen("198.51.100.20", "198.51.100.66", 1)).expect("tamper");
     let (svc, report) = ActionService::start(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         ActionLimits::default(),
         &r.dir,
         r.tfps.clone(),
@@ -359,9 +362,9 @@ fn a_damaged_journal_turns_actions_off_and_says_why() {
 #[test]
 fn a_second_sipnab_on_the_same_journal_is_refused_at_start() {
     let r = rig();
-    let _first = start(&r, enabled("tfps:rest"));
+    let _first = start(&r, enabled_or_panic("tfps:rest"));
     let second = ActionService::start(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         ActionLimits::default(),
         &r.dir,
         r.tfps.clone(),

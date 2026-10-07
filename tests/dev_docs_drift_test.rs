@@ -125,7 +125,7 @@ fn code_links(text: &str) -> Vec<(String, String)> {
 #[test]
 fn code_tree_list_matches_the_repository() {
     let listed = markdown::code_trees();
-    let tracked = markdown::tracked_top_level_dirs();
+    let tracked = markdown::tracked_top_level_dirs_or_panic();
     let missing: Vec<&String> = tracked.iter().filter(|d| !listed.contains(*d)).collect();
     let stale: Vec<&String> = listed.iter().filter(|d| !tracked.contains(*d)).collect();
     assert!(

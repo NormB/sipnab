@@ -47,7 +47,7 @@ const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 /// # Panics
 /// When the process exits non-zero, with its stderr attached.
 fn run_ok(args: &[&str]) -> String {
-    let (stdout, stderr, code) = run_support::run(args, Some("error"));
+    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("error"));
     assert_eq!(code, Some(0), "sipnab {args:?} exited {code:?}\n{stderr}");
     stdout
 }

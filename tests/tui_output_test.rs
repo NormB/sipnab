@@ -181,7 +181,7 @@ fn udp_payloads(frames: &Frames, sport: u16, dport: u16) -> Vec<Vec<u8>> {
 
 #[test]
 fn in_decrypted_mode_the_tuis_srtp_comes_out_as_rtp() {
-    let r = tui_run(&sdes_call_frames(), "decrypted", false, false);
+    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, false);
     assert!(r.error.is_none(), "{:?}", r.error);
     let rtp = udp_payloads(&r.frames, 40_000, 50_000);
     assert_eq!(rtp.len(), 6, "every DTMF packet");
@@ -193,7 +193,7 @@ fn in_decrypted_mode_the_tuis_srtp_comes_out_as_rtp() {
 
 #[test]
 fn the_tuis_rebuilt_frames_say_what_they_were_decrypted_from() {
-    let r = tui_run(&sdes_call_frames(), "decrypted", false, false);
+    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, false);
     let labeled: Vec<&Vec<String>> = r
         .frames
         .iter()
@@ -215,7 +215,7 @@ fn the_tuis_rebuilt_frames_say_what_they_were_decrypted_from() {
 
 #[test]
 fn the_tui_copies_tls_as_captured_and_counts_it() {
-    let input = tls_session_frames();
+    let input = tls_session_frames_or_panic();
     let r = tui_run(&input, "decrypted", false, false);
     let written: Vec<Vec<u8>> = r.frames.iter().map(|(f, _)| f.clone()).collect();
     assert_eq!(
@@ -231,7 +231,7 @@ fn the_tui_copies_tls_as_captured_and_counts_it() {
 
 #[test]
 fn a_stopped_tui_writes_nothing_it_held_and_says_so() {
-    let r = tui_run(&sdes_call_frames(), "decrypted", false, true);
+    let r = tui_run(&sdes_call_frames_or_panic(), "decrypted", false, true);
     assert!(
         r.frames.is_empty(),
         "stop means stop: {} frames written",
@@ -243,7 +243,7 @@ fn a_stopped_tui_writes_nothing_it_held_and_says_so() {
 
 #[test]
 fn in_raw_mode_every_packet_is_written_as_captured() {
-    let input = sdes_call_frames();
+    let input = sdes_call_frames_or_panic();
     let r = tui_run(&input, "raw", false, false);
     let written: Vec<Vec<u8>> = r.frames.iter().map(|(f, _)| f.clone()).collect();
     assert_eq!(written, input);
@@ -252,7 +252,7 @@ fn in_raw_mode_every_packet_is_written_as_captured() {
 
 #[test]
 fn a_paused_tui_still_writes_but_does_not_analyze() {
-    let input = sdes_call_frames();
+    let input = sdes_call_frames_or_panic();
     let r = tui_run(&input, "raw", true, false);
     assert_eq!(
         r.frames.len(),
@@ -272,7 +272,7 @@ fn an_output_that_cannot_be_opened_stops_the_thread_with_an_error() {
     let dir = tempfile::tempdir().expect("dir");
     let out = dir.path().join("no-such-dir").join("tui.pcapng");
     let cli = Cli::parse_from(["sipnab", "--pcapng", "-O", out.to_str().expect("utf-8")]);
-    let r = run_with(&cli, &out, &sdes_call_frames(), false, false, dir);
+    let r = run_with(&cli, &out, &sdes_call_frames_or_panic(), false, false, dir);
     let e = r.error.expect("an error");
     assert!(e.contains("Failed to create output file"), "{e}");
     // The cause, not only the context: `{e}` on an anyhow error printed the
@@ -299,7 +299,15 @@ fn frames_that_waited_long_enough_are_written_before_a_stop() {
     // Eight packets one second apart, at 0..7 s. When the last arrives the
     // window's edge is at 2 s, and a frame AT the edge has waited the whole
     // window: the ones at 0, 1 and 2 s leave, the other five are still held.
-    let r = run_spaced(&cli, &out, &sdes_call_frames(), 1_000, false, true, dir);
+    let r = run_spaced(
+        &cli,
+        &out,
+        &sdes_call_frames_or_panic(),
+        1_000,
+        false,
+        true,
+        dir,
+    );
     assert_eq!(
         r.frames.len(),
         3,

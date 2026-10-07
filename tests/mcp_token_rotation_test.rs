@@ -23,7 +23,9 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mcp::{initialize_status, shutdown, spawn_http_loopback as spawn_http};
+use mcp::{
+    initialize_status_or_panic, shutdown, spawn_http_loopback_or_panic as spawn_http_or_panic,
+};
 
 /// Absolute path to the harness rotation script under test.
 fn rotate_script() -> std::path::PathBuf {
@@ -112,20 +114,24 @@ fn rotated_token_authenticates_against_signing_key_server() {
         "rotated token should be a signed s2. token, got: {token}"
     );
 
-    let (child, addr) = spawn_http(&["--mcp-signing-key-file", key.to_str().unwrap()])
+    let (child, addr) = spawn_http_or_panic(&["--mcp-signing-key-file", key.to_str().unwrap()])
         .expect("server should start with signing-key file");
 
     assert_eq!(
-        initialize_status(&addr, Some(&token)),
+        initialize_status_or_panic(&addr, Some(&token)),
         200,
         "rotated token → 200"
     );
     assert_eq!(
-        initialize_status(&addr, Some("not-the-token")),
+        initialize_status_or_panic(&addr, Some("not-the-token")),
         401,
         "wrong token → 401"
     );
-    assert_eq!(initialize_status(&addr, None), 401, "missing token → 401");
+    assert_eq!(
+        initialize_status_or_panic(&addr, None),
+        401,
+        "missing token → 401"
+    );
     shutdown(child);
 }
 
@@ -167,15 +173,15 @@ fn each_rotation_publishes_a_fresh_token_atomically() {
     );
 
     // Both freshly minted tokens verify against the same signing key.
-    let (child, addr) = spawn_http(&["--mcp-signing-key-file", key.to_str().unwrap()])
+    let (child, addr) = spawn_http_or_panic(&["--mcp-signing-key-file", key.to_str().unwrap()])
         .expect("server should start");
     assert_eq!(
-        initialize_status(&addr, Some(&first)),
+        initialize_status_or_panic(&addr, Some(&first)),
         200,
         "first token → 200"
     );
     assert_eq!(
-        initialize_status(&addr, Some(&second)),
+        initialize_status_or_panic(&addr, Some(&second)),
         200,
         "second token → 200"
     );
@@ -238,7 +244,7 @@ fn rotation_fails_loudly_without_clobbering_the_published_token() {
 fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
     let (_dir, key, token_path) = rotation_dir();
 
-    let (child, addr) = spawn_http(&["--mcp-signing-key-file", key.to_str().unwrap()])
+    let (child, addr) = spawn_http_or_panic(&["--mcp-signing-key-file", key.to_str().unwrap()])
         .expect("server should start");
 
     // Rotate a short-TTL token: valid immediately…
@@ -258,7 +264,7 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
         .trim()
         .to_string();
     assert_eq!(
-        initialize_status(&addr, Some(&short)),
+        initialize_status_or_panic(&addr, Some(&short)),
         200,
         "freshly rotated short-TTL token → 200"
     );
@@ -269,7 +275,7 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
     // the token expires (≈ SHORT_TTL), with a generous bound to absorb suite
     // load, instead of always burning a worst-case fixed sleep.
     let expired = poll_until(Duration::from_secs(SHORT_TTL as u64 + 15), || {
-        initialize_status(&addr, Some(&short)) == 401
+        initialize_status_or_panic(&addr, Some(&short)) == 401
     });
     assert!(
         expired,
@@ -285,7 +291,7 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
         .to_string();
     assert_ne!(short, fresh, "re-rotation should mint a new token");
     assert_eq!(
-        initialize_status(&addr, Some(&fresh)),
+        initialize_status_or_panic(&addr, Some(&fresh)),
         200,
         "rotated-in fresh token → 200"
     );

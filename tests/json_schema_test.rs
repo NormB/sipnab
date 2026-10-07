@@ -24,7 +24,7 @@ use serde_json::Value;
 #[path = "support/mod.rs"]
 mod support;
 
-use support::schema::{assert_valid, load_validator};
+use support::schema::{assert_valid, load_validator_or_panic};
 
 /// The Call-ID of the one dialog in `tests/fixtures/sip_call.pcap`. Its host
 /// part moved to RFC 5737 documentation addresses in September 2026, when the
@@ -61,7 +61,7 @@ fn run_sipnab(args: &[&str]) -> String {
 /// `message.schema.json`, and at least 5 messages are produced.
 #[test]
 fn message_schema_validates_ndjson_output() {
-    let v = load_validator("message.schema.json");
+    let v = load_validator_or_panic("message.schema.json");
     let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
     let mut n = 0;
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
@@ -80,7 +80,7 @@ fn message_schema_validates_ndjson_output() {
 /// src_port, missing/wrong schema_version, extra field — makes validation fail.
 #[test]
 fn message_schema_rejects_malformed() {
-    let v = load_validator("message.schema.json");
+    let v = load_validator_or_panic("message.schema.json");
     // Ground the negative test in a REAL good line, then corrupt it.
     let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
     let good: Value = serde_json::from_str(out.lines().next().expect("≥1 message")).unwrap();
@@ -111,7 +111,7 @@ fn message_schema_rejects_malformed() {
 /// for both a no-RTP call (empty timeline/streams) and an RTP G.711 call.
 #[test]
 fn call_report_schema_validates_output() {
-    let v = load_validator("call_report.schema.json");
+    let v = load_validator_or_panic("call_report.schema.json");
 
     // No-RTP call: exercises the base shape with empty sdp_timeline/streams.
     let out = run_sipnab(&[
@@ -196,7 +196,7 @@ fn call_report_schema_validates_output() {
 /// `--call-report` invocation cannot reach.
 #[test]
 fn json_dialogs_lines_validate_against_the_call_report_schema() {
-    let v = load_validator("call_report.schema.json");
+    let v = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -233,7 +233,7 @@ fn json_dialogs_lines_validate_against_the_call_report_schema() {
 /// adding an unknown top-level field makes the call-report schema reject.
 #[test]
 fn call_report_schema_rejects_malformed() {
-    let v = load_validator("call_report.schema.json");
+    let v = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -270,7 +270,7 @@ fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
     // the same objects pretty-printed (multi-line, still a parseable
     // concatenated-JSON stream). Every value of each must validate, and both
     // must yield the same message count as the fixture.
-    let v = load_validator("message.schema.json");
+    let v = load_validator_or_panic("message.schema.json");
 
     let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
@@ -305,7 +305,7 @@ fn notes_schema_validates_a_saved_notes_file() {
     use sipnab::annotate::{NoteText, Notes};
     use sipnab::capture::resolve::parse_pointer;
 
-    let v = load_validator("notes.schema.json");
+    let v = load_validator_or_panic("notes.schema.json");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("session.notes.jsonl");
     let mut notes = Notes::new();
@@ -348,7 +348,7 @@ fn notes_schema_validates_a_saved_notes_file() {
 fn notes_schema_rejects_malformed_lines_the_loader_rejects() {
     use sipnab::annotate::Notes;
 
-    let v = load_validator("notes.schema.json");
+    let v = load_validator_or_panic("notes.schema.json");
     let good = serde_json::json!({"frame": "a.pcap#0@00000000deadbeef", "note": "ok"});
     assert!(v.is_valid(&good), "the baseline must validate");
     assert!(
@@ -404,7 +404,7 @@ fn all_schemas_compile() {
             .to_string_lossy()
             .into_owned();
         // load_validator panics with the path on read/parse/compile failure.
-        let _ = load_validator(&name);
+        let _ = load_validator_or_panic(&name);
         seen += 1;
     }
     // Anti-vacuity: a broken path or an empty directory must fail, not pass.
@@ -650,7 +650,7 @@ fn both_schemas_refuse_an_undeclared_field() {
 /// **Sixth of eight.** A real termination block validates.
 #[test]
 fn a_termination_block_validates_against_the_call_report_schema() {
-    let v = load_validator("call_report.schema.json");
+    let v = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -677,7 +677,7 @@ fn a_termination_block_validates_against_the_call_report_schema() {
 /// sparser answer, it is a broken one.
 #[test]
 fn a_termination_block_without_its_required_fields_is_refused() {
-    let v = load_validator("call_report.schema.json");
+    let v = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -708,7 +708,7 @@ fn a_termination_block_without_its_required_fields_is_refused() {
 /// typed one does not.
 #[test]
 fn an_extension_header_list_validates_against_the_message_schema() {
-    let v = load_validator("message.schema.json");
+    let v = load_validator_or_panic("message.schema.json");
     let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
     let base: Value = serde_json::from_str(out.lines().next().expect("a message")).unwrap();
 
@@ -923,7 +923,7 @@ fn json_analyze(path: &str, extra: &[&str]) -> Value {
 #[cfg(feature = "native")]
 #[test]
 fn capture_analysis_schema_validates_json_analyze_output() {
-    let v = load_validator("capture_analysis.schema.json");
+    let v = load_validator_or_panic("capture_analysis.schema.json");
     let mut severities = std::collections::BTreeSet::new();
     let mut evidence_keys = std::collections::BTreeSet::new();
     let mut clean = 0usize;
@@ -969,7 +969,7 @@ fn capture_analysis_schema_validates_json_analyze_output() {
 #[cfg(feature = "native")]
 #[test]
 fn capture_analysis_schema_rejects_malformed() {
-    let v = load_validator("capture_analysis.schema.json");
+    let v = load_validator_or_panic("capture_analysis.schema.json");
     let good = json_analyze("tests/fixtures/stun_sdp_mismatch.pcap", &[]);
     assert!(v.is_valid(&good), "sanity: a real analysis must validate");
     assert!(

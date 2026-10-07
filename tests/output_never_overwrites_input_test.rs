@@ -225,10 +225,10 @@ fn strip_secrets_onto_its_own_input_is_refused() {
           From: <sip:a@10.1.0.1>;tag=1\r\nTo: <sip:b@10.2.0.1>\r\nCall-ID: strip-guard\r\n\
           CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     );
-    pcap_build::write_pcapng_with_dsb(&cap, "CLIENT_RANDOM 00 11\n", &frame);
+    pcap_build::write_pcapng_with_dsb_or_panic(&cap, "CLIENT_RANDOM 00 11\n", &frame);
     let before = std::fs::read(&cap).expect("read input");
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&cap, 0x0000_000a),
+        pcap_build::count_pcapng_blocks_or_panic(&cap, 0x0000_000a),
         1,
         "the fixture must start with a Decryption Secrets Block"
     );
@@ -247,7 +247,7 @@ fn strip_secrets_onto_its_own_input_is_refused() {
     );
     assert_intact(&cap, &before, "--strip-secrets X -I X");
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&cap, 0x0000_000a),
+        pcap_build::count_pcapng_blocks_or_panic(&cap, 0x0000_000a),
         1,
         "the only copy of the decryption secrets must survive"
     );

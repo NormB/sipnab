@@ -52,9 +52,10 @@ fn a_first_read_is_not_settled() {
 /// streams in the RTP fixture are in the store.
 #[test]
 fn a_spawned_server_has_read_its_whole_capture() {
-    let srv = server::ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
+    let srv =
+        server::ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
     let stats: serde_json::Value =
-        serde_json::from_str(&srv.get("/v1/stats").body).expect("stats JSON");
+        serde_json::from_str(&srv.get_or_panic("/v1/stats").body).expect("stats JSON");
     assert_eq!(stats["source_exhausted"], true, "{stats}");
     assert_eq!(stats["streams"]["total"], 2, "{stats}");
 }

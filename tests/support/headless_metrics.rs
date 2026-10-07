@@ -81,7 +81,10 @@ impl HeadlessMetrics {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
-        let stderr = child.stderr.take().expect("stderr is piped");
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| "stderr is piped, but the child has none".to_string())?;
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {

@@ -76,7 +76,7 @@ fn scanner_capture(dir: &std::path::Path, port: u16) -> std::path::PathBuf {
     );
     let frame = pcap_build::udp_frame([127, 0, 0, 1], [127, 0, 0, 1], port, 5060, msg.as_bytes());
     let path = dir.join("scanner.pcap");
-    pcap_build::write_pcap(&path, &[frame]);
+    pcap_build::write_pcap_or_panic(&path, &[frame]);
     path
 }
 

@@ -20,7 +20,7 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 /// An `INVITE` to `ext<n>@` from one source, with a unique branch.
 ///
@@ -58,9 +58,9 @@ fn the_summary_names_the_source_behind_a_sweep() {
     // threshold and the rate threshold, and unanswered is the evidence the
     // rate test rests on.
     let frames: Vec<Vec<u8>> = (0..12).map(probe).collect();
-    write_pcap(Path::new(&pcap), &frames);
+    write_pcap_or_panic(Path::new(&pcap), &frames);
 
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -114,9 +114,9 @@ fn an_ordinary_call_is_not_accused() {
           Call-ID: ordinary-1@198.51.100.20\r\n\
           CSeq: 1 INVITE\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n",
     );
-    write_pcap(Path::new(&pcap), &[invite]);
+    write_pcap_or_panic(Path::new(&pcap), &[invite]);
 
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",

@@ -45,8 +45,8 @@ fn type_lines(body: &str) -> std::collections::HashMap<String, String> {
 /// the correct `# TYPE` (counter/gauge/histogram).
 #[test]
 fn metrics_expose_expected_families_with_types() {
-    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let resp = srv.get("/metrics");
+    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
+    let resp = srv.get_or_panic("/metrics");
     assert_eq!(resp.status, 200);
     let body = resp.body;
     let types = type_lines(&body);
@@ -101,8 +101,8 @@ fn metrics_expose_expected_families_with_types() {
 /// label sets (dialog state, method, stream status) appear for the RTP fixture.
 #[test]
 fn metrics_sample_lines_parse_and_labels_are_correct() {
-    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
+    let body = srv.get_or_panic("/metrics").body;
     let re = sample_re();
 
     for line in body.lines() {
@@ -123,8 +123,8 @@ fn metrics_sample_lines_parse_and_labels_are_correct() {
 /// `+Inf`), `_count`, and `_sum`.
 #[test]
 fn histograms_have_bucket_count_and_sum() {
-    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     for h in [
         "sipnab_mos",

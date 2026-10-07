@@ -16,7 +16,7 @@
 
 #[path = "support/mcp.rs"]
 mod support;
-use support::{call_tool_with_args, ok_payload};
+use support::{call_tool_with_args_or_panic, ok_payload_or_panic};
 
 /// A SIPREC INVITE toward a recording server, carrying the multipart body an
 /// SRC sends: the session SDP and the `application/rs-metadata+xml` part.
@@ -42,13 +42,13 @@ const G711_CALL: &str = "1-1966@10.0.2.20";
 
 /// Call `siprec_metadata` and return its payload.
 fn siprec(pcap: &str, call_id: &str) -> serde_json::Value {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         pcap,
         &[],
         "siprec_metadata",
         serde_json::json!({ "call_id": call_id }),
     );
-    ok_payload(&msg)
+    ok_payload_or_panic(&msg)
 }
 
 /// The recording metadata of a real SIPREC INVITE reaches the agent whole.
@@ -166,7 +166,7 @@ fn a_call_with_no_siprec_is_reported_as_such_without_overclaiming() {
 /// not recorded".
 #[test]
 fn an_unknown_call_id_is_refused_rather_than_answered() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         SIPREC,
         &[],
         "siprec_metadata",
@@ -225,13 +225,13 @@ fn the_answer_identifies_the_capture_it_came_from() {
 /// would miss.
 #[test]
 fn a_recorded_call_still_appears_in_the_ordinary_dialog_listing() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         SIPREC,
         &[],
         "list_dialogs",
         serde_json::json!({ "limit": 10 }),
     );
-    let v = ok_payload(&msg);
+    let v = ok_payload_or_panic(&msg);
     let ids: Vec<&str> = v["dialogs"]
         .as_array()
         .map(|a| a.iter().filter_map(|d| d["call_id"].as_str()).collect())

@@ -127,7 +127,7 @@ struct Run {
 fn export(frames: &[Vec<u8>], keylog: bool, out_name: &str, extra: &[&str]) -> Run {
     let dir = tempfile::tempdir().expect("dir");
     let input = dir.path().join("in.pcap");
-    pcap_build::write_pcap(&input, frames);
+    pcap_build::write_pcap_or_panic(&input, frames);
     let kl = dir.path().join("keys.log");
     std::fs::write(&kl, tls_keylog()).expect("keylog");
     let out: PathBuf = dir.path().join(out_name);
@@ -143,7 +143,7 @@ fn export(frames: &[Vec<u8>], keylog: bool, out_name: &str, extra: &[&str]) -> R
     args.extend(["--pcap-export-mode".into(), "decrypted".into()]);
     args.extend(extra.iter().map(|s| s.to_string()));
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (_, stderr, code) = run_support::run(&argv, Some("warn"));
+    let (_, stderr, code) = run_support::run_or_panic(&argv, Some("warn"));
     let export = if out.exists() {
         read_export(&out)
     } else {
@@ -159,7 +159,7 @@ fn export(frames: &[Vec<u8>], keylog: bool, out_name: &str, extra: &[&str]) -> R
 
 /// The INVITE and 180 of the TLS test call, as the session carries them.
 fn tls_call_messages() -> (Vec<u8>, Vec<u8>) {
-    let frames = tls_session_frames();
+    let frames = tls_session_frames_or_panic();
     let _ = frames;
     let (client, _server) = (40_111u16, 5061u16);
     let via = format!("Via: SIP/2.0/TLS 10.9.0.1:{client};branch=z9hG4bKmatrix1\r\n");
@@ -179,7 +179,7 @@ fn tls_call_messages() -> (Vec<u8>, Vec<u8>) {
 
 #[test]
 fn the_decrypted_mode_runs_and_exits_zero() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     assert_eq!(r.code, Some(0), "{}", r.stderr);
 }
 
@@ -210,7 +210,7 @@ fn a_capture_with_nothing_encrypted_is_exported_byte_for_byte() {
 
 #[test]
 fn sip_over_tls_is_exported_as_the_plaintext_messages() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     let (invite, ringing) = tls_call_messages();
     let payloads = tcp_payloads(&r.export);
     assert_eq!(payloads, vec![invite, ringing], "{}", r.stderr);
@@ -218,7 +218,7 @@ fn sip_over_tls_is_exported_as_the_plaintext_messages() {
 
 #[test]
 fn no_tls_record_of_a_decrypted_connection_is_left_in_the_export() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     for p in tcp_payloads(&r.export) {
         assert!(
             !(p.len() > 5 && (p[0] == 0x16 || p[0] == 0x17) && p[1] == 0x03),
@@ -230,7 +230,7 @@ fn no_tls_record_of_a_decrypted_connection_is_left_in_the_export() {
 
 #[test]
 fn a_decrypted_export_holds_no_key_material() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     assert_eq!(r.export.dsb_blocks, 0, "no Decryption Secrets Block");
     for secret in [&CLIENT_SECRET[..], &SERVER_SECRET[..]] {
         assert!(
@@ -253,11 +253,11 @@ fn a_decrypted_export_holds_no_key_material() {
 
 #[test]
 fn the_export_reads_back_as_the_same_call_with_no_keys() {
-    let r = export(&tls_session_frames(), true, "out.pcap", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcap", &[]);
     let dir = tempfile::tempdir().expect("dir");
     let path = dir.path().join("again.pcap");
     std::fs::write(&path, &r.export.raw).expect("write");
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &["--no-config", "-N", "-I", path.to_str().unwrap(), "--json"],
         Some("warn"),
     );
@@ -272,7 +272,7 @@ fn the_export_reads_back_as_the_same_call_with_no_keys() {
 
 #[test]
 fn srtp_is_exported_as_rtp_carrying_the_plaintext() {
-    let frames = sdes_call_frames();
+    let frames = sdes_call_frames_or_panic();
     let r = export(&frames, false, "out.pcapng", &[]);
     let rtp: Vec<Vec<u8>> = r
         .export
@@ -305,7 +305,7 @@ fn srtp_is_exported_as_rtp_carrying_the_plaintext() {
 #[test]
 fn sip_over_wss_is_exported_as_plain_sip() {
     let (invite, ringing) = wss_messages();
-    let frames = wss_session(
+    let frames = wss_session_or_panic(
         &[ws_text_frame(invite.as_bytes(), Some(WS_MASK))],
         &[ws_text_frame(ringing.as_bytes(), None)],
     );
@@ -330,7 +330,7 @@ fn sip_over_wss_is_exported_as_plain_sip() {
 
 #[test]
 fn the_pcapng_section_says_it_was_decrypted_and_holds_no_keys() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     let c = r.export.section_comments.join("\n");
     assert!(
         c.contains("decrypted by sipnab") && c.contains("no keys"),
@@ -340,7 +340,7 @@ fn the_pcapng_section_says_it_was_decrypted_and_holds_no_keys() {
 
 #[test]
 fn each_rebuilt_frame_names_what_it_was_decrypted_from() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     let rebuilt: Vec<&Frame> = r
         .export
         .frames
@@ -357,14 +357,14 @@ fn each_rebuilt_frame_names_what_it_was_decrypted_from() {
 
 #[test]
 fn classic_pcap_works_too() {
-    let r = export(&tls_session_frames(), true, "out.pcap", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcap", &[]);
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert_eq!(tcp_payloads(&r.export).len(), 2);
 }
 
 #[test]
 fn the_run_ends_with_the_export_counts() {
-    let r = export(&tls_session_frames(), true, "out.pcapng", &[]);
+    let r = export(&tls_session_frames_or_panic(), true, "out.pcapng", &[]);
     assert!(
         r.stderr.contains("decrypted export: 2 SIP from TLS")
             && r.stderr.contains("captured segments replaced"),

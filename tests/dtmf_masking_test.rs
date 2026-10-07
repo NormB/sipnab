@@ -134,7 +134,7 @@ fn dtmf_capture() -> (tempfile::TempDir, PathBuf) {
         ),
         pcap_build::udp_frame(CALLER, CALLEE, 40001, MEDIA_PORT, &rtp_telephone_event()),
     ];
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
     (dir, path)
 }
 
@@ -155,7 +155,7 @@ fn dtmf_run(extra: &[&str], level: &str) -> (String, String) {
     let capture = path.to_string_lossy().into_owned();
     let mut args = vec!["-N", "-I", capture.as_str(), "-t"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run_support::run(&args, Some(level));
+    let (stdout, stderr, code) = run_support::run_or_panic(&args, Some(level));
     assert_eq!(code, Some(0), "sipnab exited {code:?}\nstderr:\n{stderr}");
     (stdout, stderr)
 }

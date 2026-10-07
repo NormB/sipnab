@@ -20,7 +20,7 @@ mod mcp;
 mod pcap_build;
 
 use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 const CALL_ID: &str = "amr-wb-call@10.0.0.1";
 const PT: u8 = 96;
@@ -81,13 +81,13 @@ fn capture(dir: &std::path::Path, codec: &str, ft: u8, packets: u16, step: u16) 
         frames.push(udp_frame(A, B, 20000, 30000, &rtp(n * step, ft)));
     }
     let path = dir.join("amr-wb.pcap");
-    write_pcap(&path, &frames);
+    write_pcap_or_panic(&path, &frames);
     path.to_str().expect("utf-8 path").to_string()
 }
 
 /// The `rtp_stats` stream objects for `CALL_ID`.
 fn streams(session: &mut McpSession) -> Vec<serde_json::Value> {
-    let msg = session.call("rtp_stats", serde_json::json!({ "call_id": CALL_ID }));
+    let msg = session.call_or_panic("rtp_stats", serde_json::json!({ "call_id": CALL_ID }));
     assert!(msg.get("error").is_none(), "rtp_stats must answer: {msg}");
     let text = msg["result"]["content"][0]["text"]
         .as_str()
@@ -103,7 +103,7 @@ fn streams(session: &mut McpSession) -> Vec<serde_json::Value> {
 fn rtp_stats_carries_the_wideband_score_of_an_amr_wb_stream() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 1);
-    let mut session = McpSession::start(&pcap, &["--no-config"]);
+    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
     let found = streams(&mut session);
     let stream = found
         .iter()
@@ -123,7 +123,7 @@ fn rtp_stats_carries_the_wideband_score_of_an_amr_wb_stream() {
 fn rtp_stats_names_why_a_lossy_amr_wb_stream_has_no_wideband_score() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = capture(dir.path(), "AMR-WB/16000/1", 2, 20, 2);
-    let mut session = McpSession::start(&pcap, &["--no-config"]);
+    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
     let found = streams(&mut session);
     let stream = found
         .iter()
@@ -141,7 +141,7 @@ fn rtp_stats_names_why_a_lossy_amr_wb_stream_has_no_wideband_score() {
 fn rtp_stats_adds_no_wideband_fields_to_a_narrowband_stream() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = capture(dir.path(), "AMR/8000/1", 2, 20, 1);
-    let mut session = McpSession::start(&pcap, &["--no-config"]);
+    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
     let found = streams(&mut session);
     assert!(!found.is_empty(), "no stream at all");
     for stream in &found {

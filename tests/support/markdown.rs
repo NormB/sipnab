@@ -414,23 +414,22 @@ pub fn code_trees() -> &'static BTreeSet<String> {
 /// The top-level directories git actually tracks, `docs/` excluded.
 ///
 /// The truth [`code_trees`] is checked against, not a second source of it.
-pub fn tracked_top_level_dirs() -> BTreeSet<String> {
+pub fn tracked_top_level_dirs() -> std::io::Result<BTreeSet<String>> {
     let out = Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(repo_root())
-        .output()
-        .expect("git ls-files — the code-tree list is checked against it");
+        .output()?;
     assert!(
         out.status.success(),
         "git ls-files failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter_map(|p| p.split_once('/'))
         .map(|(top, _)| top.to_string())
         .filter(|top| top != "docs")
-        .collect()
+        .collect())
 }
 
 /// Whether a link target points into the code tree.
@@ -442,4 +441,13 @@ pub fn is_code_tree_path(target: &str) -> bool {
     code_trees()
         .iter()
         .any(|t| stripped == *t || stripped.starts_with(&format!("{t}/")))
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`tracked_top_level_dirs`], panicking on error.
+pub fn tracked_top_level_dirs_or_panic() -> BTreeSet<String> {
+    tracked_top_level_dirs().expect("tracked_top_level_dirs")
 }

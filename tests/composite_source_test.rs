@@ -1119,6 +1119,6 @@ fn the_disagreement_json_validates_against_the_call_report_schema() {
         !json["signaling_diagnosis"]["source_disagreement"].is_null(),
         "the instance under validation must carry the finding: {json}"
     );
-    let validator = schema::load_validator("call_report.schema.json");
+    let validator = schema::load_validator_or_panic("call_report.schema.json");
     schema::assert_valid(&validator, &json, "composite dialog JSON");
 }

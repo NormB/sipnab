@@ -20,7 +20,7 @@
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload};
+use support::{McpSession, ok_payload_or_panic};
 
 /// The capture the server starts on: one G.711 call.
 const FIRST: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
@@ -52,7 +52,8 @@ fn root_with_second(name: &str) -> std::path::PathBuf {
 /// The final `capture_status` payload.
 fn wait_for_load(session: &mut McpSession) -> serde_json::Value {
     for _ in 0..400 {
-        let v = ok_payload(&session.call("capture_status", serde_json::json!({})));
+        let v =
+            ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
         if v["load"]["done"] == true {
             return v;
         }
@@ -68,11 +69,11 @@ fn wait_for_load(session: &mut McpSession) -> serde_json::Value {
 #[test]
 fn open_capture_is_refused_without_the_opt_in_flag() {
     let root = root_with_second("refused");
-    let msg = McpSession::start(
+    let msg = McpSession::start_or_panic(
         FIRST,
         &["--mcp-file-root", root.to_str().unwrap_or_default()],
     )
-    .call("open_capture", serde_json::json!({"filename": SECOND}));
+    .call_or_panic("open_capture", serde_json::json!({"filename": SECOND}));
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(
         err.contains("--mcp-allow-open-capture"),
@@ -83,8 +84,8 @@ fn open_capture_is_refused_without_the_opt_in_flag() {
 /// The tool appears in `tools/list` whether or not the flag was passed.
 #[test]
 fn open_capture_is_registered_even_when_it_is_not_permitted() {
-    let mut session = McpSession::start(FIRST, &[]);
-    let listed = session.list_tools();
+    let mut session = McpSession::start_or_panic(FIRST, &[]);
+    let listed = session.list_tools_or_panic();
     assert!(
         listed.iter().any(|t| t == "open_capture"),
         "open_capture must be listed even without the opt-in; got {listed:?}"
@@ -99,7 +100,7 @@ fn open_capture_is_registered_even_when_it_is_not_permitted() {
 #[test]
 fn a_swap_replaces_the_dialogs_and_renames_the_capture() {
     let root = root_with_second("swap");
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -108,7 +109,8 @@ fn a_swap_replaces_the_dialogs_and_renames_the_capture() {
         ],
     );
 
-    let before = ok_payload(&session.call("capture_status", serde_json::json!({})));
+    let before =
+        ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
     let before_dialogs = before["dialog_count"].as_u64().unwrap_or(0);
     let before_instance = before["capture_identity"]["instance"]
         .as_str()
@@ -121,7 +123,9 @@ fn a_swap_replaces_the_dialogs_and_renames_the_capture() {
         before["name"]
     );
 
-    let opened = ok_payload(&session.call("open_capture", serde_json::json!({"filename": SECOND})));
+    let opened = ok_payload_or_panic(
+        &session.call_or_panic("open_capture", serde_json::json!({"filename": SECOND})),
+    );
     assert_eq!(opened["status"], "loading");
     assert_eq!(
         opened["discarded_dialogs"], before_dialogs,
@@ -159,7 +163,9 @@ fn a_swap_replaces_the_dialogs_and_renames_the_capture() {
 
     // The dialogs are genuinely the second capture's: one of its Call-IDs
     // resolves, and the first capture's does not.
-    let page = ok_payload(&session.call("list_dialogs", serde_json::json!({"limit": 1})));
+    let page = ok_payload_or_panic(
+        &session.call_or_panic("list_dialogs", serde_json::json!({"limit": 1})),
+    );
     assert_eq!(
         page["capture_identity"]["instance"], after["capture_identity"]["instance"],
         "a page must carry the identity of the capture it came from"
@@ -187,7 +193,7 @@ fn a_swap_replaces_the_dialogs_and_renames_the_capture() {
 #[test]
 fn the_load_does_not_block_the_server() {
     let root = root_with_second("nonblocking");
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -197,13 +203,16 @@ fn the_load_does_not_block_the_server() {
     );
 
     let started = std::time::Instant::now();
-    let opened = ok_payload(&session.call("open_capture", serde_json::json!({"filename": SECOND})));
+    let opened = ok_payload_or_panic(
+        &session.call_or_panic("open_capture", serde_json::json!({"filename": SECOND})),
+    );
     let call_took = started.elapsed();
     assert_eq!(opened["status"], "loading");
 
     // Another tool answers while the load is in flight, and says so.
     let probe = std::time::Instant::now();
-    let status = ok_payload(&session.call("capture_status", serde_json::json!({})));
+    let status =
+        ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
     let probe_took = probe.elapsed();
 
     assert_eq!(
@@ -236,7 +245,7 @@ fn the_load_does_not_block_the_server() {
 #[test]
 fn a_tail_poller_can_tell_the_capture_changed_underneath_it() {
     let root = root_with_second("tail");
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -245,7 +254,7 @@ fn a_tail_poller_can_tell_the_capture_changed_underneath_it() {
         ],
     );
 
-    let first = ok_payload(&session.call("tail_dialogs", serde_json::json!({})));
+    let first = ok_payload_or_panic(&session.call_or_panic("tail_dialogs", serde_json::json!({})));
     let cursor = first["next_cursor"]
         .as_str()
         .unwrap_or_default()
@@ -256,10 +265,12 @@ fn a_tail_poller_can_tell_the_capture_changed_underneath_it() {
         .to_string();
     assert!(!first_instance.is_empty(), "tail must carry an instance");
 
-    session.call("open_capture", serde_json::json!({"filename": SECOND}));
+    session.call_or_panic("open_capture", serde_json::json!({"filename": SECOND}));
     wait_for_load(&mut session);
 
-    let second = ok_payload(&session.call("tail_dialogs", serde_json::json!({"cursor": cursor})));
+    let second = ok_payload_or_panic(
+        &session.call_or_panic("tail_dialogs", serde_json::json!({"cursor": cursor})),
+    );
     assert_ne!(
         second["capture_identity"]["instance"], first_instance,
         "the poller must see a different instance after the swap — without it, \
@@ -274,7 +285,7 @@ fn a_broken_capture_reports_the_error_instead_of_an_empty_store() {
     let root = root_with_second("broken");
     std::fs::write(root.join("not-a-capture.pcap"), b"this is not a pcap")
         .expect("write the decoy");
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -282,7 +293,7 @@ fn a_broken_capture_reports_the_error_instead_of_an_empty_store() {
             "--mcp-allow-open-capture",
         ],
     );
-    session.call(
+    session.call_or_panic(
         "open_capture",
         serde_json::json!({"filename": "not-a-capture.pcap"}),
     );
@@ -303,15 +314,16 @@ fn a_broken_capture_reports_the_error_instead_of_an_empty_store() {
 #[test]
 fn server_capabilities_reports_the_runtime_opt_ins() {
     let root = root_with_second("caps");
-    let plain = ok_payload(
-        &McpSession::start(FIRST, &[]).call("server_capabilities", serde_json::json!({})),
+    let plain = ok_payload_or_panic(
+        &McpSession::start_or_panic(FIRST, &[])
+            .call_or_panic("server_capabilities", serde_json::json!({})),
     );
     assert_eq!(plain["runtime"]["mcp_allow_open_capture"], false);
     assert_eq!(plain["runtime"]["mcp_allow_shutdown"], false);
     assert!(plain["runtime"]["mcp_file_root"].is_null());
 
-    let opted = ok_payload(
-        &McpSession::start(
+    let opted = ok_payload_or_panic(
+        &McpSession::start_or_panic(
             FIRST,
             &[
                 "--mcp-file-root",
@@ -319,7 +331,7 @@ fn server_capabilities_reports_the_runtime_opt_ins() {
                 "--mcp-allow-open-capture",
             ],
         )
-        .call("server_capabilities", serde_json::json!({})),
+        .call_or_panic("server_capabilities", serde_json::json!({})),
     );
     assert_eq!(opted["runtime"]["mcp_allow_open_capture"], true);
     assert_eq!(

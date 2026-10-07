@@ -512,7 +512,7 @@ fn an_xr_datagram_is_rtcp_and_the_prefilter_now_rejects_it() {
 /// Burst and gap durations sipnab reports for the first stream of the first
 /// dialog, off `--json-dialogs`.
 fn reported_burst_and_gap(pcap: &std::path::Path) -> (f64, f64) {
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -553,7 +553,7 @@ fn burst_and_gap_durations_follow_the_streams_own_packetization() {
     let mut measured = Vec::new();
     for ptime in [20u64, 30, 40] {
         let pcap = dir.path().join(format!("lossy-{ptime}ms.pcap"));
-        pcap_build::write_pcap_at(
+        pcap_build::write_pcap_at_or_panic(
             &pcap,
             &pcap_build::sdp_call_with_lossy_rtp_at(&format!("ptime-{ptime}"), 400, 3, ptime),
             1,

@@ -356,8 +356,8 @@ pub fn invite_without_max_forwards(call_id: &str, branch: &str, cseq: u32) -> Ve
 ///
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are
 /// well-defined rather than all-zero.
-pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) {
-    write_pcap_with_linktype(path, frames, 1);
+pub fn write_pcap(path: &Path, frames: &[Vec<u8>]) -> std::io::Result<()> {
+    write_pcap_with_linktype(path, frames, 1)
 }
 
 /// Wrap `data` in a gzip member built from STORED (uncompressed) deflate
@@ -517,13 +517,17 @@ pub fn sdp_call_with_lossy_rtp(call_id: &str, packets: u16, losses_per_ten: u16)
 ///
 /// Timestamps advance 1 ms per frame so dialog durations and ordering are
 /// well-defined rather than all-zero.
-pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
+pub fn write_pcap_with_linktype(
+    path: &Path,
+    frames: &[Vec<u8>],
+    network: u32,
+) -> std::io::Result<()> {
     let timed: Vec<_> = frames
         .iter()
         .enumerate()
         .map(|(i, f)| (f.clone(), i as u64 * 1_000))
         .collect();
-    write_pcap_at(path, &timed, network);
+    write_pcap_at(path, &timed, network)
 }
 
 /// Write frames at explicit microsecond offsets from the capture's start.
@@ -537,7 +541,7 @@ pub fn write_pcap_with_linktype(path: &Path, frames: &[Vec<u8>], network: u32) {
 ///
 /// Offsets are added to a fixed base second, so a fixture's absolute times are
 /// reproducible across runs.
-pub fn write_pcap_at(path: &Path, frames: &[(Vec<u8>, u64)], network: u32) {
+pub fn write_pcap_at(path: &Path, frames: &[(Vec<u8>, u64)], network: u32) -> std::io::Result<()> {
     const BASE_SECS: u64 = 1_700_000_000;
     let mut out = Vec::new();
     // magic, version 2.4, thiszone, sigfigs, snaplen, network
@@ -558,7 +562,7 @@ pub fn write_pcap_at(path: &Path, frames: &[(Vec<u8>, u64)], network: u32) {
         out.extend_from_slice(&(f.len() as u32).to_le_bytes());
         out.extend_from_slice(f);
     }
-    std::fs::write(path, out).expect("write pcap");
+    std::fs::write(path, out)
 }
 
 /// The seven messages of one complete call, as SIP payloads.
@@ -632,8 +636,8 @@ pub fn sip_call_frames(
 ///
 /// `secrets` is embedded as a TLS key-log DSB (`TLSK`), the type Wireshark and
 /// sipnab both write for `--tls-key` material.
-pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
-    write_pcapng_with_dsb_frames(path, secrets, &[frame.to_vec()]);
+pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) -> std::io::Result<()> {
+    write_pcapng_with_dsb_frames(path, secrets, &[frame.to_vec()])
 }
 
 /// [`write_pcapng_with_dsb`] with any number of frames, the n-th stamped n ms
@@ -642,7 +646,11 @@ pub fn write_pcapng_with_dsb(path: &Path, secrets: &str, frame: &[u8]) {
 ///
 /// A decryption test needs a whole session after the secrets: the handshake
 /// the keys belong to and the records they open.
-pub fn write_pcapng_with_dsb_frames(path: &Path, secrets: &str, frames: &[Vec<u8>]) {
+pub fn write_pcapng_with_dsb_frames(
+    path: &Path,
+    secrets: &str,
+    frames: &[Vec<u8>],
+) -> std::io::Result<()> {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         // total = 12 (type + 2x length) + padded body
         let pad = (4 - body.len() % 4) % 4;
@@ -695,13 +703,13 @@ pub fn write_pcapng_with_dsb_frames(path: &Path, secrets: &str, frames: &[Vec<u8
         out.extend_from_slice(&block(0x0000_0006, &epb));
     }
 
-    std::fs::write(path, out).expect("write pcapng");
+    std::fs::write(path, out)
 }
 
 /// Count blocks of `kind` in a pcapng file. Used to assert a DSB is present
 /// before stripping and absent afterwards.
-pub fn count_pcapng_blocks(path: &Path, kind: u32) -> usize {
-    let d = std::fs::read(path).expect("read pcapng");
+pub fn count_pcapng_blocks(path: &Path, kind: u32) -> std::io::Result<usize> {
+    let d = std::fs::read(path)?;
     let mut off = 0usize;
     let mut n = 0usize;
     while off + 12 <= d.len() {
@@ -715,7 +723,7 @@ pub fn count_pcapng_blocks(path: &Path, kind: u32) -> usize {
         }
         off += bl;
     }
-    n
+    Ok(n)
 }
 
 /// One's-complement checksum over a 16-bit-aligned buffer.
@@ -746,12 +754,12 @@ fn checksum16(data: &[u8]) -> u16 {
 ///
 /// `frames` is `(interface_index, bytes)`. Interface 0 is Ethernet at snaplen
 /// 65535; interface 1 is raw IP (DLT 12) at snaplen 2048.
-pub fn write_pcapng_multi_iface(path: &Path, frames: &[(u32, Vec<u8>)]) {
+pub fn write_pcapng_multi_iface(path: &Path, frames: &[(u32, Vec<u8>)]) -> std::io::Result<()> {
     let whole: Vec<(u32, Vec<u8>, usize)> = frames
         .iter()
         .map(|(iface, data)| (*iface, data.clone(), usize::MAX))
         .collect();
-    write_pcapng_multi_iface_cut(path, &whole);
+    write_pcapng_multi_iface_cut(path, &whole)
 }
 
 /// The IP-and-up bytes of an Ethernet frame, for an interface whose link type
@@ -764,7 +772,10 @@ pub fn strip_ethernet(frame: &[u8]) -> Vec<u8> {
 /// `(interface_index, bytes, captured)`. A `captured` below `bytes.len()`
 /// writes an Enhanced Packet Block whose captured length is short of its
 /// original length -- the record a snaplen leaves behind.
-pub fn write_pcapng_multi_iface_cut(path: &Path, frames: &[(u32, Vec<u8>, usize)]) {
+pub fn write_pcapng_multi_iface_cut(
+    path: &Path,
+    frames: &[(u32, Vec<u8>, usize)],
+) -> std::io::Result<()> {
     fn block(kind: u32, body: &[u8]) -> Vec<u8> {
         let pad = (4 - body.len() % 4) % 4;
         let total = 12 + body.len() + pad;
@@ -809,7 +820,7 @@ pub fn write_pcapng_multi_iface_cut(path: &Path, frames: &[(u32, Vec<u8>, usize)
         epb.extend(std::iter::repeat_n(0u8, pad));
         out.extend_from_slice(&block(0x0000_0006, &epb));
     }
-    std::fs::write(path, out).expect("write merged pcapng");
+    std::fs::write(path, out)
 }
 
 /// A call's messages from [`sip_call`], each wrapped in HEP v3 the way a
@@ -853,7 +864,7 @@ pub fn hep_call_frames(call_id: &str) -> Vec<Vec<u8>> {
 /// does not read: neither as the SIP inside it nor as the UDP payload it
 /// arrived in.
 #[cfg(feature = "hep")]
-pub fn hep_frame_with_ip_proto(ip_proto: u8) -> Vec<u8> {
+pub fn hep_frame_with_ip_proto(ip_proto: u8) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3, parse_hep};
     let ep = HepEndpoint {
         src_addr: [10, 1, 0, 1].into(),
@@ -876,11 +887,64 @@ pub fn hep_frame_with_ip_proto(ip_proto: u8) -> Vec<u8> {
     let at = datagram
         .windows(chunk.len())
         .position(|w| w == chunk)
-        .expect("the encoder always writes an IP protocol chunk");
+        .ok_or("the encoder wrote no IP protocol chunk")?;
     datagram[at + chunk.len()] = ip_proto;
-    assert_eq!(
-        parse_hep(&datagram).expect("still valid HEP3").ip_protocol,
-        ip_proto
-    );
-    udp_frame([127, 0, 0, 1], [127, 0, 0, 1], 40000, 9063, &datagram)
+    assert_eq!(parse_hep(&datagram)?.ip_protocol, ip_proto);
+    Ok(udp_frame(
+        [127, 0, 0, 1],
+        [127, 0, 0, 1],
+        40000,
+        9063,
+        &datagram,
+    ))
+}
+
+// Panicking forms of the writers above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`write_pcap`], panicking on error.
+pub fn write_pcap_or_panic(path: &Path, frames: &[Vec<u8>]) {
+    write_pcap(path, frames).expect("write_pcap")
+}
+
+/// [`write_pcap_with_linktype`], panicking on error.
+pub fn write_pcap_with_linktype_or_panic(path: &Path, frames: &[Vec<u8>], network: u32) {
+    write_pcap_with_linktype(path, frames, network).expect("write_pcap_with_linktype")
+}
+
+/// [`write_pcap_at`], panicking on error.
+pub fn write_pcap_at_or_panic(path: &Path, frames: &[(Vec<u8>, u64)], network: u32) {
+    write_pcap_at(path, frames, network).expect("write_pcap_at")
+}
+
+/// [`write_pcapng_with_dsb`], panicking on error.
+pub fn write_pcapng_with_dsb_or_panic(path: &Path, secrets: &str, frame: &[u8]) {
+    write_pcapng_with_dsb(path, secrets, frame).expect("write_pcapng_with_dsb")
+}
+
+/// [`write_pcapng_with_dsb_frames`], panicking on error.
+pub fn write_pcapng_with_dsb_frames_or_panic(path: &Path, secrets: &str, frames: &[Vec<u8>]) {
+    write_pcapng_with_dsb_frames(path, secrets, frames).expect("write_pcapng_with_dsb_frames")
+}
+
+/// [`count_pcapng_blocks`], panicking on error.
+pub fn count_pcapng_blocks_or_panic(path: &Path, kind: u32) -> usize {
+    count_pcapng_blocks(path, kind).expect("count_pcapng_blocks")
+}
+
+/// [`write_pcapng_multi_iface`], panicking on error.
+pub fn write_pcapng_multi_iface_or_panic(path: &Path, frames: &[(u32, Vec<u8>)]) {
+    write_pcapng_multi_iface(path, frames).expect("write_pcapng_multi_iface")
+}
+
+/// [`write_pcapng_multi_iface_cut`], panicking on error.
+pub fn write_pcapng_multi_iface_cut_or_panic(path: &Path, frames: &[(u32, Vec<u8>, usize)]) {
+    write_pcapng_multi_iface_cut(path, frames).expect("write_pcapng_multi_iface_cut")
+}
+
+/// [`hep_frame_with_ip_proto`], panicking on error.
+#[cfg(feature = "hep")]
+pub fn hep_frame_with_ip_proto_or_panic(ip_proto: u8) -> Vec<u8> {
+    hep_frame_with_ip_proto(ip_proto).expect("hep_frame_with_ip_proto")
 }

@@ -397,7 +397,7 @@ fn a_container_validates_against_the_working_group_schema() {
     let json: serde_json::Value =
         serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
 
-    let validator = support::schema::load_validator("vcon.schema.json");
+    let validator = support::schema::load_validator_or_panic("vcon.schema.json");
     support::schema::assert_valid(&validator, &json, "signaling-only vCon");
 }
 
@@ -868,7 +868,7 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
     let json: serde_json::Value =
         serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
 
-    let errors = support::schema::openapi_errors("vcon-store-openapi.json", "VCon", &json);
+    let errors = support::schema::openapi_errors_or_panic("vcon-store-openapi.json", "VCon", &json);
 
     // Divergence 1: their Dialog requires `type`, and a signaling-only object
     // has no truthful value for it. This is the PV1 decision, and it is the

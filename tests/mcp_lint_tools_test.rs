@@ -24,7 +24,7 @@
 
 #[path = "support/mcp.rs"]
 mod support;
-use support::{McpSession, call_tool_with_args, ok_payload};
+use support::{McpSession, call_tool_with_args_or_panic, ok_payload_or_panic};
 
 /// A B2BUA capture whose SDP negotiates `sendrecv` in both directions while the
 /// media only ever flows one way.
@@ -82,7 +82,7 @@ fn skipped_ids(payload: &serde_json::Value) -> Vec<String> {
 /// nothing proved the MCP surface reached that rule.
 #[test]
 fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
-    let payload = ok_payload(&call_tool_with_args(
+    let payload = ok_payload_or_panic(&call_tool_with_args_or_panic(
         B2BUA,
         &[],
         "lint_dialog",
@@ -127,7 +127,7 @@ fn lint_dialog_reports_a_defect_that_lives_between_signaling_and_media() {
 /// is not.
 #[test]
 fn a_finding_carries_the_citation_as_data_not_prose() {
-    let payload = ok_payload(&call_tool_with_args(
+    let payload = ok_payload_or_panic(&call_tool_with_args_or_panic(
         B2BUA,
         &[],
         "lint_dialog",
@@ -171,18 +171,20 @@ fn a_finding_carries_the_citation_as_data_not_prose() {
 /// caller then reads the whole catalog believing it read a subset.
 #[test]
 fn rulesets_and_severity_narrow_the_run() {
-    let mut session = McpSession::start(B2BUA, &[]);
+    let mut session = McpSession::start_or_panic(B2BUA, &[]);
 
-    let all = ok_payload(&session.call("lint_dialog", serde_json::json!({"call_id": B2BUA_CALL})));
-    let observed = ok_payload(&session.call(
+    let all = ok_payload_or_panic(
+        &session.call_or_panic("lint_dialog", serde_json::json!({"call_id": B2BUA_CALL})),
+    );
+    let observed = ok_payload_or_panic(&session.call_or_panic(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["observed"]}),
     ));
-    let interop = ok_payload(&session.call(
+    let interop = ok_payload_or_panic(&session.call_or_panic(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["interop"]}),
     ));
-    let rfc3261 = ok_payload(&session.call(
+    let rfc3261 = ok_payload_or_panic(&session.call_or_panic(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "rulesets": ["rfc3261"]}),
     ));
@@ -212,14 +214,14 @@ fn rulesets_and_severity_narrow_the_run() {
 
     // `severity_min` is the engine's own filter, so a threshold above every
     // finding present empties the list rather than reordering it.
-    let loud = ok_payload(&session.call(
+    let loud = ok_payload_or_panic(&session.call_or_panic(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "severity_min": "error"}),
     ));
     assert_eq!(loud["finding_count"], 0, "nothing here is an error: {loud}");
     assert_eq!(loud["severity_min"], "error");
 
-    let warned = ok_payload(&session.call(
+    let warned = ok_payload_or_panic(&session.call_or_panic(
         "lint_dialog",
         serde_json::json!({"call_id": B2BUA_CALL, "severity_min": "warning"}),
     ));
@@ -236,7 +238,7 @@ fn rulesets_and_severity_narrow_the_run() {
 /// the worst outcome available, because it is a confident wrong answer.
 #[test]
 fn an_unknown_selector_is_refused_rather_than_silently_ignored() {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         B2BUA,
         &[],
         "lint_dialog",
@@ -262,7 +264,7 @@ fn an_unknown_selector_is_refused_rather_than_silently_ignored() {
 fn a_run_names_the_rules_it_could_not_evaluate() {
     // A call with media: only the RTCP rule stays out of reach, because the
     // stream store keeps no record of the endpoint pairs RTCP landed on.
-    let with_media = ok_payload(&call_tool_with_args(
+    let with_media = ok_payload_or_panic(&call_tool_with_args_or_panic(
         B2BUA,
         &[],
         "lint_dialog",
@@ -277,7 +279,7 @@ fn a_run_names_the_rules_it_could_not_evaluate() {
 
     // A call with no media at all: every observation rule is unreachable, and
     // saying nothing would present that as a clean media path.
-    let no_media = ok_payload(&call_tool_with_args(
+    let no_media = ok_payload_or_panic(&call_tool_with_args_or_panic(
         OPTIONS_PING,
         &[],
         "lint_dialog",
@@ -308,9 +310,9 @@ fn a_run_names_the_rules_it_could_not_evaluate() {
 /// beginning `z9hG4bK`.
 #[test]
 fn validate_message_checks_the_message_the_index_names() {
-    let mut session = McpSession::start(OPTIONS_PING, &[]);
+    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
 
-    let payload = ok_payload(&session.call(
+    let payload = ok_payload_or_panic(&session.call_or_panic(
         "validate_message",
         serde_json::json!({"call_id": OPTIONS_CALL, "index": 0}),
     ));
@@ -345,7 +347,7 @@ fn validate_message_checks_the_message_the_index_names() {
 
     // Out of range refuses and names the count, rather than returning the last
     // message or an empty finding list.
-    let msg = session.call(
+    let msg = session.call_or_panic(
         "validate_message",
         serde_json::json!({"call_id": OPTIONS_CALL, "index": 99}),
     );
@@ -369,9 +371,9 @@ fn validate_message_checks_the_message_the_index_names() {
 /// tool cites the right paragraph. One that recalls it does not.
 #[test]
 fn explain_rule_resolves_an_identifier_to_its_real_citation() {
-    let mut session = McpSession::start(OPTIONS_PING, &[]);
+    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
 
-    let bracket = ok_payload(&session.call(
+    let bracket = ok_payload_or_panic(&session.call_or_panic(
         "explain_rule",
         serde_json::json!({"rule_id": "SIP-3261-20-URI-BRACKETS"}),
     ));
@@ -388,7 +390,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 
     // The selectors reported have to work as `lint_dialog` arguments, which is
     // the only reason to report them at all.
-    let observation = ok_payload(&session.call(
+    let observation = ok_payload_or_panic(&session.call_or_panic(
         "explain_rule",
         serde_json::json!({"rule_id": "OBS-3264-6.1-DIRECTION-UNMET"}),
     ));
@@ -406,7 +408,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 
     // An unknown identifier refuses and lists the catalog, because an empty
     // answer reads as "that rule found nothing".
-    let msg = session.call(
+    let msg = session.call_or_panic(
         "explain_rule",
         serde_json::json!({"rule_id": "SIP-3261-20.10-URI-BRACKETS"}),
     );
@@ -429,7 +431,7 @@ fn explain_rule_resolves_an_identifier_to_its_real_citation() {
 /// citation comes from.
 #[test]
 fn every_cataloged_rule_is_explainable() {
-    let mut session = McpSession::start(OPTIONS_PING, &[]);
+    let mut session = McpSession::start_or_panic(OPTIONS_PING, &[]);
     // Read out of the library so a rule added later has to appear here too.
     let ids: Vec<&'static str> = sipnab::sip::lint::RULES.iter().map(|r| r.id).collect();
     // 32 -> 41: PA4 added nine rules — three message-scoped
@@ -441,7 +443,9 @@ fn every_cataloged_rule_is_explainable() {
     assert_eq!(ids.len(), 41, "the catalog size moved: {}", ids.len());
 
     for id in ids {
-        let payload = ok_payload(&session.call("explain_rule", serde_json::json!({"rule_id": id})));
+        let payload = ok_payload_or_panic(
+            &session.call_or_panic("explain_rule", serde_json::json!({"rule_id": id})),
+        );
         assert_eq!(payload["rule_id"], id);
         assert!(
             payload["title"].as_str().is_some_and(|t| !t.is_empty()),

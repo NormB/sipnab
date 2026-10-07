@@ -881,7 +881,7 @@ fn media_container(wrapped: bool) -> serde_json::Value {
 /// Every media container validates against the working group's own schema.
 #[test]
 fn a_media_container_validates_against_the_working_group_schema() {
-    let validator = support::schema::load_validator("vcon.schema.json");
+    let validator = support::schema::load_validator_or_panic("vcon.schema.json");
     for (label, wrapped) in [("intact ring", false), ("wrapped ring", true)] {
         let json = media_container(wrapped);
         if let Err(e) = validator.validate(&json) {

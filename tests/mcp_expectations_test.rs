@@ -64,9 +64,9 @@ fn one(rule: serde_json::Value) -> serde_json::Value {
 /// the scope, or one wired to a constant, cannot satisfy both.
 #[test]
 fn the_gate_goes_red_on_the_capture_that_violates_it() {
-    let mut s = McpSession::start(REJECT, &[]);
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
 
-    let red = s.ok(
+    let red = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
@@ -81,7 +81,7 @@ fn the_gate_goes_red_on_the_capture_that_violates_it() {
         "the population is the whole capture: {red}"
     );
 
-    let green = s.ok(
+    let green = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
@@ -101,9 +101,9 @@ fn the_gate_goes_red_on_the_capture_that_violates_it() {
 /// when it has quietly stopped guarding anything.
 #[test]
 fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
-    let mut s = McpSession::start(REGISTERS, &[]);
+    let mut s = McpSession::start_or_panic(REGISTERS, &[]);
 
-    let unevaluable = s.ok(
+    let unevaluable = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({ "metric": "asr", "op": ">=", "value": 0.99 })),
     );
@@ -126,7 +126,7 @@ fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
          {unevaluable}"
     );
 
-    let declared = s.ok(
+    let declared = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "asr", "op": ">=", "value": 0.99, "min_sample": 50
@@ -146,9 +146,9 @@ fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() {
 /// give the same verdict twice.
 #[test]
 fn grounded_only_changes_the_verdict_it_is_supposed_to_change() {
-    let mut s = McpSession::start(CODECS, &[]);
+    let mut s = McpSession::start_or_panic(CODECS, &[]);
 
-    let grounded = s.ok(
+    let grounded = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({ "metric": "mos_p0", "op": ">=", "value": 4.3 })),
     );
@@ -165,7 +165,7 @@ fn grounded_only_changes_the_verdict_it_is_supposed_to_change() {
         "and the answer says what it could not judge: {grounded}"
     );
 
-    let everything = s.ok(
+    let everything = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "mos_p0", "op": ">=", "value": 4.3, "grounded_only": false
@@ -183,8 +183,8 @@ fn grounded_only_changes_the_verdict_it_is_supposed_to_change() {
 /// empty store.
 #[test]
 fn a_count_gate_on_a_capture_with_no_dialogs_is_unevaluable() {
-    let mut s = McpSession::start(CODECS, &[]);
-    let v = s.ok(
+    let mut s = McpSession::start_or_panic(CODECS, &[]);
+    let v = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "count", "op": "==", "value": 0,
@@ -201,8 +201,8 @@ fn a_count_gate_on_a_capture_with_no_dialogs_is_unevaluable() {
 /// A malformed rule is refused outright, not evaluated in part.
 #[test]
 fn a_malformed_rule_refuses_the_whole_suite() {
-    let mut s = McpSession::start(REJECT, &[]);
-    let msg = s.call(
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
+    let msg = s.call_or_panic(
         "evaluate_expectations",
         serde_json::json!({ "rules": [
             { "metric": "count", "op": "==", "value": 0 },
@@ -220,8 +220,8 @@ fn a_malformed_rule_refuses_the_whole_suite() {
 /// counted from.
 #[test]
 fn a_lint_gate_counts_findings_at_the_declared_severity() {
-    let mut s = McpSession::start(REJECT, &[]);
-    let v = s.ok(
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
+    let v = s.ok_or_panic(
         "evaluate_expectations",
         one(serde_json::json!({
             "metric": "lint_errors", "op": ">=", "value": 0, "scope": "severity:info"
@@ -248,9 +248,9 @@ fn a_lint_gate_counts_findings_at_the_declared_severity() {
 /// pinning carries that call's own SDP into it.
 #[test]
 fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
-    let mut s = McpSession::start(REJECT, &[]);
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
 
-    let generic = s.ok(
+    let generic = s.ok_or_panic(
         "generate_repro",
         serde_json::json!({ "call_id": REJECT_CALL }),
     );
@@ -261,7 +261,7 @@ fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
     );
     assert_eq!(generic["asserted"]["final"], 488, "{generic}");
 
-    let pinned = s.ok(
+    let pinned = s.ok_or_panic(
         "generate_repro",
         serde_json::json!({ "call_id": REJECT_CALL, "pin": ["sdp"] }),
     );
@@ -287,8 +287,8 @@ fn a_repro_for_a_real_rejected_call_asserts_the_rejection() {
 /// A repro for a Call-ID the capture does not hold is refused.
 #[test]
 fn a_repro_for_an_unknown_call_is_refused() {
-    let mut s = McpSession::start(REJECT, &[]);
-    let msg = s.call(
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
+    let msg = s.call_or_panic(
         "generate_repro",
         serde_json::json!({ "call_id": "not-in-this-capture" }),
     );
@@ -299,8 +299,8 @@ fn a_repro_for_an_unknown_call_is_refused() {
 /// else — there is no RTP attributed to a rejected INVITE.
 #[test]
 fn a_wireshark_filter_selects_the_call_and_says_when_there_is_no_media() {
-    let mut s = McpSession::start(REJECT, &[]);
-    let v = s.ok(
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
+    let v = s.ok_or_panic(
         "generate_wireshark_filter",
         serde_json::json!({ "call_id": REJECT_CALL }),
     );
@@ -321,8 +321,8 @@ fn a_wireshark_filter_selects_the_call_and_says_when_there_is_no_media() {
 /// All four tools are registered and reachable over the wire.
 #[test]
 fn the_gate_and_the_generators_are_registered() {
-    let mut s = McpSession::start(REJECT, &[]);
-    let tools = s.list_tools();
+    let mut s = McpSession::start_or_panic(REJECT, &[]);
+    let tools = s.list_tools_or_panic();
     for name in [
         "evaluate_expectations",
         "generate_fail2ban_rule",

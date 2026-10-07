@@ -42,7 +42,7 @@ fn capture(call_id: &str) -> Vec<u8> {
         .enumerate()
         .map(|(i, f)| (f, 10_000_000 + i as u64 * 1_000))
         .collect();
-    pcap_build::write_pcap_at(&p, &frames, 1);
+    pcap_build::write_pcap_at_or_panic(&p, &frames, 1);
     std::fs::read(&p).expect("read back")
 }
 

@@ -48,7 +48,7 @@ fn sip_call_fixture() -> PathBuf {
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, i32) {
-    let (stdout, stderr, code) = run_support::run(args, Some("warn"));
+    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("warn"));
     (stdout, stderr, code.unwrap_or(-1))
 }
 
@@ -594,7 +594,7 @@ fn write_multi_call_pcap(dir: &tempfile::TempDir, calls: usize) -> PathBuf {
             "bob",
         ));
     }
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
     path
 }
 
@@ -635,7 +635,7 @@ fn write_idle_dialog_pcap(
     for f in pcap_build::sip_call_frames("late-call@10.1.0.1", "late", "carol", "dave") {
         timed.push((f, later));
     }
-    pcap_build::write_pcap_at(&path, &timed, 1);
+    pcap_build::write_pcap_at_or_panic(&path, &timed, 1);
     (path, messages)
 }
 
@@ -816,7 +816,7 @@ fn cli_max_streams_overrides_config() {
 /// Write a pcap holding `flows` partial SIP messages open over TCP.
 fn write_tcp_flow_pcap(dir: &tempfile::TempDir, flows: usize) -> PathBuf {
     let path = dir.path().join("tcp-flows.pcap");
-    pcap_build::write_pcap(&path, &pcap_build::partial_tcp_sip_flows(flows));
+    pcap_build::write_pcap_or_panic(&path, &pcap_build::partial_tcp_sip_flows(flows));
     path
 }
 
@@ -1588,7 +1588,7 @@ fn probe_lint_max_per_rule() -> (String, String) {
         .map(|i| pcap_build::invite_without_max_forwards("lint-probe", &format!("l{i}"), i + 1))
         .collect();
     let pcap = dir.path().join("lint.pcap");
-    pcap_build::write_pcap(&pcap, &frames);
+    pcap_build::write_pcap_or_panic(&pcap, &frames);
     observe_stdout(
         &pcap,
         "[limits]\nlint_max_per_rule = 5\n",
@@ -1664,7 +1664,7 @@ fn probe_exec_queue_depth() -> (String, String) {
 fn probe_max_lost_sequences() -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("lossy-call.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &pcap_build::sdp_call_with_lossy_rtp("loss-probe", 4000, 3),
     );
@@ -1702,7 +1702,7 @@ fn probe_quality_interval_secs() -> (String, String) {
     // five-second period closes several intervals and a one-second period
     // closes several times more. A shorter capture would leave both at one
     // and the two observations would agree for the wrong reason.
-    pcap_build::write_pcap_at(
+    pcap_build::write_pcap_at_or_panic(
         &pcap,
         &pcap_build::sdp_call_with_lossy_rtp_at("interval-probe", 1500, 1, 20),
         1,
@@ -1773,7 +1773,7 @@ fn probe_max_metadata_file_bytes() -> (String, String) {
         let dir = tempfile::tempdir().unwrap();
         let src = dir.path().join("secrets.pcapng");
         let dst = dir.path().join("stripped.pcapng");
-        pcap_build::write_pcapng_with_dsb(
+        pcap_build::write_pcapng_with_dsb_or_panic(
             &src,
             "CLIENT_RANDOM abcd 0123\n",
             &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
@@ -1816,7 +1816,7 @@ fn probe_max_gunzip_bytes() -> (String, String) {
         let plain = dir.path().join("secrets.pcapng");
         let gz = dir.path().join("secrets.pcapng.gz");
         let dst = dir.path().join("stripped.pcapng");
-        pcap_build::write_pcapng_with_dsb(
+        pcap_build::write_pcapng_with_dsb_or_panic(
             &plain,
             "CLIENT_RANDOM abcd 0123\n",
             &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
@@ -1865,7 +1865,7 @@ fn probe_max_gunzip_bytes() -> (String, String) {
 fn probe_max_tcp_buffer() -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("big-tcp-invite.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("big-tcp-probe", 100_000, false),
     );
@@ -2141,7 +2141,7 @@ fn probe_max_reassembly() -> (String, String) {
 fn probe_max_header_line() -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("long-header.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &[pcap_build::invite_with_long_from("long-header-1", 300)],
     );
@@ -2157,7 +2157,7 @@ fn probe_max_header_line() -> (String, String) {
 fn probe_max_headers_per_message() -> (String, String) {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("many-headers.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &[pcap_build::invite_with_padded_headers("many-headers-1", 40)],
     );
@@ -2311,10 +2311,10 @@ fn exported_wav_bytes(cap: usize) -> u64 {
 #[cfg(feature = "api")]
 fn probe_api_max_rows() -> (String, String) {
     fn rows_with(pcap: &std::path::Path, extra: &[&str]) -> String {
-        let srv = server::ApiServer::spawn_with_pcap(pcap.to_str().unwrap(), extra);
-        let resp = srv.get("/v1/dialogs?limit=1000");
+        let srv = server::ApiServer::spawn_with_pcap_or_panic(pcap.to_str().unwrap(), extra);
+        let resp = srv.get_or_panic("/v1/dialogs?limit=1000");
         let rows = resp
-            .json()
+            .json_or_panic()
             .get("dialogs")
             .and_then(|d| d.as_array())
             .map_or(0, Vec::len);
@@ -2344,12 +2344,12 @@ fn probe_api_max_rows() -> (String, String) {
 #[cfg(feature = "api")]
 fn probe_api_rate_limit_per_peer() -> (String, String) {
     fn burst_verdict(extra: &[&str]) -> String {
-        let srv = server::ApiServer::spawn(extra);
+        let srv = server::ApiServer::spawn_or_panic(extra);
         let started = std::time::Instant::now();
         let refused = (0..40)
             // 503, not 429: the limiter runs BEFORE auth, so a refusal here
             // says nothing about the credential — see `guard_scoped`.
-            .filter(|_| srv.get("/v1/stats").status == 503)
+            .filter(|_| srv.get_or_panic("/v1/stats").status == 503)
             .count();
         assert_premise_inside_window("api", started.elapsed(), refused);
         if refused > 0 {
@@ -3088,7 +3088,7 @@ fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
 fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("pushed-big-tcp-invite.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("pushed-probe", 100_000, true),
     );
@@ -3122,7 +3122,7 @@ fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
 fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("wss-8081.pcap");
-    pcap_build::write_pcap(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081));
+    pcap_build::write_pcap_or_panic(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081));
     let pcap = pcap.to_str().unwrap().to_string();
     // `--portrange` is widened in every run: the WebSocket set and the
     // signaling port range are different gates, and leaving the default
@@ -3419,7 +3419,7 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
     }
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("lo.pcap");
-    pcap_build::write_pcap(&pcap, &frames);
+    pcap_build::write_pcap_or_panic(&pcap, &frames);
     let pcap = pcap.to_str().unwrap().to_string();
 
     let probe = |extra: &[&str]| -> (String, String) {

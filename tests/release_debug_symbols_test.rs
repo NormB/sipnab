@@ -356,12 +356,12 @@ fn every_build_publishes_a_distinctly_named_symbol_file() {
 #[test]
 #[cfg(target_os = "linux")]
 fn the_split_step_and_the_strip_check_run_on_a_real_binary() {
-    let host = dbgsym::host_triple();
+    let host = dbgsym::host_triple_or_panic();
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path();
     let rel = work.join("target").join(&host).join("release");
     std::fs::create_dir_all(&rel).unwrap();
-    let fixture = dbgsym::build_fixture(work, None, true).expect("host fixture");
+    let fixture = dbgsym::build_fixture_or_panic(work, None, true).expect("host fixture");
     let bin = rel.join("sipnab");
     std::fs::copy(&fixture, &bin).unwrap();
     std::fs::create_dir_all(work.join("scripts")).unwrap();
@@ -398,7 +398,10 @@ fn the_split_step_and_the_strip_check_run_on_a_real_binary() {
     );
     let debug = work.join(format!("dist/sipnab-1.2.3-{host}.debug"));
     assert!(debug.is_file(), "no {}:\n{}", debug.display(), text(&out));
-    assert_eq!(dbgsym::build_id(&bin), dbgsym::build_id(&debug));
+    assert_eq!(
+        dbgsym::build_id_or_panic(&bin),
+        dbgsym::build_id_or_panic(&debug)
+    );
 
     let stripped = Command::new("bash")
         .arg("-c")
@@ -650,14 +653,14 @@ enum ProofCase {
 #[test]
 #[cfg(target_os = "linux")]
 fn the_ci_proof_step_catches_what_it_must() {
-    let host = dbgsym::host_triple();
+    let host = dbgsym::host_triple_or_panic();
     let prove = step_script_in(CI, CI_PROVE_STEP);
     let run = |case: ProofCase| {
         let dir = tempfile::tempdir().unwrap();
         let work = dir.path().to_path_buf();
         let rel = work.join("target").join(&host).join("release");
         std::fs::create_dir_all(&rel).unwrap();
-        let fixture = dbgsym::build_fixture(&work, None, true).expect("host fixture");
+        let fixture = dbgsym::build_fixture_or_panic(&work, None, true).expect("host fixture");
         let bin = rel.join("sipnab");
         std::fs::copy(&fixture, &bin).unwrap();
         std::fs::create_dir_all(work.join("scripts")).unwrap();

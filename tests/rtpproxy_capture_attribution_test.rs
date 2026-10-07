@@ -18,7 +18,7 @@ use std::process::Command;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 const CALL_ID: &str = "rp-wire-e2e@192.0.2.10";
 const PROXY_IP: [u8; 4] = [192, 0, 2, 10];
@@ -60,7 +60,7 @@ fn capture() -> (tempfile::TempDir, PathBuf) {
 fn capture_on(control_port: u16) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join("rtpproxy.pcap");
-    write_pcap(&path, &frames_on(control_port));
+    write_pcap_or_panic(&path, &frames_on(control_port));
     (dir, path)
 }
 

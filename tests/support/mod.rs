@@ -18,6 +18,10 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on every error type alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// JSON-Schema validation helpers (T1.3).
 pub mod schema;
 
@@ -82,34 +86,44 @@ pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {
 ///
 /// Order matters: timestamps are scrubbed before durations so the seconds field
 /// of a timestamp can't be mistaken for a duration.
-pub fn normalize(input: &str) -> String {
+pub fn normalize(input: &str) -> Result<String, TestError> {
     let subs: [(&Regex, &str); 5] = [
-        (ts_re(), "<TS>"),
-        (dur_re(), "<DUR>"),
-        (tmp_re(), "<TMP>"),
-        (pid_re(), "pid=<PID>"),
-        (port_re(), "$host:<PORT>"),
+        (ts_re()?, "<TS>"),
+        (dur_re()?, "<DUR>"),
+        (tmp_re()?, "<TMP>"),
+        (pid_re()?, "pid=<PID>"),
+        (port_re()?, "$host:<PORT>"),
     ];
     let mut out = input.to_string();
     for (re, rep) in subs {
         out = re.replace_all(&out, rep).into_owned();
     }
-    out
+    Ok(out)
+}
+
+/// The regex `cell` holds, compiling `pattern()` on first use; a pattern that
+/// fails to compile reports the same error on every call.
+fn cached(
+    cell: &'static OnceLock<Result<Regex, regex::Error>>,
+    pattern: impl FnOnce() -> String,
+) -> Result<&'static Regex, regex::Error> {
+    cell.get_or_init(|| Regex::new(&pattern()))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 /// RFC3339 / `%Y-%m-%d %H:%M:%S` timestamps, with optional fraction and offset.
-fn ts_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?")
-            .unwrap()
+fn ts_re() -> Result<&'static Regex, regex::Error> {
+    static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    cached(&RE, || {
+        r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?".to_string()
     })
 }
 
 /// Durations like `1.234s`, `12.3 ms`, `500us`, `7ns`.
-fn dur_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s)\b").unwrap())
+fn dur_re() -> Result<&'static Regex, regex::Error> {
+    static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    cached(&RE, || r"\d+(?:\.\d+)?\s?(?:ns|µs|us|ms|s)\b".to_string())
 }
 
 /// Temp-file paths, under `/tmp/` **and** under this platform's real temp
@@ -136,9 +150,9 @@ fn dur_re() -> &'static Regex {
 /// Built once from `temp_dir()` at first use rather than hardcoded, because the
 /// `<hash>` differs per user and per boot. `regex::escape` is not optional: the
 /// path is interpolated into a pattern.
-fn tmp_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
+fn tmp_re() -> Result<&'static Regex, regex::Error> {
+    static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    cached(&RE, || {
         let mut alts = vec![regex::escape("/tmp/"), regex::escape("/private/tmp/")];
         let sys = std::env::temp_dir();
         let sys = sys.to_string_lossy();
@@ -149,19 +163,29 @@ fn tmp_re() -> &'static Regex {
         // Longest-first: the alternation is ordered, and `/tmp/` would
         // otherwise win against a temp dir that happens to start with it.
         alts.sort_by_key(|a| std::cmp::Reverse(a.len()));
-        Regex::new(&format!(r#"(?:{})[^\s"']+"#, alts.join("|")))
-            .expect("temp-dir alternation is escaped, so it always compiles")
+        format!(r#"(?:{})[^\s"']+"#, alts.join("|"))
     })
 }
 
 /// `pid=NNN` / `PID: NNN` in any case.
-fn pid_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\bpid\s*[=:]\s*\d+").unwrap())
+fn pid_re() -> Result<&'static Regex, regex::Error> {
+    static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    cached(&RE, || r"(?i)\bpid\s*[=:]\s*\d+".to_string())
 }
 
 /// Ephemeral ports on loopback hosts, keeping the host intact.
-fn port_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?P<host>127\.0\.0\.1|\[::1\]|localhost):\d{2,5}").unwrap())
+fn port_re() -> Result<&'static Regex, regex::Error> {
+    static RE: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    cached(&RE, || {
+        r"(?P<host>127\.0\.0\.1|\[::1\]|localhost):\d{2,5}".to_string()
+    })
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`normalize`], panicking on error.
+pub fn normalize_or_panic(input: &str) -> String {
+    normalize(input).expect("normalize")
 }

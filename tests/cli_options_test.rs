@@ -64,7 +64,7 @@ fn run(args: &[&str]) -> (String, String, i32) {
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_with_log(args: &[&str], level: &str) -> (String, String, i32) {
-    let (stdout, stderr, code) = run_support::run(args, Some(level));
+    let (stdout, stderr, code) = run_support::run_or_panic(args, Some(level));
     (stdout, stderr, code.unwrap_or(-1))
 }
 
@@ -533,7 +533,7 @@ fn calls_only_keeps_the_call_and_drops_dialogs_that_are_not_calls() {
 
     let dir = tempfile::tempdir().unwrap();
     let pcap = dir.path().join("call-and-others.pcap");
-    pcap_build::write_pcap(&pcap, &frames);
+    pcap_build::write_pcap_or_panic(&pcap, &frames);
     let path = pcap.to_str().unwrap();
 
     let call_ids = |stdout: &str| -> Vec<String> {
@@ -1426,9 +1426,9 @@ fn write_pcapng_with_secrets(path: &std::path::Path, call_id: &str) {
         "OPTIONS sip:a@b SIP/2.0\r\nCall-ID: {call_id}\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
     );
     let frame = pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 5060, 5060, payload.as_bytes());
-    pcap_build::write_pcapng_with_dsb(path, "CLIENT_RANDOM 0011 22334455\n", &frame);
+    pcap_build::write_pcapng_with_dsb_or_panic(path, "CLIENT_RANDOM 0011 22334455\n", &frame);
     assert_eq!(
-        pcap_build::count_pcapng_blocks(path, DSB_BLOCK_TYPE),
+        pcap_build::count_pcapng_blocks_or_panic(path, DSB_BLOCK_TYPE),
         1,
         "fixture must start with exactly one DSB"
     );
@@ -1471,7 +1471,7 @@ fn strip_secrets_refuses_two_input_files() {
     );
     for input in [&first, &second] {
         assert_eq!(
-            pcap_build::count_pcapng_blocks(input, DSB_BLOCK_TYPE),
+            pcap_build::count_pcapng_blocks_or_panic(input, DSB_BLOCK_TYPE),
             1,
             "--strip-secrets must never modify its input ({})",
             input.display()
@@ -1551,12 +1551,12 @@ fn strip_secrets_accepts_a_directory_holding_one_capture() {
         "a directory naming exactly one capture must be stripped:\n{stderr}"
     );
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&out, DSB_BLOCK_TYPE),
+        pcap_build::count_pcapng_blocks_or_panic(&out, DSB_BLOCK_TYPE),
         0,
         "the stripped copy must contain no Decryption Secrets Block"
     );
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&input, DSB_BLOCK_TYPE),
+        pcap_build::count_pcapng_blocks_or_panic(&input, DSB_BLOCK_TYPE),
         1,
         "--strip-secrets must never modify its input"
     );
@@ -1579,7 +1579,8 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() {
     let path = cap.to_string_lossy().into_owned();
 
     // Informational on its own: findings print, exit code untouched.
-    let (out, err, code) = run_support::run(&["-N", "-I", &path, "--no-cli-print", "--lint"], None);
+    let (out, err, code) =
+        run_support::run_or_panic(&["-N", "-I", &path, "--no-cli-print", "--lint"], None);
     assert_eq!(
         code,
         Some(0),
@@ -1595,7 +1596,7 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() {
     // The gate itself. `info` is the floor, so anything the linter found at
     // all trips it — which makes this assert the WIRING rather than depending
     // on this fixture happening to contain an error-severity defect.
-    let (_o2, e2, c2) = run_support::run(
+    let (_o2, e2, c2) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1625,7 +1626,7 @@ fn lint_reports_from_the_cli_and_fail_on_exits_three() {
 
     // A threshold nothing can reach must not fail the build. Guards against a
     // gate wired to "any findings at all" regardless of severity.
-    let (_o3, _e3, c3) = run_support::run(
+    let (_o3, _e3, c3) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1677,8 +1678,8 @@ fn cores_runs_the_same_lint_gate_as_the_batch_path() {
     let many_args = args("4");
     let one_refs: Vec<&str> = one_args.iter().map(String::as_str).collect();
     let many_refs: Vec<&str> = many_args.iter().map(String::as_str).collect();
-    let one = run_support::run(&one_refs, None);
-    let many = run_support::run(&many_refs, None);
+    let one = run_support::run_or_panic(&one_refs, None);
+    let many = run_support::run_or_panic(&many_refs, None);
 
     assert_eq!(
         one.2, many.2,
@@ -1698,7 +1699,7 @@ fn cores_runs_the_same_lint_gate_as_the_batch_path() {
 #[test]
 fn lint_fail_on_requires_lint() {
     let cap = sip_call_fixture();
-    let (_o, err, code) = run_support::run(
+    let (_o, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1731,8 +1732,8 @@ fn lint_fail_on_requires_lint() {
 fn markdown_actually_changes_the_report() {
     let cap = sip_call_fixture();
     let path = cap.to_string_lossy().into_owned();
-    let plain = run_support::run(&["-N", "-I", &path, "--report", "--no-cli-print"], None);
-    let md = run_support::run(
+    let plain = run_support::run_or_panic(&["-N", "-I", &path, "--report", "--no-cli-print"], None);
+    let md = run_support::run_or_panic(
         &[
             "-N",
             "-I",

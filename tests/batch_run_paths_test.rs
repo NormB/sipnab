@@ -20,7 +20,7 @@ mod pcap_build;
 use std::path::Path;
 use std::process::Command;
 
-use pcap_build::{udp_frame, write_pcap, write_pcapng_with_dsb};
+use pcap_build::{udp_frame, write_pcap_or_panic, write_pcapng_with_dsb_or_panic};
 
 /// The committed two-party call every flag-only case reads.
 const SIP_CALL: &str = "tests/fixtures/sip_call.pcap";
@@ -284,7 +284,7 @@ fn llmnr_on_the_segment_is_summarized_as_a_capped_host_roster() {
         51_000,
         &llmnr(100, "printer0", Some([10, 9, 0, 200])),
     ));
-    write_pcap(&pcap, &frames);
+    write_pcap_or_panic(&pcap, &frames);
 
     let run = sipnab(&["-N", "-I", s(&pcap)]);
     assert_eq!(run.code, Some(0), "{}", run.dump());
@@ -355,7 +355,7 @@ fn icmp_errors_quoting_sip_name_the_unreachable_endpoint() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = dir.path().join("icmp.pcap");
     let full = invite("icmp@192.0.2.10", &[]);
-    write_pcap(
+    write_pcap_or_panic(
         &pcap,
         &[
             udp_frame([192, 0, 2, 10], [192, 0, 2, 20], 5060, 5060, &full),
@@ -485,7 +485,7 @@ fn secrets_embedded_in_the_capture_arm_decryption_without_a_keylog() {
         5060,
         &invite("dsb@192.0.2.10", &[]),
     );
-    write_pcapng_with_dsb(&pcap, &keylog_line('c'), &frame);
+    write_pcapng_with_dsb_or_panic(&pcap, &keylog_line('c'), &frame);
     let run = sipnab(&["-N", "-I", s(&pcap)]);
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
@@ -513,7 +513,7 @@ fn embedded_secrets_are_added_to_a_keylog_already_loaded() {
         5060,
         &invite("dsb2@192.0.2.10", &[]),
     );
-    write_pcapng_with_dsb(&pcap, &keylog_line('e'), &frame);
+    write_pcapng_with_dsb_or_panic(&pcap, &keylog_line('e'), &frame);
     let run = sipnab(&["-N", "-I", s(&pcap), "--keylog", s(&keylog)]);
     assert_eq!(run.code, Some(0), "{}", run.dump());
     assert!(
@@ -746,7 +746,7 @@ fn export_vcon_when_carries_the_calls_audio_like_export_vcon() {
 fn wireshark_with_no_dialogs_says_there_is_nothing_to_filter() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = dir.path().join("rtp-only.pcap");
-    write_pcap(
+    write_pcap_or_panic(
         &pcap,
         &[udp_frame(
             [192, 0, 2, 10],
@@ -793,7 +793,7 @@ fn stir_shaken_reports_each_identity_and_warns_on_a_corrupt_one() {
     );
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = dir.path().join("shaken.pcap");
-    write_pcap(
+    write_pcap_or_panic(
         &pcap,
         &[
             udp_frame(

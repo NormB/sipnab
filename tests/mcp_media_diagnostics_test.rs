@@ -35,7 +35,7 @@
 
 #[path = "support/mcp.rs"]
 mod support;
-use support::{call_tool_with_args, ok_payload};
+use support::{call_tool_with_args_or_panic, ok_payload_or_panic};
 
 /// A G.711 call: two streams, PCMU both ways, every frame unmarked.
 const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
@@ -45,13 +45,13 @@ const G711_CALL: &str = "1-1966@10.0.2.20";
 
 /// Call `media_diagnostics` and return its payload.
 fn diagnostics(pcap: &str, call_id: &str) -> serde_json::Value {
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         pcap,
         &[],
         "media_diagnostics",
         serde_json::json!({ "call_id": call_id }),
     );
-    ok_payload(&msg)
+    ok_payload_or_panic(&msg)
 }
 
 /// The QoS marking of a real capture reaches the agent, named.
@@ -193,13 +193,13 @@ fn absent_rtcp_is_reported_as_absent_rather_than_as_a_clean_report() {
 #[test]
 fn a_dialog_with_no_media_says_so_rather_than_returning_an_empty_list() {
     const NO_MEDIA: &str = "tests/pcap-samples/sip-register.pcap";
-    let msg = call_tool_with_args(
+    let msg = call_tool_with_args_or_panic(
         NO_MEDIA,
         &[],
         "media_diagnostics",
         serde_json::json!({ "call_id": first_call_id(NO_MEDIA) }),
     );
-    let v = ok_payload(&msg);
+    let v = ok_payload_or_panic(&msg);
     assert_eq!(
         v["applicable"], false,
         "a REGISTER dialog carries no media; the answer is that the question \

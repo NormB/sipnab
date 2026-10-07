@@ -702,7 +702,7 @@ fn hep_parse_reads_the_transport_by_the_listener_rule() {
         .collect();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("hep-feed.pcap");
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
@@ -789,7 +789,7 @@ fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
     ];
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("hep-off-range.pcap");
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
@@ -1067,7 +1067,7 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
     // one TCP connection with PSH on every segment.
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = dir.path().join("tcp_trunk.pcap");
-    pcap_build::write_pcap(
+    pcap_build::write_pcap_or_panic(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("tcp-trunk-1", 40, true),
     );

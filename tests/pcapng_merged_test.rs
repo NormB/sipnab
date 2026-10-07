@@ -35,7 +35,7 @@ mod run_support;
 
 /// Read `path` headlessly and return combined output.
 fn read_capture(path: &Path) -> (String, String, Option<i32>) {
-    run_support::run(
+    run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -76,7 +76,7 @@ fn a_merged_pcapng_yields_packets_from_every_interface() {
           CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     ));
 
-    pcap_build::write_pcapng_multi_iface(&path, &[(0, eth), (1, raw)]);
+    pcap_build::write_pcapng_multi_iface_or_panic(&path, &[(0, eth), (1, raw)]);
 
     let (stdout, stderr, code) = read_capture(&path);
     let all = format!("{stdout}{stderr}");
@@ -115,7 +115,7 @@ fn an_ordinary_single_interface_capture_still_reads() {
         b"OPTIONS sip:plain@example.net SIP/2.0\r\nCall-ID: plain-one\r\n\
           CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     );
-    pcap_build::write_pcap(&path, &[frame]);
+    pcap_build::write_pcap_or_panic(&path, &[frame]);
 
     let (stdout, stderr, code) = read_capture(&path);
     let all = format!("{stdout}{stderr}");
@@ -154,7 +154,7 @@ fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() {
     let cut = eth("merged-cut");
     let kept = cut.len() - 20;
     let raw = pcap_build::strip_ethernet(&eth("merged-raw"));
-    pcap_build::write_pcapng_multi_iface_cut(
+    pcap_build::write_pcapng_multi_iface_cut_or_panic(
         &path,
         &[(0, whole, usize::MAX), (0, cut, kept), (1, raw, usize::MAX)],
     );

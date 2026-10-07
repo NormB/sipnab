@@ -195,7 +195,7 @@ fn the_report_records_the_image_identity_and_raw_frames() {
 
     #[cfg(target_os = "linux")]
     {
-        let on_disk = dbgsym::build_id(std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")))
+        let on_disk = dbgsym::build_id_or_panic(std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")))
             .expect("the test binary carries a build ID");
         assert!(
             report.contains(&format!("Build ID:  {on_disk}")),
@@ -225,7 +225,7 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("sipnab");
     std::fs::copy(env!("CARGO_BIN_EXE_sipnab"), &copy).unwrap();
-    let out = dbgsym::split(&copy, &dir.path().join("sipnab-test"));
+    let out = dbgsym::split_or_panic(&copy, &dir.path().join("sipnab-test"));
     assert!(
         out.status.success(),
         "split failed:\n{}",
@@ -234,7 +234,7 @@ fn the_report_frames_resolve_against_the_published_symbol_file() {
     let debug = dir.path().join("sipnab-test.debug");
 
     let addresses: Vec<&str> = frames.iter().map(String::as_str).collect();
-    let resolved = dbgsym::symbolize_all(&debug, &addresses).unwrap_or_default();
+    let resolved = dbgsym::symbolize_all_or_panic(&debug, &addresses).unwrap_or_default();
     // The panic's own `Location:` line, minus the column: a frame must
     // resolve to exactly that line. This does NOT pin the call-site rule
     // (return address minus one): in this unoptimized test binary both

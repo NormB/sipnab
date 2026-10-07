@@ -61,7 +61,7 @@ fn frames() -> Vec<Vec<u8>> {
 fn call_ids(cores: &str) -> Vec<String> {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("hole.pcap");
-    pcap_build::write_pcap(&path, &frames());
+    pcap_build::write_pcap_or_panic(&path, &frames());
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&path)
@@ -98,7 +98,7 @@ fn skipped_holes_are_reported_as_capture_loss_by_both_readers() {
     for cores in ["1", "2"] {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("hole.pcap");
-        pcap_build::write_pcap(&path, &frames());
+        pcap_build::write_pcap_or_panic(&path, &frames());
         let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(["-N", "-I"])
             .arg(&path)
@@ -138,7 +138,7 @@ fn retransmitted_frames() -> Vec<Vec<u8>> {
 fn a_retransmission_on_a_connection_joined_part_way_is_reported_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("retransmitted.pcap");
-    pcap_build::write_pcap(&path, &retransmitted_frames());
+    pcap_build::write_pcap_or_panic(&path, &retransmitted_frames());
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&path)

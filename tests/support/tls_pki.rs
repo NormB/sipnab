@@ -19,6 +19,10 @@
 
 use std::io::{Read, Write};
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on I/O and certificate errors alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// A CA and a server certificate it issued, written as PEM files into a
 /// temporary directory.
 pub struct TestPki {
@@ -36,13 +40,13 @@ pub struct TestPki {
 
 /// Issue a fresh [`TestPki`] whose files are named `<stem>.pem`,
 /// `<stem>.key` and `<stem>-ca.pem`.
-pub fn test_pki(stem: &str) -> TestPki {
+pub fn test_pki(stem: &str) -> Result<TestPki, TestError> {
     use rcgen::{
         BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
         KeyPair, KeyUsagePurpose, SanType,
     };
-    let dir = tempfile::tempdir().expect("tempdir");
-    let ca_key = KeyPair::generate().expect("CA key");
+    let dir = tempfile::tempdir()?;
+    let ca_key = KeyPair::generate()?;
     let mut ca_params = CertificateParams::default();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
     ca_params.key_usages = vec![
@@ -52,13 +56,10 @@ pub fn test_pki(stem: &str) -> TestPki {
     ca_params
         .distinguished_name
         .push(DnType::CommonName, format!("sipnab {stem} test CA"));
-    let ca_cert = ca_params
-        .clone()
-        .self_signed(&ca_key)
-        .expect("self-signed CA");
+    let ca_cert = ca_params.clone().self_signed(&ca_key)?;
     let issuer = Issuer::new(ca_params, &ca_key);
 
-    let leaf_key = KeyPair::generate().expect("server key");
+    let leaf_key = KeyPair::generate()?;
     let mut leaf = CertificateParams::default();
     leaf.is_ca = IsCa::ExplicitNoCa;
     leaf.subject_alt_names = vec![SanType::IpAddress(std::net::IpAddr::V4(
@@ -67,27 +68,26 @@ pub fn test_pki(stem: &str) -> TestPki {
     leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     leaf.distinguished_name
         .push(DnType::CommonName, format!("sipnab {stem} test server"));
-    let leaf_cert = leaf.signed_by(&leaf_key, &issuer).expect("issue the leaf");
+    let leaf_cert = leaf.signed_by(&leaf_key, &issuer)?;
 
     let cert = dir.path().join(format!("{stem}.pem"));
     let key = dir.path().join(format!("{stem}.key"));
     let ca_file = dir.path().join(format!("{stem}-ca.pem"));
-    std::fs::write(&cert, leaf_cert.pem()).expect("write the certificate");
-    std::fs::write(&key, leaf_key.serialize_pem()).expect("write the key");
-    std::fs::write(&ca_file, ca_cert.pem()).expect("write the CA");
+    std::fs::write(&cert, leaf_cert.pem())?;
+    std::fs::write(&key, leaf_key.serialize_pem())?;
+    std::fs::write(&ca_file, ca_cert.pem())?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
-            .expect("chmod the key");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
     }
-    TestPki {
+    Ok(TestPki {
         cert: cert.to_string_lossy().into_owned(),
         key: key.to_string_lossy().into_owned(),
         ca_file: ca_file.to_string_lossy().into_owned(),
         ca: ca_cert.der().clone(),
         dir,
-    }
+    })
 }
 
 impl TestPki {
@@ -98,10 +98,9 @@ impl TestPki {
 
     /// Make the key file readable by every user on the host.
     #[cfg(unix)]
-    pub fn make_key_world_readable(&self) {
+    pub fn make_key_world_readable(&self) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&self.key, std::fs::Permissions::from_mode(0o644))
-            .expect("chmod 644 the key");
     }
 }
 
@@ -143,7 +142,8 @@ pub fn https_exchange(
         .with_no_client_auth();
     let port = addr.rsplit_once(':').map(|(_, p)| p).unwrap_or_default();
     let target = format!("127.0.0.1:{port}");
-    let name = rustls::pki_types::ServerName::try_from("127.0.0.1").expect("IP server name");
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1")
+        .map_err(|e| format!("IP server name: {e}"))?;
     let conn = rustls::ClientConnection::new(std::sync::Arc::new(config), name)
         .map_err(|e| format!("client: {e}"))?;
     let sock = std::net::TcpStream::connect(&target).map_err(|e| format!("connect: {e}"))?;
@@ -195,13 +195,40 @@ pub fn https_get(
 
 /// Send a plain-HTTP `GET path` to `addr` and return whatever came back
 /// before the peer closed or `timeout` passed.
-pub fn plain_http_get(addr: &str, path: &str, timeout: std::time::Duration) -> String {
-    let mut sock = std::net::TcpStream::connect(addr).expect("connect");
+pub fn plain_http_get(
+    addr: &str,
+    path: &str,
+    timeout: std::time::Duration,
+) -> std::io::Result<String> {
+    let mut sock = std::net::TcpStream::connect(addr)?;
     sock.set_read_timeout(Some(timeout)).ok();
     let _ = sock.write_all(
         format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").as_bytes(),
     );
     let mut raw = Vec::new();
     let _ = sock.read_to_end(&mut raw);
-    String::from_utf8_lossy(&raw).into_owned()
+    Ok(String::from_utf8_lossy(&raw).into_owned())
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`test_pki`], panicking on error.
+pub fn test_pki_or_panic(stem: &str) -> TestPki {
+    test_pki(stem).expect("test_pki")
+}
+
+/// [`plain_http_get`], panicking on error.
+pub fn plain_http_get_or_panic(addr: &str, path: &str, timeout: std::time::Duration) -> String {
+    plain_http_get(addr, path, timeout).expect("plain_http_get")
+}
+
+impl TestPki {
+    /// [`TestPki::make_key_world_readable`], panicking on error.
+    #[cfg(unix)]
+    pub fn make_key_world_readable_or_panic(&self) {
+        self.make_key_world_readable()
+            .expect("TestPki::make_key_world_readable")
+    }
 }

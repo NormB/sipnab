@@ -44,7 +44,10 @@ mod tui_state {
     // `tui_snapshot_test.rs` via the file-scoped `fixtures` module above so
     // the two suites can't drift. File-specific higher-level builders stay
     // below.
-    use super::fixtures::{base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response};
+    use super::fixtures::{
+        base_ts_or_panic, build_sip, endpoint_a, endpoint_b, make_invite_or_panic,
+        make_response_or_panic,
+    };
 
     /// Build an `App` preloaded with three INVITE dialogs: `call-1@test`
     /// completed (200 OK), `call-2@test` failed (503), `call-3@test` active
@@ -53,11 +56,11 @@ mod tui_state {
     /// # Returns
     /// The `App` with all six messages already processed into its dialog store.
     fn app_with_three_dialogs() -> App {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
             // Dialog 1: Completed
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_response(
+            make_invite_or_panic("call-1@test", "1001", "1002", t0),
+            make_response_or_panic(
                 "call-1@test",
                 200,
                 "OK",
@@ -65,8 +68,8 @@ mod tui_state {
                 t0 + TimeDelta::seconds(2),
             ),
             // Dialog 2: Failed
-            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_response(
+            make_invite_or_panic("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
+            make_response_or_panic(
                 "call-2@test",
                 503,
                 "Service Unavailable",
@@ -74,8 +77,8 @@ mod tui_state {
                 t0 + TimeDelta::seconds(6),
             ),
             // Dialog 3: Active (InCall)
-            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_response(
+            make_invite_or_panic("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
+            make_response_or_panic(
                 "call-3@test",
                 200,
                 "OK",
@@ -1396,7 +1399,7 @@ mod tui_state {
     /// Filter text "a+b" matches only the literal `a+b` user (a regex would also match "aab"), with no error.
     #[test]
     fn filter_text_with_regex_metachars_matches_literally() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let mut app = App::with_processed_messages(vec![
             make_invite_from_user("plus@test", "a+b", t0),
             make_invite_from_user("plain@test", "aab", t0 + TimeDelta::seconds(1)),
@@ -1428,7 +1431,7 @@ mod tui_state {
     /// Unbalanced parens/brackets/quotes/backslashes in a filter never error; they just match nothing.
     #[test]
     fn filter_adversarial_text_never_errors() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         for adversarial in ["(", "[[", "a\\", "it's", "\"", "*?"] {
             let mut app =
                 App::with_processed_messages(vec![make_invite_from_user("adv@test", "1001", t0)]);
@@ -1447,10 +1450,10 @@ mod tui_state {
     /// The Payload filter field matches raw message content (a User-Agent string), narrowing to 1 dialog.
     #[test]
     fn payload_filter_matches_message_content() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let mut app = App::with_processed_messages(vec![
             make_invite_from_user("ua@test", "1001", t0),
-            make_invite("plain@test", "1002", "1003", t0 + TimeDelta::seconds(1)),
+            make_invite_or_panic("plain@test", "1002", "1003", t0 + TimeDelta::seconds(1)),
         ]);
         // Focus the Payload field (index 4) and type a string only present
         // in the first dialog's User-Agent header.
@@ -1760,18 +1763,24 @@ mod tui_state {
     /// With autoscroll on and the selection on the last row, a newly arriving dialog pulls the selection to the new bottom.
     #[test]
     fn autoscroll_follows_new_dialogs_when_at_bottom() {
-        let t0 = base_ts();
-        let mut app =
-            App::with_processed_messages(vec![make_invite("as-1@test", "1001", "1002", t0)]);
+        let t0 = base_ts_or_panic();
+        let mut app = App::with_processed_messages(vec![make_invite_or_panic(
+            "as-1@test",
+            "1001",
+            "1002",
+            t0,
+        )]);
         let mut term = small_terminal();
         draw(&mut app, &mut term);
         assert_eq!(app.call_list_state().selected(), 0);
-        app.dialog_store_ref().write().process_message(make_invite(
-            "as-2@test",
-            "1003",
-            "1004",
-            t0 + TimeDelta::seconds(1),
-        ));
+        app.dialog_store_ref()
+            .write()
+            .process_message(make_invite_or_panic(
+                "as-2@test",
+                "1003",
+                "1004",
+                t0 + TimeDelta::seconds(1),
+            ));
         // Sticky-bottom follows at the churn-floor cadence (≤300 ms), not
         // per tick; elapse the floor as real time would between refreshes.
         app.elapse_churn_floors_for_test();
@@ -1791,12 +1800,14 @@ mod tui_state {
         draw(&mut app, &mut term);
         // User is inspecting row 0, not the bottom.
         assert_eq!(app.call_list_state().selected(), 0);
-        app.dialog_store_ref().write().process_message(make_invite(
-            "as-4@test",
-            "1007",
-            "1008",
-            base_ts() + TimeDelta::seconds(20),
-        ));
+        app.dialog_store_ref()
+            .write()
+            .process_message(make_invite_or_panic(
+                "as-4@test",
+                "1007",
+                "1008",
+                base_ts_or_panic() + TimeDelta::seconds(20),
+            ));
         draw(&mut app, &mut term);
         assert_eq!(
             app.call_list_state().selected(),
@@ -1885,7 +1896,7 @@ mod tui_state {
     /// # Returns
     /// The app (call flow open) and the 120x40 terminal it was rendered into.
     fn app_with_folded_flow() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
             make_options("fold@test", 1, t0),
             make_options("fold@test", 1, t0 + TimeDelta::milliseconds(500)),
@@ -3777,11 +3788,11 @@ mod tui_state {
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         // A two-message dialog on one leg: INVITE A->B, then 200 OK B->A.
         let messages = vec![
-            make_invite("sel-state@test", "1001", "1002", t0),
-            make_response(
+            make_invite_or_panic("sel-state@test", "1001", "1002", t0),
+            make_response_or_panic(
                 "sel-state@test",
                 200,
                 "OK",
@@ -4172,7 +4183,7 @@ mod tui_state {
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let la = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let lb = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let lc = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
@@ -4500,7 +4511,7 @@ mod tui_state {
     /// # Returns
     /// The five parsed messages in capture order, timestamped from `base_ts`.
     fn make_full_dialog_messages(call_id: &str) -> Vec<SipMessage> {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         vec![
             make_invite_sdp(call_id, t0),
             make_100_trying(call_id, t0 + TimeDelta::milliseconds(50)),
@@ -4809,7 +4820,7 @@ mod tui_state {
     /// # Returns
     /// The `App` with both messages processed.
     fn app_with_user_agent_dialog() -> App {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
             make_invite_with_user_agent(
                 "call-ua@test",
@@ -4818,7 +4829,7 @@ mod tui_state {
                 "FreeSWITCH-mod-sofia/1.10",
                 t0,
             ),
-            make_response(
+            make_response_or_panic(
                 "call-ua@test",
                 200,
                 "OK",
@@ -5056,13 +5067,19 @@ mod tui_state {
     /// reason and the way out (instead of the indefinite silence of #188).
     #[test]
     fn a_clamped_horizontal_scroll_names_the_reason_instead_of_doing_nothing_silently() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         // The fixture INVITE's widest header is ~40 columns; the detail pane
         // of a 200-column terminal is far wider, so nothing overflows.
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
-                make_invite("fits@test", "1001", "1002", t0),
-                make_response("fits@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+                make_invite_or_panic("fits@test", "1001", "1002", t0),
+                make_response_or_panic(
+                    "fits@test",
+                    200,
+                    "OK",
+                    "INVITE",
+                    t0 + TimeDelta::seconds(1),
+                ),
             ],
             true,
             true,
@@ -5107,14 +5124,14 @@ mod tui_state {
     /// branch #188 was reported against.
     #[test]
     fn every_call_flow_arrow_press_either_moves_the_frame_or_says_why_it_could_not() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         for focus_detail in [false, true] {
             for unwrap_detail in [false, true] {
                 for arrow in [KeyCode::Left, KeyCode::Right] {
                     let (mut app, mut term) = call_flow_in_arrow_mode(
                         vec![
-                            make_invite("fits@test", "1001", "1002", t0),
-                            make_response(
+                            make_invite_or_panic("fits@test", "1001", "1002", t0),
+                            make_response_or_panic(
                                 "fits@test",
                                 200,
                                 "OK",
@@ -5155,11 +5172,17 @@ mod tui_state {
     /// and reports the column it landed on.
     #[test]
     fn a_line_wider_than_the_pane_still_scrolls_and_reports_its_column() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
                 make_wide_invite("wide@test", t0),
-                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+                make_response_or_panic(
+                    "wide@test",
+                    200,
+                    "OK",
+                    "INVITE",
+                    t0 + TimeDelta::seconds(1),
+                ),
             ],
             true,
             true,
@@ -5191,13 +5214,19 @@ mod tui_state {
     /// one event drain, with no frame in between.
     #[test]
     fn the_first_arrow_after_the_wrap_toggle_is_answered_from_the_wrapped_frame() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         // Focused, wrapping still ON: the frame drawn here is the only one
         // the controller can consult for the presses below.
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
                 make_wide_invite("wide@test", t0),
-                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+                make_response_or_panic(
+                    "wide@test",
+                    200,
+                    "OK",
+                    "INVITE",
+                    t0 + TimeDelta::seconds(1),
+                ),
             ],
             true,
             false,

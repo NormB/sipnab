@@ -21,7 +21,7 @@ const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 /// # Returns
 /// `(stdout, stderr, exit_code)` of the finished process.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    run_support::run(args, Some("error"))
+    run_support::run_or_panic(args, Some("error"))
 }
 
 /// --json-pretty was byte-identical to --json on the message stream; it must

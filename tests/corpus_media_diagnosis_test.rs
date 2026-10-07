@@ -111,7 +111,7 @@ fn dialogs(capture: &Path) -> (Vec<serde_json::Value>, Option<i32>) {
         "--portrange",
         "1-65535",
     ];
-    let (stdout, _stderr, code) = run_support::run(&argv, Some("error"));
+    let (stdout, _stderr, code) = run_support::run_or_panic(&argv, Some("error"));
     let parsed = stdout
         .lines()
         .filter(|l| l.starts_with('{'))

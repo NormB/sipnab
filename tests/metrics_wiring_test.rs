@@ -63,8 +63,8 @@ fn require(body: &str, key: &str) -> f64 {
 /// processed. A hard `0` here reads to an operator as "capture is dead".
 #[test]
 fn capture_packets_total_moves_with_the_capture() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     let packets = require(&body, "sipnab_capture_packets_total");
     assert!(
@@ -79,8 +79,8 @@ fn capture_packets_total_moves_with_the_capture() {
 /// class is present even at zero so a rule over an unseen class has data.
 #[test]
 fn responses_total_counts_responses_by_class() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     let ok = require(&body, r#"sipnab_responses_total{code="2xx"}"#);
     assert!(
@@ -101,8 +101,8 @@ fn responses_total_counts_responses_by_class() {
 /// dialogs, with the full type set present so a panel is never blank.
 #[test]
 fn diagnosis_total_reports_media_findings() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     for kind in ["one_way_audio", "nat_mismatch", "no_media"] {
         let key = format!(r#"sipnab_diagnosis_total{{type="{kind}"}}"#);
@@ -126,8 +126,8 @@ fn diagnosis_total_reports_media_findings() {
 /// pinned in `metrics_counters_test.rs` against the sweep itself.
 #[test]
 fn reassembly_timeouts_total_is_exposed() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     assert!(
         body.contains("# TYPE sipnab_reassembly_timeouts_total counter"),
@@ -149,8 +149,8 @@ fn reassembly_timeouts_total_is_exposed() {
 /// which reads the same as "fine" on a dashboard and is not.
 #[test]
 fn capture_quality_reaches_the_scrape_as_separate_series() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     for family in [
         "sipnab_capture_kernel_dropped_packets_total",
@@ -189,8 +189,8 @@ fn capture_quality_reaches_the_scrape_as_separate_series() {
 /// it rather than in the struct.
 #[test]
 fn kernel_and_interface_drops_are_never_one_series() {
-    let srv = ApiServer::spawn_with_pcap(RTP_PCAP, &[]);
-    let body = srv.get("/metrics").body;
+    let srv = ApiServer::spawn_with_pcap_or_panic(RTP_PCAP, &[]);
+    let body = srv.get_or_panic("/metrics").body;
 
     assert!(
         sample(&body, "sipnab_capture_kernel_dropped_packets_total").is_some()

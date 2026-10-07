@@ -22,7 +22,7 @@ mod pcap_build;
 #[path = "support/tar_build.rs"]
 mod tar_build;
 
-use tar_build::{Entry, gzip, tar};
+use tar_build::{Entry, gzip_or_panic, tar};
 
 /// Captures, by member name: three calls at distinct times, one of them with
 /// an RTP stream, plus an LTE-MAC-style capture sipnab cannot decode.
@@ -36,7 +36,7 @@ fn captures() -> Vec<(&'static str, Vec<u8>)> {
             .enumerate()
             .map(|(i, f)| (f, start_usec + i as u64 * 1_000))
             .collect();
-        pcap_build::write_pcap_at(&p, &timed, link);
+        pcap_build::write_pcap_at_or_panic(&p, &timed, link);
         out.push((name, std::fs::read(&p).expect("read back")));
     };
     at(
@@ -99,9 +99,9 @@ fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
     let tar_path = root.join("set.tar");
     std::fs::write(&tar_path, &plain_tar).expect("tar");
     let tgz_path = root.join("set.tgz");
-    std::fs::write(&tgz_path, gzip(&plain_tar)).expect("tgz");
+    std::fs::write(&tgz_path, gzip_or_panic(&plain_tar)).expect("tgz");
     let targz_path = root.join("set.tar.gz");
-    std::fs::write(&targz_path, gzip(&plain_tar)).expect("tar.gz");
+    std::fs::write(&targz_path, gzip_or_panic(&plain_tar)).expect("tar.gz");
 
     // Two layers inside a third: a `.tgz` holding a and b, and c gzipped but
     // still NAMED c.pcap — the layer is found by its bytes, not its name.
@@ -110,8 +110,8 @@ fn forms(root: &Path) -> Vec<(&'static str, PathBuf)> {
         .filter(|(n, _)| matches!(*n, "a.pcap" | "b.pcap"))
         .map(|(n, b)| Entry::file(n, b))
         .collect();
-    let inner_tgz = gzip(&tar(&inner));
-    let c_gz = gzip(&caps.iter().find(|(n, _)| *n == "c.pcap").expect("c").1);
+    let inner_tgz = gzip_or_panic(&tar(&inner));
+    let c_gz = gzip_or_panic(&caps.iter().find(|(n, _)| *n == "c.pcap").expect("c").1);
     let mac = &caps.iter().find(|(n, _)| *n == "mac.pcap").expect("mac").1;
     let mut outer = vec![
         Entry::dir("nested/"),
@@ -382,7 +382,7 @@ fn a_bomb_is_refused_at_the_ceiling_and_cleaned_up() {
     let mut big = captures().remove(0).1;
     big.resize(4 * 1024 * 1024, 0);
     let bomb = root.path().join("bomb.tgz");
-    std::fs::write(&bomb, gzip(&tar(&[Entry::file("big.pcap", &big)]))).expect("bomb");
+    std::fs::write(&bomb, gzip_or_panic(&tar(&[Entry::file("big.pcap", &big)]))).expect("bomb");
     let spec = bomb.display().to_string();
     let (_, stderr, code) = sipnab(
         &[
@@ -418,7 +418,7 @@ fn a_run_that_exits_nonzero_still_removes_what_it_extracted() {
     // Cut inside b.pcap's data: the tar reads, a is whole, b is a prefix.
     let cut_at = 512 + caps[0].1.len().div_ceil(512) * 512 + 512 + 100;
     let cut = root.path().join("cut.tgz");
-    std::fs::write(&cut, gzip(&whole[..cut_at])).expect("write");
+    std::fs::write(&cut, gzip_or_panic(&whole[..cut_at])).expect("write");
     let spec = cut.display().to_string();
     let (_, stderr, code) = sipnab(
         &[

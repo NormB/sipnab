@@ -22,8 +22,8 @@ pub struct Fake {
 }
 
 impl Fake {
-    pub fn new() -> Self {
-        let dir = tempfile::tempdir().expect("tempdir");
+    pub fn new() -> std::io::Result<Self> {
+        let dir = tempfile::tempdir()?;
         let here = dir.path().display();
         let script = format!(
             "#!/bin/sh\n\
@@ -42,17 +42,17 @@ impl Fake {
              esac\n"
         );
         let path = dir.path().join("tfps_ctl");
-        std::fs::write(&path, script).expect("write the fake");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        Self { dir }
+        std::fs::write(&path, script)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        Ok(Self { dir })
     }
 
     pub fn path(&self) -> String {
         self.dir.path().join("tfps_ctl").display().to_string()
     }
 
-    pub fn fail_bans(&self) {
-        std::fs::write(self.dir.path().join("fail"), "").expect("fail switch");
+    pub fn fail_bans(&self) -> std::io::Result<()> {
+        std::fs::write(self.dir.path().join("fail"), "")
     }
 
     pub fn calls(&self) -> String {
@@ -62,5 +62,21 @@ impl Fake {
     /// How many times `tfps_ctl <subcommand>` ran; `banned` is not `ban`.
     pub fn count(&self, subcommand: &str) -> usize {
         self.calls().lines().filter(|l| *l == subcommand).count()
+    }
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+impl Fake {
+    /// [`Fake::new`], panicking on error.
+    pub fn new_or_panic() -> Self {
+        Self::new().expect("Fake::new")
+    }
+
+    /// [`Fake::fail_bans`], panicking on error.
+    pub fn fail_bans_or_panic(&self) {
+        self.fail_bans().expect("Fake::fail_bans")
     }
 }

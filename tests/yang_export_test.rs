@@ -152,10 +152,10 @@ fn the_cli_prints_the_document_alone() {
 #[test]
 fn rest_serves_one_analysis_in_both_encodings() {
     for (case, path, extra) in CASES {
-        let srv = server::ApiServer::spawn_with_pcap(path, extra);
-        let plain = srv.get("/v1/report");
+        let srv = server::ApiServer::spawn_with_pcap_or_panic(path, extra);
+        let plain = srv.get_or_panic("/v1/report");
         assert_eq!(plain.status, 200, "{case}: {}", plain.body);
-        let yang_resp = srv.get("/v1/report?format=yang-json");
+        let yang_resp = srv.get_or_panic("/v1/report?format=yang-json");
         assert_eq!(yang_resp.status, 200, "{case}: {}", yang_resp.body);
         assert_eq!(
             yang_resp.content_type.as_deref(),
@@ -165,11 +165,14 @@ fn rest_serves_one_analysis_in_both_encodings() {
         let doc: Value = serde_json::from_str(&yang_resp.body).expect("JSON");
         assert_eq!(
             decoded("rest", case, &doc),
-            plain.json(),
+            plain.json_or_panic(),
             "{case}: the two encodings disagree"
         );
         // `json` is the default spelled out, and answers exactly as the default.
-        assert_eq!(srv.get("/v1/report?format=json").json(), plain.json());
+        assert_eq!(
+            srv.get_or_panic("/v1/report?format=json").json_or_panic(),
+            plain.json_or_panic()
+        );
         export("rest", case, &doc);
     }
 }
@@ -177,9 +180,9 @@ fn rest_serves_one_analysis_in_both_encodings() {
 /// A format REST does not serve is refused, not silently answered in JSON.
 #[test]
 fn rest_refuses_a_format_it_does_not_serve() {
-    let srv = server::ApiServer::spawn(&[]);
+    let srv = server::ApiServer::spawn_or_panic(&[]);
     for bad in ["xml", "yang-xml", "markdown", "YANG-JSON", ""] {
-        let resp = srv.get(&format!("/v1/report?format={bad}"));
+        let resp = srv.get_or_panic(&format!("/v1/report?format={bad}"));
         assert_eq!(resp.status, 400, "format={bad:?} answered {}", resp.status);
         assert!(
             resp.body.contains("yang-json"),
@@ -196,13 +199,13 @@ fn rest_refuses_a_format_it_does_not_serve() {
 #[test]
 fn mcp_answers_one_analysis_in_both_encodings() {
     for (case, path, extra) in CASES {
-        let mut session = mcp::McpSession::start(path, extra);
-        let mut plain = session.ok("get_capture_report", serde_json::json!({}));
-        let msg = session.call(
+        let mut session = mcp::McpSession::start_or_panic(path, extra);
+        let mut plain = session.ok_or_panic("get_capture_report", serde_json::json!({}));
+        let msg = session.call_or_panic(
             "get_capture_report",
             serde_json::json!({"format": "yang-json"}),
         );
-        let doc = mcp::ok_payload(&msg);
+        let doc = mcp::ok_payload_or_panic(&msg);
         let obj = doc.as_object().expect("the document is an object");
         assert!(
             obj.keys().all(|k| k.contains(':')),

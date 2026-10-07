@@ -50,7 +50,7 @@ use std::process::Command;
 ///
 /// # Side effects
 /// Spawns `env!("CARGO_BIN_EXE_sipnab")` as a subprocess from the crate root.
-pub fn run(args: &[&str], log: Option<&str>) -> (String, String, Option<i32>) {
+pub fn run(args: &[&str], log: Option<&str>) -> std::io::Result<(String, String, Option<i32>)> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
@@ -64,10 +64,19 @@ pub fn run(args: &[&str], log: Option<&str>) -> (String, String, Option<i32>) {
             cmd.env_remove("SIPNAB_LOG");
         }
     }
-    let out = cmd.output().expect("spawn sipnab");
-    (
+    let out = cmd.output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code(),
-    )
+    ))
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`run`], panicking on error.
+pub fn run_or_panic(args: &[&str], log: Option<&str>) -> (String, String, Option<i32>) {
+    run(args, log).expect("run")
 }

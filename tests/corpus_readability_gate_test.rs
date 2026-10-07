@@ -58,7 +58,7 @@ fn write_readable_capture(path: &Path) {
         5060,
         b"OPTIONS sip:probe SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
     );
-    pcap_build::write_pcap(path, &[frame]);
+    pcap_build::write_pcap_or_panic(path, &[frame]);
 }
 
 /// Run the gate in a child process against `root`, returning `(stderr, code)`.
@@ -219,7 +219,7 @@ fn a_capture_shaped_name_with_no_magic_is_still_demanded_to_open() {
 fn a_capture_that_opens_and_yields_no_packets_is_unread() {
     let dir = tempfile::tempdir().expect("tempdir");
     write_readable_capture(&dir.path().join("real.pcap"));
-    pcap_build::write_pcap(&dir.path().join("headers-only.pcap"), &[]);
+    pcap_build::write_pcap_or_panic(&dir.path().join("headers-only.pcap"), &[]);
 
     let (stderr, code) = run_gate(dir.path());
     assert_ne!(
@@ -260,7 +260,7 @@ fn a_merged_pcapng_must_open_through_the_product_read_path_too() {
         sip,
     ));
     // Interface 0 is Ethernet at snaplen 65535, interface 1 raw IP at 2048.
-    pcap_build::write_pcapng_multi_iface(
+    pcap_build::write_pcapng_multi_iface_or_panic(
         &dir.path().join("merged.pcapng"),
         &[(0, eth), (1, raw_ip)],
     );

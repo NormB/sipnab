@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 use jsonschema::Validator;
 use serde_json::Value;
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on every error type alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// Absolute path to a schema file under `tests/schemas/`.
 pub fn schema_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,28 +26,30 @@ pub fn schema_path(name: &str) -> PathBuf {
 
 /// Read + compile a schema file into a reusable validator.
 ///
-/// Panics (with the file path) on read / parse / compile failure — a malformed
+/// Fails (with the file path) on read / parse / compile failure — a malformed
 /// schema is a test-authoring bug that should fail loudly.
-pub fn load_validator(schema_file: &str) -> Validator {
+pub fn load_validator(schema_file: &str) -> Result<Validator, TestError> {
     let path = schema_path(schema_file);
     let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read schema {}: {e}", path.display()));
-    let schema: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("parse schema {}: {e}", path.display()));
-    jsonschema::validator_for(&schema)
-        .unwrap_or_else(|e| panic!("compile schema {}: {e}", path.display()))
+        .map_err(|e| format!("read schema {}: {e}", path.display()))?;
+    let schema: Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse schema {}: {e}", path.display()))?;
+    Ok(jsonschema::validator_for(&schema)
+        .map_err(|e| format!("compile schema {}: {e}", path.display()))?)
 }
 
-/// Assert `instance` validates, panicking with every error (path + message) on
+/// Assert `instance` validates, failing with every error (path + message) on
 /// failure so a schema mismatch is actionable.
 pub fn assert_valid(validator: &Validator, instance: &Value, ctx: &str) {
-    if !validator.is_valid(instance) {
-        let errors: Vec<String> = validator
-            .iter_errors(instance)
-            .map(|e| format!("  at `{}`: {e}", e.instance_path()))
-            .collect();
-        panic!("{ctx}: instance failed schema:\n{}", errors.join("\n"));
-    }
+    let errors: Vec<String> = validator
+        .iter_errors(instance)
+        .map(|e| format!("  at `{}`: {e}", e.instance_path()))
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{ctx}: instance failed schema:\n{}",
+        errors.join("\n")
+    );
 }
 
 /// Every JSON path in `value` whose leaf is `null`, deepest-first.
@@ -108,12 +114,16 @@ pub fn null_paths(value: &Value) -> Vec<String> {
 /// helper only the vCon contract tests call fails every other feature combo
 /// under CI's `-Dwarnings`.
 #[allow(dead_code)]
-pub fn openapi_errors(doc_file: &str, schema_name: &str, instance: &Value) -> Vec<String> {
+pub fn openapi_errors(
+    doc_file: &str,
+    schema_name: &str,
+    instance: &Value,
+) -> Result<Vec<String>, TestError> {
     let path = schema_path(doc_file);
     let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let doc: Value =
-        serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
 
     let mut wrapper = serde_json::json!({
         "$ref": format!("#/components/schemas/{schema_name}"),
@@ -121,9 +131,24 @@ pub fn openapi_errors(doc_file: &str, schema_name: &str, instance: &Value) -> Ve
     wrapper["components"] = doc["components"].clone();
 
     let validator = jsonschema::validator_for(&wrapper)
-        .unwrap_or_else(|e| panic!("compile {schema_name} from {}: {e}", path.display()));
-    validator
+        .map_err(|e| format!("compile {schema_name} from {}: {e}", path.display()))?;
+    Ok(validator
         .iter_errors(instance)
         .map(|e| format!("at `{}`: {e}", e.instance_path()))
-        .collect()
+        .collect())
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`load_validator`], panicking on error.
+pub fn load_validator_or_panic(schema_file: &str) -> Validator {
+    load_validator(schema_file).expect("load_validator")
+}
+
+/// [`openapi_errors`], panicking on error.
+#[allow(dead_code)]
+pub fn openapi_errors_or_panic(doc_file: &str, schema_name: &str, instance: &Value) -> Vec<String> {
+    openapi_errors(doc_file, schema_name, instance).expect("openapi_errors")
 }

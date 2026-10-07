@@ -96,7 +96,7 @@ fn server(fake: &Fake, extra: &[&str]) -> ApiServer {
         journal.as_str(),
     ];
     args.extend_from_slice(extra);
-    ApiServer::spawn(&args)
+    ApiServer::spawn_or_panic(&args)
 }
 
 const BAN_BODY: &str = r#"{"ip":"198.51.100.20"}"#;
@@ -109,7 +109,7 @@ fn by_default_no_token_can_ban_or_unban() {
     let srv = server(&fake, &[]);
     let actions = token(sipnab::auth::SCOPE_ACTIONS);
     for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
-        let resp = srv.post_json_bearer(route, BAN_BODY, &actions);
+        let resp = srv.post_json_bearer_or_panic(route, BAN_BODY, &actions);
         assert_eq!(resp.status, 403, "POST {route}: {}", resp.body);
         assert!(
             resp.body.contains("--allow-action tfps:rest") && resp.body.contains("[actions]"),
@@ -130,11 +130,11 @@ fn enabled_for_rest_an_actions_token_bans_and_unbans() {
     let config = config.display().to_string();
     let srv = server(&fake, &["--allow-action", "tfps:rest", "--config", &config]);
     let actions = token(sipnab::auth::SCOPE_ACTIONS);
-    let ban = srv.post_json_bearer("/v1/tfps/ban", BAN_BODY, &actions);
+    let ban = srv.post_json_bearer_or_panic("/v1/tfps/ban", BAN_BODY, &actions);
     assert_eq!(ban.status, 200, "{}", ban.body);
-    assert_eq!(ban.json()["applied"], true, "{}", ban.body);
+    assert_eq!(ban.json_or_panic()["applied"], true, "{}", ban.body);
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let unban = srv.post_json_bearer("/v1/tfps/unban", BAN_BODY, &actions);
+    let unban = srv.post_json_bearer_or_panic("/v1/tfps/unban", BAN_BODY, &actions);
     assert_eq!(unban.status, 200, "{}", unban.body);
     assert!(fake.ran("ban") && fake.ran("unban"), "{}", fake.calls());
     assert!(
@@ -154,9 +154,9 @@ fn enabled_a_full_token_or_static_key_cannot_act() {
         &["--allow-action", "tfps:rest", "--api-key", "static-key"],
     );
     for credential in [token(sipnab::auth::SCOPE_FULL), "static-key".to_string()] {
-        let resp = srv.post_json_bearer("/v1/tfps/ban", BAN_BODY, &credential);
+        let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", BAN_BODY, &credential);
         assert_eq!(resp.status, 401, "{}", resp.body);
-        let read = srv.get_bearer("/v1/tfps/banned", &credential);
+        let read = srv.get_bearer_or_panic("/v1/tfps/banned", &credential);
         assert_eq!(read.status, 200, "reading still works: {}", read.body);
     }
     assert!(fake.ran("banned"), "the reads ran: {}", fake.calls());
@@ -172,7 +172,7 @@ fn enabled_a_full_token_or_static_key_cannot_act() {
 fn enabled_for_mcp_only_rest_stays_refused() {
     let fake = Fake::new();
     let srv = server(&fake, &["--allow-action", "tfps:mcp"]);
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/tfps/ban",
         BAN_BODY,
         &token(sipnab::auth::SCOPE_ACTIONS),
@@ -190,7 +190,7 @@ fn the_config_file_enables_it_like_the_flag() {
     std::fs::write(&config, "[actions]\ntfps = [\"rest\"]\n").expect("write config");
     let config = config.display().to_string();
     let srv = server(&fake, &["--config", &config]);
-    let resp = srv.post_json_bearer(
+    let resp = srv.post_json_bearer_or_panic(
         "/v1/tfps/ban",
         BAN_BODY,
         &token(sipnab::auth::SCOPE_ACTIONS),

@@ -41,7 +41,7 @@ fn repo(rel: &str) -> PathBuf {
 fn sipnab(args: &[&str]) -> (String, String, i32) {
     let mut argv = vec!["-F"];
     argv.extend_from_slice(args);
-    let (out, err, code) = run_support::run(&argv, Some("warn"));
+    let (out, err, code) = run_support::run_or_panic(&argv, Some("warn"));
     (out, err, code.unwrap_or(-1))
 }
 
@@ -213,8 +213,8 @@ fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
         "the copy must carry the note, or this test proves nothing"
     );
 
-    let mut session = mcp::McpSession::start(copy.to_str().expect("utf-8"), &["-F"]);
-    let dialogs = session.ok("list_dialogs", serde_json::json!({}));
+    let mut session = mcp::McpSession::start_or_panic(copy.to_str().expect("utf-8"), &["-F"]);
+    let dialogs = session.ok_or_panic("list_dialogs", serde_json::json!({}));
     let rows = dialogs["dialogs"].as_array().expect("dialogs").clone();
     assert!(!rows.is_empty(), "the copy must load dialogs: {dialogs}");
     let mut answers = Vec::new();
@@ -223,7 +223,7 @@ fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
         let call_id = row["call_id"].as_str().expect("call_id").to_string();
         let count = row["msg_count"].as_u64().expect("msg_count");
         for index in 0..count {
-            let reply = session.call(
+            let reply = session.call_or_panic(
                 "get_message",
                 serde_json::json!({"call_id": call_id, "index": index}),
             );
@@ -234,7 +234,7 @@ fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
     }
     assert!(messages >= 5, "only {messages} messages were read back");
     for query in ["SENTINEL", "operator note", "INVITE"] {
-        let reply = session.call("search_messages", serde_json::json!({"query": query}));
+        let reply = session.call_or_panic("search_messages", serde_json::json!({"query": query}));
         assert!(
             reply["result"].is_object(),
             "search_messages failed: {reply}"
@@ -398,9 +398,9 @@ fn a_decryption_secret_in_the_input_is_not_in_the_copy() {
     );
     // A key-log line built from repeated bytes, not pasted material.
     let dsb_text = format!("CLIENT_RANDOM {} {}\n", "0a".repeat(32), "0b".repeat(48));
-    pcap_build::write_pcapng_with_dsb(&input, &dsb_text, &frame);
+    pcap_build::write_pcapng_with_dsb_or_panic(&input, &dsb_text, &frame);
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&input, DSB),
+        pcap_build::count_pcapng_blocks_or_panic(&input, DSB),
         1,
         "fixture has a DSB"
     );
@@ -413,7 +413,7 @@ fn a_decryption_secret_in_the_input_is_not_in_the_copy() {
     assert_eq!(code, 0, "annotate failed:\n{err}");
 
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&copy, DSB),
+        pcap_build::count_pcapng_blocks_or_panic(&copy, DSB),
         0,
         "the annotated copy must carry no Decryption Secrets Block"
     );

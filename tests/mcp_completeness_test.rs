@@ -251,7 +251,7 @@ fn write_big_capture(path: &Path, calls: usize) {
             &format!("callee{n}"),
         ));
     }
-    pcap_build::write_pcap(path, &frames);
+    pcap_build::write_pcap_or_panic(path, &frames);
 }
 
 /// Copy `INTACT` into `dir` with its last packet record cut in half.

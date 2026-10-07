@@ -484,11 +484,11 @@ fn run_capture(capture: &str) {
     );
 
     let bytes = read_capture(capture);
-    let mut session = McpSession::start(capture, &[]);
+    let mut session = McpSession::start_or_panic(capture, &[]);
     let mut failures: Vec<String> = Vec::new();
 
     for case in &cases {
-        let reply = session.ok(&case.tool, case.arguments.clone());
+        let reply = session.ok_or_panic(&case.tool, case.arguments.clone());
         let oracle = case.oracle.derive(&bytes);
         let oracle_agrees = oracle.map(|v| case.expected.as_u64() == Some(v));
 

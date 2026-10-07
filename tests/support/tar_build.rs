@@ -74,9 +74,18 @@ pub fn tar(entries: &[Entry<'_>]) -> Vec<u8> {
 }
 
 /// gzip `data` with real compression.
-pub fn gzip(data: &[u8]) -> Vec<u8> {
+pub fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
     use std::io::Write;
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    enc.write_all(data).expect("gzip");
-    enc.finish().expect("gzip")
+    enc.write_all(data)?;
+    enc.finish()
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`gzip`], panicking on error.
+pub fn gzip_or_panic(data: &[u8]) -> Vec<u8> {
+    gzip(data).expect("gzip")
 }

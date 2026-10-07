@@ -46,7 +46,7 @@ use std::process::Command;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 /// The Call-ID a crafted datagram tries to introduce.
 const FORGED_CALL_ID: &str = "ATTACKER-CHOSEN-CALLID";
@@ -146,7 +146,7 @@ fn media_frames() -> Vec<Vec<u8>> {
 fn capture(name: &str, frames: &[Vec<u8>]) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("temp dir");
     let path = dir.path().join(name);
-    write_pcap(&path, frames);
+    write_pcap_or_panic(&path, frames);
     (dir, path)
 }
 
