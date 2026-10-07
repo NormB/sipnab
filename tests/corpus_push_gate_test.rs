@@ -23,6 +23,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 /// The hook this file gates.
 const HOOK: &str = ".githooks/pre-push";
 
@@ -82,20 +85,14 @@ fn runnable_gate() -> String {
 /// put on `PATH`.
 fn stub_cargo(dir: &Path, code: i32, stdout: &str) {
     let bin = dir.join("cargo");
-    std::fs::write(
+    executable::write_executable(
         &bin,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' {}\nexit {code}\n",
             shell_quote(stdout)
         ),
     )
     .expect("write cargo stub");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod cargo stub");
-    }
 }
 
 /// Single-quote for `sh`.

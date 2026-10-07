@@ -10,10 +10,12 @@
 #![cfg(all(unix, feature = "full"))]
 
 use std::net::Ipv4Addr;
-use std::os::unix::fs::PermissionsExt;
 
 use sipnab::security::actions::{TfpsActions, TfpsCtl, TfpsReply};
 use sipnab::security::tfps::TfpsLocator;
+
+#[path = "support/executable.rs"]
+mod executable;
 
 const BAN: &str = include_str!("fixtures/tfps-ban-golden.jsonl");
 const UNBAN: &str = include_str!("fixtures/tfps-unban-golden.jsonl");
@@ -37,8 +39,7 @@ fn fake(ban_line: &str, unban_line: &str) -> (tempfile::TempDir, TfpsCtl) {
          esac\n"
     );
     let path = dir.path().join("tfps_ctl");
-    std::fs::write(&path, script).expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&path, &script).expect("write");
     let ctl = TfpsCtl::new(TfpsLocator::new(Some(path), None));
     (dir, ctl)
 }

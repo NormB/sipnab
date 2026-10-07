@@ -28,6 +28,9 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
+#[path = "support/executable.rs"]
+mod executable;
+
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
@@ -395,7 +398,6 @@ fn before_probe(tool: &str) {
 /// probe of `tfps_ban` against `PATH` would be a real ban request. Naming
 /// the fake with `--tfps-ctl` is what keeps this test from ever reaching it.
 fn fake_tfps_ctl() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tfps_ctl");
     let one = |text: &str| text.lines().next().expect("a line").to_string();
@@ -416,8 +418,7 @@ fn fake_tfps_ctl() -> tempfile::TempDir {
         one(include_str!("fixtures/tfps-ban-golden.jsonl")),
         one(include_str!("fixtures/tfps-unban-golden.jsonl")),
     );
-    std::fs::write(&path, script).expect("write the fake");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    executable::write_executable(&path, &script).expect("write the fake");
     dir
 }
 

@@ -25,6 +25,9 @@ mod dbgsym;
 
 use dbgsym::{repo, text};
 
+#[path = "support/executable.rs"]
+mod executable;
+
 const RELEASE: &str = ".github/workflows/release.yml";
 
 /// The step that splits the symbols out of the binary the release ships.
@@ -759,12 +762,7 @@ fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
         } else {
             "#!/bin/sh\nexit 137\n"
         };
-        std::fs::write(rel.join("sipnab"), body).unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(rel.join("sipnab"), std::fs::Permissions::from_mode(0o755))
-                .unwrap();
-        }
+        executable::write_executable(&rel.join("sipnab"), body).unwrap();
         std::fs::create_dir_all(w.join("scripts")).unwrap();
         let split = if make_zip {
             "mkdir -p \"$(dirname \"$2\")\"; echo zip > \"$2.dSYM.zip\"\n"
@@ -779,9 +777,7 @@ fn the_ci_proof_step_macos_branch_checks_the_zip_and_the_uuid() {
              *) echo \"UUID: AAAA-1111 (arm64) $2\" ;;\nesac\n"
         );
         let dd = bin.join("dwarfdump");
-        std::fs::write(&dd, stub).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dd, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable::write_executable(&dd, &stub).unwrap();
         let path = format!(
             "{}:{}",
             bin.display(),
@@ -844,7 +840,6 @@ fn build_step_rustflags(
     target: &str,
     ambient: &str,
 ) -> String {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let w = dir.path();
     std::fs::create_dir_all(w.join("scripts")).unwrap();
@@ -860,15 +855,14 @@ fn build_step_rustflags(
     std::fs::create_dir_all(&bin).unwrap();
     let rec = w.join("seen");
     let stub = bin.join(tool);
-    std::fs::write(
+    executable::write_executable(
         &stub,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf 'RUSTFLAGS=%s\\n' \"${{RUSTFLAGS-<unset>}}\" > '{}'\n",
             rec.display()
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
     let script = step_script_in(workflow, step)
         .replace("${{ matrix.target }}", target)
         .replace("${{ steps.features.outputs.features }}", "native");

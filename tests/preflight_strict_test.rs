@@ -23,6 +23,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/executable.rs"]
+mod executable;
+
 /// The script under test.
 const SCRIPT: &str = "scripts/preflight.sh";
 
@@ -534,19 +537,14 @@ fn codespell_bin_counts_as_installed() {
 
 /// Write an executable stub that prints `stdout` and exits with `code`.
 fn stub(path: &Path, stdout: &str, code: i32) {
-    std::fs::write(
+    executable::write_executable(
         path,
-        format!(
+        &format!(
             "#!/bin/sh\nprintf '%s\\n' '{}'\nexit {code}\n",
             stdout.replace('\'', r"'\''")
         ),
     )
     .expect("write stub");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
-    }
 }
 
 /// A generator that exits non-zero rewrote nothing, so "the mirror did not

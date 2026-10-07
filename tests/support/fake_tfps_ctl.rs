@@ -7,7 +7,8 @@
 
 #![allow(dead_code)]
 
-use std::os::unix::fs::PermissionsExt;
+#[path = "executable.rs"]
+mod executable;
 
 const BAN: &str = r#"{"ip":"198.51.100.20","action":"ban","applied":true,"refused":null,"expires":null,"source":"operator"}"#;
 const UNBAN: &str = r#"{"ip":"198.51.100.20","action":"unban","applied":true,"refused":null,"expires":null,"source":"operator"}"#;
@@ -42,8 +43,7 @@ impl Fake {
              esac\n"
         );
         let path = dir.path().join("tfps_ctl");
-        std::fs::write(&path, script)?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        executable::write_executable(&path, &script)?;
         Ok(Self { dir })
     }
 

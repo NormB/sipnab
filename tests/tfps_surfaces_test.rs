@@ -15,7 +15,6 @@
 //! fixture, so every surface is driven against the bytes the contract pins.
 #![cfg(all(unix, feature = "full"))]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[path = "support/mcp.rs"]
@@ -25,6 +24,9 @@ mod server;
 
 use mcp::{McpSession, ok_payload_or_panic};
 use server::ApiServer;
+
+#[path = "support/executable.rs"]
+mod executable;
 
 const STATUS: &str = include_str!("fixtures/tfps-status-golden.json");
 const BANNED: &str = include_str!("fixtures/tfps-banned-golden.jsonl");
@@ -75,8 +77,7 @@ impl Fake {
              *) echo \"unknown subcommand $1\" >&2; exit 2;;\n\
              esac\n"
         );
-        std::fs::write(&path, script).expect("write the fake");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        executable::write_executable(&path, &script).expect("write the fake");
         Self { dir }
     }
 
@@ -315,12 +316,11 @@ fn the_tfps_routes_sit_behind_the_bearer_guard() {
 fn a_failing_peer_is_a_502_carrying_its_stderr() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("tfps_ctl");
-    std::fs::write(
+    executable::write_executable(
         &path,
         "#!/bin/sh\necho 'tfps.db: database is locked' >&2\nexit 3\n",
     )
     .expect("write");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let path = path.display().to_string();
     let srv = ApiServer::spawn_or_panic(&["--api-key", KEY, "--tfps-ctl", &path]);
     let resp = srv.get_bearer_or_panic("/v1/tfps/status", KEY);

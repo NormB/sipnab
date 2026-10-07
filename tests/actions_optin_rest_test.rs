@@ -21,13 +21,15 @@
 
 #![cfg(all(unix, feature = "full"))]
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 #[path = "support/server.rs"]
 mod server;
 
 use server::ApiServer;
+
+#[path = "support/executable.rs"]
+mod executable;
 
 const SIGNING_KEY: &str = "actions-optin-rest-test-signing-key";
 const BAN: &str = r#"{"ip":"198.51.100.20","action":"ban","applied":true,"refused":null,"expires":null,"source":"operator"}"#;
@@ -54,8 +56,7 @@ impl Fake {
              esac\n"
         );
         let path = dir.path().join("tfps_ctl");
-        std::fs::write(&path, script).expect("write the fake");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        executable::write_executable(&path, &script).expect("write the fake");
         Self { dir }
     }
 

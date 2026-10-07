@@ -809,7 +809,9 @@ fn linked_code_targets_exist() {
     // scripts/tag-signature-check.sh and .github/allowed_signers.
     // 482 -> 483: the add-a-flag walkthrough links src/settings.rs, the table
     // that pairs every flag with its config key.
-    const EXPECTED_CODE_LINKS: usize = 483;
+    // 483 -> 484: docs/internals/testing.md's support table links
+    // tests/support/executable.rs.
+    const EXPECTED_CODE_LINKS: usize = 484;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
