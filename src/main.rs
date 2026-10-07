@@ -197,8 +197,9 @@ fn run_validation_steps(cli: &Cli) {
     }
 
     // 4b. --vcon-forward: deliver a vCon spool to a store, as a process of
-    //     its own. Before the config and before any capture: it reads no
-    //     packet, and clap refused every capture flag beside it.
+    //     its own. It loads the config itself, for [vcon_forward], and opens
+    //     no capture: it reads no packet, and clap refused every capture flag
+    //     beside it.
     if let Some(code) = bootstrap::run_vcon_forward(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }

@@ -19,6 +19,44 @@ entry that carries them.
   `tests/help_env_values_test.rs` reads every environment-backed flag from the
   parser, so a flag added later is held to the same rule.
 
+### Added
+
+- **The vCon forwarder takes its settings from `sipnab.toml`.** A
+  `[vcon_forward]` section has a key for each forwarder flag that is not
+  per-run: `kind`, `url`, `replace_url`, `auth_file`, `ca`, `done`, `failed`,
+  `interval`, `timeout`, `compat`, `backoff_first`, `backoff_cap`,
+  `max_response_head` and `max_error_body`. A flag overrides its key, each key
+  is checked by the rule its flag follows, and `--dump-config` shows them.
+  `--vcon-forward` no longer requires `--vcon-forward-url` and
+  `--vcon-forward-auth-file` on the command line; without a URL or a credential
+  from either source, sipnab refuses the run with exit 2, naming the flag and
+  the key.
+- **`--vcon-forward-kind` (`generic`, `vcon-store`, `conserver`) and
+  `[vcon_forward] kind`.** A kind supplies what that store needs, as measured on
+  2026-10-07: the ingest path for a base URL (`/v1/vcons` for vcon.store,
+  `/vcon/external-ingress?ingress_list=sipnab` for a conserver), the header
+  for a bare key (`Authorization: Bearer <key>`, `x-conserver-api-token:
+  <key>`), and the payload adaptation (`vcon-store` sends `extensions` as an
+  object). An explicit URL path, a full header line or `--vcon-forward-compat`
+  overrides each. `generic`, the default, supplies nothing, as before.
+  `--vcon-forward-compat vcon-store` keeps its meaning, and takes `none` to turn
+  a kind's adaptation off. `docs/vcon.md` shows how to chain two forwarders to
+  deliver to two stores.
+- **The forwarder's credential from the environment.** `SIPNAB_VCON_FORWARD_AUTH`
+  (or `--vcon-forward-auth`, whose value the process list shows) holds what
+  the auth file holds. It is refused when empty and beside
+  `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, `--help` does not
+  show its value, and it is removed from every log line, failure record and
+  stop reason the way the file's value is.
+- **The forwarder's fixed numbers are settings.** `--vcon-forward-backoff-first`
+  (default 2 s) and `--vcon-forward-backoff-cap` (default 300 s) space the
+  retries, and refuse 0 and a first delay longer than the cap;
+  `--vcon-forward-max-response-head` (default 65536 bytes) and
+  `--vcon-forward-max-error-body` (default 8192 bytes) bound what is read of a
+  store's answer and kept of a refusal, and refuse 0. The defaults are the
+  former constants. The constants that remain each state why they are not
+  settings.
+
 ### Changed
 
 - **Values that did nothing, or did the wrong thing, are refused at startup.**

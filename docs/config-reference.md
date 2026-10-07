@@ -647,6 +647,43 @@ The sender's trust is one setting. When the command line names
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
 ```
 
+### `[vcon_forward]`
+
+The vCon forwarder's settings (`sipnab --vcon-forward <SPOOL_DIR>`, see
+[Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store)). The
+spool and `--vcon-forward-once` stay on the command line. The credential's
+value has no key: `auth_file` names the file that holds it, and
+`--vcon-forward-auth` or the `SIPNAB_VCON_FORWARD_AUTH` environment variable
+carries it without a file. A flag replaces its key. With neither, a `kind`
+other than `generic` supplies the value, and then the default applies.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
+| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows |
+| `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. `--vcon-forward-replace-url` overrides it |
+| `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. `--vcon-forward-auth-file` overrides it |
+| `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
+| `done` | path | `<SPOOL_DIR>/delivered` | Where a delivered container goes. Must be on the spool's file system. `--vcon-forward-done` overrides it |
+| `failed` | path | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`. Must be on the spool's file system. `--vcon-forward-failed` overrides it |
+| `interval` | integer | `5` | Seconds between passes over the spool, 1 to 3600. `--vcon-forward-interval` overrides it |
+| `timeout` | integer | `30` | Seconds to wait to connect, and for each read and write, 1 to 600. `--vcon-forward-timeout` overrides it |
+| `compat` | string | the kind's | `none` or `vcon-store`: the adaptation of the copy sent. `vcon-store` is the adaptation the `vcon-store` kind applies. `--vcon-forward-compat` overrides it |
+| `backoff_first` | integer | `2` | Seconds a container waits after its first failed try, 1 to 4294967295; each failed try doubles the wait. No longer than `backoff_cap`. `--vcon-forward-backoff-first` overrides it |
+| `backoff_cap` | integer | `300` | The longest wait between tries, in seconds, 1 to 4294967295. `--vcon-forward-backoff-cap` overrides it |
+| `max_response_head` | integer | `65536` | The most bytes of a store's status line and headers read, 1 to 4294967295. The forwarder treats an answer with more as no answer and retries the container. `--vcon-forward-max-response-head` overrides it |
+| `max_error_body` | integer | `8192` | The most bytes of a refusal's body a `<name>.error.json` record keeps, 1 to 4294967295. `--vcon-forward-max-error-body` overrides it |
+
+```toml
+[vcon_forward]
+kind = "vcon-store"
+url = "https://api.vcon.store"
+auth_file = "/etc/sipnab/vcon-store.key"
+done = "/var/spool/sipnab-vcon-sent"
+failed = "/var/spool/sipnab-vcon-held"
+interval = 10
+```
+
 ### [privilege]
 
 Privilege separation settings (Linux only).

@@ -95,3 +95,17 @@ max_audio_frames = 1500
 # What a --hep-listen-transport tls listener presents:
 # tls_cert = "/etc/sipnab/hep.pem"
 # tls_key = "/etc/sipnab/hep.key"
+
+# -- vCon forwarder ----------------------------------------------------------
+# What `sipnab --vcon-forward <SPOOL_DIR>` uses when its flags are not given;
+# each flag, such as --vcon-forward-url, replaces its own key. The kind adds
+# its ingest path to a URL that names no path and its header to a bare key.
+# The key file holds only the key; chmod 600 it. Uncomment to use.
+
+# [vcon_forward]
+# kind = "conserver"
+# url = "http://127.0.0.1:8000"
+# auth_file = "/etc/sipnab/conserver.key"
+# done = "/var/spool/sipnab-vcon-sent"
+# failed = "/var/spool/sipnab-vcon-held"
+# interval = 5

@@ -4292,12 +4292,12 @@ pub struct VconForwardArgs {
     /// Run as the vCon forwarder: deliver each container in this
     /// `--export-vcon-dir` spool to --vcon-forward-url, byte for byte, and
     /// move it out of the spool once the store answers. Captures nothing.
-    /// Needs the `vcon` feature.
+    /// Needs a URL and a credential, from a flag or from `[vcon_forward]` in
+    /// the config file. Needs the `vcon` feature.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward",
         value_name = "SPOOL_DIR",
-        requires_all = ["vcon_forward_url", "vcon_forward_auth_file"],
         conflicts_with_all = [
             "device", "input", "hep_listen", "hep_send", "bpf_filter",
             "bpf_file", "api", "mcp", "metrics", "export_vcon",
@@ -4309,6 +4309,9 @@ pub struct VconForwardArgs {
     /// Where the forwarder POSTs each container, `http://` or `https://`,
     /// path and query included, for example
     /// `http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab`.
+    /// With a --vcon-forward-kind other than `generic`, a URL with no path is
+    /// the store's base URL and the kind adds its ingest path. Overrides
+    /// `[vcon_forward] url`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-url",
@@ -4320,8 +4323,10 @@ pub struct VconForwardArgs {
     /// File holding the one header that authenticates the forwarder, as
     /// `Header-Name: value` on one line, for example
     /// `Authorization: Bearer <token>` or `x-conserver-api-token: <key>`.
-    /// Refused when other users can read it: chmod 600. The value never
-    /// appears in a log line, an error or a failure record.
+    /// With a --vcon-forward-kind other than `generic` it may hold the bare
+    /// key, and the kind supplies the header. Refused when other users can
+    /// read it: chmod 600. The value never appears in a log line, an error or
+    /// a failure record. Overrides `[vcon_forward] auth_file`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-auth-file",
@@ -4330,9 +4335,44 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_auth_file: Option<std::path::PathBuf>,
 
+    /// The credential itself, as the auth file would hold it: one line,
+    /// `Header-Name: value`, or the bare key with a --vcon-forward-kind other
+    /// than `generic`. A flag's value is visible in the process list to
+    /// other users of the host: prefer the SIPNAB_VCON_FORWARD_AUTH
+    /// environment variable or --vcon-forward-auth-file. Refused beside
+    /// --vcon-forward-auth-file or `[vcon_forward] auth_file`, and when
+    /// empty. The value never appears in a log line, an error or a failure
+    /// record.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-auth",
+        value_name = "HEADER",
+        env = "SIPNAB_VCON_FORWARD_AUTH",
+        hide_env_values = true,
+        value_parser = parse_forward_auth,
+        conflicts_with = "vcon_forward_auth_file"
+    )]
+    pub vcon_forward_auth: Option<String>,
+
+    /// What kind of store receives the containers: `generic` (the default:
+    /// every setting given explicitly), `vcon-store` or `conserver`. A kind
+    /// supplies the ingest path for a base URL, the header for a bare key,
+    /// and the payload adaptation; an explicit setting overrides each.
+    /// Overrides `[vcon_forward] kind`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-kind",
+        value_name = "KIND",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::config::FORWARD_KINDS.iter().copied()
+        ),
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_kind: Option<String>,
+
     /// Where a container goes, under its own name, once the store answers
     /// 2xx. Default: `delivered/` inside the spool. Must be on the spool's
-    /// filesystem.
+    /// filesystem. Overrides `[vcon_forward] done`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-done",
@@ -4344,7 +4384,7 @@ pub struct VconForwardArgs {
     /// Where a container goes when the store refuses it with a 4xx, beside
     /// a `<name>.error.json` record of the status and the store's answer.
     /// Default: `failed/` inside the spool. Must be on the spool's
-    /// filesystem.
+    /// filesystem. Overrides `[vcon_forward] failed`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-failed",
@@ -4356,8 +4396,8 @@ pub struct VconForwardArgs {
     /// URL template the forwarder PUTs a container to when the POST answers
     /// 409 (the store already holds that uuid). `{uuid}` is replaced with the
     /// container's `uuid`, for example
-    /// `https://api.vcon.store/v1/vcons/{uuid}`. Without it a 409 is a
-    /// refusal like any other 4xx.
+    /// `https://store.example.com/v1/vcons/{uuid}`. Without it a 409 is a
+    /// refusal like any other 4xx. Overrides `[vcon_forward] replace_url`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-replace-url",
@@ -4376,31 +4416,82 @@ pub struct VconForwardArgs {
     )]
     pub vcon_forward_once: bool,
 
-    /// Seconds between passes over the spool, 1 to 3600.
+    /// Seconds between passes over the spool, 1 to 3600. Default: 5.
+    /// Overrides `[vcon_forward] interval`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-interval",
         value_name = "SECS",
-        default_value = "5",
-        value_parser = clap::value_parser!(u64).range(1..=3600),
+        value_parser = parse_forward_interval,
         requires = "vcon_forward"
     )]
-    pub vcon_forward_interval: u64,
+    pub vcon_forward_interval: Option<u64>,
 
     /// Seconds the forwarder waits to connect, and for each read and write,
     /// before it treats the store as unreachable and retries later, 1 to 600.
+    /// Default: 30. Overrides `[vcon_forward] timeout`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-timeout",
         value_name = "SECS",
-        default_value = "30",
-        value_parser = clap::value_parser!(u64).range(1..=600),
+        value_parser = parse_forward_timeout,
         requires = "vcon_forward"
     )]
-    pub vcon_forward_timeout: u64,
+    pub vcon_forward_timeout: Option<u64>,
+
+    /// Seconds a container waits after its first failed try (a 5xx, a
+    /// timeout or no connection); each failed try after it doubles the wait,
+    /// up to --vcon-forward-backoff-cap. 1 to 4294967295, and no longer than
+    /// the cap. Default: 2. Overrides `[vcon_forward] backoff_first`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-backoff-first",
+        value_name = "SECS",
+        value_parser = parse_forward_backoff_first,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_backoff_first: Option<u64>,
+
+    /// The longest a container waits between tries, in seconds, 1 to
+    /// 4294967295, and no shorter than --vcon-forward-backoff-first.
+    /// Default: 300. Overrides `[vcon_forward] backoff_cap`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-backoff-cap",
+        value_name = "SECS",
+        value_parser = parse_forward_backoff_cap,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_backoff_cap: Option<u64>,
+
+    /// The most bytes of a store's status line and headers the forwarder
+    /// reads; an answer with more is treated as no answer and the container
+    /// is retried. 1 to 4294967295. Default: 65536. Overrides
+    /// `[vcon_forward] max_response_head`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-max-response-head",
+        value_name = "BYTES",
+        value_parser = parse_forward_max_response_head,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_max_response_head: Option<u64>,
+
+    /// The most bytes of a store's answer to a refused container that its
+    /// `<name>.error.json` record keeps, 1 to 4294967295. Default: 8192.
+    /// Overrides `[vcon_forward] max_error_body`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-max-error-body",
+        value_name = "BYTES",
+        value_parser = parse_forward_max_error_body,
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_max_error_body: Option<u64>,
 
     /// Trust only the CA certificates in this PEM file for an `https://`
     /// store. Without it the forwarder trusts the host's CA bundle.
+    /// Overrides `[vcon_forward] ca`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-ca",
@@ -4411,16 +4502,76 @@ pub struct VconForwardArgs {
 
     /// Adjust the copy that is SENT for one store's known deviation from the
     /// vCon drafts. `vcon-store`: send `extensions` as an object, and refuse
-    /// a Dialog Object without `type` and `parties`. The container on disk is
-    /// never changed. Default: no adjustment.
+    /// a Dialog Object without `type` and `parties`, the adaptation the
+    /// `vcon-store` kind applies. `none`: send every container byte for
+    /// byte. The container on disk is never changed. Default: the
+    /// --vcon-forward-kind's adaptation, none for `generic`. Overrides
+    /// `[vcon_forward] compat`.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-compat",
         value_name = "STORE",
-        value_parser = ["vcon-store"],
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::config::FORWARD_COMPAT.iter().copied()
+        ),
         requires = "vcon_forward"
     )]
     pub vcon_forward_compat: Option<String>,
+}
+
+impl VconForwardArgs {
+    /// The first forwarder option given without `--vcon-forward`, or `None`.
+    /// `--vcon-forward-auth` is not counted: its environment variable may be
+    /// exported for every run on a host, and a capture run ignores it.
+    #[must_use]
+    pub fn option_without_the_mode(&self) -> Option<&'static str> {
+        if self.vcon_forward.is_some() {
+            return None;
+        }
+        [
+            ("--vcon-forward-url", self.vcon_forward_url.is_some()),
+            (
+                "--vcon-forward-auth-file",
+                self.vcon_forward_auth_file.is_some(),
+            ),
+            ("--vcon-forward-kind", self.vcon_forward_kind.is_some()),
+            ("--vcon-forward-done", self.vcon_forward_done.is_some()),
+            ("--vcon-forward-failed", self.vcon_forward_failed.is_some()),
+            (
+                "--vcon-forward-replace-url",
+                self.vcon_forward_replace_url.is_some(),
+            ),
+            ("--vcon-forward-once", self.vcon_forward_once),
+            (
+                "--vcon-forward-interval",
+                self.vcon_forward_interval.is_some(),
+            ),
+            (
+                "--vcon-forward-timeout",
+                self.vcon_forward_timeout.is_some(),
+            ),
+            (
+                "--vcon-forward-backoff-first",
+                self.vcon_forward_backoff_first.is_some(),
+            ),
+            (
+                "--vcon-forward-backoff-cap",
+                self.vcon_forward_backoff_cap.is_some(),
+            ),
+            (
+                "--vcon-forward-max-response-head",
+                self.vcon_forward_max_response_head.is_some(),
+            ),
+            (
+                "--vcon-forward-max-error-body",
+                self.vcon_forward_max_error_body.is_some(),
+            ),
+            ("--vcon-forward-ca", self.vcon_forward_ca.is_some()),
+            ("--vcon-forward-compat", self.vcon_forward_compat.is_some()),
+        ]
+        .into_iter()
+        .find_map(|(flag, given)| given.then_some(flag))
+    }
 }
 
 /// `Config` flags.
@@ -6353,6 +6504,16 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
+        // A forwarder option names something only the forwarder does. clap's
+        // `requires = "vcon_forward"` does not fire when an argument that
+        // conflicts with `--vcon-forward` (a capture input) is present, so the
+        // rule is stated here too, for every run.
+        if let Some(flag) = self.vcon_forward_args.option_without_the_mode() {
+            return Err(crate::Error::CliValidation(format!(
+                "{flag} is a vCon forwarder setting and needs --vcon-forward"
+            )));
+        }
+
         // Decrypted export needs the decryption it writes out (PCAPX-DEC).
         #[cfg(not(feature = "tls"))]
         if self.tls_args.pcap_export_mode == "decrypted" {
@@ -6749,6 +6910,54 @@ pub fn resolve_named_secret(
 
 /// Unit tests for CLI parsing, flag defaults, argument validation, and
 /// file-vs-inline secret resolution.
+/// `--vcon-forward-auth`: any value but an empty or blank one. A malformed
+/// header is refused when the forwarder starts, by a message that does not
+/// quote it; clap quotes a value it refuses, so this parser refuses only what
+/// is safe to quote.
+fn parse_forward_auth(s: &str) -> Result<String, String> {
+    if s.trim().is_empty() {
+        return Err(
+            "the value is empty; give `Header-Name: value`, or the bare key with \
+                    --vcon-forward-kind"
+                .to_string(),
+        );
+    }
+    Ok(s.to_string())
+}
+
+/// `--vcon-forward-interval`: [`crate::config::FORWARD_INTERVAL`]'s rule.
+fn parse_forward_interval(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_INTERVAL.parse(s)
+}
+
+/// `--vcon-forward-timeout`: [`crate::config::FORWARD_TIMEOUT`]'s rule.
+fn parse_forward_timeout(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_TIMEOUT.parse(s)
+}
+
+/// `--vcon-forward-backoff-first`: [`crate::config::FORWARD_BACKOFF_FIRST`]'s
+/// rule.
+fn parse_forward_backoff_first(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_BACKOFF_FIRST.parse(s)
+}
+
+/// `--vcon-forward-backoff-cap`: [`crate::config::FORWARD_BACKOFF_CAP`]'s rule.
+fn parse_forward_backoff_cap(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_BACKOFF_CAP.parse(s)
+}
+
+/// `--vcon-forward-max-response-head`:
+/// [`crate::config::FORWARD_MAX_RESPONSE_HEAD`]'s rule.
+fn parse_forward_max_response_head(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_MAX_RESPONSE_HEAD.parse(s)
+}
+
+/// `--vcon-forward-max-error-body`: [`crate::config::FORWARD_MAX_ERROR_BODY`]'s
+/// rule.
+fn parse_forward_max_error_body(s: &str) -> Result<u64, String> {
+    crate::config::FORWARD_MAX_ERROR_BODY.parse(s)
+}
+
 /// Parse `--dialog-track`, rejecting anything that is not a known method.
 ///
 /// The flag this replaces accepted every value — `--dialog-track telepathy`
@@ -6918,10 +7127,25 @@ mod tests {
             "9",
             "--vcon-forward-ca",
             "/etc/ssl/store-ca.pem",
+            "--vcon-forward-kind",
+            "conserver",
+            "--vcon-forward-backoff-first",
+            "3",
+            "--vcon-forward-backoff-cap",
+            "90",
+            "--vcon-forward-max-response-head",
+            "4096",
+            "--vcon-forward-max-error-body",
+            "512",
         ]);
         let cli = Cli::try_parse_from(argv)?;
         cli.validate()?;
         let f = &cli.vcon_forward_args;
+        assert_eq!(f.vcon_forward_kind.as_deref(), Some("conserver"));
+        assert_eq!(f.vcon_forward_backoff_first, Some(3));
+        assert_eq!(f.vcon_forward_backoff_cap, Some(90));
+        assert_eq!(f.vcon_forward_max_response_head, Some(4096));
+        assert_eq!(f.vcon_forward_max_error_body, Some(512));
         assert_eq!(
             f.vcon_forward.as_deref(),
             Some(std::path::Path::new("/srv/spool"))
@@ -6932,9 +7156,65 @@ mod tests {
         );
         assert!(f.vcon_forward_once);
         assert_eq!(f.vcon_forward_compat.as_deref(), Some("vcon-store"));
-        assert_eq!(f.vcon_forward_interval, 7);
-        assert_eq!(f.vcon_forward_timeout, 9);
+        assert_eq!(f.vcon_forward_interval, Some(7));
+        assert_eq!(f.vcon_forward_timeout, Some(9));
         Ok(())
+    }
+
+    /// Each whole-number forwarder flag's help states the range its parser
+    /// accepts and the default it falls back to, from the one declaration in
+    /// `crate::config`, and its parser refuses 0.
+    #[test]
+    fn each_forwarder_number_flag_states_its_range_and_default() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        for number in crate::config::FORWARD_NUMBERS {
+            let long = number.flag.trim_start_matches("--");
+            let arg = cmd.get_arguments().find(|a| a.get_long() == Some(long));
+            let help = arg
+                .and_then(|a| a.get_help())
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            assert!(
+                help.contains(&format!("{} to {}", number.min, number.max)),
+                "{long}: {help}"
+            );
+            assert!(
+                help.contains(&format!("Default: {}", number.default)),
+                "{long}: {help}"
+            );
+            let mut argv = vec!["sipnab".to_string()];
+            argv.extend(FORWARD.iter().map(ToString::to_string));
+            argv.push(format!("{}=0", number.flag));
+            assert!(Cli::try_parse_from(&argv).is_err(), "{long} accepted 0");
+        }
+    }
+
+    /// `--vcon-forward-auth` and `--vcon-forward-auth-file` both name the
+    /// credential, so clap refuses the two together; an empty or blank
+    /// `--vcon-forward-auth` is refused at parse time.
+    #[test]
+    fn the_inline_credential_conflicts_with_the_auth_file() {
+        let mut argv = vec!["sipnab"];
+        argv.extend(FORWARD);
+        argv.push("--vcon-forward-auth=Authorization: Bearer x");
+        let e = Cli::try_parse_from(&argv)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            e.contains("--vcon-forward-auth <") && e.contains("--vcon-forward-auth-file"),
+            "{e}"
+        );
+        for blank in ["", "  "] {
+            let argv = [
+                "sipnab".to_string(),
+                "--vcon-forward".to_string(),
+                "/srv/spool".to_string(),
+                format!("--vcon-forward-auth={blank}"),
+            ];
+            assert!(Cli::try_parse_from(argv).is_err(), "{blank:?} accepted");
+        }
     }
 
     /// The forwarder is a separate process: no capture source, no listener
@@ -6982,30 +7262,69 @@ mod tests {
             &["--vcon-forward-once"],
             &["--vcon-forward-compat", "vcon-store"],
             &["--vcon-forward-done", "/srv/done"],
+            &["--vcon-forward-kind", "conserver"],
+            &["--vcon-forward-backoff-first", "3"],
+            &["--vcon-forward-backoff-cap", "30"],
+            &["--vcon-forward-max-response-head", "4096"],
+            &["--vcon-forward-max-error-body", "512"],
         ] {
             let mut argv = vec!["sipnab", "-I", "x.pcap"];
             argv.extend(opt.iter().copied());
-            assert!(
-                Cli::try_parse_from(&argv).is_err(),
-                "{opt:?} accepted without --vcon-forward"
-            );
+            let refused = Cli::try_parse_from(&argv)
+                .map_err(|e| e.to_string())
+                .and_then(|cli| cli.validate().map_err(|e| e.to_string()));
+            assert!(refused.is_err(), "{opt:?} accepted without --vcon-forward");
+            let e = refused.err().unwrap_or_default();
+            assert!(e.contains("--vcon-forward"), "{opt:?}: {e}");
         }
-        assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "sipnab",
-                "--vcon-forward",
-                "/srv/spool",
-                "--vcon-forward-url",
-                "http://127.0.0.1:8000/x",
-            ])
-            .is_err(),
-            "no auth file"
-        );
+        // The URL and the credential may come from `[vcon_forward]` in the
+        // config file, so the command line alone does not need them; the
+        // startup check that does is
+        // `the_forwarder_needs_a_url_and_a_credential_from_some_source`.
+        assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_ok());
         let mut bad = vec!["sipnab"];
         bad.extend(FORWARD);
         bad.extend(["--vcon-forward-compat", "something-else"]);
         assert!(Cli::try_parse_from(&bad).is_err(), "unknown compat mode");
+    }
+
+    /// With no URL or no credential from any source, the startup pipeline
+    /// refuses a forwarder run with exit 2, naming the flag and the key.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_forwarder_needs_a_url_and_a_credential_from_some_source()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (argv, names) in [
+            (
+                vec!["sipnab", "-F", "--vcon-forward", "/srv/spool"],
+                ["--vcon-forward-url", "[vcon_forward] url"],
+            ),
+            (
+                vec![
+                    "sipnab",
+                    "-F",
+                    "--vcon-forward",
+                    "/srv/spool",
+                    "--vcon-forward-url",
+                    "http://127.0.0.1:8000/x",
+                ],
+                ["--vcon-forward-auth-file", "[vcon_forward] auth_file"],
+            ),
+        ] {
+            let cli = Cli::try_parse_from(&argv)?;
+            let Err(refused) = crate::app::bootstrap::load_config(&cli) else {
+                return Err("a forwarder without a source was accepted".into());
+            };
+            assert_eq!(refused.exit_code, 2, "{}", refused.message);
+            for name in names {
+                assert!(
+                    refused.message.contains(name),
+                    "{name}: {}",
+                    refused.message
+                );
+            }
+        }
+        Ok(())
     }
 
     // ── --version and the libpcap it runs on (CT6b) ─────────────────────

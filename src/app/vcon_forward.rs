@@ -16,6 +16,11 @@
 //! | any other `4xx` | moves it to the failed directory beside `<name>.error.json` |
 //! | `5xx`, a timeout, or no connection | leaves it, and retries with a doubling delay |
 //!
+//! Every number it works by is a setting with a flag and a `[vcon_forward]`
+//! key (see [`ForwardPlan::resolve`]), except the constants below, each of
+//! which says why it is not one. A store kind ([`STORE_KINDS`]) supplies the
+//! values a store of that kind needs, and an explicit setting overrides each.
+//!
 //! A `2xx` means the store ACCEPTED the container. It does not mean the store
 //! kept it: the self-hosted conserver once answered `204` for a container it
 //! then failed to store. So the forwarder reports "delivered", never "stored".
@@ -32,23 +37,41 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// The most of a store's answer a failure record keeps, in bytes.
-pub const MAX_ERROR_BODY: usize = 8 * 1024;
-
 /// The most of a store's answer the stop reason quotes, in bytes.
+///
+/// Not a setting: the quote goes into one log line, and its only purpose is
+/// to make the answer recognizable there (a CDN's `error code: 1010`). Nothing
+/// is kept from a halted answer, so no deployment loses data by its length.
 const MAX_HALT_BODY: usize = 200;
 
-/// The largest auth file the forwarder reads, in bytes. One header line.
+/// The largest credential the forwarder reads from a file, in bytes.
+///
+/// Not a setting: the file holds one header line, and common HTTP servers
+/// refuse a longer one (Apache httpd's `LimitRequestFieldSize` defaults to
+/// 8190 bytes, nginx's `large_client_header_buffers` to 8 KiB per line). The
+/// same figure bounds how far past the kept part of an answer the forwarder
+/// reads, so the credential is removed before the cut.
 const MAX_AUTH_FILE: usize = 8 * 1024;
 
-/// The largest response head (status line and headers) the forwarder reads.
-const MAX_RESPONSE_HEAD: usize = 64 * 1024;
+/// How often the wait between passes asks whether a stop was requested.
+///
+/// Not a setting: it changes nothing that is sent or when, only how soon
+/// after SIGTERM or SIGINT the forwarder returns, which is at most this long.
+const STOP_POLL_STEP: Duration = Duration::from_millis(100);
 
-/// The first retry delay. Each failed try after it doubles the delay.
-const BACKOFF_FIRST_SECS: u64 = 2;
+/// The longest container `uuid` the forwarder puts into a replace URL's path.
+///
+/// Not a setting: it describes the value, not the store. A vCon `uuid` is a
+/// UUID, 36 characters in its text form; the limit refuses a value long
+/// enough to be something else before it reaches a URL.
+const MAX_UUID_LEN: usize = 64;
 
-/// The longest a container waits between tries.
-const BACKOFF_CAP_SECS: u64 = 300;
+/// The shortest last word of the credential that [`AuthHeader::scrub`] also
+/// removes on its own (the token of `Bearer <token>`).
+///
+/// Not a setting: a shorter word would remove ordinary words from a store's
+/// answer, and a token shorter than this is not one a store issues.
+const MIN_SCRUBBED_WORD: usize = 8;
 
 /// What replaces the auth value in any text the forwarder keeps.
 const REMOVED: &str = "[auth value removed]";
@@ -56,12 +79,24 @@ const REMOVED: &str = "[auth value removed]";
 /// The `User-Agent` every request carries. A Cloudflare front refuses some
 /// client libraries' default agents with `403 error code: 1010`; an explicit,
 /// honest one names the software that sent the request.
+///
+/// Not a setting: the header names the software that sent the request, and a
+/// setting would let the request name other software.
 const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
 
 /// The flag that names the auth file, quoted in its errors.
 const AUTH_FLAG: &str = "--vcon-forward-auth-file";
 
+/// The key that names the auth file, quoted in its errors.
+const AUTH_KEY: &str = "[vcon_forward] auth_file";
+
+/// The flag and the environment variable that carry the credential itself,
+/// quoted in their errors.
+const AUTH_INLINE: &str = "--vcon-forward-auth (or SIPNAB_VCON_FORWARD_AUTH)";
+
 /// Headers the forwarder writes itself, so the auth file may not name them.
+///
+/// Not a setting: they frame the HTTP request and are computed from it.
 const RESERVED_HEADERS: &[&str] = &[
     "host",
     "content-type",
@@ -265,30 +300,79 @@ impl AuthHeader {
         })
     }
 
-    /// Read the header from a secret file, refused when other users can read
-    /// it ([`crate::privilege::open_private_file`], the rule every secret file
-    /// sipnab reads follows).
+    /// The header a credential stands for, for a store of `kind`: a
+    /// `Header-Name: value` line is that header, whatever the kind. A kind
+    /// with an auth header ([`KindFacts::auth_header`]) also takes the bare
+    /// key, one line, and sends it in that header after the kind's prefix;
+    /// the generic kind takes only the full line.
     ///
     /// # Errors
     ///
-    /// The file is refused, unreadable, larger than 8 KiB, not UTF-8, or
-    /// fails [`AuthHeader::parse`]. Every message names the flag and the
-    /// path, never the contents.
+    /// As [`AuthHeader::parse`] for the generic kind; for another, no key,
+    /// more than one line, or a control character. No message quotes the
+    /// credential.
+    pub fn from_credential(text: &str, kind: StoreKind) -> Result<Self, String> {
+        let parsed = Self::parse(text);
+        let Some((name, prefix)) = kind.facts().auth_header else {
+            return parsed;
+        };
+        if parsed.is_ok() {
+            return parsed;
+        }
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        let key = match lines.as_slice() {
+            [one] => *one,
+            [] => return Err("holds no key".into()),
+            _ => return Err("holds more than one line; give the key, or one header line".into()),
+        };
+        if key.chars().any(char::is_control) {
+            return Err("holds a key with a control character in it".into());
+        }
+        Ok(Self {
+            name: name.to_string(),
+            value: format!("{prefix}{key}"),
+        })
+    }
+
+    /// Read the header from a secret file, refused when other users can read
+    /// it ([`crate::privilege::open_private_file`], the rule every secret file
+    /// sipnab reads follows). The generic kind's rule, with the flag named.
+    ///
+    /// # Errors
+    ///
+    /// As [`AuthHeader::read_file_for`].
     pub fn read_file(path: &Path) -> Result<Self, String> {
+        Self::read_file_for(path, AUTH_FLAG, StoreKind::Generic)
+    }
+
+    /// Read the credential for a store of `kind` from a secret file, by
+    /// [`AuthHeader::from_credential`]. `from` names the setting that named
+    /// the file, for the messages.
+    ///
+    /// # Errors
+    ///
+    /// The file is refused, unreadable, larger than [`MAX_AUTH_FILE`], not
+    /// UTF-8, or not a credential. Every message names `from` and the path,
+    /// never the contents.
+    pub fn read_file_for(path: &Path, from: &str, kind: StoreKind) -> Result<Self, String> {
         let shown = path.display();
-        let file = crate::privilege::open_private_file(path, AUTH_FLAG)?;
+        let file = crate::privilege::open_private_file(path, from)?;
         let mut buf = Vec::new();
         file.take(MAX_AUTH_FILE as u64 + 1)
             .read_to_end(&mut buf)
-            .map_err(|e| format!("{AUTH_FLAG} '{shown}': {e}"))?;
+            .map_err(|e| format!("{from} '{shown}': {e}"))?;
         if buf.len() > MAX_AUTH_FILE {
             return Err(format!(
-                "{AUTH_FLAG} '{shown}': larger than {MAX_AUTH_FILE} bytes; it holds one header line"
+                "{from} '{shown}': larger than {MAX_AUTH_FILE} bytes; it holds one line"
             ));
         }
         let text =
-            String::from_utf8(buf).map_err(|_| format!("{AUTH_FLAG} '{shown}': not UTF-8 text"))?;
-        Self::parse(&text).map_err(|e| format!("{AUTH_FLAG} '{shown}' {e}"))
+            String::from_utf8(buf).map_err(|_| format!("{from} '{shown}': not UTF-8 text"))?;
+        Self::from_credential(&text, kind).map_err(|e| format!("{from} '{shown}' {e}"))
     }
 
     /// The header's name.
@@ -305,7 +389,7 @@ impl AuthHeader {
         let mut out = text.replace(&self.value, REMOVED);
         if let Some(word) = self.value.split_whitespace().last()
             && word != self.value
-            && word.len() >= 8
+            && word.len() >= MIN_SCRUBBED_WORD
         {
             out = out.replace(word, REMOVED);
         }
@@ -328,12 +412,124 @@ fn is_field_name_byte(b: u8) -> bool {
 /// for in the copy it SENDS. The container on disk never changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compat {
-    /// Send every container byte for byte. The default.
+    /// Send every container byte for byte (`none`). The default.
     Off,
-    /// vcon.store: `extensions` as an object, and no Dialog Object without
-    /// `type` and `parties`. See [`vcon_store_copy`].
+    /// vcon.store (`vcon-store`): `extensions` as an object, and no Dialog
+    /// Object without `type` and `parties`. See [`vcon_store_copy`].
     VconStore,
 }
+
+impl Compat {
+    /// The mode one of [`crate::config::FORWARD_COMPAT`] names.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::Off),
+            "vcon-store" => Some(Self::VconStore),
+            _ => None,
+        }
+    }
+}
+
+/// The kind of store a forwarder delivers to: what it supplies for a setting
+/// that is not given. One store per forwarder process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreKind {
+    /// Nothing supplied: every setting is explicit. The default.
+    Generic,
+    /// vcon.store, the hosted store.
+    VconStore,
+    /// A self-hosted vCon server (conserver), through its external ingress.
+    Conserver,
+}
+
+impl StoreKind {
+    /// The kind one of [`crate::config::FORWARD_KINDS`] names.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Self::Generic, Self::VconStore, Self::Conserver]
+            .into_iter()
+            .find(|k| k.facts().name == name)
+    }
+
+    /// This kind's row of [`STORE_KINDS`].
+    #[must_use]
+    pub fn facts(self) -> &'static KindFacts {
+        match self {
+            Self::Generic => &STORE_KINDS[0],
+            Self::VconStore => &STORE_KINDS[1],
+            Self::Conserver => &STORE_KINDS[2],
+        }
+    }
+}
+
+/// What a store of one kind needs, as measured. An explicit setting
+/// overrides each value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KindFacts {
+    /// The kind's name in `--vcon-forward-kind` and `[vcon_forward] kind`.
+    pub name: &'static str,
+    /// The path and query the kind appends to a URL that names no path.
+    /// `None`: the URL is the endpoint as written.
+    pub ingest_path: Option<&'static str>,
+    /// The header a bare key is sent in, and the text before the key in its
+    /// value. `None`: the credential is a full `Header-Name: value` line.
+    pub auth_header: Option<(&'static str, &'static str)>,
+    /// What the store answers for a uuid it already holds: `Some(status)`
+    /// when it refuses the duplicate with that status (a replace URL then
+    /// applies), `None` when the duplicate replaces the held container or
+    /// nothing was measured.
+    pub duplicate_status: Option<u16>,
+    /// The adaptation of the copy sent.
+    pub compat: Compat,
+    /// The statuses, inclusive, that count as delivered.
+    pub delivered: (u16, u16),
+}
+
+/// One row per store kind, in the order of
+/// [`crate::config::FORWARD_KINDS`]. The one place each kind's facts live.
+///
+/// vcon.store, measured by the maintainer against `https://api.vcon.store`
+/// on 2026-10-07: `POST /v1/vcons` with `Authorization: Bearer <key>`
+/// answered `201` on create, `400` for `extensions` as an array of strings
+/// and for a Dialog Object without `type` and `parties`, and `409` for a uuid
+/// it held. A `PUT` to `/v1/vcons/{uuid}` was not measured, so the kind sets
+/// no replace URL.
+///
+/// conserver, measured against the self-hosted vCon server on thor-02 on
+/// 2026-10-07: `POST /vcon/external-ingress?ingress_list=sipnab` with
+/// `x-conserver-api-token: <key>` answered `204` for a new container, and
+/// `GET /vcon/{uuid}` then returned it with an `amended` member added; `204`
+/// for the same uuid again, and the read-back then showed the second copy;
+/// `422` for a body that is not JSON and for one without `uuid`; `403` with
+/// no key or a wrong one. `ingress_list=sipnab` names the ingress list the
+/// sipnab setup in `docs/vcon-sipnab.md` creates.
+pub const STORE_KINDS: [KindFacts; 3] = [
+    KindFacts {
+        name: "generic",
+        ingest_path: None,
+        auth_header: None,
+        duplicate_status: None,
+        compat: Compat::Off,
+        delivered: (200, 299),
+    },
+    KindFacts {
+        name: "vcon-store",
+        ingest_path: Some("/v1/vcons"),
+        auth_header: Some(("Authorization", "Bearer ")),
+        duplicate_status: Some(409),
+        compat: Compat::VconStore,
+        delivered: (200, 299),
+    },
+    KindFacts {
+        name: "conserver",
+        ingest_path: Some("/vcon/external-ingress?ingress_list=sipnab"),
+        auth_header: Some(("x-conserver-api-token", "")),
+        duplicate_status: None,
+        compat: Compat::Off,
+        delivered: (200, 299),
+    },
+];
 
 /// The copy of a container the forwarder sends in a compat mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,7 +695,7 @@ pub fn container_uuid(container: &[u8]) -> Result<String, String> {
         .and_then(serde_json::Value::as_str)
         .ok_or("the container carries no `uuid` to replace by")?;
     if uuid.is_empty()
-        || uuid.len() > 64
+        || uuid.len() > MAX_UUID_LEN
         || !uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
         return Err("the container's `uuid` is not one a URL path may carry".into());
@@ -536,13 +732,13 @@ pub fn pending(spool: &Path) -> std::io::Result<Vec<String>> {
     Ok(names)
 }
 
-/// How long a container waits after its `attempts`-th failed try: 2 s, then
-/// doubling, never more than 5 minutes.
+/// How long a container waits after its `attempts`-th failed try:
+/// `first_secs`, then doubling, never more than `cap_secs`.
 #[must_use]
-pub fn backoff_delay(attempts: u32) -> Duration {
-    let doublings = attempts.saturating_sub(1).min(63);
-    let secs = BACKOFF_FIRST_SECS.saturating_mul(1u64 << doublings);
-    Duration::from_secs(secs.min(BACKOFF_CAP_SECS))
+pub fn backoff_delay(attempts: u32, first_secs: u64, cap_secs: u64) -> Duration {
+    let doublings = attempts.saturating_sub(1).min(u64::BITS - 1);
+    let secs = first_secs.saturating_mul(1u64 << doublings);
+    Duration::from_secs(secs.min(cap_secs))
 }
 
 /// What an HTTP status means for the container that drew it.
@@ -561,11 +757,13 @@ pub enum Verdict {
     Halt,
 }
 
-/// Classify a status. `can_replace` is whether a replace URL is set.
+/// Classify a status. `can_replace` is whether a replace URL is set;
+/// `delivered` is the inclusive range of statuses that count as delivered
+/// ([`KindFacts::delivered`]). Any other `2xx` is retried.
 #[must_use]
-pub fn classify(status: u16, can_replace: bool) -> Verdict {
+pub fn classify(status: u16, can_replace: bool, delivered: (u16, u16)) -> Verdict {
     match status {
-        200..=299 => Verdict::Delivered,
+        s if (delivered.0..=delivered.1).contains(&s) => Verdict::Delivered,
         401 | 403 => Verdict::Halt,
         409 if can_replace => Verdict::Replace,
         400..=499 => Verdict::Refused,
@@ -592,6 +790,61 @@ pub fn plaintext_warning(endpoint: &Endpoint) -> Option<String> {
     ))
 }
 
+/// How a container's retries are spaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackoffPolicy {
+    /// Seconds before the first retry. See
+    /// [`crate::config::FORWARD_BACKOFF_FIRST`].
+    pub first_secs: u64,
+    /// The longest wait between retries, in seconds. See
+    /// [`crate::config::FORWARD_BACKOFF_CAP`].
+    pub cap_secs: u64,
+}
+
+impl Default for BackoffPolicy {
+    /// The declared defaults.
+    fn default() -> Self {
+        Self {
+            first_secs: crate::config::FORWARD_BACKOFF_FIRST.default,
+            cap_secs: crate::config::FORWARD_BACKOFF_CAP.default,
+        }
+    }
+}
+
+/// How much of a store's answer the forwarder reads and keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadLimits {
+    /// The most bytes of the status line and headers read. See
+    /// [`crate::config::FORWARD_MAX_RESPONSE_HEAD`].
+    pub response_head: usize,
+    /// The most bytes of a refusal's body a failure record keeps. See
+    /// [`crate::config::FORWARD_MAX_ERROR_BODY`].
+    pub error_body: usize,
+}
+
+impl ReadLimits {
+    /// The limits from two byte counts. Both settings accept at most
+    /// `u32::MAX`, which every target's `usize` holds; a larger count reads
+    /// as `usize::MAX`.
+    #[must_use]
+    pub fn from_bytes(response_head: u64, error_body: u64) -> Self {
+        Self {
+            response_head: usize::try_from(response_head).unwrap_or(usize::MAX),
+            error_body: usize::try_from(error_body).unwrap_or(usize::MAX),
+        }
+    }
+}
+
+impl Default for ReadLimits {
+    /// The declared defaults.
+    fn default() -> Self {
+        Self::from_bytes(
+            crate::config::FORWARD_MAX_RESPONSE_HEAD.default,
+            crate::config::FORWARD_MAX_ERROR_BODY.default,
+        )
+    }
+}
+
 /// Everything one forwarder needs.
 #[derive(Debug, Clone)]
 pub struct ForwardSettings {
@@ -613,47 +866,294 @@ pub struct ForwardSettings {
     pub compat: Compat,
     /// The only CA file trusted for HTTPS; the host's bundle when `None`.
     pub ca: Option<PathBuf>,
+    /// The kind of store: which statuses count as delivered.
+    pub kind: StoreKind,
+    /// How retries are spaced.
+    pub backoff: BackoffPolicy,
+    /// How much of an answer is read and kept.
+    pub limits: ReadLimits,
 }
 
-impl ForwardSettings {
-    /// Settings from the command line.
+/// Where the credential comes from, resolved but not yet read.
+#[derive(Clone)]
+pub enum Credential {
+    /// The header itself, from `--vcon-forward-auth` or
+    /// `SIPNAB_VCON_FORWARD_AUTH`.
+    Header(AuthHeader),
+    /// A file that holds it, and the setting that named the file.
+    File {
+        /// The file.
+        path: PathBuf,
+        /// `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, for
+        /// the messages.
+        from: &'static str,
+    },
+}
+
+impl std::fmt::Debug for Credential {
+    /// The header's name, or the file's path. Never the value, and not the
+    /// setting that named the file: a flag and its key that name the same
+    /// file are the same credential.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Header(h) => write!(f, "Header({h:?})"),
+            Self::File { path, .. } => write!(f, "File({path:?})"),
+        }
+    }
+}
+
+/// Every forwarder setting, resolved from the flags and the `[vcon_forward]`
+/// keys, before any file is read.
+#[derive(Debug, Clone)]
+pub struct ForwardPlan {
+    /// The spool.
+    pub spool: PathBuf,
+    /// The kind of store.
+    pub kind: StoreKind,
+    /// Where each container is POSTed.
+    pub url: Endpoint,
+    /// The URL template a `409` is PUT to.
+    pub replace_url: Option<String>,
+    /// Where the credential comes from.
+    pub credential: Credential,
+    /// Where a delivered container goes.
+    pub done_dir: PathBuf,
+    /// Where a refused container goes.
+    pub failed_dir: PathBuf,
+    /// The connect, read and write timeout.
+    pub timeout: Duration,
+    /// The wait between passes.
+    pub interval: Duration,
+    /// The adaptation of the copy sent.
+    pub compat: Compat,
+    /// The only CA file trusted for HTTPS.
+    pub ca: Option<PathBuf>,
+    /// How retries are spaced.
+    pub backoff: BackoffPolicy,
+    /// How much of an answer is read and kept.
+    pub limits: ReadLimits,
+}
+
+/// The value in force of a text setting, and the name of where it came from:
+/// the flag, else the key.
+fn pick_text<'a>(
+    flag: Option<&'a str>,
+    flag_name: &'static str,
+    key: Option<&'a str>,
+    key_name: &'static str,
+) -> Option<(&'a str, &'static str)> {
+    flag.map(|v| (v, flag_name))
+        .or_else(|| key.map(|v| (v, key_name)))
+}
+
+/// A whole-number setting's value in force, checked by its one rule, with
+/// where it came from.
+fn pick_number(
+    number: crate::config::ForwardNumber,
+    flag: Option<u64>,
+    key: Option<u64>,
+) -> Result<(u64, String), String> {
+    let (value, from) = number.pick(flag, key);
+    number.check(value).map_err(|e| format!("{from}: {e}"))?;
+    Ok((value, from))
+}
+
+impl ForwardPlan {
+    /// Resolve every setting: the flag, else the `[vcon_forward]` key, else
+    /// the store kind's value, else the declared default. Reads no file.
     ///
     /// # Errors
     ///
-    /// The URL or the replace URL does not parse, or the auth file is refused.
-    pub fn from_cli(args: &crate::cli::VconForwardArgs) -> Result<Self, String> {
+    /// No URL or no credential from any source; the credential from more
+    /// than one; a URL, replace URL or number its flag's rule refuses; a
+    /// first back-off longer than the cap; an unknown kind or compat name.
+    /// Each message names the flag or key the value came from, and none
+    /// quotes the credential.
+    pub fn resolve(
+        args: &crate::cli::VconForwardArgs,
+        keys: &crate::config::VconForwardConfig,
+    ) -> Result<Self, String> {
+        use crate::config::{
+            FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_INTERVAL, FORWARD_MAX_ERROR_BODY,
+            FORWARD_MAX_RESPONSE_HEAD, FORWARD_TIMEOUT,
+        };
         let spool = args
             .vcon_forward
             .clone()
             .ok_or("--vcon-forward names no spool")?;
-        let url = args
-            .vcon_forward_url
-            .as_deref()
-            .ok_or("--vcon-forward needs --vcon-forward-url")?;
-        let auth = args
-            .vcon_forward_auth_file
-            .as_deref()
-            .ok_or("--vcon-forward needs --vcon-forward-auth-file")?;
+        let kind = match pick_text(
+            args.vcon_forward_kind.as_deref(),
+            "--vcon-forward-kind",
+            keys.kind.as_deref(),
+            "[vcon_forward] kind",
+        ) {
+            Some((name, from)) => StoreKind::from_name(name)
+                .ok_or_else(|| format!("{from}: {name:?} is not a store kind"))?,
+            None => StoreKind::Generic,
+        };
+        let facts = kind.facts();
+        let (url_text, url_from) = pick_text(
+            args.vcon_forward_url.as_deref(),
+            "--vcon-forward-url",
+            keys.url.as_deref(),
+            "[vcon_forward] url",
+        )
+        .ok_or(
+            "--vcon-forward needs the store's URL: give --vcon-forward-url, or [vcon_forward] url \
+             in the config file",
+        )?;
+        let mut url = Endpoint::parse(url_text).map_err(|e| format!("{url_from} {e}"))?;
+        if let Some(path) = facts.ingest_path
+            && url.target == "/"
+        {
+            path.clone_into(&mut url.target);
+        }
+        let replace = pick_text(
+            args.vcon_forward_replace_url.as_deref(),
+            "--vcon-forward-replace-url",
+            keys.replace_url.as_deref(),
+            "[vcon_forward] replace_url",
+        );
+        if let Some((template, from)) = replace {
+            replace_endpoint(template, "0").map_err(|e| format!("{from} {e}"))?;
+        }
+        let credential = credential(args, keys, kind)?;
+        let compat = match pick_text(
+            args.vcon_forward_compat.as_deref(),
+            "--vcon-forward-compat",
+            keys.compat.as_deref(),
+            "[vcon_forward] compat",
+        ) {
+            Some((name, from)) => Compat::from_name(name)
+                .ok_or_else(|| format!("{from}: {name:?} is not a compat mode"))?,
+            None => facts.compat,
+        };
+        let interval = pick_number(FORWARD_INTERVAL, args.vcon_forward_interval, keys.interval)?;
+        let timeout = pick_number(FORWARD_TIMEOUT, args.vcon_forward_timeout, keys.timeout)?;
+        let first = pick_number(
+            FORWARD_BACKOFF_FIRST,
+            args.vcon_forward_backoff_first,
+            keys.backoff_first,
+        )?;
+        let cap = pick_number(
+            FORWARD_BACKOFF_CAP,
+            args.vcon_forward_backoff_cap,
+            keys.backoff_cap,
+        )?;
+        if let Some(problem) =
+            crate::config::forward_backoff_problem((first.0, &first.1), (cap.0, &cap.1))
+        {
+            return Err(problem);
+        }
+        let head = pick_number(
+            FORWARD_MAX_RESPONSE_HEAD,
+            args.vcon_forward_max_response_head,
+            keys.max_response_head,
+        )?;
+        let body = pick_number(
+            FORWARD_MAX_ERROR_BODY,
+            args.vcon_forward_max_error_body,
+            keys.max_error_body,
+        )?;
         Ok(Self {
             done_dir: args
                 .vcon_forward_done
                 .clone()
+                .or_else(|| keys.done.clone())
                 .unwrap_or_else(|| spool.join("delivered")),
             failed_dir: args
                 .vcon_forward_failed
                 .clone()
+                .or_else(|| keys.failed.clone())
                 .unwrap_or_else(|| spool.join("failed")),
-            url: Endpoint::parse(url).map_err(|e| format!("--vcon-forward-url {e}"))?,
-            replace_url: args.vcon_forward_replace_url.clone(),
-            auth: AuthHeader::read_file(auth)?,
-            timeout: Duration::from_secs(args.vcon_forward_timeout),
-            compat: match args.vcon_forward_compat.as_deref() {
-                Some("vcon-store") => Compat::VconStore,
-                _ => Compat::Off,
-            },
-            ca: args.vcon_forward_ca.clone(),
+            ca: args.vcon_forward_ca.clone().or_else(|| keys.ca.clone()),
+            replace_url: replace.map(|(t, _)| t.to_string()),
             spool,
+            kind,
+            url,
+            credential,
+            timeout: Duration::from_secs(timeout.0),
+            interval: Duration::from_secs(interval.0),
+            compat,
+            backoff: BackoffPolicy {
+                first_secs: first.0,
+                cap_secs: cap.0,
+            },
+            limits: ReadLimits::from_bytes(head.0, body.0),
         })
+    }
+
+    /// The settings to run with, the credential read, and the wait between
+    /// passes.
+    ///
+    /// # Errors
+    ///
+    /// The credential's file is refused or holds no credential.
+    pub fn into_settings(self) -> Result<(ForwardSettings, Duration), String> {
+        let auth = match self.credential {
+            Credential::Header(h) => h,
+            Credential::File { path, from } => AuthHeader::read_file_for(&path, from, self.kind)?,
+        };
+        Ok((
+            ForwardSettings {
+                spool: self.spool,
+                url: self.url,
+                replace_url: self.replace_url,
+                auth,
+                done_dir: self.done_dir,
+                failed_dir: self.failed_dir,
+                timeout: self.timeout,
+                compat: self.compat,
+                ca: self.ca,
+                kind: self.kind,
+                backoff: self.backoff,
+                limits: self.limits,
+            },
+            self.interval,
+        ))
+    }
+}
+
+/// Where the credential comes from: exactly one of `--vcon-forward-auth`
+/// (or its environment variable), `--vcon-forward-auth-file`, and
+/// `[vcon_forward] auth_file`, except that the file flag replaces the key.
+///
+/// # Errors
+///
+/// None given, the inline one beside a file, or an inline one that is not a
+/// credential for `kind`. No message quotes the value.
+fn credential(
+    args: &crate::cli::VconForwardArgs,
+    keys: &crate::config::VconForwardConfig,
+    kind: StoreKind,
+) -> Result<Credential, String> {
+    match (
+        args.vcon_forward_auth.as_deref(),
+        args.vcon_forward_auth_file.as_ref(),
+        keys.auth_file.as_ref(),
+    ) {
+        (Some(_), Some(_), _) => Err(format!(
+            "{AUTH_INLINE} and {AUTH_FLAG} both name the credential; give one"
+        )),
+        (Some(_), None, Some(_)) => Err(format!(
+            "{AUTH_INLINE} and {AUTH_KEY} both name the credential; give one, or name another \
+             file with {AUTH_FLAG}, which replaces the key"
+        )),
+        (Some(text), None, None) => AuthHeader::from_credential(text, kind)
+            .map(Credential::Header)
+            .map_err(|e| format!("{AUTH_INLINE} {e}")),
+        (None, Some(path), _) => Ok(Credential::File {
+            path: path.clone(),
+            from: AUTH_FLAG,
+        }),
+        (None, None, Some(path)) => Ok(Credential::File {
+            path: path.clone(),
+            from: AUTH_KEY,
+        }),
+        (None, None, None) => Err(format!(
+            "--vcon-forward needs a credential: give {AUTH_FLAG}, {AUTH_KEY} in the config file, \
+             or the SIPNAB_VCON_FORWARD_AUTH environment variable"
+        )),
     }
 }
 
@@ -773,8 +1273,14 @@ impl Forwarder {
             ));
         }
         for (flag, dir) in [
-            ("--vcon-forward-done", &settings.done_dir),
-            ("--vcon-forward-failed", &settings.failed_dir),
+            (
+                "--vcon-forward-done ([vcon_forward] done)",
+                &settings.done_dir,
+            ),
+            (
+                "--vcon-forward-failed ([vcon_forward] failed)",
+                &settings.failed_dir,
+            ),
         ] {
             std::fs::DirBuilder::new()
                 .recursive(true)
@@ -795,7 +1301,9 @@ impl Forwarder {
         }
         let mut needs_tls = settings.url.tls;
         if let Some(template) = &settings.replace_url {
-            needs_tls |= replace_endpoint(template, "0")?.tls;
+            needs_tls |= replace_endpoint(template, "0")
+                .map_err(|e| format!("the replace URL {e}"))?
+                .tls;
         }
         let tls = if needs_tls {
             Some(client_config(settings.ca.as_deref())?)
@@ -870,7 +1378,8 @@ impl Forwarder {
             }
             Outcome::Retry => {
                 let attempts = self.waiting.get(&name).map_or(0, |b| b.attempts) + 1;
-                let next = now + backoff_delay(attempts);
+                let policy = self.settings.backoff;
+                let next = now + backoff_delay(attempts, policy.first_secs, policy.cap_secs);
                 self.waiting
                     .insert(name.clone(), Backoff { attempts, next });
                 report.waiting.push(name);
@@ -903,7 +1412,12 @@ impl Forwarder {
                 return Outcome::Retry;
             }
         };
-        match classify(answer.status, self.settings.replace_url.is_some()) {
+        let delivered = self.settings.kind.facts().delivered;
+        match classify(
+            answer.status,
+            self.settings.replace_url.is_some(),
+            delivered,
+        ) {
             Verdict::Replace => self.replace(name, &before, &body),
             verdict => self.act_on(name, &before, verdict, &answer, "POST", url),
         }
@@ -930,7 +1444,9 @@ impl Forwarder {
     /// URL, and act on that answer.
     fn replace(&self, name: &str, before: &Identity, body: &[u8]) -> Outcome {
         let target = container_uuid(body).and_then(|uuid| match &self.settings.replace_url {
-            Some(template) => replace_endpoint(template, &uuid),
+            Some(template) => {
+                replace_endpoint(template, &uuid).map_err(|e| format!("the replace URL {e}"))
+            }
             None => Err("no replace URL".to_string()),
         });
         let endpoint = match target {
@@ -939,7 +1455,7 @@ impl Forwarder {
         };
         match self.send(&endpoint, "PUT", body) {
             Ok(answer) => {
-                let verdict = classify(answer.status, false);
+                let verdict = classify(answer.status, false, self.settings.kind.facts().delivered);
                 self.act_on(name, before, verdict, &answer, "PUT", &endpoint)
             }
             Err(e) => {
@@ -1022,7 +1538,7 @@ impl Forwarder {
         format!(
             "{method} {url} answered {} for {name}: \"{start}{more}\". A {} refuses the \
              credentials or the client for every container alike, so nothing more is sent and \
-             every container stays in the spool. Check the auth file, and that nothing replaces \
+             every container stays in the spool. Check the credential, and that nothing replaces \
              the User-Agent: a Cloudflare front refuses some clients with a 403 whose body \
              names error code 1010",
             answer.status, answer.status
@@ -1031,8 +1547,8 @@ impl Forwarder {
 
     /// The `<name>.error.json` text: the status and the store's answer, or
     /// the forwarder's own reason. The auth value is scrubbed from the answer
-    /// before it is cut to [`MAX_ERROR_BODY`], so a cut cannot leave part of
-    /// it behind.
+    /// before it is cut to [`ReadLimits::error_body`], so a cut cannot leave
+    /// part of it behind.
     fn failure_record(&self, name: &str, why: &Refusal<'_>) -> String {
         let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let record = match why {
@@ -1041,7 +1557,7 @@ impl Forwarder {
                     .settings
                     .auth
                     .scrub(&String::from_utf8_lossy(&answer.body));
-                let (body, cut) = cut_to(&text, MAX_ERROR_BODY);
+                let (body, cut) = cut_to(&text, self.settings.limits.error_body);
                 serde_json::json!({
                     "file": name,
                     "method": method,
@@ -1111,9 +1627,15 @@ impl Forwarder {
         head.push_str(&self.settings.auth.value);
         head.push_str("\r\n\r\n");
         let sock = connect(endpoint, self.settings.timeout)?;
-        let keep = MAX_ERROR_BODY + MAX_AUTH_FILE;
+        // Read past the kept part by the most a credential can be, so the
+        // credential is removed from the answer before the cut.
+        let limits = self.settings.limits;
+        let read = ReadLimits {
+            error_body: limits.error_body.saturating_add(MAX_AUTH_FILE),
+            ..limits
+        };
         if !endpoint.tls {
-            return talk(sock, head.as_bytes(), body, keep);
+            return talk(sock, head.as_bytes(), body, read);
         }
         let config = self.tls.clone().ok_or("no TLS configuration")?;
         let name = rustls::pki_types::ServerName::try_from(endpoint.host.clone())
@@ -1123,7 +1645,7 @@ impl Forwarder {
             rustls::StreamOwned::new(conn, sock),
             head.as_bytes(),
             body,
-            keep,
+            read,
         )
     }
 }
@@ -1132,15 +1654,13 @@ impl Forwarder {
 ///
 /// # Errors
 ///
-/// The template has no `{uuid}`, or does not parse.
+/// The template has no `{uuid}`, or does not parse. The caller names the
+/// setting the template came from.
 fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
     if !template.contains("{uuid}") {
-        return Err(format!(
-            "--vcon-forward-replace-url '{template}' has no {{uuid}} to fill in"
-        ));
+        return Err(format!("'{template}' has no {{uuid}} to fill in"));
     }
     Endpoint::parse(&template.replace("{uuid}", uuid))
-        .map_err(|e| format!("--vcon-forward-replace-url {e}"))
 }
 
 /// The rustls client configuration: trusting only `ca` when named, else the
@@ -1213,13 +1733,14 @@ fn connect(endpoint: &Endpoint, timeout: Duration) -> Result<std::net::TcpStream
     Err(last)
 }
 
-/// Write the request and read the answer. The body of a `2xx` is not read;
-/// any other answer keeps at most `keep` bytes of its body.
+/// Write the request and read the answer: at most `limits.response_head`
+/// bytes of status line and headers, and, for an answer other than a `2xx`
+/// (whose body is not read), at most `limits.error_body` bytes of its body.
 fn talk(
     stream: impl Read + Write,
     head: &[u8],
     body: &[u8],
-    keep: usize,
+    limits: ReadLimits,
 ) -> Result<Answer, String> {
     let mut reader = std::io::BufReader::new(stream);
     let out = reader.get_mut();
@@ -1228,7 +1749,7 @@ fn talk(
         .and_then(|()| out.flush())
         .map_err(|e| format!("sending: {e}"))?;
     loop {
-        let headers = read_head(&mut reader)?;
+        let headers = read_head(&mut reader, limits.response_head)?;
         let status = status_of(&headers)?;
         if (100..200).contains(&status) {
             continue;
@@ -1240,7 +1761,7 @@ fn talk(
                 truncated: false,
             });
         }
-        let (body, truncated) = read_body(&mut reader, &headers, keep);
+        let (body, truncated) = read_body(&mut reader, &headers, limits.error_body);
         return Ok(Answer {
             status,
             body,
@@ -1249,8 +1770,8 @@ fn talk(
     }
 }
 
-/// The status line and headers, as lines.
-fn read_head(reader: &mut impl BufRead) -> Result<Vec<String>, String> {
+/// The status line and headers, as lines, refused past `max` bytes.
+fn read_head(reader: &mut impl BufRead, max: usize) -> Result<Vec<String>, String> {
     let mut lines = Vec::new();
     let mut total = 0usize;
     loop {
@@ -1262,8 +1783,11 @@ fn read_head(reader: &mut impl BufRead) -> Result<Vec<String>, String> {
             return Err("the store closed the connection without an answer".into());
         }
         total += n;
-        if total > MAX_RESPONSE_HEAD {
-            return Err("the answer's headers are larger than 64 KiB".into());
+        if total > max {
+            return Err(format!(
+                "the answer's status line and headers are larger than {max} bytes \
+                 (--vcon-forward-max-response-head)"
+            ));
         }
         let text = String::from_utf8_lossy(&line).trim_end().to_string();
         if text.is_empty() {
@@ -1441,13 +1965,12 @@ fn pass_outcome(report: &PassReport, once: bool) -> Option<i32> {
 /// Sleep for `interval` in short steps. Returns `false` as soon as `stop`
 /// says so.
 fn sleep_unless_stopped(interval: Duration, stop: &dyn Fn() -> bool) -> bool {
-    let step = Duration::from_millis(100);
     let until = Instant::now() + interval;
     while Instant::now() < until {
         if stop() {
             return false;
         }
-        std::thread::sleep(step.min(until.saturating_duration_since(Instant::now())));
+        std::thread::sleep(STOP_POLL_STEP.min(until.saturating_duration_since(Instant::now())));
     }
     !stop()
 }
@@ -1586,34 +2109,478 @@ mod tests {
     /// 4xx refuses; 5xx and anything else retries.
     #[test]
     fn statuses_classify_by_class() {
+        const ALL_2XX: (u16, u16) = (200, 299);
         for s in [200, 201, 202, 204, 299] {
-            assert_eq!(classify(s, false), Verdict::Delivered, "{s}");
+            assert_eq!(classify(s, false, ALL_2XX), Verdict::Delivered, "{s}");
         }
-        assert_eq!(classify(409, true), Verdict::Replace);
-        assert_eq!(classify(409, false), Verdict::Refused);
+        assert_eq!(classify(409, true, ALL_2XX), Verdict::Replace);
+        assert_eq!(classify(409, false, ALL_2XX), Verdict::Refused);
         for s in [400, 404, 413, 422, 499] {
-            assert_eq!(classify(s, true), Verdict::Refused, "{s}");
+            assert_eq!(classify(s, true, ALL_2XX), Verdict::Refused, "{s}");
         }
         for s in [401, 403] {
-            assert_eq!(classify(s, true), Verdict::Halt, "{s}");
-            assert_eq!(classify(s, false), Verdict::Halt, "{s}");
+            assert_eq!(classify(s, true, ALL_2XX), Verdict::Halt, "{s}");
+            assert_eq!(classify(s, false, ALL_2XX), Verdict::Halt, "{s}");
         }
         for s in [500, 502, 503, 504, 599, 100, 301, 304] {
-            assert_eq!(classify(s, false), Verdict::Retry, "{s}");
+            assert_eq!(classify(s, false, ALL_2XX), Verdict::Retry, "{s}");
         }
     }
 
-    /// The delay doubles from 2 s and stops at 5 minutes, and a huge attempt
-    /// count does not overflow.
+    /// With the defaults the delay doubles from 2 s and stops at 5 minutes,
+    /// and a huge attempt count does not overflow.
     #[test]
     fn backoff_doubles_from_two_seconds_and_caps_at_five_minutes() {
-        assert_eq!(backoff_delay(1), Duration::from_secs(2));
-        assert_eq!(backoff_delay(2), Duration::from_secs(4));
-        assert_eq!(backoff_delay(3), Duration::from_secs(8));
-        assert_eq!(backoff_delay(8), Duration::from_secs(256));
-        assert_eq!(backoff_delay(9), Duration::from_secs(300));
-        assert_eq!(backoff_delay(u32::MAX), Duration::from_secs(300));
-        assert_eq!(backoff_delay(0), Duration::from_secs(2));
+        let delay = |n| {
+            backoff_delay(
+                n,
+                crate::config::FORWARD_BACKOFF_FIRST.default,
+                crate::config::FORWARD_BACKOFF_CAP.default,
+            )
+        };
+        assert_eq!(delay(1), Duration::from_secs(2));
+        assert_eq!(delay(2), Duration::from_secs(4));
+        assert_eq!(delay(3), Duration::from_secs(8));
+        assert_eq!(delay(8), Duration::from_secs(256));
+        assert_eq!(delay(9), Duration::from_secs(300));
+        assert_eq!(delay(u32::MAX), Duration::from_secs(300));
+        assert_eq!(delay(0), Duration::from_secs(2));
+    }
+
+    /// The delay starts at the configured first delay, doubles, and stops at
+    /// the configured cap, whatever the two are.
+    #[test]
+    fn backoff_follows_the_configured_first_delay_and_cap() {
+        assert_eq!(backoff_delay(1, 10, 25), Duration::from_secs(10));
+        assert_eq!(backoff_delay(2, 10, 25), Duration::from_secs(20));
+        assert_eq!(backoff_delay(3, 10, 25), Duration::from_secs(25));
+        assert_eq!(backoff_delay(u32::MAX, 10, 25), Duration::from_secs(25));
+        assert_eq!(backoff_delay(1, 7, 7), Duration::from_secs(7));
+        assert_eq!(backoff_delay(5, 1, 1000), Duration::from_secs(16));
+        let most = u64::from(u32::MAX);
+        assert_eq!(backoff_delay(40, most, most), Duration::from_secs(most));
+    }
+
+    /// The forwarder flags after `--vcon-forward /srv/spool`, parsed.
+    fn flags(extra: &[&str]) -> Result<crate::cli::VconForwardArgs, Box<dyn std::error::Error>> {
+        use clap::Parser as _;
+        let mut argv = vec!["sipnab", "--vcon-forward", "/srv/spool"];
+        argv.extend_from_slice(extra);
+        Ok(crate::cli::Cli::try_parse_from(argv)?.vcon_forward_args)
+    }
+
+    /// A `[vcon_forward]` section holding `body`.
+    fn keys(body: &str) -> Result<crate::config::VconForwardConfig, Box<dyn std::error::Error>> {
+        let config: crate::config::Config = toml::from_str(&format!("[vcon_forward]\n{body}\n"))?;
+        Ok(config.vcon_forward)
+    }
+
+    /// Every `[vcon_forward]` key, each with a value no default has.
+    const ALL_KEYS: &str = "kind = \"generic\"\n\
+        url = \"https://keys.example.com/v1/vcons\"\n\
+        replace_url = \"https://keys.example.com/v1/vcons/{uuid}\"\n\
+        auth_file = \"/etc/keys/auth\"\nca = \"/etc/keys/ca.pem\"\n\
+        done = \"/srv/keys-done\"\nfailed = \"/srv/keys-failed\"\n\
+        interval = 11\ntimeout = 12\ncompat = \"vcon-store\"\n\
+        backoff_first = 13\nbackoff_cap = 140\n\
+        max_response_head = 15000\nmax_error_body = 1600";
+
+    /// Each `[vcon_forward]` key supplies its setting when its flag is not
+    /// given.
+    #[test]
+    fn every_key_supplies_its_setting() -> TestResult {
+        let plan = ForwardPlan::resolve(&flags(&[])?, &keys(ALL_KEYS)?)?;
+        assert_eq!(plan.kind, StoreKind::Generic);
+        assert_eq!(plan.url.to_string(), "https://keys.example.com/v1/vcons");
+        assert_eq!(
+            plan.replace_url.as_deref(),
+            Some("https://keys.example.com/v1/vcons/{uuid}")
+        );
+        match &plan.credential {
+            Credential::File { path, .. } => assert_eq!(path, Path::new("/etc/keys/auth")),
+            Credential::Header(h) => return Err(format!("inline credential {h:?}").into()),
+        }
+        assert_eq!(plan.ca.as_deref(), Some(Path::new("/etc/keys/ca.pem")));
+        assert_eq!(plan.done_dir, Path::new("/srv/keys-done"));
+        assert_eq!(plan.failed_dir, Path::new("/srv/keys-failed"));
+        assert_eq!(plan.interval, Duration::from_secs(11));
+        assert_eq!(plan.timeout, Duration::from_secs(12));
+        assert_eq!(plan.compat, Compat::VconStore);
+        assert_eq!(
+            plan.backoff,
+            BackoffPolicy {
+                first_secs: 13,
+                cap_secs: 140
+            }
+        );
+        assert_eq!(
+            plan.limits,
+            ReadLimits {
+                response_head: 15000,
+                error_body: 1600
+            }
+        );
+        Ok(())
+    }
+
+    /// Each flag overrides its `[vcon_forward]` key.
+    #[test]
+    fn every_flag_overrides_its_key() -> TestResult {
+        let args = flags(&[
+            "--vcon-forward-kind=conserver",
+            "--vcon-forward-url=https://flags.example.com/v2/in",
+            "--vcon-forward-replace-url=https://flags.example.com/v2/in/{uuid}",
+            "--vcon-forward-auth-file=/etc/flags/auth",
+            "--vcon-forward-ca=/etc/flags/ca.pem",
+            "--vcon-forward-done=/srv/flags-done",
+            "--vcon-forward-failed=/srv/flags-failed",
+            "--vcon-forward-interval=21",
+            "--vcon-forward-timeout=22",
+            "--vcon-forward-compat=none",
+            "--vcon-forward-backoff-first=23",
+            "--vcon-forward-backoff-cap=240",
+            "--vcon-forward-max-response-head=25000",
+            "--vcon-forward-max-error-body=2600",
+        ])?;
+        let plan = ForwardPlan::resolve(&args, &keys(ALL_KEYS)?)?;
+        assert_eq!(plan.kind, StoreKind::Conserver);
+        assert_eq!(plan.url.to_string(), "https://flags.example.com/v2/in");
+        assert_eq!(
+            plan.replace_url.as_deref(),
+            Some("https://flags.example.com/v2/in/{uuid}")
+        );
+        match &plan.credential {
+            Credential::File { path, .. } => assert_eq!(path, Path::new("/etc/flags/auth")),
+            Credential::Header(h) => return Err(format!("inline credential {h:?}").into()),
+        }
+        assert_eq!(plan.ca.as_deref(), Some(Path::new("/etc/flags/ca.pem")));
+        assert_eq!(plan.done_dir, Path::new("/srv/flags-done"));
+        assert_eq!(plan.failed_dir, Path::new("/srv/flags-failed"));
+        assert_eq!(plan.interval, Duration::from_secs(21));
+        assert_eq!(plan.timeout, Duration::from_secs(22));
+        assert_eq!(plan.compat, Compat::Off);
+        assert_eq!(
+            plan.backoff,
+            BackoffPolicy {
+                first_secs: 23,
+                cap_secs: 240
+            }
+        );
+        assert_eq!(
+            plan.limits,
+            ReadLimits {
+                response_head: 25000,
+                error_body: 2600
+            }
+        );
+        Ok(())
+    }
+
+    /// With neither a flag nor a key, each setting takes its declared
+    /// default.
+    #[test]
+    fn without_a_flag_or_key_each_setting_has_its_default() -> TestResult {
+        use crate::config::{
+            FORWARD_BACKOFF_CAP, FORWARD_BACKOFF_FIRST, FORWARD_INTERVAL, FORWARD_MAX_ERROR_BODY,
+            FORWARD_MAX_RESPONSE_HEAD, FORWARD_TIMEOUT,
+        };
+        let args = flags(&[
+            "--vcon-forward-url=http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file=/etc/a",
+        ])?;
+        let plan = ForwardPlan::resolve(&args, &keys("")?)?;
+        assert_eq!(plan.kind, StoreKind::Generic);
+        assert_eq!(plan.replace_url, None);
+        assert_eq!(plan.ca, None);
+        assert_eq!(plan.done_dir, Path::new("/srv/spool/delivered"));
+        assert_eq!(plan.failed_dir, Path::new("/srv/spool/failed"));
+        assert_eq!(plan.interval, Duration::from_secs(FORWARD_INTERVAL.default));
+        assert_eq!(plan.timeout, Duration::from_secs(FORWARD_TIMEOUT.default));
+        assert_eq!(plan.compat, Compat::Off);
+        assert_eq!(
+            (plan.backoff.first_secs, plan.backoff.cap_secs),
+            (FORWARD_BACKOFF_FIRST.default, FORWARD_BACKOFF_CAP.default)
+        );
+        assert_eq!(
+            (
+                plan.limits.response_head as u64,
+                plan.limits.error_body as u64
+            ),
+            (
+                FORWARD_MAX_RESPONSE_HEAD.default,
+                FORWARD_MAX_ERROR_BODY.default
+            )
+        );
+        Ok(())
+    }
+
+    /// The credential has exactly one source. `--vcon-forward-auth` beside
+    /// `[vcon_forward] auth_file` is refused naming both; no source at all is
+    /// refused naming every one; neither refusal quotes the value.
+    #[test]
+    fn the_credential_has_one_source() -> TestResult {
+        let inline = "--vcon-forward-auth=Authorization: Bearer s3cr3t-value";
+        let url = "--vcon-forward-url=http://127.0.0.1:9/x";
+        let both = ForwardPlan::resolve(&flags(&[url, inline])?, &keys("auth_file = \"/etc/a\"")?);
+        let e = both.err().ok_or("inline beside the key was accepted")?;
+        assert!(
+            e.contains("--vcon-forward-auth") && e.contains("[vcon_forward] auth_file"),
+            "{e}"
+        );
+        assert!(!e.contains("s3cr3t"), "{e}");
+        let none = ForwardPlan::resolve(&flags(&[url])?, &keys("")?);
+        let e = none.err().ok_or("no credential was accepted")?;
+        for name in [
+            "--vcon-forward-auth-file",
+            "[vcon_forward] auth_file",
+            "SIPNAB_VCON_FORWARD_AUTH",
+        ] {
+            assert!(e.contains(name), "{name} not in {e}");
+        }
+        let plan = ForwardPlan::resolve(&flags(&[url, inline])?, &keys("")?)?;
+        match &plan.credential {
+            Credential::Header(h) => assert_eq!(h.name(), "Authorization"),
+            Credential::File { .. } => return Err("the inline credential was not used".into()),
+        }
+        assert!(!format!("{plan:?}").contains("s3cr3t"), "{plan:?}");
+        Ok(())
+    }
+
+    /// A URL is checked by one rule, and the refusal names where it came
+    /// from: the flag or the key.
+    #[test]
+    fn a_url_refusal_names_its_source() -> TestResult {
+        let auth = "--vcon-forward-auth-file=/etc/a";
+        let e = ForwardPlan::resolve(&flags(&[auth, "--vcon-forward-url=x"])?, &keys("")?)
+            .err()
+            .ok_or("x accepted")?;
+        assert!(e.contains("--vcon-forward-url"), "{e}");
+        let e = ForwardPlan::resolve(&flags(&[auth])?, &keys("url = \"x\"")?)
+            .err()
+            .ok_or("x accepted")?;
+        assert!(e.contains("[vcon_forward] url"), "{e}");
+        let e = ForwardPlan::resolve(&flags(&[auth])?, &keys("")?)
+            .err()
+            .ok_or("no URL accepted")?;
+        assert!(
+            e.contains("--vcon-forward-url") && e.contains("[vcon_forward] url"),
+            "{e}"
+        );
+        Ok(())
+    }
+
+    /// A back-off pair whose first delay is longer than its cap is refused,
+    /// however the two are given, naming both sources.
+    #[test]
+    fn a_first_delay_longer_than_the_cap_is_refused() -> TestResult {
+        let base = [
+            "--vcon-forward-url=http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file=/etc/a",
+        ];
+        let mut args = base.to_vec();
+        args.push("--vcon-forward-backoff-cap=5");
+        let e = ForwardPlan::resolve(&flags(&args)?, &keys("backoff_first = 10")?)
+            .err()
+            .ok_or("10 > 5 accepted")?;
+        assert!(
+            e.contains("--vcon-forward-backoff-cap") && e.contains("[vcon_forward] backoff_first"),
+            "{e}"
+        );
+        let mut args = base.to_vec();
+        args.push("--vcon-forward-backoff-first=301");
+        let e = ForwardPlan::resolve(&flags(&args)?, &keys("")?)
+            .err()
+            .ok_or("301 > the default 300 accepted")?;
+        assert!(
+            e.contains("--vcon-forward-backoff-first") && e.contains("the default"),
+            "{e}"
+        );
+        let mut args = base.to_vec();
+        args.push("--vcon-forward-backoff-first=300");
+        ForwardPlan::resolve(&flags(&args)?, &keys("")?)?;
+        Ok(())
+    }
+
+    // ── Store kinds ─────────────────────────────────────────────────────
+
+    /// Every kind and compat name the flag and key accept is one the
+    /// forwarder knows, and the kind table holds one row per kind name.
+    #[test]
+    fn every_kind_and_compat_name_maps() {
+        for name in crate::config::FORWARD_KINDS {
+            let kind = StoreKind::from_name(name);
+            assert!(kind.is_some(), "{name}");
+            assert_eq!(kind.map(|k| k.facts().name), Some(*name));
+        }
+        let names: Vec<&str> = STORE_KINDS.iter().map(|f| f.name).collect();
+        assert_eq!(names, crate::config::FORWARD_KINDS);
+        for name in crate::config::FORWARD_COMPAT {
+            assert!(Compat::from_name(name).is_some(), "{name}");
+        }
+        assert_eq!(StoreKind::from_name("other"), None);
+        assert_eq!(Compat::from_name("other"), None);
+    }
+
+    /// The vcon-store kind, given the store's base URL and the bare key,
+    /// posts to `/v1/vcons` with `Authorization: Bearer <key>` and adapts the
+    /// payload as `--vcon-forward-compat vcon-store` does.
+    #[test]
+    fn the_vcon_store_kind_supplies_its_path_header_and_adaptation() -> TestResult {
+        let plan = ForwardPlan::resolve(
+            &flags(&[
+                "--vcon-forward-kind=vcon-store",
+                "--vcon-forward-url=https://api.vcon.store",
+                "--vcon-forward-auth=vcs_live_0123456789",
+            ])?,
+            &keys("")?,
+        )?;
+        assert_eq!(plan.url.to_string(), "https://api.vcon.store/v1/vcons");
+        assert_eq!(plan.compat, Compat::VconStore);
+        let generic = ForwardPlan::resolve(
+            &flags(&[
+                "--vcon-forward-url=https://api.vcon.store/v1/vcons",
+                "--vcon-forward-auth=Authorization: Bearer vcs_live_0123456789",
+                "--vcon-forward-compat=vcon-store",
+            ])?,
+            &keys("")?,
+        )?;
+        assert_eq!(
+            plan.compat, generic.compat,
+            "the compat flag means the kind's adaptation"
+        );
+        assert_eq!(plan.url, generic.url);
+        let (Credential::Header(by_kind), Credential::Header(by_line)) =
+            (&plan.credential, &generic.credential)
+        else {
+            return Err("inline credentials expected".into());
+        };
+        assert_eq!(by_kind.name(), "Authorization");
+        assert_eq!(by_kind.value, "Bearer vcs_live_0123456789");
+        assert_eq!(by_kind.value, by_line.value);
+        Ok(())
+    }
+
+    /// The conserver kind, given the server's base URL and the bare key,
+    /// posts to the `sipnab` external ingress list with
+    /// `x-conserver-api-token: <key>` and leaves the payload alone.
+    #[test]
+    fn the_conserver_kind_supplies_its_path_and_header() -> TestResult {
+        let plan = ForwardPlan::resolve(
+            &flags(&["--vcon-forward-auth=k3y-0123456789"])?,
+            &keys("kind = \"conserver\"\nurl = \"http://127.0.0.1:8000\"")?,
+        )?;
+        assert_eq!(
+            plan.url.to_string(),
+            "http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab"
+        );
+        assert_eq!(plan.compat, Compat::Off);
+        let Credential::Header(h) = &plan.credential else {
+            return Err("inline credential expected".into());
+        };
+        assert_eq!(
+            (h.name(), h.value.as_str()),
+            ("x-conserver-api-token", "k3y-0123456789")
+        );
+        Ok(())
+    }
+
+    /// Every value a kind supplies gives way to an explicit one: a URL with a
+    /// path is the endpoint as written, a full header line is sent as
+    /// written, and the compat flag or key replaces the kind's adaptation.
+    #[test]
+    fn an_explicit_setting_overrides_the_kind_default() -> TestResult {
+        let plan = ForwardPlan::resolve(
+            &flags(&[
+                "--vcon-forward-kind=vcon-store",
+                "--vcon-forward-url=https://proxy.example.com/other/path",
+                "--vcon-forward-auth=X-Api-Key: k3y-0123456789",
+                "--vcon-forward-compat=none",
+                "--vcon-forward-replace-url=https://proxy.example.com/other/path/{uuid}",
+            ])?,
+            &keys("")?,
+        )?;
+        assert_eq!(plan.url.to_string(), "https://proxy.example.com/other/path");
+        assert_eq!(plan.compat, Compat::Off);
+        assert_eq!(
+            plan.replace_url.as_deref(),
+            Some("https://proxy.example.com/other/path/{uuid}")
+        );
+        let Credential::Header(h) = &plan.credential else {
+            return Err("inline credential expected".into());
+        };
+        assert_eq!(
+            (h.name(), h.value.as_str()),
+            ("X-Api-Key", "k3y-0123456789")
+        );
+        let keyed = ForwardPlan::resolve(
+            &flags(&["--vcon-forward-kind=vcon-store", "--vcon-forward-auth=k"])?,
+            &keys("url = \"https://api.vcon.store\"\ncompat = \"none\"")?,
+        )?;
+        assert_eq!(
+            keyed.compat,
+            Compat::Off,
+            "the compat key replaces the kind's"
+        );
+        Ok(())
+    }
+
+    /// The generic kind keeps today's rule: the credential is a full
+    /// `Header-Name: value` line, and a bare key is refused without being
+    /// quoted.
+    #[test]
+    fn the_generic_kind_needs_a_full_header_line() -> TestResult {
+        let e = ForwardPlan::resolve(
+            &flags(&[
+                "--vcon-forward-url=http://127.0.0.1:9/x",
+                "--vcon-forward-auth=s3cr3t-bare-key",
+            ])?,
+            &keys("")?,
+        )
+        .err()
+        .ok_or("a bare key was accepted by the generic kind")?;
+        assert!(e.contains("--vcon-forward-auth"), "{e}");
+        assert!(!e.contains("s3cr3t"), "{e}");
+        let h = AuthHeader::from_credential("s3cr3t-bare-key", StoreKind::Conserver)?;
+        assert_eq!(h.name(), "x-conserver-api-token");
+        assert!(AuthHeader::from_credential("s3cr3t-bare-key", StoreKind::Generic).is_err());
+        Ok(())
+    }
+
+    /// The kind key supplies the kind, and the flag overrides it.
+    #[test]
+    fn the_kind_flag_overrides_the_kind_key() -> TestResult {
+        let k = keys("kind = \"conserver\"\nurl = \"http://127.0.0.1:8000\"")?;
+        let by_key = ForwardPlan::resolve(&flags(&["--vcon-forward-auth=A: b"])?, &k)?;
+        assert_eq!(by_key.kind, StoreKind::Conserver);
+        let by_flag = ForwardPlan::resolve(
+            &flags(&["--vcon-forward-auth=A: b", "--vcon-forward-kind=generic"])?,
+            &k,
+        )?;
+        assert_eq!(by_flag.kind, StoreKind::Generic);
+        assert_eq!(by_flag.url.to_string(), "http://127.0.0.1:8000/");
+        Ok(())
+    }
+
+    /// A store kind's delivered statuses decide what a 2xx means: a status
+    /// outside them is retried, never moved as delivered.
+    #[test]
+    fn delivered_statuses_come_from_the_kind() {
+        assert_eq!(classify(201, false, (201, 201)), Verdict::Delivered);
+        assert_eq!(classify(204, false, (201, 201)), Verdict::Retry);
+        for facts in &STORE_KINDS {
+            assert_eq!(
+                classify(201, false, facts.delivered),
+                Verdict::Delivered,
+                "{}",
+                facts.name
+            );
+            assert_eq!(
+                classify(204, false, facts.delivered),
+                Verdict::Delivered,
+                "{}",
+                facts.name
+            );
+        }
     }
 
     /// A credential over plain HTTP to anything but loopback draws a

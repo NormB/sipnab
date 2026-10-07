@@ -197,17 +197,19 @@ lists what a container carries.
 
 ### Run it
 
-Put the one header that authenticates you in a file that only you can read.
-The forwarder refuses the file when your group or other users can read it, by
-the same rule sipnab applies to its other secret files. The file holds one
-line, `Header-Name: value`:
+The forwarder needs two things: where the store is, and the credential that
+authenticates you. Give the store's URL once, in a shell variable, and put the
+one header that authenticates you in a file that only you can read. The
+forwarder refuses the file when your group or other users can read it, by the
+same rule sipnab applies to its other secret files. The file holds one line,
+`Header-Name: value`:
 
 ```sh
 # Run all of these, in order.
+STORE_URL='http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab'
 umask 077
 printf 'x-conserver-api-token: %s\n' "$KEY" > vcon-forward.auth
-sipnab --vcon-forward ./spool \
-  --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' \
+sipnab --vcon-forward ./spool --vcon-forward-url "$STORE_URL" \
   --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once
 echo "exit $?"
 ```
@@ -217,13 +219,133 @@ the line is `Authorization: Bearer <token>` instead. The value never appears in
 a log line, an error message or a failure record: the forwarder removes it from
 any store answer it keeps, even one that echoes the request back.
 
+The credential can come from the environment instead of a file:
+`SIPNAB_VCON_FORWARD_AUTH` holds exactly what the file would hold. The
+`--vcon-forward-auth` flag takes the same value, but a flag's value is visible
+in the process list to other users of the host, so prefer the variable or the
+file. The credential has one source: sipnab refuses the variable or the flag
+beside `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, and refuses an
+empty one. A capture run ignores the variable.
+
+```sh
+# Run all of these, in order.
+export SIPNAB_VCON_FORWARD_AUTH="x-conserver-api-token: $KEY"
+sipnab --vcon-forward ./spool --vcon-forward-url "$STORE_URL" --vcon-forward-once
+```
+
 `--vcon-forward-once` makes one pass and exits: `0` when the store accepted
 every container, or the spool held none, `1` when the store refused one or
-one is still waiting, and `3` when the store refused the credentials or the
-client. Without it the forwarder makes a pass every `--vcon-forward-interval`
-seconds (default 5) until SIGTERM or SIGINT. Stopping it means stopping: it
-sends nothing more after the signal, and a container it had not reached stays
-in the spool for the next run.
+one is still waiting, `2` when sipnab refuses a setting, and `3` when the store
+refused the credentials or the client. A config file sipnab refuses exits `1`,
+as on any run. Without `--vcon-forward-once` the forwarder makes a pass every
+`--vcon-forward-interval` seconds (default 5) until SIGTERM or SIGINT. Stopping
+it means stopping: it sends nothing more after the signal, and a container it
+had not reached stays in the spool for the next run.
+
+### Choose the store kind
+
+Stores differ in where they take a container, how they authenticate, what they
+answer for a uuid they hold, and which parts of the drafts they accept.
+`--vcon-forward-kind` (or `[vcon_forward] kind`) names the kind of store, and
+the kind supplies those values, so you give the store's base URL and the bare
+key:
+
+| Kind | Ingest path added to a base URL | The header a bare key goes in | A uuid it holds | Copy sent |
+|---|---|---|---|---|
+| `generic` (default) | none: the URL is the endpoint | not accepted: give `Header-Name: value` | not measured | unchanged |
+| `vcon-store` | `/v1/vcons` | `Authorization: Bearer <key>` | `409`; set `--vcon-forward-replace-url` to PUT it instead | `extensions` as an object, as `--vcon-forward-compat vcon-store` does |
+| `conserver` | `/vcon/external-ingress?ingress_list=sipnab` | `x-conserver-api-token: <key>` | `204`, and the store replaces its copy | unchanged |
+
+Each value is what the store did when measured on 2026-10-07. vcon.store:
+the measurements in
+[Send sipnab's vCons to vcon.store](@/docs/vcon-store.md#the-measurements). conserver:
+a self-hosted vCon server, sent a synthetic container from sipnab's test
+fixtures. It answered `204` for a new container, and `GET /vcon/{uuid}` then
+returned the container with an `amended` member added. It answered `204` for
+the same uuid sent again, and the read-back then showed the second copy. It
+answered `422` for a body that is not JSON and for one without `uuid`, and `403`
+with no key or a wrong one. Every kind counts any `2xx` as delivered. The
+`sipnab` ingress list is the one
+[Run sipnab with a vCon server](@/docs/vcon-sipnab.md) creates.
+
+An explicit setting overrides each value the kind supplies:
+
+- A URL that names a path is the endpoint as written; the kind adds its path
+  only to a URL with none (`https://api.vcon.store`, not
+  `https://api.vcon.store/v1/vcons`).
+- The forwarder sends a credential that is a full `Header-Name: value` line as
+  written. The kind forms the header only from a bare key, so give a key that
+  itself holds a colon as the full line.
+- `--vcon-forward-compat` (or `[vcon_forward] compat`) replaces the kind's
+  adaptation: `none` sends the container unchanged to a `vcon-store` kind, and
+  `vcon-store` adapts it for a `generic` one. `--vcon-forward-compat vcon-store`
+  means what it meant before kinds existed.
+- `--vcon-forward-replace-url` applies to any kind. No kind sets one: nobody has
+  measured a `PUT` to vcon.store.
+
+```sh
+# Run all of these, in order.
+STORE_URL=http://127.0.0.1:8000
+umask 077
+printf '%s\n' "$KEY" > conserver.key
+sipnab --vcon-forward ./spool --vcon-forward-kind conserver \
+  --vcon-forward-url "$STORE_URL" --vcon-forward-auth-file conserver.key \
+  --vcon-forward-once
+```
+
+### Keep the settings in sipnab.toml
+
+Every forwarder flag but `--vcon-forward`, `--vcon-forward-once` and
+`--vcon-forward-auth` has a key in the `[vcon_forward]` section of the
+[config file](@/docs/config.md#vcon-forward). A flag overrides its key, so a
+file holds the standing settings and a command line changes one for one run:
+
+```toml
+[vcon_forward]
+kind = "conserver"
+url = "http://127.0.0.1:8000"
+auth_file = "/etc/sipnab/conserver.key"
+done = "/var/spool/sipnab-vcon-sent"
+failed = "/var/spool/sipnab-vcon-held"
+interval = 5
+```
+
+```sh
+sipnab --vcon-forward /var/spool/sipnab-vcon --config /etc/sipnab/vcon-forward.toml
+```
+
+sipnab checks each key by the rule its flag follows. A number out of range, an
+unknown kind or compat name, or a first back-off longer than the cap stops any
+run that loads the file. A URL or a credential the forwarder cannot use stops the
+forwarder at startup, naming the key.
+
+### Deliver to two stores
+
+One forwarder delivers to one store, and it moves each container out of the
+spool once the store accepts it, so two forwarders cannot share one spool: the
+first would take every container from the second. To deliver to two stores,
+chain them. The second forwarder's spool is the first one's delivered
+directory, and each has its own delivered directory. Run each as a process of
+its own, in two terminals or as two services. The first delivers to a
+conserver:
+
+```sh
+sipnab --vcon-forward ./spool --vcon-forward-kind conserver \
+  --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-auth-file conserver.key \
+  --vcon-forward-done ./spool/delivered
+```
+
+The second delivers what the first delivered to vcon.store:
+
+```sh
+sipnab --vcon-forward ./spool/delivered --vcon-forward-kind vcon-store \
+  --vcon-forward-url https://api.vcon.store --vcon-forward-auth-file vcon-store.key \
+  --vcon-forward-done ./spool/delivered/vcon-store
+```
+
+A container reaches the second store only after the first accepted it. A
+container the first refused stays in the first one's failed directory and
+never reaches the second.
 
 ### What it does with each container
 
@@ -237,10 +359,13 @@ from the file, and then moves the file by the answer:
 | `401` or `403` | stops. The answer refuses the credentials or the client, so every container would draw it: the forwarder sends nothing more, moves no file, logs one error line naming the status and the first 200 bytes of the answer, and exits `3`, with or without `--vcon-forward-once` |
 | `409`, with `--vcon-forward-replace-url` | PUTs the same bytes to that URL, with `{uuid}` replaced by the container's `uuid`, and acts on that answer |
 | any other `4xx`, `409` included without a replace URL | moves the file to `--vcon-forward-failed`, `failed/` in the spool by default, beside `<name>.error.json`, and logs one line naming the file and the status |
-| `5xx`, a timeout, or no connection | leaves the file in the spool and tries it again after 2 s, then 4 s, 8 s and so on up to 5 minutes. The other containers are not held up |
+| `5xx`, a timeout, or no connection | leaves the file in the spool and tries it again after `--vcon-forward-backoff-first` seconds (default 2), then twice that, and so on up to `--vcon-forward-backoff-cap` seconds (default 300). The other containers are not held up |
 
-`<name>.error.json` holds the status, the method and URL, and the first 8 KiB
-of the store's answer. The delivered and failed directories must be on the
+`<name>.error.json` holds the status, the method and URL, and the first
+`--vcon-forward-max-error-body` bytes (default 8192) of the store's answer. An
+answer whose status line and headers exceed `--vcon-forward-max-response-head`
+bytes (default 65536) counts as no answer, and the container waits for a
+retry. The delivered and failed directories must be on the
 spool's file system, so that every move is a rename.
 
 The forwarder reads the spool by the contract above. It skips dot-prefixed
@@ -269,7 +394,7 @@ sent, and leaves a newer one in the spool for the next pass.
   `401` or `403` for every container, so the forwarder stops at the first one
   and leaves the whole spool where it is. The log line quotes the start of the
   answer: a Cloudflare front that refuses the client answers `403` with
-  `error code: 1010`. Fix the auth file or the client, and start the
+  `error code: 1010`. Fix the credential or the client, and start the
   forwarder again.
 - **It does not delete anything.** The delivered directory keeps a copy of
   every container, and every copy is call data. Delete them on a schedule

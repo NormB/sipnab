@@ -1169,7 +1169,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // one site page source outside docs/ (SITE-CONTRIB).
     // 1313 -> 1314: the same sentence links CONTRIBUTING.md, now a site page
     // source too.
-    const EXPECTED_WIKI_LINKS: usize = 1314;
+    // 1314 -> 1319: the forwarder's settings and store kinds. Net added links
+    // per file, measured from the diff: vcon.md +3, config-reference.md +1,
+    // cli-reference.md +1 (+2, -1).
+    const EXPECTED_WIKI_LINKS: usize = 1319;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
