@@ -284,16 +284,20 @@ fn run(
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The handle must describe what it is probing before any packet arrives —
     /// an agent polls this to learn whether the capture it asked for is the one
     /// that started.
     #[test]
-    fn the_handle_names_its_targets_up_front() {
+    fn the_handle_names_its_targets_up_front() -> Result<(), TestError> {
         let c = TlsCapture::new(vec!["/usr/lib/libssl.so.3:SSL_write".to_string()], "cap-1");
         assert_eq!(c.instance, "cap-1");
         assert_eq!(c.targets, vec!["/usr/lib/libssl.so.3:SSL_write"]);
         assert_eq!(c.messages.load(Ordering::Relaxed), 0);
         assert!(!c.finished(), "nothing has run yet");
+        Ok(())
     }
 
     /// A capture that cannot attach still finishes, and says why.
@@ -308,7 +312,7 @@ mod tests {
     /// reason that needs no privileges to produce and no kernel state to
     /// clean up afterwards.
     #[test]
-    fn a_capture_that_cannot_attach_finishes_and_reports_the_reason() {
+    fn a_capture_that_cannot_attach_finishes_and_reports_the_reason() -> Result<(), TestError> {
         let dialogs = Arc::new(RwLock::new(DialogStore::new(16, false)));
         let streams = Arc::new(RwLock::new(StreamStore::new(16)));
         let target = UprobeTarget {
@@ -316,7 +320,8 @@ mod tests {
             symbol: "SSL_write".to_string(),
         };
 
-        let cap = spawn(vec![target], "cap-fail", dialogs, streams).expect("the thread spawns");
+        let cap = spawn(vec![target], "cap-fail", dialogs, streams)
+            .map_err(|e| format!("the thread spawns: {e:?}"))?;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while !cap.finished() {
@@ -328,13 +333,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        let outcome = cap.outcome.lock().clone().expect("an outcome is recorded");
+        let outcome = cap.outcome.lock().clone().ok_or("an outcome is recorded")?;
         assert!(
             outcome.error.is_some(),
             "the failure must reach the caller through the outcome, since \
              spawn already returned Ok: {outcome:?}"
         );
         assert_eq!(outcome.messages, 0, "nothing was captured");
+        Ok(())
     }
 
     /// The handle describes every target it was given, not just the first.
@@ -343,7 +349,7 @@ mod tests {
     /// that silently held one would report a narrower capture than the one
     /// running.
     #[test]
-    fn the_handle_describes_every_target_it_was_given() {
+    fn the_handle_describes_every_target_it_was_given() -> Result<(), TestError> {
         let c = TlsCapture::new(
             vec![
                 "/usr/lib/libssl.so.3:SSL_write".to_string(),
@@ -362,12 +368,13 @@ mod tests {
             "each is library:symbol, which is what an agent matches on: {:?}",
             c.targets
         );
+        Ok(())
     }
 
     /// Stopping is a request, not an act: the worker owns the probes and must
     /// remove them itself, in the one order the kernel accepts.
     #[test]
-    fn requesting_a_stop_is_recorded_without_claiming_the_capture_ended() {
+    fn requesting_a_stop_is_recorded_without_claiming_the_capture_ended() -> Result<(), TestError> {
         let c = TlsCapture::new(vec!["x:y".to_string()], "cap-2");
         c.request_stop();
         assert!(c.stop.load(Ordering::Relaxed));
@@ -376,12 +383,13 @@ mod tests {
             "the probes are still installed until the worker removes them, and \
              reporting otherwise would have an agent believe the kernel is clean"
         );
+        Ok(())
     }
 
     /// A handle built for a test is the same unstarted handle `spawn` makes:
     /// nothing counted, no outcome, not finished.
     #[test]
-    fn a_handle_built_for_a_test_starts_unfinished_with_no_outcome() {
+    fn a_handle_built_for_a_test_starts_unfinished_with_no_outcome() -> Result<(), TestError> {
         let c = TlsCapture::new_for_test(vec!["x:y".to_string()], "cap-t");
         assert_eq!(c.instance, "cap-t");
         assert!(!c.finished());
@@ -390,6 +398,7 @@ mod tests {
             c.outcome.lock().is_none(),
             "an outcome before the worker ran would be a result nobody produced"
         );
+        Ok(())
     }
 
     /// Bytes an application handed its TLS library, as the uprobe reader
@@ -398,9 +407,7 @@ mod tests {
     fn lifted(bytes: &[u8], ip_protocol: u8) -> crate::capture::packet::Packet {
         let unspecified = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
         crate::capture::packet::Packet::with_pre_parsed(
-            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
-                .single()
-                .expect("a literal instant"),
+            chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_781_524_800), // 2026-06-15T12:00:00Z
             bytes.to_vec(),
             Some("uprobe:opensips/1234".to_string()),
             crate::capture::packet::PreParsed {
@@ -425,7 +432,7 @@ mod tests {
     /// state behind when it failed.
     #[cfg(all(target_os = "linux", feature = "native"))]
     #[test]
-    fn each_drained_read_counts_only_if_it_reached_the_stores() {
+    fn each_drained_read_counts_only_if_it_reached_the_stores() -> Result<(), TestError> {
         let dialogs = Arc::new(RwLock::new(DialogStore::new(16, false)));
         let streams = Arc::new(RwLock::new(StreamStore::new(16)));
         let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -478,5 +485,6 @@ mod tests {
             1,
             "neither of the refused reads created a dialog"
         );
+        Ok(())
     }
 }

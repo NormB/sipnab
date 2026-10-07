@@ -528,6 +528,9 @@ fn hook_body(
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The panic hook is process-global state; tests that install one
     /// must not run concurrently with each other.
     static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -535,7 +538,7 @@ mod tests {
     /// An empty `[crash]` config resolves to reports+backtrace on, core
     /// off, and a sipnab-owned default report directory.
     #[test]
-    fn policy_defaults_are_report_with_backtrace_no_core() {
+    fn policy_defaults_are_report_with_backtrace_no_core() -> Result<(), TestError> {
         let policy = CrashPolicy::from_config(&CrashConfig::default());
         assert!(policy.reports, "reports default on");
         assert!(policy.backtrace, "backtrace default on");
@@ -545,11 +548,12 @@ mod tests {
             "default report dir is sipnab-owned, got {:?}",
             policy.report_dir
         );
+        Ok(())
     }
 
     /// Explicitly set `[crash]` values override every default.
     #[test]
-    fn policy_honors_explicit_config() {
+    fn policy_honors_explicit_config() -> Result<(), TestError> {
         let cfg = CrashConfig {
             reports: Some(false),
             backtrace: Some(false),
@@ -561,24 +565,27 @@ mod tests {
         assert!(!policy.backtrace);
         assert!(policy.core);
         assert_eq!(policy.report_dir, PathBuf::from("/tmp/xyz"));
+        Ok(())
     }
 
     /// core=false decides a clean `Exit(101)` (no core dump).
     #[test]
-    fn post_action_no_core_is_clean_exit_101() {
+    fn post_action_no_core_is_clean_exit_101() -> Result<(), TestError> {
         assert_eq!(post_report_action(false), PostAction::Exit(101));
+        Ok(())
     }
 
     /// core=true decides `Abort` so the OS can produce a core dump.
     #[test]
-    fn post_action_core_is_abort() {
+    fn post_action_core_is_abort() -> Result<(), TestError> {
         assert_eq!(post_report_action(true), PostAction::Abort);
+        Ok(())
     }
 
     /// The rendered report carries message, location, thread, version,
     /// and the backtrace section.
     #[test]
-    fn report_contains_all_sections() {
+    fn report_contains_all_sections() -> Result<(), TestError> {
         let r = build_crash_report(
             "range start index 3 out of range for slice of length 2",
             "src/tui/call_list.rs:509:71",
@@ -596,34 +603,41 @@ mod tests {
             r.contains("Image:\n  Build ID:  00ff\n"),
             "image section kept verbatim:\n{r}"
         );
+        Ok(())
     }
 
     /// With backtrace capture off, the report says so instead of
     /// silently omitting the section.
     #[test]
-    fn report_without_backtrace_says_disabled() {
+    fn report_without_backtrace_says_disabled() -> Result<(), TestError> {
         let r = build_crash_report("boom", "here.rs:1:1", "main", None, "Image:\n");
         assert!(!r.contains("Backtrace:"));
         assert!(
             r.to_ascii_lowercase().contains("disabled"),
             "report must say why no backtrace is present, got: {r}"
         );
+        Ok(())
     }
 
     /// `write_crash_report` creates the (nested) directory and a
     /// timestamped `sipnab-crash-*.log` file holding the contents.
     #[test]
-    fn write_report_creates_timestamped_file_in_dir() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_report_creates_timestamped_file_in_dir() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let sub = dir.path().join("nested").join("state");
-        let path = write_crash_report(&sub, "the-contents").unwrap();
+        let path = write_crash_report(&sub, "the-contents")?;
         assert!(path.starts_with(&sub), "report inside the dir");
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let name = path
+            .file_name()
+            .ok_or("path.file_name() is None")?
+            .to_string_lossy()
+            .to_string();
         assert!(
             name.starts_with("sipnab-crash-") && name.ends_with(".log"),
             "got {name}"
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the-contents");
+        assert_eq!(std::fs::read_to_string(&path)?, "the-contents");
+        Ok(())
     }
 
     /// A write failure while filling the report must not leave a partial
@@ -631,20 +645,22 @@ mod tests {
     /// read-only handle to the target, so `write_all` fails with `EBADF`;
     /// the cleanup path must then remove the file.
     #[test]
-    fn finish_report_removes_partial_on_write_failure() {
-        let dir = tempfile::tempdir().unwrap();
+    fn finish_report_removes_partial_on_write_failure() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sipnab-crash-probe.log");
         // Create the target the way write_crash_report would, then reopen it
         // read-only so the subsequent write_all is guaranteed to fail.
-        std::fs::write(&path, b"").unwrap();
-        let mut ro = std::fs::File::open(&path).unwrap();
+        std::fs::write(&path, b"")?;
+        let mut ro = std::fs::File::open(&path)?;
 
         finish_report(&path, &mut ro, "backtrace-contents")
-            .expect_err("write to a read-only handle must fail");
+            .err()
+            .ok_or("write to a read-only handle must fail")?;
         assert!(
             !path.exists(),
             "a failed write must not leave a partial report behind"
         );
+        Ok(())
     }
 
     /// Two reports written by the same process within the same second
@@ -653,13 +669,14 @@ mod tests {
     /// unrelated test's panic routed through the installed hook clobbered
     /// the probe's report).
     #[test]
-    fn write_report_same_second_does_not_clobber() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = write_crash_report(dir.path(), "first-crash").unwrap();
-        let b = write_crash_report(dir.path(), "second-crash").unwrap();
+    fn write_report_same_second_does_not_clobber() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let a = write_crash_report(dir.path(), "first-crash")?;
+        let b = write_crash_report(dir.path(), "second-crash")?;
         assert_ne!(a, b, "distinct paths for back-to-back reports");
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "first-crash");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "second-crash");
+        assert_eq!(std::fs::read_to_string(&a)?, "first-crash");
+        assert_eq!(std::fs::read_to_string(&b)?, "second-crash");
+        Ok(())
     }
 
     /// A pre-existing symlink at the exact target path must NOT be
@@ -669,14 +686,16 @@ mod tests {
     /// open fail instead, leaving the link target untouched.
     #[test]
     #[cfg(unix)]
-    fn open_new_report_refuses_to_follow_symlink() {
-        let dir = tempfile::tempdir().unwrap();
+    fn open_new_report_refuses_to_follow_symlink() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let victim = dir.path().join("victim.txt");
-        std::fs::write(&victim, "original").unwrap();
+        std::fs::write(&victim, "original")?;
         let link = dir.path().join("sipnab-crash-planted.log");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        std::os::unix::fs::symlink(&victim, &link)?;
 
-        let err = open_new_report_file(&link).expect_err("must refuse a symlink target");
+        let err = open_new_report_file(&link)
+            .err()
+            .ok_or("must refuse a symlink target")?;
         assert!(
             matches!(
                 err.kind(),
@@ -685,22 +704,26 @@ mod tests {
             "expected refusal, got {err:?}"
         );
         assert_eq!(
-            std::fs::read_to_string(&victim).unwrap(),
+            std::fs::read_to_string(&victim)?,
             "original",
             "the symlink target must be untouched"
         );
+        Ok(())
     }
 
     /// The open must be exclusive: an existing regular file at the target
     /// is never truncated/overwritten (`create_new` semantics).
     #[test]
-    fn open_new_report_refuses_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn open_new_report_refuses_existing_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sipnab-crash-existing.log");
-        std::fs::write(&path, "keep-me").unwrap();
-        let err = open_new_report_file(&path).expect_err("must refuse an existing file");
+        std::fs::write(&path, "keep-me")?;
+        let err = open_new_report_file(&path)
+            .err()
+            .ok_or("must refuse an existing file")?;
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me");
+        assert_eq!(std::fs::read_to_string(&path)?, "keep-me");
+        Ok(())
     }
 
     /// Reports are created owner-read/write only (0600): a crash report can
@@ -708,12 +731,13 @@ mod tests {
     /// users on the host should not read.
     #[test]
     #[cfg(unix)]
-    fn crash_report_created_mode_0600() {
+    fn crash_report_created_mode_0600() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_crash_report(dir.path(), "secret-backtrace").unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir()?;
+        let path = write_crash_report(dir.path(), "secret-backtrace")?;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "report must be owner-only, got {mode:o}");
+        Ok(())
     }
 
     // ── Report-directory safety classification (SN-03 follow-up) ──────
@@ -721,62 +745,68 @@ mod tests {
     /// An owner-private (0700) directory owned by us is accepted.
     #[test]
     #[cfg(unix)]
-    fn classify_accepts_owned_private_dir() {
+    fn classify_accepts_owned_private_dir() -> Result<(), TestError> {
         // drwx------ owned by us: the safe, expected case.
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40700), Ok(()));
+        Ok(())
     }
 
     /// A /tmp-like sticky world-writable directory owned by us is accepted.
     #[test]
     #[cfg(unix)]
-    fn classify_accepts_owned_sticky_world_writable_dir() {
+    fn classify_accepts_owned_sticky_world_writable_dir() -> Result<(), TestError> {
         // /tmp-like: world-writable but sticky and owned by us — accepted,
         // because O_EXCL|O_NOFOLLOW already defeats plant-and-follow there.
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o41777), Ok(()));
+        Ok(())
     }
 
     /// A symlinked report directory is rejected (repointable by a co-tenant).
     #[test]
     #[cfg(unix)]
-    fn classify_rejects_symlink() {
+    fn classify_rejects_symlink() -> Result<(), TestError> {
         assert_eq!(
             classify_report_dir(true, 1000, 1000, 0o40700),
             Err(UnsafeReportDir::Symlink)
         );
+        Ok(())
     }
 
     /// A directory owned by a different UID is rejected.
     #[test]
     #[cfg(unix)]
-    fn classify_rejects_dir_owned_by_another_user() {
+    fn classify_rejects_dir_owned_by_another_user() -> Result<(), TestError> {
         // Owned by root while we run as uid 1000: a privileged/foreign dir.
         assert_eq!(
             classify_report_dir(false, 0, 1000, 0o40700),
             Err(UnsafeReportDir::NotOwned)
         );
+        Ok(())
     }
 
     /// World-writable without the sticky bit is rejected.
     #[test]
     #[cfg(unix)]
-    fn classify_rejects_world_writable_without_sticky() {
+    fn classify_rejects_world_writable_without_sticky() -> Result<(), TestError> {
         assert_eq!(
             classify_report_dir(false, 1000, 1000, 0o40777),
             Err(UnsafeReportDir::WorldWritable),
             "world-writable, no sticky"
         );
+        Ok(())
     }
 
     /// Group-writable directories are accepted (user-private-group
     /// convention; group membership is the operator's responsibility).
     #[test]
     #[cfg(unix)]
-    fn classify_accepts_group_writable_dir() {
+    fn classify_accepts_group_writable_dir() -> Result<(), TestError> {
         // umask 0002 (user-private-group) makes new dirs group-writable by
         // default; rejecting that would reject the common case. Group
         // membership is the operator's responsibility.
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40775), Ok(()));
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40770), Ok(()));
+        Ok(())
     }
 
     /// `create_report_dir` itself must fail closed on a symlinked leaf, not
@@ -786,79 +816,89 @@ mod tests {
     /// catches it, so nothing is created through the link.
     #[test]
     #[cfg(unix)]
-    fn create_report_dir_refuses_symlinked_dir() {
-        let root = tempfile::tempdir().unwrap();
+    fn create_report_dir_refuses_symlinked_dir() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
         let victim = root.path().join("victim_dir");
-        std::fs::create_dir(&victim).unwrap();
+        std::fs::create_dir(&victim)?;
         let link = root.path().join("reports");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        std::os::unix::fs::symlink(&victim, &link)?;
 
-        let err = create_report_dir(&link).expect_err("must refuse a symlinked report dir");
+        let err = create_report_dir(&link)
+            .err()
+            .ok_or("must refuse a symlinked report dir")?;
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
         assert_eq!(
-            std::fs::read_dir(&victim).unwrap().count(),
+            std::fs::read_dir(&victim)?.count(),
             0,
             "nothing may be created through the link"
         );
+        Ok(())
     }
 
     /// The safe path is unaffected: `create_report_dir` creates a fresh nested
     /// leaf owned by us at 0700 and returns Ok.
     #[test]
     #[cfg(unix)]
-    fn create_report_dir_accepts_fresh_nested_dir() {
+    fn create_report_dir_accepts_fresh_nested_dir() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir()?;
         let leaf = root.path().join("nested").join("reports");
-        create_report_dir(&leaf).expect("fresh nested dir must be created");
+        create_report_dir(&leaf).map_err(|e| format!("fresh nested dir must be created: {e:?}"))?;
         assert!(leaf.is_dir());
-        let mode = std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&leaf)?.permissions().mode() & 0o777;
         assert_eq!(mode, 0o700, "fresh leaf must be owner-only, got {mode:o}");
+        Ok(())
     }
 
     /// A symlinked report directory is refused end to end — nothing is
     /// written through the link.
     #[test]
     #[cfg(unix)]
-    fn write_crash_report_refuses_symlinked_dir() {
+    fn write_crash_report_refuses_symlinked_dir() -> Result<(), TestError> {
         // A hostile co-tenant symlinks the report dir at a victim location.
         // The write must refuse rather than create reports through the link.
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir()?;
         let victim = root.path().join("victim_dir");
-        std::fs::create_dir(&victim).unwrap();
+        std::fs::create_dir(&victim)?;
         let link = root.path().join("reports");
-        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        std::os::unix::fs::symlink(&victim, &link)?;
 
-        let err = write_crash_report(&link, "boom").expect_err("must refuse a symlinked dir");
+        let err = write_crash_report(&link, "boom")
+            .err()
+            .ok_or("must refuse a symlinked dir")?;
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
         assert_eq!(
-            std::fs::read_dir(&victim).unwrap().count(),
+            std::fs::read_dir(&victim)?.count(),
             0,
             "nothing may be written through the link"
         );
+        Ok(())
     }
 
     /// A non-sticky world-writable report directory is refused end to end.
     #[test]
     #[cfg(unix)]
-    fn write_crash_report_refuses_world_writable_dir() {
+    fn write_crash_report_refuses_world_writable_dir() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let dir = tempfile::tempdir()?;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))?;
 
-        let err =
-            write_crash_report(dir.path(), "boom").expect_err("must refuse a world-writable dir");
+        let err = write_crash_report(dir.path(), "boom")
+            .err()
+            .ok_or("must refuse a world-writable dir")?;
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        Ok(())
     }
 
     /// The safe (owned, private) directory path still works end to end.
     #[test]
     #[cfg(unix)]
-    fn write_crash_report_accepts_owned_private_dir() {
+    fn write_crash_report_accepts_owned_private_dir() -> Result<(), TestError> {
         // The safe path still works end to end (regression guard).
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_crash_report(dir.path(), "ok-contents").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok-contents");
+        let dir = tempfile::tempdir()?;
+        let path = write_crash_report(dir.path(), "ok-contents")?;
+        assert_eq!(std::fs::read_to_string(&path)?, "ok-contents");
+        Ok(())
     }
 
     /// The hook's stderr writes must swallow I/O errors: `eprintln!`
@@ -866,7 +906,7 @@ mod tests {
     /// aborts the process before any report can be written. A writer that
     /// always fails stands in for a closed stderr.
     #[test]
-    fn hook_write_line_swallows_write_errors() {
+    fn hook_write_line_swallows_write_errors() -> Result<(), TestError> {
         struct AlwaysFails;
         impl std::io::Write for AlwaysFails {
             fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
@@ -887,25 +927,27 @@ mod tests {
             &mut AlwaysFails,
             format_args!("sipnab panicked at x:\nboom"),
         );
+        Ok(())
     }
 
     /// The helper formats exactly one newline-terminated line, matching
     /// what `eprintln!` used to emit.
     #[test]
-    fn hook_write_line_formats_single_line() {
+    fn hook_write_line_formats_single_line() -> Result<(), TestError> {
         let mut out = Vec::new();
         hook_write_line(&mut out, format_args!("crash report written to {}", "p"));
         assert_eq!(out, b"crash report written to p\n");
+        Ok(())
     }
 
     /// End-to-end hook behavior in-process: a panicking thread triggers
     /// the hook, which writes the report and decides Exit(101) under the
     /// default no-core policy. The previous hook is restored afterwards.
     #[test]
-    fn hook_writes_report_and_decides_clean_exit() {
+    fn hook_writes_report_and_decides_clean_exit() -> Result<(), TestError> {
         use std::sync::{Arc, Mutex};
-        let _guard = HOOK_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = HOOK_LOCK.lock()?;
+        let dir = tempfile::tempdir()?;
         let policy = CrashPolicy {
             reports: true,
             backtrace: true,
@@ -916,24 +958,29 @@ mod tests {
         let decided2 = decided.clone();
         let prev = std::panic::take_hook();
         install_panic_hook_with(policy, move |a| {
-            *decided2.lock().unwrap() = Some(a);
+            // A poisoned slot leaves `decided` at None, which the assertion
+            // below reports.
+            if let Ok(mut slot) = decided2.lock() {
+                *slot = Some(a);
+            }
         });
         let _ = std::thread::Builder::new()
             .name("crash-probe".into())
-            .spawn(|| panic!("intentional hook-test panic"))
-            .unwrap()
+            .spawn(|| panic!("intentional hook-test panic"))?
             .join();
         std::panic::set_hook(prev);
 
-        assert_eq!(*decided.lock().unwrap(), Some(PostAction::Exit(101)));
+        assert_eq!(
+            *decided.lock().map_err(|e| format!("decided lock: {e}"))?,
+            Some(PostAction::Exit(101))
+        );
         // The hook is process-global: while installed it also fires for
         // panics of unrelated concurrently running tests (seen in CI), so
         // identify the probe's report by content instead of assuming it
         // is alone in the directory.
-        let reports: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
-            .collect();
+        let reports: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|e| -> Result<String, TestError> { Ok(std::fs::read_to_string(e?.path())?) })
+            .collect::<Result<_, _>>()?;
         let ours: Vec<&String> = reports
             .iter()
             .filter(|c| c.contains("intentional hook-test panic"))
@@ -963,16 +1010,17 @@ mod tests {
             "at least two frames resolved to an image:\n{}",
             ours[0]
         );
+        Ok(())
     }
 
     /// backtrace=false still records the image identity (it costs nothing and
     /// names the symbol file), but no frames: the user turned stack capture
     /// off, and raw frames are a stack.
     #[test]
-    fn hook_without_backtrace_records_identity_but_no_frames() {
+    fn hook_without_backtrace_records_identity_but_no_frames() -> Result<(), TestError> {
         use std::sync::{Arc, Mutex};
-        let _guard = HOOK_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = HOOK_LOCK.lock()?;
+        let dir = tempfile::tempdir()?;
         let policy = CrashPolicy {
             reports: true,
             backtrace: false,
@@ -983,14 +1031,19 @@ mod tests {
         let decided2 = decided.clone();
         let prev = std::panic::take_hook();
         install_panic_hook_with(policy, move |a| {
-            *decided2.lock().unwrap() = Some(a);
+            // A poisoned slot leaves `decided` at None, which the assertion
+            // below reports.
+            if let Ok(mut slot) = decided2.lock() {
+                *slot = Some(a);
+            }
         });
         let _ = std::thread::spawn(|| panic!("no-backtrace identity probe")).join();
         std::panic::set_hook(prev);
 
-        let reports: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        let reports: Vec<String> = std::fs::read_dir(dir.path())?
+            .map(|e| -> Result<String, TestError> { Ok(std::fs::read_to_string(e?.path())?) })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .filter(|c| c.contains("no-backtrace identity probe"))
             .collect();
         assert_eq!(reports.len(), 1);
@@ -1004,14 +1057,15 @@ mod tests {
             "no frames when backtrace is off:\n{}",
             reports[0]
         );
+        Ok(())
     }
 
     /// reports=false must not write any file but still decide the action.
     #[test]
-    fn hook_respects_reports_disabled() {
+    fn hook_respects_reports_disabled() -> Result<(), TestError> {
         use std::sync::{Arc, Mutex};
-        let _guard = HOOK_LOCK.lock().unwrap();
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = HOOK_LOCK.lock()?;
+        let dir = tempfile::tempdir()?;
         let policy = CrashPolicy {
             reports: false,
             backtrace: true,
@@ -1022,16 +1076,24 @@ mod tests {
         let decided2 = decided.clone();
         let prev = std::panic::take_hook();
         install_panic_hook_with(policy, move |a| {
-            *decided2.lock().unwrap() = Some(a);
+            // A poisoned slot leaves `decided` at None, which the assertion
+            // below reports.
+            if let Ok(mut slot) = decided2.lock() {
+                *slot = Some(a);
+            }
         });
         let _ = std::thread::spawn(|| panic!("no-report panic")).join();
         std::panic::set_hook(prev);
 
-        assert_eq!(*decided.lock().unwrap(), Some(PostAction::Abort));
         assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
+            *decided.lock().map_err(|e| format!("decided lock: {e}"))?,
+            Some(PostAction::Abort)
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path())?.count(),
             0,
             "no report file with reports=false"
         );
+        Ok(())
     }
 }

@@ -763,6 +763,9 @@ fn xor_mapped_address(value: &[u8], transaction_id: &[u8; 12]) -> Option<SocketA
 
 #[cfg(test)]
 mod tests {
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
     /// A channel number RFC 8656 reserves is not ChannelData.
     ///
     /// RFC 8656 (which obsoletes RFC 5766) Table 3 narrows the window:
@@ -778,7 +781,7 @@ mod tests {
     /// 16,384 of 65,536 first-two-byte values to 4,096 — which matters because
     /// this check is the one that mistook GTPv2-C for relayed media.
     #[test]
-    fn a_reserved_channel_number_is_not_channel_data() {
+    fn a_reserved_channel_number_is_not_channel_data() -> Result<(), TestError> {
         // 4-byte header plus 12 bytes of payload, correctly framed.
         let mut frame = vec![0x50, 0x00, 0x00, 0x0c];
         frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]);
@@ -787,6 +790,7 @@ mod tests {
             "0x5000 is Reserved by RFC 8656 Table 3"
         );
         assert_eq!(channel_data_payload(&frame), None);
+        Ok(())
     }
 
     /// The allowed range still is allowed, at both ends.
@@ -794,7 +798,7 @@ mod tests {
     /// The regression guard: narrowing the window must not refuse real
     /// relayed media. `0x4000` and `0x4FFF` are the boundaries RFC 8656 keeps.
     #[test]
-    fn the_rfc_8656_channel_range_is_still_accepted_at_both_ends() {
+    fn the_rfc_8656_channel_range_is_still_accepted_at_both_ends() -> Result<(), TestError> {
         for channel in [0x4000u16, 0x4001, 0x4FFF] {
             let mut frame = channel.to_be_bytes().to_vec();
             frame.extend_from_slice(&12u16.to_be_bytes());
@@ -804,6 +808,7 @@ mod tests {
                 "channel {channel:#06x} is inside RFC 8656's allowed range"
             );
         }
+        Ok(())
     }
 
     /// The first number past the allowed range is refused.
@@ -811,7 +816,7 @@ mod tests {
     /// The boundary that separates the two RFCs: `0x5000` is the first
     /// reserved value, and an off-by-one in the range would let it through.
     #[test]
-    fn the_first_reserved_channel_number_is_refused() {
+    fn the_first_reserved_channel_number_is_refused() -> Result<(), TestError> {
         let mut frame = 0x5000u16.to_be_bytes().to_vec();
         frame.extend_from_slice(&12u16.to_be_bytes());
         frame.extend_from_slice(&[0x80, 0, 0, 1, 0, 0, 0, 0, 0xDE, 0xAD, 0xBE, 0xEF]);
@@ -819,6 +824,7 @@ mod tests {
             &frame,
             ChannelDataFraming::Datagram
         ));
+        Ok(())
     }
 
     /// FINGERPRINT still verifies when the datagram carries trailing octets.
@@ -834,19 +840,20 @@ mod tests {
     /// fingerprint in `--stun` purely because something followed it in the
     /// datagram: a false accusation of corruption or tampering.
     #[test]
-    fn a_trailing_octet_does_not_invalidate_the_fingerprint() {
+    fn a_trailing_octet_does_not_invalidate_the_fingerprint() -> Result<(), TestError> {
         let clean = binding_request_with_fingerprint();
         let mut padded = clean.clone();
         padded.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
-        let a = parse(&clean).expect("the clean datagram parses");
-        let b = parse(&padded).expect("the padded datagram parses");
+        let a = parse(&clean).ok_or("the clean datagram parses")?;
+        let b = parse(&padded).ok_or("the padded datagram parses")?;
         assert_eq!(a.fingerprint_valid, Some(true), "control: the CRC is right");
         assert_eq!(
             b.fingerprint_valid,
             Some(true),
             "the same message plus trailing octets is the same message"
         );
+        Ok(())
     }
 
     /// The FIRST occurrence of a repeated attribute wins.
@@ -857,7 +864,7 @@ mod tests {
     /// it, so an attribute appended AFTER it is unauthenticated — and that was
     /// the one sipnab reported.
     #[test]
-    fn a_repeated_attribute_takes_the_first_occurrence() {
+    fn a_repeated_attribute_takes_the_first_occurrence() -> Result<(), TestError> {
         // Two SOFTWARE attributes; the second is what an appender would add.
         let mut body = Vec::new();
         body.extend_from_slice(&0x8022u16.to_be_bytes()); // SOFTWARE
@@ -867,12 +874,13 @@ mod tests {
         body.extend_from_slice(&4u16.to_be_bytes());
         body.extend_from_slice(b"fake");
 
-        let msg = parse(&binding_request(&body)).expect("parses");
+        let msg = parse(&binding_request(&body)?).ok_or("parses")?;
         assert_eq!(
             msg.software.as_deref(),
             Some("real"),
             "RFC 8489 14: only the first occurrence needs processing"
         );
+        Ok(())
     }
 
     /// A single attribute is unaffected by the first-wins rule.
@@ -880,23 +888,28 @@ mod tests {
     /// The regression guard: almost every real message has one of each, and
     /// the fix touches the assignment for all of them.
     #[test]
-    fn a_single_occurrence_is_still_read() {
+    fn a_single_occurrence_is_still_read() -> Result<(), TestError> {
         let mut body = Vec::new();
         body.extend_from_slice(&0x8022u16.to_be_bytes());
         body.extend_from_slice(&4u16.to_be_bytes());
         body.extend_from_slice(b"only");
-        let msg = parse(&binding_request(&body)).expect("parses");
+        let msg = parse(&binding_request(&body)?).ok_or("parses")?;
         assert_eq!(msg.software.as_deref(), Some("only"));
+        Ok(())
     }
 
     /// A STUN Binding Request wrapping `body`, with a correct header length.
-    fn binding_request(body: &[u8]) -> Vec<u8> {
+    fn binding_request(body: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut m = vec![0x00, 0x01];
-        m.extend_from_slice(&u16::try_from(body.len()).expect("fits").to_be_bytes());
+        m.extend_from_slice(
+            &u16::try_from(body.len())
+                .map_err(|e| format!("fits: {e:?}"))?
+                .to_be_bytes(),
+        );
         m.extend_from_slice(&0x2112_A442u32.to_be_bytes());
         m.extend_from_slice(&[0xA0; 12]); // transaction id
         m.extend_from_slice(body);
-        m
+        Ok(m)
     }
 
     /// A Binding Request carrying a correct FINGERPRINT.
@@ -944,7 +957,7 @@ mod tests {
     /// The bytes below are frame 24 of a real capture, truncated to the header
     /// and first information element; the full message is 111 bytes.
     #[test]
-    fn a_gtpv2_c_message_is_not_channel_data() {
+    fn a_gtpv2_c_message_is_not_channel_data() -> Result<(), TestError> {
         let mut msg = vec![
             0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
         ];
@@ -965,6 +978,7 @@ mod tests {
             None,
             "GTP-C traffic must never be unwrapped as relayed media"
         );
+        Ok(())
     }
 
     /// GTP-U is refused on the same grounds.
@@ -975,12 +989,13 @@ mod tests {
     /// happening to agree, because a future GTP-U extension header could move
     /// the first octet.
     #[test]
-    fn gtp_u_is_not_channel_data_either() {
+    fn gtp_u_is_not_channel_data_either() -> Result<(), TestError> {
         let mut msg = vec![
             0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
         ];
         msg.extend(std::iter::repeat_n(0u8, 111 - msg.len()));
         assert_eq!(channel_data_payload_on_port(&msg, 2152, 2152), None);
+        Ok(())
     }
 
     /// The port rule looks at BOTH ends.
@@ -990,7 +1005,7 @@ mod tests {
     /// would unwrap exactly half of a bidirectional control exchange, which is
     /// the shape that produces a one-way phantom stream.
     #[test]
-    fn either_end_on_the_gtp_c_port_is_enough_to_refuse() {
+    fn either_end_on_the_gtp_c_port_is_enough_to_refuse() -> Result<(), TestError> {
         let mut msg = vec![
             0x48, 0x21, 0x00, 0x6b, 0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00,
         ];
@@ -1005,6 +1020,7 @@ mod tests {
             None,
             "src is GTP-C"
         );
+        Ok(())
     }
 
     /// Real relayed media still unwraps.
@@ -1014,25 +1030,26 @@ mod tests {
     /// a relay reported as a call with NO MEDIA. Narrowing the unwrap must not
     /// put that back.
     #[test]
-    fn relayed_media_on_an_ephemeral_port_still_unwraps() {
+    fn relayed_media_on_an_ephemeral_port_still_unwraps() -> Result<(), TestError> {
         let mut frame = vec![0x40, 0x01, 0x00, 0x0c];
         frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
         assert_eq!(frame.len(), 16, "4 header + 12 payload");
 
         let inner = channel_data_payload_on_port(&frame, 49152, 50000)
-            .expect("a relay frame on ephemeral ports is still a relay frame");
+            .ok_or("a relay frame on ephemeral ports is still a relay frame")?;
         assert_eq!(inner.len(), 12);
         assert_eq!(
             inner[0], 0x80,
             "the unwrapped payload is the inner RTP header"
         );
+        Ok(())
     }
 
     /// `relayed_ssrc` excludes every RTCP packet type, not just 200..=207.
     /// RTCP runs 192..=223, which folds to 64..=95 once the top bit is masked;
     /// excluding only 72..=79 filed the rest as phantom media SSRCs.
     #[test]
-    fn relayed_ssrc_excludes_all_rtcp_not_just_200_to_207() {
+    fn relayed_ssrc_excludes_all_rtcp_not_just_200_to_207() -> Result<(), TestError> {
         // A 12-byte RTCP frame: version 2, packet type 192 (legacy FIR), which
         // folds to 64. Not a media stream, so no SSRC is recorded.
         let mut fir = [0u8; 12];
@@ -1063,6 +1080,7 @@ mod tests {
             Some(0x1234_5678),
             "a media packet's SSRC is still recorded"
         );
+        Ok(())
     }
 
     /// The unported entry point is unchanged.
@@ -1072,10 +1090,11 @@ mod tests {
     /// port rule lives in exactly one place rather than being re-derived by
     /// each caller.
     #[test]
-    fn the_portless_entry_point_still_answers_the_framing_question() {
+    fn the_portless_entry_point_still_answers_the_framing_question() -> Result<(), TestError> {
         let mut frame = vec![0x40, 0x01, 0x00, 0x0c];
         frame.extend_from_slice(&[0x80, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef]);
         assert!(channel_data_payload(&frame).is_some());
+        Ok(())
     }
 
     use super::*;
@@ -1098,8 +1117,8 @@ mod tests {
     ];
 
     #[test]
-    fn a_field_shaped_binding_request_parses() {
-        let msg = parse(&FIELD_SHAPED_REQUEST).expect("a real STUN request must parse");
+    fn a_field_shaped_binding_request_parses() -> Result<(), TestError> {
+        let msg = parse(&FIELD_SHAPED_REQUEST).ok_or("a real STUN request must parse")?;
         assert_eq!(msg.class, StunClass::Request);
         assert_eq!(msg.method, 0x001, "Binding");
         assert!(msg.is_binding_request());
@@ -1115,12 +1134,13 @@ mod tests {
             "the vendor's NUL padding must not survive into the name"
         );
         assert_eq!(msg.mapped_address, None, "a request carries no answer");
+        Ok(())
     }
 
     /// Anything without the cookie is not STUN, however plausible its first
     /// two bytes are. This is what makes it safe to offer every UDP payload.
     #[test]
-    fn a_payload_without_the_cookie_is_not_stun() {
+    fn a_payload_without_the_cookie_is_not_stun() -> Result<(), TestError> {
         assert!(parse(b"INVITE sip:alice@example.com SIP/2.0\r\n").is_none());
         assert!(parse(&[0u8; 64]).is_none());
         assert!(parse(&[]).is_none());
@@ -1133,11 +1153,12 @@ mod tests {
             parse(&rtp).is_none(),
             "an RTP packet that happens to carry the cookie bytes is still RTP"
         );
+        Ok(())
     }
 
     /// A success response yields the reflexive address, un-XOR'd.
     #[test]
-    fn a_success_response_yields_the_mapped_address() {
+    fn a_success_response_yields_the_mapped_address() -> Result<(), TestError> {
         let txn = [0x11u8; 12];
         let mut m = Vec::new();
         m.extend_from_slice(&0x0101u16.to_be_bytes()); // Binding success
@@ -1156,19 +1177,20 @@ mod tests {
             m.push(o ^ cookie[i]);
         }
 
-        let msg = parse(&m).expect("parses");
+        let msg = parse(&m).ok_or("parses")?;
         assert_eq!(msg.class, StunClass::SuccessResponse);
         assert_eq!(
             msg.mapped_address,
             Some(SocketAddr::new(IpAddr::V4(ip), port)),
             "the whole point of the response is this address"
         );
+        Ok(())
     }
 
     /// A lying length must not read past the buffer, and must not panic. A
     /// capture snaplen produces exactly this shape routinely.
     #[test]
-    fn a_truncated_or_lying_message_yields_no_panic() {
+    fn a_truncated_or_lying_message_yields_no_panic() -> Result<(), TestError> {
         let mut m = FIELD_SHAPED_REQUEST.to_vec();
         // Claim far more body than is present. 0xfffc rather than 0xffff, and
         // the difference is the point: RFC 8489 says the low two bits of the
@@ -1177,18 +1199,19 @@ mod tests {
         // a LEGAL length to exercise the buffer guard.
         m[2] = 0xff;
         m[3] = 0xfc;
-        let msg = parse(&m).expect("header is still valid");
+        let msg = parse(&m).ok_or("header is still valid")?;
         assert!(msg.is_binding_request());
 
         // Truncate mid-attribute at every point and require termination.
         for cut in 20..FIELD_SHAPED_REQUEST.len() {
             let _ = parse(&FIELD_SHAPED_REQUEST[..cut]);
         }
+        Ok(())
     }
 
     /// An error response reports the code rather than reading as silence.
     #[test]
-    fn an_error_response_carries_its_code() {
+    fn an_error_response_carries_its_code() -> Result<(), TestError> {
         let mut m = Vec::new();
         m.extend_from_slice(&0x0111u16.to_be_bytes()); // Binding error
         m.extend_from_slice(&8u16.to_be_bytes());
@@ -1197,9 +1220,10 @@ mod tests {
         m.extend_from_slice(&0x0009u16.to_be_bytes()); // ERROR-CODE
         m.extend_from_slice(&4u16.to_be_bytes());
         m.extend_from_slice(&[0x00, 0x00, 0x04, 0x01]); // class 4, number 1 => 401
-        let msg = parse(&m).expect("parses");
+        let msg = parse(&m).ok_or("parses")?;
         assert_eq!(msg.class, StunClass::ErrorResponse);
         assert_eq!(msg.error_code, Some(401));
+        Ok(())
     }
 }
 
@@ -2569,6 +2593,9 @@ pub fn reset() {
 mod message_length_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A STUN message whose declared length is not a multiple of four,
     /// otherwise well formed.
     fn odd_length(declared: u16) -> Vec<u8> {
@@ -2593,7 +2620,7 @@ mod message_length_tests {
     /// shape. Every additional bit that must be zero is another datagram this
     /// cannot claim, and the RFC offers these two for exactly that purpose.
     #[test]
-    fn a_length_that_is_not_a_multiple_of_four_is_not_a_stun_message() {
+    fn a_length_that_is_not_a_multiple_of_four_is_not_a_stun_message() -> Result<(), TestError> {
         for declared in [1u16, 2, 3, 5, 6, 7, 13, 15] {
             assert!(
                 parse(&odd_length(declared)).is_none(),
@@ -2602,6 +2629,7 @@ mod message_length_tests {
                  discriminator the RFC hands us"
             );
         }
+        Ok(())
     }
 
     /// And the multiples still parse, so the check discriminates rather than
@@ -2611,7 +2639,7 @@ mod message_length_tests {
     /// operator wrong would refuse every STUN message on the wire, and every
     /// assertion above would still pass.
     #[test]
-    fn a_length_that_is_a_multiple_of_four_still_parses() {
+    fn a_length_that_is_a_multiple_of_four_still_parses() -> Result<(), TestError> {
         for declared in [0u16, 4, 8, 12, 16] {
             let m = odd_length(declared);
             assert!(
@@ -2619,6 +2647,7 @@ mod message_length_tests {
                 "declared length {declared} is a legal STUN length and must parse"
             );
         }
+        Ok(())
     }
 }
 
@@ -2626,10 +2655,13 @@ mod message_length_tests {
 mod turn_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed capture timestamp `ms` milliseconds into an imaginary capture,
     /// so the timing assertions do not depend on when the test ran.
     pub(super) fn ts(ms: i64) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid timestamp")
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_700_000_000_000 + ms)
     }
 
     fn message(msg_type: u16, txn: [u8; 12], attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
@@ -2665,9 +2697,9 @@ mod turn_tests {
     /// knowing TURN exists — but its METHOD must be identified, because an
     /// unanswered Allocate is a different fault from an unanswered Binding.
     #[test]
-    fn an_allocate_request_is_identified_as_turn_not_binding() {
+    fn an_allocate_request_is_identified_as_turn_not_binding() -> Result<(), TestError> {
         let m = message(0x0003, [0x01; 12], &[]);
-        let msg = parse(&m).expect("TURN shares the STUN header, so this parses");
+        let msg = parse(&m).ok_or("TURN shares the STUN header, so this parses")?;
         assert_eq!(msg.class, StunClass::Request);
         assert!(msg.is_allocate_request());
         assert!(
@@ -2675,12 +2707,13 @@ mod turn_tests {
             "Allocate must not be counted as a Binding: they fail for different reasons"
         );
         assert_eq!(msg.method_name(), "Allocate");
+        Ok(())
     }
 
     /// The relayed address is the TURN answer an endpoint advertises, so it
     /// must survive the same XOR decoding as XOR-MAPPED-ADDRESS.
     #[test]
-    fn an_allocate_response_yields_the_relayed_address() {
+    fn an_allocate_response_yields_the_relayed_address() -> Result<(), TestError> {
         let m = message(
             0x0103, // Allocate success
             [0x02; 12],
@@ -2689,19 +2722,20 @@ mod turn_tests {
                 (0x000D, 600u32.to_be_bytes().to_vec()),
             ],
         );
-        let msg = parse(&m).expect("parses");
+        let msg = parse(&m).ok_or("parses")?;
         assert_eq!(msg.method_name(), "Allocate");
         assert_eq!(
             msg.relayed_address.map(|a| a.to_string()),
             Some("198.51.100.20:49160".to_string())
         );
         assert_eq!(msg.lifetime, Some(600));
+        Ok(())
     }
 
     /// ChannelData is the one TURN framing the STUN parser cannot read, and it
     /// must be told apart from both STUN and RTP by its high bits alone.
     #[test]
-    fn channel_data_is_recognized_and_never_confused_with_stun_or_rtp() {
+    fn channel_data_is_recognized_and_never_confused_with_stun_or_rtp() -> Result<(), TestError> {
         let mut cd = vec![0x40, 0x01, 0x00, 0x04];
         cd.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
         assert!(is_channel_data(&cd));
@@ -2717,6 +2751,7 @@ mod turn_tests {
 
         // A STUN request starts 0x00 and is likewise outside the range.
         assert!(!is_channel_data(&FIELD_SHAPED_REQUEST_FOR_CD()));
+        Ok(())
     }
 
     #[allow(non_snake_case)]
@@ -2729,19 +2764,22 @@ mod turn_tests {
     /// that never clears both report zero unanswered on a healthy capture.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_answered_request_is_struck_off_and_an_unanswered_one_stands() {
+    fn an_answered_request_is_struck_off_and_an_unanswered_one_stands() -> Result<(), TestError> {
         reset();
-        let src: SocketAddr = "192.0.2.10:5060".parse().unwrap();
-        let dst: SocketAddr = "198.51.100.1:3478".parse().unwrap();
+        let src: SocketAddr = "192.0.2.10:5060".parse()?;
+        let dst: SocketAddr = "198.51.100.1:3478".parse()?;
 
-        let asked = parse(&message(0x0001, [0xAA; 12], &[])).unwrap();
-        let ignored = parse(&message(0x0001, [0xBB; 12], &[])).unwrap();
+        let asked = parse(&message(0x0001, [0xAA; 12], &[]))
+            .ok_or("parse(&message(0x0001, [0xAA; 12], &[])) is None")?;
+        let ignored = parse(&message(0x0001, [0xBB; 12], &[]))
+            .ok_or("parse(&message(0x0001, [0xBB; 12], &[])) is None")?;
         note_message(&asked, src, dst, ts(0));
         note_message(&ignored, src, dst, ts(0));
         // The ignored one is retransmitted: one question, two attempts.
         note_message(&ignored, src, dst, ts(500));
 
-        let answer = parse(&message(0x0101, [0xAA; 12], &[])).unwrap();
+        let answer = parse(&message(0x0101, [0xAA; 12], &[]))
+            .ok_or("parse(&message(0x0101, [0xAA; 12], &[])) is None")?;
         note_message(&answer, dst, src, ts(30));
 
         let (unanswered, answered) = unanswered_requests();
@@ -2753,6 +2791,7 @@ mod turn_tests {
         );
         assert_eq!(unanswered[0].method, "Binding");
         reset();
+        Ok(())
     }
 
     /// An ERROR response is an ANSWER. The server was reachable and said no,
@@ -2760,18 +2799,19 @@ mod turn_tests {
     /// it must not be reported as unanswered.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_error_response_counts_as_answered() {
+    fn an_error_response_counts_as_answered() -> Result<(), TestError> {
         reset();
-        let src: SocketAddr = "192.0.2.10:5060".parse().unwrap();
-        let dst: SocketAddr = "198.51.100.1:3478".parse().unwrap();
-        let asked = parse(&message(0x0001, [0xCC; 12], &[])).unwrap();
+        let src: SocketAddr = "192.0.2.10:5060".parse()?;
+        let dst: SocketAddr = "198.51.100.1:3478".parse()?;
+        let asked = parse(&message(0x0001, [0xCC; 12], &[]))
+            .ok_or("parse(&message(0x0001, [0xCC; 12], &[])) is None")?;
         note_message(&asked, src, dst, ts(0));
         let refused = parse(&message(
             0x0111,
             [0xCC; 12],
             &[(0x0009, vec![0, 0, 0x04, 0x01])],
         ))
-        .unwrap();
+        .ok_or(" is None")?;
         assert_eq!(refused.error_code, Some(401));
         note_message(&refused, dst, src, ts(10));
 
@@ -2783,6 +2823,7 @@ mod turn_tests {
         );
         assert_eq!(answered, 1);
         reset();
+        Ok(())
     }
 }
 
@@ -2790,11 +2831,14 @@ mod turn_tests {
 mod channel_unwrap_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The RTP inside a ChannelData wrapper must come back out, or a relayed
     /// call reports as having no media — indistinguishable from a call that
     /// carried none.
     #[test]
-    fn the_media_inside_a_channel_wrapper_is_recovered() {
+    fn the_media_inside_a_channel_wrapper_is_recovered() -> Result<(), TestError> {
         // A minimal RTP packet: version 2, PT 0, seq 1.
         let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
         rtp.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
@@ -2805,7 +2849,7 @@ mod channel_unwrap_tests {
         wrapped.extend_from_slice(&(rtp.len() as u16).to_be_bytes());
         wrapped.extend_from_slice(&rtp);
 
-        let inner = channel_data_payload(&wrapped).expect("a wrapper must unwrap");
+        let inner = channel_data_payload(&wrapped).ok_or("a wrapper must unwrap")?;
         assert_eq!(
             inner,
             &rtp[..],
@@ -2813,12 +2857,13 @@ mod channel_unwrap_tests {
         );
         // And the unwrapped bytes must look like RTP to the rest of the stack.
         assert_eq!(inner[0] >> 6, 2, "RTP version 2 survives the unwrap");
+        Ok(())
     }
 
     /// Anything that is not a wrapper yields nothing, so this cannot invent a
     /// payload out of ordinary media or signaling.
     #[test]
-    fn nothing_else_unwraps() {
+    fn nothing_else_unwraps() -> Result<(), TestError> {
         assert!(channel_data_payload(b"INVITE sip:a@b SIP/2.0\r\n").is_none());
         let mut rtp = vec![0x80, 0x00, 0x00, 0x01];
         rtp.extend_from_slice(&[0u8; 20]);
@@ -2830,12 +2875,16 @@ mod channel_unwrap_tests {
             channel_data_payload(&[0x40, 0x01, 0xff, 0xff, 0x00]).is_none(),
             "a wrapper claiming more than it holds yields nothing rather than a short read"
         );
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod attribute_coverage_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut body = Vec::new();
@@ -2860,7 +2909,7 @@ mod attribute_coverage_tests {
     /// Without the realm the two read alike, and they are fixed in different
     /// places: one needs credentials, the other needs a firewall rule.
     #[test]
-    fn an_auth_challenge_is_distinguishable_from_a_blocked_path() {
+    fn an_auth_challenge_is_distinguishable_from_a_blocked_path() -> Result<(), TestError> {
         let m = msg(
             0x0111, // Binding error
             &[
@@ -2869,7 +2918,7 @@ mod attribute_coverage_tests {
                 (0x0015, b"dcd98b7102dd2f0e".to_vec()), // NONCE
             ],
         );
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.error_code, Some(401));
         assert_eq!(parsed.realm.as_deref(), Some("example.org"));
         assert!(parsed.nonce_present, "a nonce means a challenge to answer");
@@ -2877,39 +2926,42 @@ mod attribute_coverage_tests {
             parsed.is_auth_challenge(),
             "401 plus a realm is a challenge, and must not read as silence"
         );
+        Ok(())
     }
 
     /// A 400 is not a challenge: no realm, nothing to answer.
     #[test]
-    fn a_plain_error_is_not_an_auth_challenge() {
+    fn a_plain_error_is_not_an_auth_challenge() -> Result<(), TestError> {
         let m = msg(0x0111, &[(0x0009, vec![0, 0, 0x04, 0x00])]);
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.error_code, Some(400));
         assert!(!parsed.is_auth_challenge());
         assert_eq!(parsed.realm, None);
+        Ok(())
     }
 
     /// Legacy MAPPED-ADDRESS: pre-RFC5389 servers still answer with it, and
     /// without it a SUCCESSFUL response reads as "no address returned".
     #[test]
-    fn a_legacy_mapped_address_is_still_an_answer() {
+    fn a_legacy_mapped_address_is_still_an_answer() -> Result<(), TestError> {
         // Not XOR'd: family 0x01, port and address in the clear.
         let mut v = vec![0, 0x01];
         v.extend_from_slice(&8080u16.to_be_bytes());
         v.extend_from_slice(&[203, 0, 113, 9]);
         let m = msg(0x0101, &[(0x0001, v)]);
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(
             parsed.mapped_address.map(|a| a.to_string()),
             Some("203.0.113.9:8080".to_string()),
             "a legacy server's answer must not read as no answer at all"
         );
+        Ok(())
     }
 
     /// XOR-MAPPED-ADDRESS wins when both are present: RFC 5389 servers send
     /// both for compatibility, and the XOR one is the one NAT cannot corrupt.
     #[test]
-    fn the_xor_form_wins_when_both_are_present() {
+    fn the_xor_form_wins_when_both_are_present() -> Result<(), TestError> {
         let cookie = MAGIC_COOKIE.to_be_bytes();
         let mut xor = vec![0, 0x01];
         xor.extend_from_slice(&(9000u16 ^ ((MAGIC_COOKIE >> 16) as u16)).to_be_bytes());
@@ -2921,34 +2973,39 @@ mod attribute_coverage_tests {
         legacy.extend_from_slice(&[203, 0, 113, 9]);
 
         let m = msg(0x0101, &[(0x0001, legacy), (0x0020, xor)]);
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(
             parsed.mapped_address.map(|a| a.to_string()),
             Some("198.51.100.7:9000".to_string()),
             "the XOR form is the one a NAT cannot rewrite, so it must win"
         );
+        Ok(())
     }
 
     /// ALTERNATE-SERVER: a redirect, which without parsing reads as a failure.
     #[test]
-    fn a_redirect_names_where_it_points() {
+    fn a_redirect_names_where_it_points() -> Result<(), TestError> {
         let mut v = vec![0, 0x01];
         v.extend_from_slice(&3478u16.to_be_bytes());
         v.extend_from_slice(&[192, 0, 2, 50]);
         let m = msg(0x0111, &[(0x0009, vec![0, 0, 0x03, 0x00]), (0x8023, v)]);
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.error_code, Some(300));
         assert_eq!(
             parsed.alternate_server.map(|a| a.to_string()),
             Some("192.0.2.50:3478".to_string()),
             "a redirect that does not name its target reads as a dead end"
         );
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod fingerprint_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// FINGERPRINT is CRC-32 of the message XOR 0x5354554e, over a header
     /// whose length field counts the attribute itself. Verifiable with NO
@@ -2988,40 +3045,46 @@ mod fingerprint_tests {
     /// A correct fingerprint verifies, and that is a claim sipnab can honestly
     /// make: it needs no key, so it is not the unverifiable case.
     #[test]
-    fn a_correct_fingerprint_verifies() {
+    fn a_correct_fingerprint_verifies() -> Result<(), TestError> {
         let m = with_fingerprint(0x0001, Vec::new());
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(
             parsed.fingerprint_valid,
             Some(true),
             "a fingerprint sipnab can check must report as checked and good"
         );
+        Ok(())
     }
 
     /// A corrupted one reports FALSE, not None. None means "absent"; false
     /// means "present and wrong", and conflating them would turn a corrupt
     /// message into a message with nothing to say.
     #[test]
-    fn a_corrupt_fingerprint_reports_false_not_absent() {
+    fn a_corrupt_fingerprint_reports_false_not_absent() -> Result<(), TestError> {
         let mut m = with_fingerprint(0x0001, Vec::new());
         let n = m.len();
         m[n - 1] ^= 0xFF;
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.fingerprint_valid, Some(false));
+        Ok(())
     }
 
     /// No FINGERPRINT at all is None: sipnab did not check, and must not imply
     /// it did.
     #[test]
-    fn an_absent_fingerprint_is_none() {
-        let parsed = parse(&super::tests::FIELD_SHAPED_REQUEST).expect("parses");
+    fn an_absent_fingerprint_is_none() -> Result<(), TestError> {
+        let parsed = parse(&super::tests::FIELD_SHAPED_REQUEST).ok_or("parses")?;
         assert_eq!(parsed.fingerprint_valid, None);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod ice_and_turn_attribute_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut body = Vec::new();
@@ -3046,7 +3109,7 @@ mod ice_and_turn_attribute_tests {
     /// will use. Without it a capture of a working ICE exchange and a capture
     /// of one that never converged look the same.
     #[test]
-    fn a_nominated_candidate_is_reported() {
+    fn a_nominated_candidate_is_reported() -> Result<(), TestError> {
         let m = msg(
             0x0001,
             &[
@@ -3054,28 +3117,30 @@ mod ice_and_turn_attribute_tests {
                 (0x0024, 0x7E00_00FFu32.to_be_bytes().to_vec()),
             ],
         );
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert!(parsed.use_candidate, "the nomination is the whole finding");
         assert_eq!(parsed.priority, Some(0x7E00_00FF));
+        Ok(())
     }
 
     /// The controlling/controlled roles say which side drives nomination, and
     /// a capture where BOTH claim controlling is a role conflict -- a real
     /// misconfiguration that otherwise shows up only as media never starting.
     #[test]
-    fn the_ice_role_is_reported_for_both_sides() {
-        let controlling = parse(&msg(0x0001, &[(0x802A, vec![0; 8])])).expect("parses");
+    fn the_ice_role_is_reported_for_both_sides() -> Result<(), TestError> {
+        let controlling = parse(&msg(0x0001, &[(0x802A, vec![0; 8])])).ok_or("parses")?;
         assert_eq!(controlling.ice_role, Some(IceRole::Controlling));
-        let controlled = parse(&msg(0x0001, &[(0x8029, vec![0; 8])])).expect("parses");
+        let controlled = parse(&msg(0x0001, &[(0x8029, vec![0; 8])])).ok_or("parses")?;
         assert_eq!(controlled.ice_role, Some(IceRole::Controlled));
-        let neither = parse(&msg(0x0001, &[])).expect("parses");
+        let neither = parse(&msg(0x0001, &[])).ok_or("parses")?;
         assert_eq!(neither.ice_role, None, "not an ICE exchange, so no role");
+        Ok(())
     }
 
     /// TURN CHANNEL-NUMBER and REQUESTED-TRANSPORT explain a relay path: which
     /// channel carries the media, and over what transport it was asked for.
     #[test]
-    fn turn_channel_and_transport_are_reported() {
+    fn turn_channel_and_transport_are_reported() -> Result<(), TestError> {
         let m = msg(
             0x0009, // ChannelBind
             &[
@@ -3083,16 +3148,20 @@ mod ice_and_turn_attribute_tests {
                 (0x0019, vec![17, 0, 0, 0]),      // REQUESTED-TRANSPORT UDP
             ],
         );
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.method_name(), "ChannelBind");
         assert_eq!(parsed.channel_number, Some(0x4002));
         assert_eq!(parsed.requested_transport, Some(17), "17 is UDP");
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod turn_allocation_attribute_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     fn msg(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut body = Vec::new();
@@ -3117,7 +3186,7 @@ mod turn_allocation_attribute_tests {
     /// Without them a request for an IPv6 relay and one for an IPv4 relay are
     /// the same row, and a `440` refusal has no visible cause.
     #[test]
-    fn an_allocate_request_reports_the_shape_it_asked_for() {
+    fn an_allocate_request_reports_the_shape_it_asked_for() -> Result<(), TestError> {
         let m = msg(
             0x0003, // Allocate request
             &[
@@ -3127,7 +3196,7 @@ mod turn_allocation_attribute_tests {
                 (0x001a, Vec::new()),          // DONT-FRAGMENT
             ],
         );
-        let parsed = parse(&m).expect("parses");
+        let parsed = parse(&m).ok_or("parses")?;
         assert_eq!(parsed.requested_transport, Some(17));
         assert_eq!(parsed.requested_address_family, Some(0x02), "IPv6");
         assert_eq!(
@@ -3136,45 +3205,48 @@ mod turn_allocation_attribute_tests {
             "the R bit is the ask that reserves the RTCP port beside the RTP one"
         );
         assert!(parsed.dont_fragment);
+        Ok(())
     }
 
     /// EVEN-PORT without the R bit is a DIFFERENT ask, and absent is a third
     /// state. Collapsing any two of the three would misreport the request.
     #[test]
-    fn even_port_distinguishes_asked_asked_with_reservation_and_absent() {
-        let with_r = parse(&msg(0x0003, &[(0x0018, vec![0x80])])).expect("parses");
+    fn even_port_distinguishes_asked_asked_with_reservation_and_absent() -> Result<(), TestError> {
+        let with_r = parse(&msg(0x0003, &[(0x0018, vec![0x80])])).ok_or("parses")?;
         assert_eq!(with_r.even_port, Some(true));
-        let without_r = parse(&msg(0x0003, &[(0x0018, vec![0x00])])).expect("parses");
+        let without_r = parse(&msg(0x0003, &[(0x0018, vec![0x00])])).ok_or("parses")?;
         assert_eq!(without_r.even_port, Some(false));
-        let absent = parse(&msg(0x0003, &[])).expect("parses");
+        let absent = parse(&msg(0x0003, &[])).ok_or("parses")?;
         assert_eq!(
             absent.even_port, None,
             "absent is not the same as not asked"
         );
+        Ok(())
     }
 
     /// RESERVATION-TOKEN is what claims the port an earlier EVEN-PORT
     /// reserved, so a capture where the second Allocate carries no token
     /// explains why the pair was not honored.
     #[test]
-    fn a_reservation_token_survives_as_all_sixty_four_bits() {
+    fn a_reservation_token_survives_as_all_sixty_four_bits() -> Result<(), TestError> {
         let token: u64 = 0x0123_4567_89ab_cdef;
         let m = msg(0x0003, &[(0x0022, token.to_be_bytes().to_vec())]);
-        assert_eq!(parse(&m).expect("parses").reservation_token, Some(token));
+        assert_eq!(parse(&m).ok_or("parses")?.reservation_token, Some(token));
         // A short token is refused rather than padded: half a token is not a
         // token, and reporting one would name a reservation nobody made.
         let short = msg(0x0003, &[(0x0022, vec![0x01, 0x23, 0x45, 0x67])]);
-        assert_eq!(parse(&short).expect("parses").reservation_token, None);
+        assert_eq!(parse(&short).ok_or("parses")?.reservation_token, None);
+        Ok(())
     }
 
     /// DATA locates the relayed payload inside the message rather than copying
     /// it, so a caller can re-slice its own buffer.
     #[test]
-    fn a_data_attribute_locates_the_relayed_payload() {
+    fn a_data_attribute_locates_the_relayed_payload() -> Result<(), TestError> {
         let payload: Vec<u8> = (0u8..16).collect();
         let m = msg(0x0016, &[(0x0013, payload.clone())]); // Send indication
-        let parsed = parse(&m).expect("parses");
-        let range = parsed.data.expect("DATA must be located");
+        let parsed = parse(&m).ok_or("parses")?;
+        let range = parsed.data.ok_or("DATA must be located")?;
         assert_eq!(
             &m[range],
             &payload[..],
@@ -3183,7 +3255,8 @@ mod turn_allocation_attribute_tests {
         // An empty DATA relays nothing and must not produce a zero-length
         // range for a caller to slice with.
         let empty = msg(0x0016, &[(0x0013, Vec::new())]);
-        assert_eq!(parse(&empty).expect("parses").data, None);
+        assert_eq!(parse(&empty).ok_or("parses")?.data, None);
+        Ok(())
     }
 
     /// A truncated LIFETIME must be REFUSED, never zero-extended. Reading two
@@ -3191,18 +3264,19 @@ mod turn_allocation_attribute_tests {
     /// `expired_before_last_activity` draws a conclusion from exactly that
     /// number, so a fabricated one produces a fabricated finding.
     #[test]
-    fn a_truncated_lifetime_is_refused_rather_than_zero_extended() {
+    fn a_truncated_lifetime_is_refused_rather_than_zero_extended() -> Result<(), TestError> {
         let full = msg(0x0103, &[(0x000D, 600u32.to_be_bytes().to_vec())]);
-        assert_eq!(parse(&full).expect("parses").lifetime, Some(600));
+        assert_eq!(parse(&full).ok_or("parses")?.lifetime, Some(600));
         for short in [vec![0x02u8], vec![0x02, 0x58], vec![0x00, 0x02, 0x58]] {
             let m = msg(0x0103, &[(0x000D, short.clone())]);
             assert_eq!(
-                parse(&m).expect("parses").lifetime,
+                parse(&m).ok_or("parses")?.lifetime,
                 None,
                 "a {}-byte LIFETIME must not become a number",
                 short.len()
             );
         }
+        Ok(())
     }
 }
 
@@ -3210,13 +3284,16 @@ mod turn_allocation_attribute_tests {
 mod channel_framing_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The tightened rule. A stray datagram whose first two bytes land in the
     /// channel-number window and whose length field describes only part of it
     /// is NOT a relay frame — and the old floor (`len >= 4 + declared`)
     /// accepted it, then let the pipeline re-classify whatever followed. That
     /// is the phantom-stream class arrived at from the other side.
     #[test]
-    fn a_datagram_the_frame_does_not_account_for_is_not_channel_data() {
+    fn a_datagram_the_frame_does_not_account_for_is_not_channel_data() -> Result<(), TestError> {
         let mut stray = vec![0x40, 0x01, 0x00, 0x08];
         stray.extend_from_slice(&[0xaa; 8]);
         assert!(is_channel_data(&stray), "the exact frame is one");
@@ -3226,12 +3303,13 @@ mod channel_framing_tests {
             "over UDP the frame must account for the whole datagram"
         );
         assert!(channel_data_payload(&stray).is_none());
+        Ok(())
     }
 
     /// The optional padding [RFC 5766 section 11.5](https://www.rfc-editor.org/rfc/rfc5766#section-11.5) allows over a datagram transport
     /// must still be accepted, or a conformant sender's media disappears.
     #[test]
-    fn the_optional_datagram_padding_is_accepted() {
+    fn the_optional_datagram_padding_is_accepted() -> Result<(), TestError> {
         let mut unpadded = vec![0x40, 0x02, 0x00, 0x0d];
         unpadded.extend_from_slice(&[0xaa; 13]);
         assert!(is_channel_data(&unpadded));
@@ -3239,17 +3317,18 @@ mod channel_framing_tests {
         padded.extend_from_slice(&[0x00; 3]);
         assert!(is_channel_data(&padded));
         assert_eq!(
-            channel_data_payload(&padded).expect("unwraps").len(),
+            channel_data_payload(&padded).ok_or("unwraps")?.len(),
             13,
             "the padding is framing, not payload"
         );
+        Ok(())
     }
 
     /// On a byte stream the padding is mandatory and the next frame may
     /// follow, so the rule is "the padded frame fits" rather than "the frame
     /// is the whole buffer".
     #[test]
-    fn stream_framing_allows_a_following_frame() {
+    fn stream_framing_allows_a_following_frame() -> Result<(), TestError> {
         let mut data = vec![0x40, 0x03, 0x00, 0x0d];
         data.extend_from_slice(&[0xaa; 13]);
         data.extend_from_slice(&[0x00; 3]); // padding
@@ -3261,28 +3340,30 @@ mod channel_framing_tests {
         );
         assert_eq!(
             channel_data_payload_framed(&data, ChannelDataFraming::Stream)
-                .expect("unwraps")
+                .ok_or("unwraps")?
                 .len(),
             13
         );
+        Ok(())
     }
 
     /// A zero-length frame carries nothing, and accepting it would let ANY
     /// four-byte datagram starting in the window be claimed as relayed media —
     /// the one shape where every other check passes for free.
     #[test]
-    fn a_zero_length_frame_is_refused() {
+    fn a_zero_length_frame_is_refused() -> Result<(), TestError> {
         assert!(!is_channel_data(&[0x40, 0x01, 0x00, 0x00]));
         assert!(!is_channel_data_framed(
             &[0x40, 0x01, 0x00, 0x00],
             ChannelDataFraming::Stream
         ));
+        Ok(())
     }
 
     /// No input of any length may panic: this runs on the first four bytes of
     /// arbitrary UDP.
     #[test]
-    fn arbitrary_input_never_panics() {
+    fn arbitrary_input_never_panics() -> Result<(), TestError> {
         let mut seed: u32 = 0x1234_5678;
         for len in 0..64usize {
             let mut buf = vec![0u8; len];
@@ -3294,6 +3375,7 @@ mod channel_framing_tests {
             let _ = is_channel_data_framed(&buf, ChannelDataFraming::Stream);
             let _ = channel_data_payload(&buf);
         }
+        Ok(())
     }
 }
 
@@ -3301,6 +3383,9 @@ mod channel_framing_tests {
 mod allocation_tracking_tests {
     use super::turn_tests::ts;
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     fn message(msg_type: u16, txn: [u8; 12], attrs: &[(u16, Vec<u8>)]) -> Vec<u8> {
         let mut body = Vec::new();
@@ -3332,7 +3417,7 @@ mod allocation_tracking_tests {
     }
 
     fn client() -> SocketAddr {
-        "192.0.2.10:50000".parse().expect("valid addr")
+        std::net::SocketAddr::from(([192, 0, 2, 10], 50000))
     }
 
     /// A ChannelData frame on `channel` wrapping a 172-byte RTP packet whose
@@ -3354,12 +3439,12 @@ mod allocation_tracking_tests {
         frame
     }
     fn server() -> SocketAddr {
-        "198.51.100.20:3478".parse().expect("valid addr")
+        std::net::SocketAddr::from(([198, 51, 100, 20], 3478))
     }
 
     /// Grant an allocation with `lifetime` seconds at t=0.
-    fn allocate(lifetime: u32) {
-        let req = parse(&message(0x0003, [0x11; 12], &[])).expect("parses");
+    fn allocate(lifetime: u32) -> Result<(), TestError> {
+        let req = parse(&message(0x0003, [0x11; 12], &[])).ok_or("parses")?;
         note_message(&req, client(), server(), ts(0));
         let resp = parse(&message(
             0x0103,
@@ -3369,8 +3454,9 @@ mod allocation_tracking_tests {
                 (0x000D, lifetime.to_be_bytes().to_vec()),
             ],
         ))
-        .expect("parses");
+        .ok_or("parses")?;
         note_message(&resp, server(), client(), ts(10));
+        Ok(())
     }
 
     /// The finding: traffic still crossing the relay after the last granted
@@ -3379,9 +3465,9 @@ mod allocation_tracking_tests {
     /// message anywhere to explain it.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_allocation_still_carrying_traffic_past_its_lifetime_is_lapsed() {
+    fn an_allocation_still_carrying_traffic_past_its_lifetime_is_lapsed() -> Result<(), TestError> {
         reset();
-        allocate(60);
+        allocate(60)?;
         // Relayed media a minute and a half in, long after the 60s grant.
         note_channel_data(
             client(),
@@ -3403,6 +3489,7 @@ mod allocation_tracking_tests {
         assert_eq!(lapsed[0].seconds_past_expiry(), Some(29));
         assert_eq!(report.channel_data_frames, 1);
         reset();
+        Ok(())
     }
 
     /// A Refresh that arrives in time moves the expiry, so the same traffic is
@@ -3410,17 +3497,17 @@ mod allocation_tracking_tests {
     /// long call.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_refresh_that_kept_up_is_not_a_lapse() {
+    fn a_refresh_that_kept_up_is_not_a_lapse() -> Result<(), TestError> {
         reset();
-        allocate(60);
-        let req = parse(&message(0x0004, [0x22; 12], &[])).expect("parses");
+        allocate(60)?;
+        let req = parse(&message(0x0004, [0x22; 12], &[])).ok_or("parses")?;
         note_message(&req, client(), server(), ts(50_000));
         let resp = parse(&message(
             0x0104,
             [0x22; 12],
             &[(0x000D, 600u32.to_be_bytes().to_vec())],
         ))
-        .expect("parses");
+        .ok_or("parses")?;
         note_message(&resp, server(), client(), ts(50_010));
         note_channel_data(
             client(),
@@ -3432,6 +3519,7 @@ mod allocation_tracking_tests {
         assert_eq!(report().lapsed_allocations().count(), 0);
         assert_eq!(report().allocations[0].refreshes, 1);
         reset();
+        Ok(())
     }
 
     /// A Refresh with `LIFETIME` 0 is a deliberate RELEASE ([RFC 5766 section 7](https://www.rfc-editor.org/rfc/rfc5766#section-7)). The
@@ -3439,17 +3527,17 @@ mod allocation_tracking_tests {
     /// stray packet arriving afterwards must not turn it into one.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_released_allocation_is_never_reported_as_lapsed() {
+    fn a_released_allocation_is_never_reported_as_lapsed() -> Result<(), TestError> {
         reset();
-        allocate(60);
-        let req = parse(&message(0x0004, [0x33; 12], &[])).expect("parses");
+        allocate(60)?;
+        let req = parse(&message(0x0004, [0x33; 12], &[])).ok_or("parses")?;
         note_message(&req, client(), server(), ts(20_000));
         let resp = parse(&message(
             0x0104,
             [0x33; 12],
             &[(0x000D, 0u32.to_be_bytes().to_vec())],
         ))
-        .expect("parses");
+        .ok_or("parses")?;
         note_message(&resp, server(), client(), ts(20_010));
         note_channel_data(
             client(),
@@ -3465,13 +3553,14 @@ mod allocation_tracking_tests {
             "a release the client asked for is not a relay that lapsed under it"
         );
         reset();
+        Ok(())
     }
 
     /// Relayed media must never CREATE an allocation. Inventing one from a
     /// stray frame would put a lifetime on something no server ever granted.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn relayed_media_without_an_allocation_records_nothing() {
+    fn relayed_media_without_an_allocation_records_nothing() -> Result<(), TestError> {
         reset();
         note_channel_data(
             client(),
@@ -3486,6 +3575,7 @@ mod allocation_tracking_tests {
             "the relaxed-atomic fast path must skip the store entirely"
         );
         reset();
+        Ok(())
     }
 
     /// The transaction table keeps ANSWERED transactions too, which is what
@@ -3494,16 +3584,16 @@ mod allocation_tracking_tests {
     /// handed and did not use.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn answered_transactions_stay_in_the_table_with_their_addresses() {
+    fn answered_transactions_stay_in_the_table_with_their_addresses() -> Result<(), TestError> {
         reset();
-        let req = parse(&message(0x0001, [0x44; 12], &[])).expect("parses");
+        let req = parse(&message(0x0001, [0x44; 12], &[])).ok_or("parses")?;
         note_message(&req, client(), server(), ts(0));
         let resp = parse(&message(
             0x0101,
             [0x44; 12],
             &[(0x0020, xor_v4([203, 0, 113, 5], 12262))],
         ))
-        .expect("parses");
+        .ok_or("parses")?;
         note_message(&resp, server(), client(), ts(7));
 
         let report = report();
@@ -3517,6 +3607,7 @@ mod allocation_tracking_tests {
         assert!(!tx.is_unanswered());
         assert_eq!(report.unanswered().count(), 0);
         reset();
+        Ok(())
     }
 
     /// A CreatePermission that goes unanswered is NOT reported as a failed
@@ -3525,11 +3616,11 @@ mod allocation_tracking_tests {
     /// failed under the ones that followed it.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn only_binding_and_allocate_silence_counts_as_a_fault() {
+    fn only_binding_and_allocate_silence_counts_as_a_fault() -> Result<(), TestError> {
         reset();
-        let perm = parse(&message(0x0008, [0x55; 12], &[])).expect("parses");
+        let perm = parse(&message(0x0008, [0x55; 12], &[])).ok_or("parses")?;
         note_message(&perm, client(), server(), ts(0));
-        let bind = parse(&message(0x0001, [0x66; 12], &[])).expect("parses");
+        let bind = parse(&message(0x0001, [0x66; 12], &[])).ok_or("parses")?;
         note_message(&bind, client(), server(), ts(1));
 
         let report = report();
@@ -3543,6 +3634,7 @@ mod allocation_tracking_tests {
         assert_eq!(unanswered.len(), 1);
         assert_eq!(unanswered[0].method, "Binding");
         reset();
+        Ok(())
     }
 }
 
@@ -3550,6 +3642,9 @@ mod allocation_tracking_tests {
 mod ice_state_tests {
     use super::turn_tests::ts;
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// One agent, one peer, one check. Attributes are written out as literal
     /// bytes rather than assembled by anything in this module, so a parser
@@ -3612,23 +3707,28 @@ mod ice_state_tests {
         ]
     }
 
-    fn agent_a() -> SocketAddr {
-        "192.0.2.10:50004".parse().expect("valid addr")
+    fn agent_a() -> Result<SocketAddr, TestError> {
+        Ok("192.0.2.10:50004"
+            .parse()
+            .map_err(|e| format!("valid addr: {e:?}"))?)
     }
-    fn agent_b() -> SocketAddr {
-        "203.0.113.9:16000".parse().expect("valid addr")
+    fn agent_b() -> Result<SocketAddr, TestError> {
+        Ok("203.0.113.9:16000"
+            .parse()
+            .map_err(|e| format!("valid addr: {e:?}"))?)
     }
 
     /// The literal success bytes above must decode to the address they were
     /// written for. Without this the two tests below could both be satisfied
     /// by a decoder that produced nonsense consistently.
     #[test]
-    fn the_literal_success_bytes_decode_to_the_address_they_encode() {
-        let msg = parse(&success(0x11)).expect("parses");
+    fn the_literal_success_bytes_decode_to_the_address_they_encode() -> Result<(), TestError> {
+        let msg = parse(&success(0x11)).ok_or("parses")?;
         assert_eq!(
             msg.mapped_address.map(|a| a.to_string()).as_deref(),
             Some("192.0.2.10:50004")
         );
+        Ok(())
     }
 
     /// A connectivity check is a Binding Request carrying the ICE attributes
@@ -3637,26 +3737,29 @@ mod ice_state_tests {
     /// would read as an ICE check that failed.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_server_reflexive_probe_is_not_counted_as_an_ice_check() {
+    fn a_server_reflexive_probe_is_not_counted_as_an_ice_check() -> Result<(), TestError> {
         reset();
-        let probe = parse(&check(0x01, None, None, false)).expect("parses");
+        let probe = parse(&check(0x01, None, None, false)).ok_or("parses")?;
         note_message(
             &probe,
-            agent_a(),
-            "198.51.100.20:3478".parse().expect("addr"),
+            agent_a()?,
+            "198.51.100.20:3478"
+                .parse()
+                .map_err(|e| format!("addr: {e:?}"))?,
             ts(0),
         );
         let ice = report().ice_summary();
         assert_eq!(ice.checks, 0, "a bare Binding Request is not an ICE check");
         assert!(ice.is_empty());
         reset();
+        Ok(())
     }
 
     /// The nomination, which is the ICE analogue of the mapped address: it
     /// names the path the media actually took.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_nominated_pair_is_reported_once_the_peer_agrees() {
+    fn a_nominated_pair_is_reported_once_the_peer_agrees() -> Result<(), TestError> {
         reset();
         let nominating = parse(&check(
             0x12,
@@ -3664,22 +3767,23 @@ mod ice_state_tests {
             Some(IceRole::Controlling),
             true,
         ))
-        .expect("parses");
-        note_message(&nominating, agent_a(), agent_b(), ts(100));
-        let reply = parse(&success(0x12)).expect("parses");
-        note_message(&reply, agent_b(), agent_a(), ts(118));
+        .ok_or("parses")?;
+        note_message(&nominating, agent_a()?, agent_b()?, ts(100));
+        let reply = parse(&success(0x12)).ok_or("parses")?;
+        note_message(&reply, agent_b()?, agent_a()?, ts(118));
 
         let ice = report().ice_summary();
         assert_eq!(ice.checks, 1);
         assert_eq!(ice.checks_answered, 1);
         assert_eq!(ice.nominated_total, 1);
         let pair = &ice.nominated[0];
-        assert_eq!(pair.local, agent_a());
-        assert_eq!(pair.remote, agent_b());
+        assert_eq!(pair.local, agent_a()?);
+        assert_eq!(pair.remote, agent_b()?);
         assert_eq!(pair.role, Some(IceRole::Controlling));
         assert_eq!(pair.priority, Some(2_130_706_431));
         assert_eq!(pair.rtt_ms, Some(18.0));
         reset();
+        Ok(())
     }
 
     /// A nomination nobody answered nominated nothing: the pair was never
@@ -3687,11 +3791,11 @@ mod ice_state_tests {
     /// carried none.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_unanswered_nomination_nominates_nothing() {
+    fn an_unanswered_nomination_nominates_nothing() -> Result<(), TestError> {
         reset();
         let nominating =
-            parse(&check(0x13, Some(1), Some(IceRole::Controlling), true)).expect("parses");
-        note_message(&nominating, agent_a(), agent_b(), ts(0));
+            parse(&check(0x13, Some(1), Some(IceRole::Controlling), true)).ok_or("parses")?;
+        note_message(&nominating, agent_a()?, agent_b()?, ts(0));
 
         let ice = report().ice_summary();
         assert_eq!(ice.checks, 1);
@@ -3702,18 +3806,19 @@ mod ice_state_tests {
         // does not raise a second finding over the same row.
         assert_eq!(report().unanswered().count(), 1);
         reset();
+        Ok(())
     }
 
     /// Two agents claiming the same role is the misconfiguration. Detected
     /// from the requests alone, with no 487 anywhere.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn both_agents_claiming_one_role_is_a_conflict() {
+    fn both_agents_claiming_one_role_is_a_conflict() -> Result<(), TestError> {
         reset();
-        let from_a = parse(&check(0x21, Some(9), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&from_a, agent_a(), agent_b(), ts(0));
-        let from_b = parse(&check(0x22, Some(8), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&from_b, agent_b(), agent_a(), ts(10));
+        let from_a = parse(&check(0x21, Some(9), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&from_a, agent_a()?, agent_b()?, ts(0));
+        let from_b = parse(&check(0x22, Some(8), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&from_b, agent_b()?, agent_a()?, ts(10));
 
         let ice = report().ice_summary();
         assert_eq!(ice.role_conflicts_total, 1, "one pair, not two rows");
@@ -3722,25 +3827,27 @@ mod ice_state_tests {
         assert_eq!(conflict.role_conflict_responses, 0, "no 487 was sent");
         assert!(!conflict.resolved, "nothing was ever nominated");
         reset();
+        Ok(())
     }
 
     /// A `487 Role Conflict` response is the same fault seen from the other
     /// end, and must fold into ONE record rather than raising a second.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_487_and_a_duplicate_claim_are_one_conflict_not_two() {
+    fn a_487_and_a_duplicate_claim_are_one_conflict_not_two() -> Result<(), TestError> {
         reset();
-        let from_a = parse(&check(0x31, Some(9), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&from_a, agent_a(), agent_b(), ts(0));
-        let refusal = parse(&role_conflict_error(0x31)).expect("parses");
-        note_message(&refusal, agent_b(), agent_a(), ts(12));
-        let from_b = parse(&check(0x32, Some(8), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&from_b, agent_b(), agent_a(), ts(20));
+        let from_a = parse(&check(0x31, Some(9), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&from_a, agent_a()?, agent_b()?, ts(0));
+        let refusal = parse(&role_conflict_error(0x31)).ok_or("parses")?;
+        note_message(&refusal, agent_b()?, agent_a()?, ts(12));
+        let from_b = parse(&check(0x32, Some(8), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&from_b, agent_b()?, agent_a()?, ts(20));
 
         let ice = report().ice_summary();
         assert_eq!(ice.role_conflicts_total, 1);
         assert_eq!(ice.role_conflicts[0].role_conflict_responses, 1);
         reset();
+        Ok(())
     }
 
     /// [RFC 8445 section 7.3.1.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.3.1.1) has the losing agent SWITCH roles and repeat its
@@ -3750,19 +3857,19 @@ mod ice_state_tests {
     /// resolved rather than let it read as a call that never got media.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_conflict_ice_resolved_is_reported_as_resolved() {
+    fn a_conflict_ice_resolved_is_reported_as_resolved() -> Result<(), TestError> {
         reset();
         let both_controlling_a =
-            parse(&check(0x41, Some(9), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&both_controlling_a, agent_a(), agent_b(), ts(0));
+            parse(&check(0x41, Some(9), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&both_controlling_a, agent_a()?, agent_b()?, ts(0));
         let both_controlling_b =
-            parse(&check(0x42, Some(8), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&both_controlling_b, agent_b(), agent_a(), ts(10));
+            parse(&check(0x42, Some(8), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&both_controlling_b, agent_b()?, agent_a()?, ts(10));
         // A switches to controlled and re-checks, then nominates.
-        let switched = parse(&check(0x43, Some(9), Some(IceRole::Controlled), true)).expect("ok");
-        note_message(&switched, agent_a(), agent_b(), ts(30));
-        let reply = parse(&success(0x43)).expect("parses");
-        note_message(&reply, agent_b(), agent_a(), ts(40));
+        let switched = parse(&check(0x43, Some(9), Some(IceRole::Controlled), true)).ok_or("ok")?;
+        note_message(&switched, agent_a()?, agent_b()?, ts(30));
+        let reply = parse(&success(0x43)).ok_or("parses")?;
+        note_message(&reply, agent_b()?, agent_a()?, ts(40));
 
         let ice = report().ice_summary();
         assert_eq!(ice.role_conflicts_total, 1, "the conflict still happened");
@@ -3773,19 +3880,20 @@ mod ice_state_tests {
         );
         assert_eq!(ice.nominated_total, 1);
         reset();
+        Ok(())
     }
 
     /// The report's row cap must bite exactly, and the totals beside it must
     /// stay exact past the point it does (D17).
     #[test]
     #[serial_test::serial(stun_store)]
-    fn nominations_past_the_row_cap_are_counted_rather_than_listed() {
+    fn nominations_past_the_row_cap_are_counted_rather_than_listed() -> Result<(), TestError> {
         reset();
         let extra = 5u16;
         for n in 0..(MAX_ICE_ROWS as u16 + extra) {
             let remote: SocketAddr = format!("203.0.113.9:{}", 16000 + n)
                 .parse()
-                .expect("valid addr");
+                .map_err(|e| format!("valid addr: {e:?}"))?;
             // A distinct transaction ID per check, or the tracker would fold
             // them all into one retransmitted request.
             let mut bytes = check(0x00, Some(1), Some(IceRole::Controlling), true);
@@ -3803,12 +3911,12 @@ mod ice_state_tests {
                 0x5a,
                 0x5a,
             ]);
-            let request = parse(&bytes).expect("parses");
-            note_message(&request, agent_a(), remote, ts(i64::from(n)));
+            let request = parse(&bytes).ok_or("parses")?;
+            note_message(&request, agent_a()?, remote, ts(i64::from(n)));
             let mut reply = success(0x00);
             reply[8..20].copy_from_slice(&bytes[8..20]);
-            let response = parse(&reply).expect("parses");
-            note_message(&response, remote, agent_a(), ts(i64::from(n) + 1));
+            let response = parse(&reply).ok_or("parses")?;
+            note_message(&response, remote, agent_a()?, ts(i64::from(n) + 1));
         }
 
         let ice = report().ice_summary();
@@ -3820,23 +3928,25 @@ mod ice_state_tests {
         );
         assert_eq!(ice.nominated_dropped(), u64::from(extra));
         reset();
+        Ok(())
     }
 
     /// Two agents in the ordinary configuration are not a conflict. Without
     /// this the finding would fire on every healthy ICE exchange there is.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn opposite_roles_are_not_a_conflict() {
+    fn opposite_roles_are_not_a_conflict() -> Result<(), TestError> {
         reset();
-        let from_a = parse(&check(0x51, Some(9), Some(IceRole::Controlling), false)).expect("ok");
-        note_message(&from_a, agent_a(), agent_b(), ts(0));
-        let from_b = parse(&check(0x52, Some(8), Some(IceRole::Controlled), false)).expect("ok");
-        note_message(&from_b, agent_b(), agent_a(), ts(10));
+        let from_a = parse(&check(0x51, Some(9), Some(IceRole::Controlling), false)).ok_or("ok")?;
+        note_message(&from_a, agent_a()?, agent_b()?, ts(0));
+        let from_b = parse(&check(0x52, Some(8), Some(IceRole::Controlled), false)).ok_or("ok")?;
+        note_message(&from_b, agent_b()?, agent_a()?, ts(10));
 
         let ice = report().ice_summary();
         assert_eq!(ice.checks, 2);
         assert_eq!(ice.role_conflicts_total, 0);
         reset();
+        Ok(())
     }
 }
 
@@ -3846,19 +3956,24 @@ mod relay_attribution_tests {
     use super::turn_tests::ts;
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn client() -> SocketAddr {
-        "192.0.2.10:50000".parse().expect("valid addr")
+        std::net::SocketAddr::from(([192, 0, 2, 10], 50000))
     }
     fn server() -> SocketAddr {
-        "198.51.100.20:3478".parse().expect("valid addr")
+        std::net::SocketAddr::from(([198, 51, 100, 20], 3478))
     }
-    fn peer() -> SocketAddr {
-        "203.0.113.9:16000".parse().expect("valid addr")
+    fn peer() -> Result<SocketAddr, TestError> {
+        Ok("203.0.113.9:16000"
+            .parse()
+            .map_err(|e| format!("valid addr: {e:?}"))?)
     }
 
     /// An Allocate that succeeds with a 60-second lifetime, followed by a
     /// ChannelBind for `channel` naming `peer()`.
-    fn allocate_and_bind(channel: u16) {
+    fn allocate_and_bind(channel: u16) -> Result<(), TestError> {
         // Allocate Request / success with XOR-RELAYED-ADDRESS 198.51.100.77:49160
         // and LIFETIME 60, written as the bytes that appear on the wire.
         let req: Vec<u8> = vec![
@@ -3866,7 +3981,7 @@ mod relay_attribution_tests {
             0x21, 0x12, 0xa4, 0x42, // magic cookie
             0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1, 0xa1,
         ];
-        note_message(&parse(&req).expect("parses"), client(), server(), ts(0));
+        note_message(&parse(&req).ok_or("parses")?, client(), server(), ts(0));
         let resp: Vec<u8> = vec![
             0x01, 0x03, 0x00, 0x14, // Allocate success, 20 bytes of attributes
             0x21, 0x12, 0xa4, 0x42, // magic cookie
@@ -3879,7 +3994,7 @@ mod relay_attribution_tests {
             0x00, 0x0d, 0x00, 0x04, // LIFETIME, 4 bytes
             0x00, 0x00, 0x00, 0x3c, // 60 seconds
         ];
-        note_message(&parse(&resp).expect("parses"), server(), client(), ts(10));
+        note_message(&parse(&resp).ok_or("parses")?, server(), client(), ts(10));
 
         // ChannelBind Request naming CHANNEL-NUMBER and XOR-PEER-ADDRESS.
         let mut bind: Vec<u8> = vec![
@@ -3897,34 +4012,36 @@ mod relay_attribution_tests {
             // 203.0.113.9 ^ 21 12 a4 42
             0xea, 0x12, 0xd5, 0x4b,
         ]);
-        note_message(&parse(&bind).expect("parses"), client(), server(), ts(20));
+        note_message(&parse(&bind).ok_or("parses")?, client(), server(), ts(20));
         let bind_ok: Vec<u8> = vec![
             0x01, 0x09, 0x00, 0x00, // ChannelBind success, no attributes
             0x21, 0x12, 0xa4, 0x42, // magic cookie
             0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2, 0xb2,
         ];
         note_message(
-            &parse(&bind_ok).expect("parses"),
+            &parse(&bind_ok).ok_or("parses")?,
             server(),
             client(),
             ts(28),
         );
+        Ok(())
     }
 
     /// The literal bytes above must decode to the addresses they claim, or
     /// every assertion below could be met by a decoder producing nonsense.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn the_literal_turn_bytes_decode_to_the_addresses_they_encode() {
+    fn the_literal_turn_bytes_decode_to_the_addresses_they_encode() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         let alloc = &report().allocations[0];
         assert_eq!(
             alloc.relayed_address.map(|a| a.to_string()).as_deref(),
             Some("198.51.100.77:49160")
         );
-        assert_eq!(alloc.channels[0].peer, Some(peer()));
+        assert_eq!(alloc.channels[0].peer, Some(peer()?));
         reset();
+        Ok(())
     }
 
     /// The whole of gap 2: a relayed stream must be reachable from the
@@ -3932,9 +4049,9 @@ mod relay_attribution_tests {
     /// store already has.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_relayed_stream_is_attributable_to_its_channel_and_allocation() {
+    fn a_relayed_stream_is_attributable_to_its_channel_and_allocation() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         note_channel_data(
             client(),
             server(),
@@ -3949,7 +4066,7 @@ mod relay_attribution_tests {
         );
 
         let path = relay_path_for(client(), server(), 0x1122_3344)
-            .expect("the relayed stream must find its allocation");
+            .ok_or("the relayed stream must find its allocation")?;
         assert_eq!(path.client, client());
         assert_eq!(path.server, server());
         assert_eq!(
@@ -3957,12 +4074,12 @@ mod relay_attribution_tests {
             Some("198.51.100.77:49160")
         );
         assert_eq!(path.channel, 0x4001);
-        assert_eq!(path.peer, Some(peer()));
+        assert_eq!(path.peer, Some(peer()?));
         assert!(!path.lapsed, "the grant had not run out yet");
 
         // And in the reverse direction, because a relayed call has two streams
         // and only one of them is addressed client-to-server.
-        let back = relay_path_for(server(), client(), 0x5566_7788).expect("the other direction");
+        let back = relay_path_for(server(), client(), 0x5566_7788).ok_or("the other direction")?;
         assert_eq!(back.channel, 0x4001);
 
         let alloc = &report().allocations[0];
@@ -3973,6 +4090,7 @@ mod relay_attribution_tests {
             "the ChannelBind was seen to succeed"
         );
         reset();
+        Ok(())
     }
 
     /// The lapsed-allocation finding must be able to name the media that died
@@ -3980,9 +4098,9 @@ mod relay_attribution_tests {
     /// one packet that was on it.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_lapsed_allocation_names_the_media_that_died_with_it() {
+    fn a_lapsed_allocation_names_the_media_that_died_with_it() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         note_channel_data(
             client(),
             server(),
@@ -3995,14 +4113,15 @@ mod relay_attribution_tests {
         assert_eq!(report.lapsed_relayed_streams(), 1);
         let label = report.allocations[0]
             .relayed_media_label()
-            .expect("the media must be nameable");
+            .ok_or("the media must be nameable")?;
         assert!(label.contains("0x11223344"), "{label}");
         assert!(label.contains("0x4001"), "{label}");
         // And the stream itself carries the verdict, so a per-call surface
         // does not have to re-derive it from the capture-level finding.
-        let path = relay_path_for(client(), server(), 0x1122_3344).expect("attributed");
+        let path = relay_path_for(client(), server(), 0x1122_3344).ok_or("attributed")?;
         assert!(path.lapsed);
         reset();
+        Ok(())
     }
 
     /// Media that merely shares an address with a relay is not media the
@@ -4010,9 +4129,9 @@ mod relay_attribution_tests {
     /// SSRC half of the join exists to prevent.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_ssrc_never_seen_in_a_channel_is_not_attributed() {
+    fn an_ssrc_never_seen_in_a_channel_is_not_attributed() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         note_channel_data(
             client(),
             server(),
@@ -4024,15 +4143,16 @@ mod relay_attribution_tests {
             "an SSRC that never crossed the relay must not claim to have"
         );
         reset();
+        Ok(())
     }
 
     /// RTCP relayed on the same channel must not be filed as a media stream:
     /// its bytes 8..12 are not an SSRC in the sense the stream store means.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn relayed_rtcp_contributes_no_stream() {
+    fn relayed_rtcp_contributes_no_stream() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         // A ChannelData frame wrapping a minimal RTCP receiver report (PT 201).
         let frame: Vec<u8> = vec![
             0x40, 0x01, 0x00, 0x08, // channel 0x4001, 8 bytes of application data
@@ -4052,15 +4172,16 @@ mod relay_attribution_tests {
             "but it is not a media stream"
         );
         reset();
+        Ok(())
     }
 
     /// The retention cap must bite exactly, and must stay countable past the
     /// point it does (D17).
     #[test]
     #[serial_test::serial(stun_store)]
-    fn channels_past_the_cap_are_counted_rather_than_stored() {
+    fn channels_past_the_cap_are_counted_rather_than_stored() -> Result<(), TestError> {
         reset();
-        allocate_and_bind(0x4001);
+        allocate_and_bind(0x4001)?;
         for n in 0..(MAX_CHANNELS_PER_ALLOCATION as u16 + 4) {
             note_channel_data(
                 client(),
@@ -4075,23 +4196,25 @@ mod relay_attribution_tests {
             alloc.unattributed_frames, 4,
             "the four frames past the cap must still be counted"
         );
-        let label = alloc.relayed_media_label().expect("a label");
+        let label = alloc.relayed_media_label().ok_or("a label")?;
         assert!(
             label.contains("a sample"),
             "the report must say the list is partial: {label}"
         );
         reset();
+        Ok(())
     }
 
     /// A relayed frame must never CREATE an allocation, and must never
     /// attribute to one it did not cross.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_frame_with_no_allocation_attributes_to_nothing() {
+    fn a_frame_with_no_allocation_attributes_to_nothing() -> Result<(), TestError> {
         reset();
         note_channel_data(client(), server(), &relayed_rtp(0x4001, 1), ts(0));
         assert!(report().allocations.is_empty());
         assert!(relay_path_for(client(), server(), 1).is_none());
         reset();
+        Ok(())
     }
 }

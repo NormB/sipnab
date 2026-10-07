@@ -349,6 +349,9 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -356,7 +359,7 @@ mod tests {
 
     /// Fixed capture timestamp (2024-06-15 12:00:00 UTC) used in tests.
     fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     use crate::test_utils::build_sip_message as build_sip;
@@ -368,7 +371,7 @@ mod tests {
         to_user: &str,
         ua: &str,
         contact_addr: &str,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
             &[
@@ -382,7 +385,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts(),
             localhost(),
@@ -391,11 +394,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("test INVITE should parse")
+        .map_err(|e| format!("test INVITE should parse: {e:?}"))?)
     }
 
     /// Construct a test REGISTER SipMessage.
-    fn make_test_register(from_user: &str) -> SipMessage {
+    fn make_test_register(from_user: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar.example.com SIP/2.0",
             &[
@@ -407,7 +410,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts(),
             localhost(),
@@ -416,7 +419,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("test REGISTER should parse")
+        .map_err(|e| format!("test REGISTER should parse: {e:?}"))?)
     }
 
     /// Helper: build a default CLI with no filters.
@@ -428,152 +431,165 @@ mod tests {
 
     /// With no filters configured, every message matches and is_active is false.
     #[test]
-    fn no_filters_matches_everything() {
+    fn no_filters_matches_everything() -> Result<(), TestError> {
         let cli = default_cli();
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
         assert!(!matcher.is_active());
 
-        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&invite));
 
-        let register = make_test_register("1001");
+        let register = make_test_register("1001")?;
         assert!(matcher.matches(&register));
+        Ok(())
     }
 
     // ── --from filter ────────────────────────────────────────────────
 
     /// `--from` matches a message whose From user matches the pattern.
     #[test]
-    fn from_filter_matches() {
+    fn from_filter_matches() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
         assert!(matcher.is_active());
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// `--from` rejects a message with a non-matching From user.
     #[test]
-    fn from_filter_rejects() {
+    fn from_filter_rejects() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("2002", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("2002", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── --to filter ──────────────────────────────────────────────────
 
     /// `--to` matches a message whose To user matches the pattern.
     #[test]
-    fn to_filter_matches() {
+    fn to_filter_matches() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--to", "1002"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// `--to` rejects a message with a non-matching To user.
     #[test]
-    fn to_filter_rejects() {
+    fn to_filter_rejects() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--to", "9999"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── --ua filter ──────────────────────────────────────────────────
 
     /// `--ua` matches on a User-Agent substring.
     #[test]
-    fn ua_filter_matches() {
+    fn ua_filter_matches() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--ua", "Oasis"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "Oasis/4.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "Oasis/4.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// `--ua` rejects a non-matching User-Agent.
     #[test]
-    fn ua_filter_rejects() {
+    fn ua_filter_rejects() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--ua", "Oasis"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "Ocelot/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "Ocelot/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── --contact filter ─────────────────────────────────────────────
 
     /// `--contact` matches on the Contact header value.
     #[test]
-    fn contact_filter_matches() {
+    fn contact_filter_matches() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--contact", "10\\.0\\.0"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// `--contact` rejects a non-matching Contact header.
     #[test]
-    fn contact_filter_rejects() {
+    fn contact_filter_rejects() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--contact", "192\\.168"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── Combined AND logic ───────────────────────────────────────────
 
     /// `--from` and `--to` together match when both criteria hold.
     #[test]
-    fn combined_from_and_to_both_match() {
+    fn combined_from_and_to_both_match() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "--to", "1002"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// AND logic fails when only one of two criteria matches.
     #[test]
-    fn combined_from_and_to_partial_mismatch() {
+    fn combined_from_and_to_partial_mismatch() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "--to", "9999"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // From matches but To doesn't → AND fails
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── -v invert ────────────────────────────────────────────────────
 
     /// `-v` turns a would-be match into a non-match.
     #[test]
-    fn invert_flips_match() {
+    fn invert_flips_match() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "-v"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // Without invert this would match; with invert it should not
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     /// `-v` turns a would-be non-match into a match.
     #[test]
-    fn invert_flips_nonmatch() {
+    fn invert_flips_nonmatch() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "-v"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // Without invert this would NOT match; with invert it should
-        let msg = make_test_invite("2002", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("2002", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     // ── -c is not a per-message filter ───────────────────────────────
@@ -583,12 +599,12 @@ mod tests {
     /// ([`calls_only_admits`]). Rejecting them here dropped every response,
     /// ACK and BYE of every call.
     #[test]
-    fn calls_only_is_not_a_per_message_filter() {
+    fn calls_only_is_not_a_per_message_filter() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
-        assert!(matcher.matches(&make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")));
-        assert!(matcher.matches(&make_test_register("1001")));
+        assert!(matcher.matches(&make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?));
+        assert!(matcher.matches(&make_test_register("1001")?));
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -609,17 +625,18 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(matcher.matches(&response));
+        Ok(())
     }
 
     // ── -i case insensitive ──────────────────────────────────────────
 
     /// `-i` makes `--from` match regardless of case.
     #[test]
-    fn case_insensitive_from() {
+    fn case_insensitive_from() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-i", "--from", "ALICE"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // From header contains "alice" in lowercase
         let raw = build_sip(
@@ -640,17 +657,18 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// Without `-i`, matching is case-sensitive.
     #[test]
-    fn case_sensitive_from_by_default() {
+    fn case_sensitive_from_by_default() -> Result<(), TestError> {
         // Without -i, "ALICE" should not match "alice"
         let cli = Cli::parse_from_args(["sipnab", "--from", "ALICE"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -670,18 +688,19 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── --word whole-word matching ───────────────────────────────────
 
     /// `-w` matches when the pattern is bounded by word boundaries.
     #[test]
-    fn word_boundary_matches_exact() {
+    fn word_boundary_matches_exact() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-w", "--from", "100"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // "sip:100@" has word boundary after "100" at the "@"
         let raw = build_sip(
@@ -702,43 +721,49 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// `-w` rejects a substring occurrence without word boundaries.
     #[test]
-    fn word_boundary_rejects_partial() {
+    fn word_boundary_rejects_partial() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-w", "--from", "100"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
 
         // "1001" contains "100" but no word boundary before the "1"
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     // ── Payload regex ────────────────────────────────────────────────
 
     /// A positional payload pattern matches against the full raw message.
     #[test]
-    fn payload_regex_matches_raw() {
+    fn payload_regex_matches_raw() -> Result<(), TestError> {
         let cli = default_cli();
-        let matcher = SipMatcher::new(&cli, Some("INVITE sip:")).expect("should build");
+        let matcher = SipMatcher::new(&cli, Some("INVITE sip:"))
+            .map_err(|e| format!("should build: {e:?}"))?;
         assert!(matcher.is_active());
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&msg));
+        Ok(())
     }
 
     /// A payload pattern absent from the raw message rejects it.
     #[test]
-    fn payload_regex_rejects_nonmatch() {
+    fn payload_regex_rejects_nonmatch() -> Result<(), TestError> {
         let cli = default_cli();
-        let matcher = SipMatcher::new(&cli, Some("BYE sip:")).expect("should build");
+        let matcher =
+            SipMatcher::new(&cli, Some("BYE sip:")).map_err(|e| format!("should build: {e:?}"))?;
 
-        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&msg));
+        Ok(())
     }
 
     /// A payload pattern targeting a raw non-UTF-8 byte matches the captured
@@ -747,11 +772,12 @@ mod tests {
     /// (and `regex::Regex` cannot even compile `(?-u:\xff)` — it may match
     /// invalid UTF-8). The `regex::bytes` engine both compiles and matches it.
     #[test]
-    fn payload_regex_matches_non_utf8_byte() {
+    fn payload_regex_matches_non_utf8_byte() -> Result<(), TestError> {
         let cli = default_cli();
         // `(?-u:\xff)` matches the literal byte 0xFF; unavailable on the
         // Unicode-only str engine the old lossy path used.
-        let matcher = SipMatcher::new(&cli, Some(r"(?-u:\xff)")).expect("should build");
+        let matcher = SipMatcher::new(&cli, Some(r"(?-u:\xff)"))
+            .map_err(|e| format!("should build: {e:?}"))?;
 
         let raw = build_sip(
             "INVITE sip:1002@example.com SIP/2.0",
@@ -774,37 +800,39 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         // Confirm the fixture really carries the non-UTF-8 byte.
         assert!(msg.raw.contains(&0xffu8));
         assert!(
             matcher.matches(&msg),
             "bytes regex must match a raw 0xFF byte that lossy UTF-8 would mangle"
         );
+        Ok(())
     }
 
     // ── -e / --match wiring (positional match-expression) ──
 
     /// `-e PATTERN` behaves exactly like a positional payload pattern.
     #[test]
-    fn match_expr_flag_feeds_payload_regex() {
+    fn match_expr_flag_feeds_payload_regex() -> Result<(), TestError> {
         // `-e REGISTER` should match REGISTER but not INVITE, exactly like a
         // positional payload pattern.
         let cli = Cli::parse_from_args(["sipnab", "-e", "REGISTER"]);
-        let matcher =
-            SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).expect("should build");
+        let matcher = SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref())
+            .map_err(|e| format!("should build: {e:?}"))?;
         assert!(matcher.is_active());
 
-        let register = make_test_register("1001");
+        let register = make_test_register("1001")?;
         assert!(matcher.matches(&register));
 
-        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(!matcher.matches(&invite));
+        Ok(())
     }
 
     /// A malformed `-e` pattern fails matcher construction with an error.
     #[test]
-    fn match_expr_invalid_regex_via_flag_errors() {
+    fn match_expr_invalid_regex_via_flag_errors() -> Result<(), TestError> {
         // A malformed `-e` pattern must fail to build the matcher (not panic or
         // silently match nothing).
         let cli = Cli::parse_from_args(["sipnab", "-e", "[unterminated"]);
@@ -813,72 +841,79 @@ mod tests {
             result.is_err(),
             "-e with invalid regex must return an error"
         );
+        Ok(())
     }
 
     /// An `-e` pattern over the 1 MB size limit is rejected.
     #[test]
-    fn match_expr_oversized_via_flag_errors() {
+    fn match_expr_oversized_via_flag_errors() -> Result<(), TestError> {
         // A >1 MB `-e` pattern trips the compiled-program size limit.
         let huge = "a".repeat(2_000_000);
         let cli = Cli::parse_from_args(["sipnab", "-e", &huge]);
         assert!(SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).is_err());
+        Ok(())
     }
 
     /// `-e` composes with `-i` (case-insensitive) and `-v` (invert).
     #[test]
-    fn match_expr_honors_ignore_case_and_invert() {
+    fn match_expr_honors_ignore_case_and_invert() -> Result<(), TestError> {
         // -i makes the expression case-insensitive; -v inverts the result.
         let cli = Cli::parse_from_args(["sipnab", "-i", "-v", "-e", "register"]);
-        let matcher =
-            SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref()).expect("should build");
+        let matcher = SipMatcher::new(&cli, cli.matching_args.match_expr.as_deref())
+            .map_err(|e| format!("should build: {e:?}"))?;
 
         // REGISTER matches case-insensitively, then invert flips it out.
-        let register = make_test_register("1001");
+        let register = make_test_register("1001")?;
         assert!(!matcher.matches(&register));
 
         // INVITE never matches "register", invert flips it in.
-        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5")?;
         assert!(matcher.matches(&invite));
+        Ok(())
     }
 
     // ── Regex size limit ─────────────────────────────────────────────
 
     /// A positional pattern over the 1 MB size limit is rejected.
     #[test]
-    fn oversized_pattern_returns_error() {
+    fn oversized_pattern_returns_error() -> Result<(), TestError> {
         let cli = default_cli();
         // A 2 MB pattern of "a" characters — should exceed the 1 MB limit
         let huge_pattern = "a".repeat(2_000_000);
         let result = SipMatcher::new(&cli, Some(&huge_pattern));
         assert!(result.is_err(), "oversized pattern should return an error");
+        Ok(())
     }
 
     // ── Invalid regex returns error ──────────────────────────────────
 
     /// An invalid `--from` regex fails matcher construction.
     #[test]
-    fn invalid_regex_returns_error() {
+    fn invalid_regex_returns_error() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from", "[invalid"]);
         let result = SipMatcher::new(&cli, None);
         assert!(result.is_err(), "invalid regex should return an error");
+        Ok(())
     }
 
     // ── is_active correctness ────────────────────────────────────────
 
     /// `-v` alone counts as an active filter.
     #[test]
-    fn is_active_with_invert_only() {
+    fn is_active_with_invert_only() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-v"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
         assert!(matcher.is_active());
+        Ok(())
     }
 
     /// `-c` alone configures no matcher criterion; it is applied per dialog.
     #[test]
-    fn calls_only_alone_leaves_the_matcher_inactive() {
+    fn calls_only_alone_leaves_the_matcher_inactive() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
-        let matcher = SipMatcher::new(&cli, None).expect("should build");
+        let matcher = SipMatcher::new(&cli, None).map_err(|e| format!("should build: {e:?}"))?;
         assert!(!matcher.is_active());
+        Ok(())
     }
 }
 
@@ -887,12 +922,16 @@ mod calls_only_admits_tests {
     use super::calls_only_admits;
     use crate::sip::SipMethod;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     const INVITE: Option<&SipMethod> = Some(&SipMethod::Invite);
 
     /// The INVITE that starts a call is a call.
     #[test]
-    fn the_invite_that_starts_a_call_is_admitted() {
+    fn the_invite_that_starts_a_call_is_admitted() -> Result<(), TestError> {
         assert!(calls_only_admits(INVITE, INVITE));
+        Ok(())
     }
 
     /// `--calls-only` shows the CALL, and a call is more than its INVITE: the
@@ -900,7 +939,7 @@ mod calls_only_admits_tests {
     /// flag used to be applied per message, so every one of them was dropped
     /// and `-c` printed a lone INVITE for a complete call.
     #[test]
-    fn every_message_of_an_invite_dialog_is_admitted() {
+    fn every_message_of_an_invite_dialog_is_admitted() -> Result<(), TestError> {
         assert!(calls_only_admits(INVITE, None), "a response has no method");
         for m in [
             SipMethod::Ack,
@@ -910,12 +949,13 @@ mod calls_only_admits_tests {
         ] {
             assert!(calls_only_admits(INVITE, Some(&m)), "{m:?} inside a call");
         }
+        Ok(())
     }
 
     /// A dialog that did not start with INVITE is not a call, whatever passes
     /// through it: the REGISTER, its 200, a SUBSCRIBE and its NOTIFY.
     #[test]
-    fn a_dialog_that_did_not_start_with_invite_is_refused() {
+    fn a_dialog_that_did_not_start_with_invite_is_refused() -> Result<(), TestError> {
         let register = Some(&SipMethod::Register);
         assert!(!calls_only_admits(register, register));
         assert!(!calls_only_admits(register, None));
@@ -923,13 +963,14 @@ mod calls_only_admits_tests {
         assert!(!calls_only_admits(subscribe, Some(&SipMethod::Notify)));
         let options = Some(&SipMethod::Options);
         assert!(!calls_only_admits(options, None));
+        Ok(())
     }
 
     /// With no dialog tracked (`--no-dialog`, or a Call-ID nothing recorded),
     /// only an INVITE request can be recognized as a call on its own; a lone
     /// response cannot say what it answers.
     #[test]
-    fn without_a_dialog_only_an_invite_request_is_admitted() {
+    fn without_a_dialog_only_an_invite_request_is_admitted() -> Result<(), TestError> {
         assert!(calls_only_admits(None, INVITE));
         assert!(!calls_only_admits(None, None));
         assert!(!calls_only_admits(None, Some(&SipMethod::Register)));
@@ -937,5 +978,6 @@ mod calls_only_admits_tests {
         // parses to a custom method and is not a call.
         let lowercase = SipMethod::Custom("invite".into());
         assert!(!calls_only_admits(None, Some(&lowercase)));
+        Ok(())
     }
 }

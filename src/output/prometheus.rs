@@ -1501,11 +1501,14 @@ fn format_histogram(
 /// counter/gauge values, cumulative buckets, and label sorting/escaping.
 #[cfg(test)]
 mod tests {
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
     // ── HEP listener series ──────────────────────────────────────────
 
     /// A meter carrying a roster with two senders, and refusals under two
     /// reasons: two for a wrong key, one for the allowlist.
-    fn meter_with_hep_roster() -> crate::capture::channel::CaptureMeter {
+    fn meter_with_hep_roster() -> Result<crate::capture::channel::CaptureMeter, TestError> {
         use crate::capture::hep_roster::{
             HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
         };
@@ -1518,23 +1521,25 @@ mod tests {
             chrono::Utc::now(),
         );
         for (id, peer) in [(7u32, "192.0.2.7"), (9, "192.0.2.9")] {
-            let peer: std::net::IpAddr = peer.parse().expect("literal");
+            let peer: std::net::IpAddr = peer.parse().map_err(|e| format!("literal: {e:?}"))?;
             state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
         }
-        let bad: std::net::IpAddr = "203.0.113.66".parse().expect("literal");
+        let bad: std::net::IpAddr = "203.0.113.66"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         state.refused(HepRefusal::AuthMismatch, bad, t);
         state.refused(HepRefusal::AuthMismatch, bad, t);
         state.refused(HepRefusal::Allowlist, bad, t);
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let meter = rx.meter();
         assert!(meter.attach_hep_roster(HepRoster::new(state)));
-        meter
+        Ok(meter)
     }
 
     /// The capture-source table scrapes as two gauges and a counter, and a
     /// scrape loads them from the process table.
     #[test]
-    fn the_capture_source_table_scrapes_its_size_limit_and_refusals() {
+    fn the_capture_source_table_scrapes_its_size_limit_and_refusals() -> Result<(), TestError> {
         let m = PrometheusMetrics {
             capture_sources: crate::capture::packet::CaptureSourceCounts {
                 held: 3,
@@ -1564,6 +1569,7 @@ mod tests {
             PrometheusMetrics::for_scrape().capture_sources.limit
                 >= crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES as u64
         );
+        Ok(())
     }
 
     /// **A HEP listener scrapes its sender count, its received total, and a
@@ -1572,9 +1578,10 @@ mod tests {
     /// new reason reaches the scrape the day it is added. Zeros are published,
     /// so an alert on a reason reads zero rather than no-data.
     #[test]
-    fn a_hep_listener_scrapes_its_counts_and_a_series_for_every_refusal_reason() {
+    fn a_hep_listener_scrapes_its_counts_and_a_series_for_every_refusal_reason()
+    -> Result<(), TestError> {
         let mut m = PrometheusMetrics::default();
-        m.apply_meter(&meter_with_hep_roster());
+        m.apply_meter(&meter_with_hep_roster()?);
         let out = format_metrics(&m);
         assert!(out.contains("# TYPE sipnab_hep_senders gauge"), "{out}");
         assert!(out.contains("\nsipnab_hep_senders 2\n"), "{out}");
@@ -1610,13 +1617,15 @@ mod tests {
             !out.contains("192.0.2.7") && !out.contains("203.0.113.66"),
             "no sender address reaches the scrape: {out}"
         );
+        Ok(())
     }
 
     /// **An exporter scrapes its packets sent and a failure series for every
     /// kind**, the `kind` label set derived from the exporter's own
     /// vocabulary; zeros published so an alert reads zero, not no-data.
     #[test]
-    fn an_exporter_scrapes_its_sends_and_a_series_for_every_failure_kind() {
+    fn an_exporter_scrapes_its_sends_and_a_series_for_every_failure_kind() -> Result<(), TestError>
+    {
         use crate::capture::hep_export::{ExportFailure, HepExportCounters};
         let counters = HepExportCounters::new("tls");
         counters.record_sent();
@@ -1652,26 +1661,29 @@ mod tests {
         );
         assert_eq!(kinds.get("tls_handshake").map(String::as_str), Some("1"));
         assert_eq!(kinds.get("connect").map(String::as_str), Some("0"));
+        Ok(())
     }
 
     /// A run that exports nothing publishes no export series.
     #[test]
-    fn a_run_with_no_exporter_scrapes_no_export_series() {
+    fn a_run_with_no_exporter_scrapes_no_export_series() -> Result<(), TestError> {
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let mut m = PrometheusMetrics::default();
         m.apply_meter(&rx.meter());
         assert!(!format_metrics(&m).contains("sipnab_hep_export_"));
+        Ok(())
     }
 
     /// A run with no HEP listener publishes no HEP series at all: a zero
     /// would claim a listener that heard nothing.
     #[test]
-    fn a_run_with_no_hep_listener_scrapes_no_hep_series() {
+    fn a_run_with_no_hep_listener_scrapes_no_hep_series() -> Result<(), TestError> {
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let mut m = PrometheusMetrics::default();
         m.apply_meter(&rx.meter());
         let out = format_metrics(&m);
         assert!(!out.contains("sipnab_hep_"), "{out}");
+        Ok(())
     }
 
     use super::*;
@@ -1710,7 +1722,7 @@ mod tests {
 
     /// The MCP families carry both labels and the histogram's three parts.
     #[test]
-    fn mcp_tool_metrics_carry_tool_and_outcome() {
+    fn mcp_tool_metrics_carry_tool_and_outcome() -> Result<(), TestError> {
         let mut m = sample_metrics();
         m.mcp_tool_calls
             .insert("list_dialogs".to_string(), tool_tally("ok", 0.004, 2048));
@@ -1738,12 +1750,13 @@ mod tests {
             out.contains("# TYPE sipnab_mcp_tool_duration_seconds histogram"),
             "the latency family must be typed as a histogram:\n{out}"
         );
+        Ok(())
     }
 
     /// Latency buckets are cumulative on the way out: a 4 ms call appears in
     /// the 5 ms bucket and in every bucket above it, and in none below.
     #[test]
-    fn mcp_latency_buckets_are_cumulative() {
+    fn mcp_latency_buckets_are_cumulative() -> Result<(), TestError> {
         let mut m = PrometheusMetrics::default();
         m.mcp_tool_calls
             .insert("t".to_string(), tool_tally("ok", 0.004, 0));
@@ -1761,12 +1774,13 @@ mod tests {
             out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="t",le="10"} 1"#),
             "and in every bucket above it -- `le` means at-or-below:\n{out}"
         );
+        Ok(())
     }
 
     /// A call slower than the last boundary reaches `+Inf` and `_count`
     /// alone, which is what a Prometheus histogram means by unbounded.
     #[test]
-    fn a_call_past_the_last_boundary_lands_only_in_inf() {
+    fn a_call_past_the_last_boundary_lands_only_in_inf() -> Result<(), TestError> {
         let last = MCP_TOOL_LATENCY_BUCKETS_SECONDS
             .last()
             .copied()
@@ -1786,24 +1800,26 @@ mod tests {
             out.contains(r#"sipnab_mcp_tool_duration_seconds_bucket{tool="slow",le="+Inf"} 1"#),
             "+Inf must:\n{out}"
         );
+        Ok(())
     }
 
     /// A build that has served no tool call publishes no MCP series at all,
     /// rather than three empty families claiming a surface it may not have.
     #[test]
-    fn no_tool_calls_publishes_no_mcp_families() {
+    fn no_tool_calls_publishes_no_mcp_families() -> Result<(), TestError> {
         let out = format_metrics(&sample_metrics());
         assert!(
             !out.contains("sipnab_mcp_tool"),
             "an empty tally must publish nothing:\n{out}"
         );
+        Ok(())
     }
 
     /// A tool name carrying a quote cannot close the label and forge a second
     /// one. The name comes from the client, so this is the same escaping
     /// question `escape_label_value` answers for every other family.
     #[test]
-    fn a_tool_name_cannot_forge_a_label() {
+    fn a_tool_name_cannot_forge_a_label() -> Result<(), TestError> {
         let mut m = PrometheusMetrics::default();
         m.mcp_tool_calls.insert(
             "evil\",outcome=\"ok".to_string(),
@@ -1815,13 +1831,14 @@ mod tests {
             out.contains(r#"tool="evil\",outcome=\"ok",outcome="refused""#),
             "the quote must be escaped rather than closing the label:\n{out}"
         );
+        Ok(())
     }
 
     /// Every observation counts toward `_sum` in seconds, so a dashboard
     /// dividing `_sum` by `_count` gets an average in the unit the name
     /// promises.
     #[test]
-    fn the_latency_sum_is_in_seconds() {
+    fn the_latency_sum_is_in_seconds() -> Result<(), TestError> {
         let mut tally = McpToolTally::default();
         tally.observe_latency(0.25);
         tally.observe_latency(0.75);
@@ -1833,11 +1850,12 @@ mod tests {
             out.contains(r#"sipnab_mcp_tool_duration_seconds_sum{tool="t"} 1"#),
             "two calls of 250 ms and 750 ms sum to one second:\n{out}"
         );
+        Ok(())
     }
 
     /// Every non-empty line is a comment or a `sipnab_` metric line.
     #[test]
-    fn format_produces_valid_output() {
+    fn format_produces_valid_output() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
@@ -1854,11 +1872,12 @@ mod tests {
                 "Unexpected line format: {line}"
             );
         }
+        Ok(())
     }
 
     /// Every metric line starts with the `sipnab_` prefix.
     #[test]
-    fn all_metric_names_prefixed() {
+    fn all_metric_names_prefixed() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
@@ -1871,11 +1890,12 @@ mod tests {
                 "Metric line missing sipnab_ prefix: {line}"
             );
         }
+        Ok(())
     }
 
     /// HELP/TYPE pairs exist for counter, gauge, and histogram families.
     #[test]
-    fn help_and_type_lines_present() {
+    fn help_and_type_lines_present() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
@@ -1885,11 +1905,12 @@ mod tests {
         assert!(output.contains("# TYPE sipnab_rtp_streams_active gauge"));
         assert!(output.contains("# HELP sipnab_pdd_seconds"));
         assert!(output.contains("# TYPE sipnab_pdd_seconds histogram"));
+        Ok(())
     }
 
     /// Labeled and scalar counters carry the exact sample values.
     #[test]
-    fn counter_values_correct() {
+    fn counter_values_correct() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
@@ -1897,6 +1918,7 @@ mod tests {
         assert!(output.contains(r#"sipnab_dialogs_total{state="failed"} 23"#));
         assert!(output.contains("sipnab_capture_packets_total 50000"));
         assert!(output.contains("sipnab_reassembly_timeouts_total 7"));
+        Ok(())
     }
 
     // ── Frames sipnab could not decode ──────────────────────────────
@@ -1910,7 +1932,7 @@ mod tests {
     /// family that collapsed every DLT into `unsupported_link_type` would be
     /// as unactionable as the silence it replaces.
     #[test]
-    fn undecodable_reasons_are_exposed_with_their_numbers() {
+    fn undecodable_reasons_are_exposed_with_their_numbers() -> Result<(), TestError> {
         let mut m = PrometheusMetrics {
             capture_packets_total: 49,
             capture_undecodable_total: 49,
@@ -1938,6 +1960,7 @@ mod tests {
             ),
             "EtherType series missing: {out}"
         );
+        Ok(())
     }
 
     /// The fraction is the one series that separates "no SIP here" from "read
@@ -1945,7 +1968,7 @@ mod tests {
     /// where an empty labeled family is omitted entirely and an alert over it
     /// would be no-data rather than zero.
     #[test]
-    fn the_undecoded_fraction_is_always_published() {
+    fn the_undecoded_fraction_is_always_published() -> Result<(), TestError> {
         let clean = format_metrics(&PrometheusMetrics {
             capture_packets_total: 4_212,
             ..Default::default()
@@ -1968,12 +1991,13 @@ mod tests {
             blind.contains("sipnab_capture_undecoded_fraction 1\n"),
             "a run that read nothing must publish 1: {blind}"
         );
+        Ok(())
     }
 
     /// The fraction's exact arithmetic, including the no-packets case: zero
     /// captured means "nothing was observed to fail", never "everything did".
     #[test]
-    fn the_undecoded_fraction_is_exact() {
+    fn the_undecoded_fraction_is_exact() -> Result<(), TestError> {
         let f = |captured, undecodable| {
             PrometheusMetrics {
                 capture_packets_total: captured,
@@ -1986,6 +2010,7 @@ mod tests {
         assert_eq!(f(49, 49), 1.0);
         assert_eq!(f(100, 25), 0.25);
         assert_eq!(f(10_000, 0), 0.0);
+        Ok(())
     }
 
     /// Frames whose reason the tally could not keep still appear in the
@@ -1993,7 +2018,7 @@ mod tests {
     /// failed to add up would be the same defect one layer down.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn a_scrape_reports_reasons_the_tally_could_not_keep() {
+    fn a_scrape_reports_reasons_the_tally_could_not_keep() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         // More distinct link types than the tally holds slots for.
         let mut proc = crate::capture::PacketProcessor::new();
@@ -2025,6 +2050,7 @@ mod tests {
             "the family must sum to the total"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 
     /// `for_scrape` must read the process tally. Building from `Default`
@@ -2032,7 +2058,7 @@ mod tests {
     /// the exact defect that made `sipnab_capture_packets_total` unusable.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn for_scrape_reads_the_process_tally() {
+    fn for_scrape_reads_the_process_tally() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         let mut proc = crate::capture::PacketProcessor::new();
         for _ in 0..7 {
@@ -2057,20 +2083,22 @@ mod tests {
             m.capture_undecodable_frames
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 
     /// The active-streams gauge carries its sample value.
     #[test]
-    fn gauge_value_correct() {
+    fn gauge_value_correct() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
         assert!(output.contains("sipnab_rtp_streams_active 12"));
+        Ok(())
     }
 
     /// PDD buckets count cumulatively up through `+Inf` == total count.
     #[test]
-    fn histogram_buckets_are_cumulative() {
+    fn histogram_buckets_are_cumulative() -> Result<(), TestError> {
         // 5 observations: 0.3, 0.8, 1.5, 2.5, 4.0
         let metrics = PrometheusMetrics {
             pdd_histogram: vec![0.3, 0.8, 1.5, 2.5, 4.0],
@@ -2093,11 +2121,12 @@ mod tests {
         assert!(output.contains(r#"sipnab_pdd_seconds_bucket{le="+Inf"} 5"#));
         // count and sum
         assert!(output.contains("sipnab_pdd_seconds_count 5"));
+        Ok(())
     }
 
     /// The `_sum` line equals the sum of all observations.
     #[test]
-    fn histogram_sum_correct() {
+    fn histogram_sum_correct() -> Result<(), TestError> {
         let metrics = PrometheusMetrics {
             pdd_histogram: vec![1.0, 2.0, 3.0],
             ..Default::default()
@@ -2106,12 +2135,13 @@ mod tests {
 
         // Sum should be 6.0
         assert!(output.contains("sipnab_pdd_seconds_sum 6"));
+        Ok(())
     }
 
     /// Default metrics still emit scalar counters and zero-count
     /// histograms.
     #[test]
-    fn empty_metrics_produce_valid_output() {
+    fn empty_metrics_produce_valid_output() -> Result<(), TestError> {
         let metrics = PrometheusMetrics::default();
         let output = format_metrics(&metrics);
 
@@ -2120,11 +2150,12 @@ mod tests {
         assert!(output.contains("sipnab_mos_count 0"));
         assert!(output.contains("sipnab_capture_packets_total 0"));
         assert!(output.contains("sipnab_rtp_streams_active 0"));
+        Ok(())
     }
 
     /// Label values render in sorted key order for deterministic output.
     #[test]
-    fn labeled_counters_sorted_by_key() {
+    fn labeled_counters_sorted_by_key() -> Result<(), TestError> {
         let mut metrics = PrometheusMetrics::default();
         metrics.dialogs_total.insert("zombie".to_string(), 1);
         metrics.dialogs_total.insert("active".to_string(), 2);
@@ -2133,32 +2164,34 @@ mod tests {
         let output = format_metrics(&metrics);
 
         // Find positions of each label — they should be in sorted order
-        let pos_active = output.find(r#"state="active""#).expect("active label");
+        let pos_active = output.find(r#"state="active""#).ok_or("active label")?;
         let pos_completed = output
             .find(r#"state="completed""#)
-            .expect("completed label");
-        let pos_zombie = output.find(r#"state="zombie""#).expect("zombie label");
+            .ok_or("completed label")?;
+        let pos_zombie = output.find(r#"state="zombie""#).ok_or("zombie label")?;
 
         assert!(
             pos_active < pos_completed && pos_completed < pos_zombie,
             "Labels should be sorted: active({pos_active}) < completed({pos_completed}) < zombie({pos_zombie})"
         );
+        Ok(())
     }
 
     /// The MOS histogram section is present with the sample count.
     #[test]
-    fn mos_histogram_present() {
+    fn mos_histogram_present() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
         assert!(output.contains("# HELP sipnab_mos"));
         assert!(output.contains("# TYPE sipnab_mos histogram"));
         assert!(output.contains("sipnab_mos_count 10"));
+        Ok(())
     }
 
     /// Jitter and loss histogram sections are present with sample counts.
     #[test]
-    fn jitter_and_loss_histograms_present() {
+    fn jitter_and_loss_histograms_present() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
@@ -2166,27 +2199,30 @@ mod tests {
         assert!(output.contains("sipnab_jitter_ms_count 8"));
         assert!(output.contains("# HELP sipnab_loss_percent"));
         assert!(output.contains("sipnab_loss_percent_count 8"));
+        Ok(())
     }
 
     /// Security-alert and diagnosis counters carry their typed labels.
     #[test]
-    fn diagnosis_and_security_counters() {
+    fn diagnosis_and_security_counters() -> Result<(), TestError> {
         let metrics = sample_metrics();
         let output = format_metrics(&metrics);
 
         assert!(output.contains(r#"sipnab_security_alerts_total{type="reg_flood"} 3"#));
         assert!(output.contains(r#"sipnab_diagnosis_total{type="one_way_audio"} 4"#));
+        Ok(())
     }
 
     /// Empty labeled-counter families emit no HELP/TYPE lines at all.
     #[test]
-    fn empty_counter_maps_omitted() {
+    fn empty_counter_maps_omitted() -> Result<(), TestError> {
         let metrics = PrometheusMetrics::default();
         let output = format_metrics(&metrics);
 
         // Empty HashMap counters should not produce HELP/TYPE lines
         assert!(!output.contains("# HELP sipnab_dialogs_total"));
         assert!(!output.contains("# HELP sipnab_security_alerts_total"));
+        Ok(())
     }
 
     // ── capture quality ──────────────────────────────────────────────
@@ -2199,7 +2235,7 @@ mod tests {
     /// invalid timestamp loses no packet — it invalidates the timing. A
     /// collapsed total would read as one problem with one remedy.
     #[test]
-    fn capture_quality_counters_stay_separately_named() {
+    fn capture_quality_counters_stay_separately_named() -> Result<(), TestError> {
         let metrics = PrometheusMetrics {
             capture_quality: CaptureQuality {
                 kernel_dropped_packets: 11,
@@ -2222,12 +2258,13 @@ mod tests {
         assert!(output.contains("sipnab_capture_interface_dropped_packets_total 22"));
         assert!(output.contains("# TYPE sipnab_capture_invalid_timestamps_total counter"));
         assert!(output.contains("sipnab_capture_invalid_timestamps_total 33"));
+        Ok(())
     }
 
     /// A clean capture publishes all four series at zero rather than
     /// omitting them: a rule over an absent series is no-data, not "fine".
     #[test]
-    fn capture_quality_is_published_even_when_clean() {
+    fn capture_quality_is_published_even_when_clean() -> Result<(), TestError> {
         let output = format_metrics(&PrometheusMetrics::default());
 
         assert!(output.contains("sipnab_capture_kernel_dropped_packets_total 0"));
@@ -2235,11 +2272,12 @@ mod tests {
         assert!(output.contains("sipnab_capture_invalid_timestamps_total 0"));
         assert!(output.contains("# TYPE sipnab_capture_quality_degraded gauge"));
         assert!(output.contains("sipnab_capture_quality_degraded 0"));
+        Ok(())
     }
 
     /// Any one of the three counters moving raises the degraded gauge.
     #[test]
-    fn any_single_counter_raises_the_degraded_gauge() {
+    fn any_single_counter_raises_the_degraded_gauge() -> Result<(), TestError> {
         for quality in [
             CaptureQuality {
                 kernel_dropped_packets: 1,
@@ -2264,12 +2302,14 @@ mod tests {
                 "{quality:?} did not raise the gauge"
             );
         }
+        Ok(())
     }
 
     /// A capture with nothing wrong observed is not degraded.
     #[test]
-    fn a_clean_capture_is_not_degraded() {
+    fn a_clean_capture_is_not_degraded() -> Result<(), TestError> {
         assert!(!CaptureQuality::default().degraded());
+        Ok(())
     }
 
     /// `for_scrape` loads the capture-quality block from the process
@@ -2286,7 +2326,7 @@ mod tests {
     /// `Default::default()` cannot produce it.
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn for_scrape_loads_capture_quality() {
+    fn for_scrape_loads_capture_quality() -> Result<(), TestError> {
         crate::capture::reset_undecodable_frames();
         let mut proc = crate::capture::PacketProcessor::new();
         for _ in 0..3 {
@@ -2316,5 +2356,6 @@ mod tests {
              whole defect this gates"
         );
         crate::capture::reset_undecodable_frames();
+        Ok(())
     }
 }

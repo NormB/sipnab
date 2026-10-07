@@ -71,72 +71,81 @@ pub(crate) fn quote_placeholders(template: &str, table: &[(&str, &str)]) -> Stri
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Run a rewritten `%from` template through `sh -c` the way a hook runs,
     /// with `SIPNAB_FROM` set to `value`, inside a directory holding one file
     /// so an unquoted `*` would visibly glob. Returns stdout.
-    fn run_migrated(template: &str, value: &str) -> String {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("glob-would-match-this"), b"").expect("seed file");
+    fn run_migrated(template: &str, value: &str) -> Result<String, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("glob-would-match-this"), b"")
+            .map_err(|e| format!("seed file: {e:?}"))?;
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(quote_placeholders(template, &[("from", "SIPNAB_FROM")]))
             .env("SIPNAB_FROM", value)
             .current_dir(dir.path())
             .output()
-            .expect("sh should run");
-        String::from_utf8(out.stdout).expect("utf-8 stdout")
+            .map_err(|e| format!("sh should run: {e:?}"))?;
+        Ok(String::from_utf8(out.stdout).map_err(|e| format!("utf-8 stdout: {e:?}"))?)
     }
 
     /// An operator who already wrapped the placeholder in double quotes gets
     /// the same single argument, not a quote pair that cancels out.
     #[test]
-    fn legacy_placeholder_inside_double_quotes_stays_one_argument() {
+    fn legacy_placeholder_inside_double_quotes_stays_one_argument() -> Result<(), TestError> {
         let hostile = "a  b *";
         assert_eq!(
-            run_migrated("printf '<%s>' \"%from\"", hostile),
+            run_migrated("printf '<%s>' \"%from\"", hostile)?,
             format!("<{hostile}>")
         );
         assert_eq!(
-            run_migrated("printf '<%s>' \"from=%from;\"", hostile),
+            run_migrated("printf '<%s>' \"from=%from;\"", hostile)?,
             format!("<from={hostile};>")
         );
+        Ok(())
     }
 
     /// Inside single quotes the value still expands. A plain `$SIPNAB_FROM`
     /// there would reach the hook as that literal text, not the value.
     #[test]
-    fn legacy_placeholder_inside_single_quotes_expands() {
+    fn legacy_placeholder_inside_single_quotes_expands() -> Result<(), TestError> {
         let hostile = "a  b *";
         assert_eq!(
-            run_migrated("printf '<%s>' 'from=%from;'", hostile),
+            run_migrated("printf '<%s>' 'from=%from;'", hostile)?,
             format!("<from={hostile};>")
         );
+        Ok(())
     }
 
     /// A backslash-escaped quote is a literal character, not the start of a
     /// quoted span, so the placeholder after it is still unquoted context.
     #[test]
-    fn legacy_placeholder_after_escaped_quote() {
+    fn legacy_placeholder_after_escaped_quote() -> Result<(), TestError> {
         assert_eq!(
-            run_migrated("printf '<%s>' \\\"%from\\\"", "a  b *"),
+            run_migrated("printf '<%s>' \\\"%from\\\"", "a  b *")?,
             "<\"a  b *\">"
         );
+        Ok(())
     }
 
     /// Text glued to a placeholder stays text: `%from_x` is the From value
     /// followed by `_x`, not an unset variable named `SIPNAB_FROM_x`.
     #[test]
-    fn legacy_placeholder_followed_by_name_characters() {
-        assert_eq!(run_migrated("printf '<%s>' %from_x", "v"), "<v_x>");
+    fn legacy_placeholder_followed_by_name_characters() -> Result<(), TestError> {
+        assert_eq!(run_migrated("printf '<%s>' %from_x", "v")?, "<v_x>");
+        Ok(())
     }
 
     /// Shell syntax inside the value is never run, quoted or not.
     #[test]
-    fn legacy_placeholder_value_is_never_executed() {
+    fn legacy_placeholder_value_is_never_executed() -> Result<(), TestError> {
         let hostile = "$(echo pwned) `echo pwned`; echo pwned";
         assert_eq!(
-            run_migrated("printf '<%s>' %from", hostile),
+            run_migrated("printf '<%s>' %from", hostile)?,
             format!("<{hostile}>")
         );
+        Ok(())
     }
 }

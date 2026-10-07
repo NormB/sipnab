@@ -9709,6 +9709,9 @@ mod tests {
     use crate::test_utils::build_sip_message as build_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A server over fresh, empty dialog/stream stores.
     fn empty_server() -> SipnabMcp {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -9723,12 +9726,15 @@ mod tests {
 
     /// A fixed timestamp so dialog `updated_at` values are deterministic.
     fn base_ts() -> chrono::DateTime<chrono::Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     /// Parse `raw` as SIP between localhost:5060 endpoints at time `ts`.
-    fn parse_at(raw: &[u8], ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
-        parse_sip(
+    fn parse_at(
+        raw: &[u8],
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_sip(
             raw,
             ts,
             localhost(),
@@ -9737,7 +9743,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse SIP")
+        .map_err(|e| format!("should parse SIP: {e:?}"))?)
     }
 
     /// A minimal well-formed INVITE for `call_id`, parsed at `ts`.
@@ -9750,7 +9756,7 @@ mod tests {
         name: &str,
         value: &str,
         ts: chrono::DateTime<chrono::Utc>,
-    ) -> crate::sip::SipMessage {
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -9764,10 +9770,13 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, ts)
+        Ok(parse_at(&raw, ts)?)
     }
 
-    fn invite(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
+    fn invite(
+        call_id: &str,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -9781,11 +9790,14 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, ts)
+        Ok(parse_at(&raw, ts)?)
     }
 
     /// The matching 200 OK response for `call_id`, parsed at `ts`.
-    fn ok200(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
+    fn ok200(
+        call_id: &str,
+        ts: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -9802,7 +9814,7 @@ mod tests {
             ],
             b"",
         );
-        parse_at(&raw, ts)
+        Ok(parse_at(&raw, ts)?)
     }
 
     /// A bare filename that is a symlink out of the root is refused.
@@ -9823,23 +9835,26 @@ mod tests {
     /// an agent-facing surface, and a boundary documented as absolute should be.
     #[cfg(unix)]
     #[test]
-    fn a_symlink_out_of_the_file_root_is_refused() {
+    fn a_symlink_out_of_the_file_root_is_refused() -> Result<(), TestError> {
         let base =
             std::env::temp_dir().join(format!("sipnab-mcp-root-symlink-{}", std::process::id()));
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&root).expect("mkdir root");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
+        std::fs::create_dir_all(&outside).map_err(|e| format!("mkdir outside: {e:?}"))?;
 
         let escape = outside.join("secrets.pcap");
-        std::fs::write(&escape, b"original").expect("seed the file outside");
-        std::os::unix::fs::symlink(&escape, root.join("innocent.pcap")).expect("symlink");
+        std::fs::write(&escape, b"original")
+            .map_err(|e| format!("seed the file outside: {e:?}"))?;
+        std::os::unix::fs::symlink(&escape, root.join("innocent.pcap"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
 
-        let srv = server_with_dialog("sym@test").with_file_root(&root);
+        let srv = server_with_dialog("sym@test")?.with_file_root(&root);
         let err = srv
             .resolve_in_root("innocent.pcap")
-            .expect_err("a name that resolves outside the root must be refused");
+            .err()
+            .ok_or("a name that resolves outside the root must be refused")?;
 
         let msg = format!("{err:?}");
         assert!(
@@ -9848,11 +9863,12 @@ mod tests {
              failed: {msg}"
         );
         assert_eq!(
-            std::fs::read(&escape).expect("read"),
+            std::fs::read(&escape).map_err(|e| format!("read: {e:?}"))?,
             b"original",
             "the file outside the root must be untouched"
         );
         let _ = std::fs::remove_dir_all(&base);
+        Ok(())
     }
 
     /// A write refuses a name that already exists, and the bytes survive.
@@ -9864,68 +9880,90 @@ mod tests {
     /// documented workflow.
     ///
     /// A capture root holding real files, plus whatever junk the test wants.
-    fn sweep_root(tag: &str, files: &[(&str, &str)], junk: &[(&str, &[u8])]) -> std::path::PathBuf {
+    fn sweep_root(
+        tag: &str,
+        files: &[(&str, &str)],
+        junk: &[(&str, &[u8])],
+    ) -> Result<std::path::PathBuf, TestError> {
         let root = std::env::temp_dir().join(format!("sipnab-sweep-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
         for (name, source) in files {
             let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
             std::fs::copy(&from, root.join(name))
-                .unwrap_or_else(|e| panic!("copy {source} -> {name}: {e}"));
+                .map_err(|e| format!("copy {source} -> {name}: {e}"))?;
         }
         for (name, bytes) in junk {
-            std::fs::write(root.join(name), bytes).expect("write junk");
+            std::fs::write(root.join(name), bytes).map_err(|e| format!("write junk: {e:?}"))?;
         }
-        root
+        Ok(root)
     }
 
     /// Write a gzip-compressed tar of `members` (name, fixture path) into
     /// `root` as `name`.
-    fn tgz_into(root: &std::path::Path, name: &str, members: &[(&str, &str)]) {
+    fn tgz_into(
+        root: &std::path::Path,
+        name: &str,
+        members: &[(&str, &str)],
+    ) -> Result<(), TestError> {
         use crate::capture::archive::tar::testutil::{Spec, build};
         use std::io::Write;
         let bytes: Vec<(String, Vec<u8>)> = members
             .iter()
-            .map(|(n, src)| {
+            .map(|(n, src)| -> Result<_, TestError> {
                 let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(src);
-                (n.to_string(), std::fs::read(from).expect("fixture"))
+                Ok((
+                    n.to_string(),
+                    std::fs::read(from).map_err(|e| format!("fixture: {e:?}"))?,
+                ))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let specs: Vec<Spec<'_>> = bytes.iter().map(|(n, d)| Spec::file(n, d)).collect();
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(&build(&specs)).expect("gzip");
-        std::fs::write(root.join(name), enc.finish().expect("gzip")).expect("write tgz");
+        enc.write_all(&build(&specs))
+            .map_err(|e| format!("gzip: {e:?}"))?;
+        std::fs::write(
+            root.join(name),
+            enc.finish().map_err(|e| format!("gzip: {e:?}"))?,
+        )
+        .map_err(|e| format!("write tgz: {e:?}"))?;
+        Ok(())
     }
 
     /// An archive in the root is listed: `open_capture` and
     /// `find_in_captures` read it as the set it holds, so hiding it would
     /// leave an agent unable to name a capture sipnab can read.
     #[tokio::test]
-    async fn list_captures_lists_an_archive() {
-        let root = sweep_root("list-archive", &[], &[]);
+    async fn list_captures_lists_an_archive() -> Result<(), TestError> {
+        let root = sweep_root("list-archive", &[], &[])?;
         tgz_into(
             &root,
             "session.tgz",
             &[("a.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
-        );
-        let srv = server_with_dialog("caps@x").with_file_root(&root);
-        let result = srv.list_captures().await.expect("list_captures");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+        )?;
+        let srv = server_with_dialog("caps@x")?.with_file_root(&root);
+        let result = srv
+            .list_captures()
+            .await
+            .map_err(|e| format!("list_captures: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
         let names: Vec<&str> = v["captures"]
             .as_array()
-            .expect("captures")
+            .ok_or("captures")?
             .iter()
             .filter_map(|c| c["filename"].as_str())
             .collect();
         assert_eq!(names, vec!["session.tgz"]);
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The sweep reads inside an archive, and names the archive as the file
     /// holding the call.
     #[tokio::test]
-    async fn find_in_captures_reads_inside_an_archive() {
-        let root = sweep_root("archive-hit", &[], &[]);
+    async fn find_in_captures_reads_inside_an_archive() -> Result<(), TestError> {
+        let root = sweep_root("archive-hit", &[], &[])?;
         tgz_into(
             &root,
             "bundle.tgz",
@@ -9933,20 +9971,22 @@ mod tests {
                 ("x/register.pcap", "tests/pcap-samples/sip-register.pcap"),
                 ("x/call.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
             ],
-        );
-        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
         let r = srv
             .find_in_captures(Parameters(FindInCapturesParams {
                 filter: "call_id == \"1-1966@10.0.2.20\"".to_string(),
                 ..Default::default()
             }))
             .await
-            .expect("the sweep succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("json");
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("json: {e:?}"))?;
         let sweep = &v["sweep"];
         assert_eq!(sweep["matches"][0]["filename"], "bundle.tgz", "{sweep}");
         assert_eq!(sweep["complete"], true, "{sweep}");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The sweep names the file holding the call, and leaves the loaded
@@ -9958,7 +9998,8 @@ mod tests {
     /// "which of these files holds Call-ID X" cost the caller the capture it
     /// was already working in.
     #[tokio::test]
-    async fn find_in_captures_names_the_file_without_touching_the_loaded_capture() {
+    async fn find_in_captures_names_the_file_without_touching_the_loaded_capture()
+    -> Result<(), TestError> {
         let root = sweep_root(
             "hit",
             &[
@@ -9966,8 +10007,8 @@ mod tests {
                 ("b-target.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
             ],
             &[],
-        );
-        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
 
         let before_len = srv.dialog_store.read().len();
         // The store GENERATIONS, which is what `capture_identity` is derived
@@ -9986,8 +10027,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("the sweep succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("payload is JSON: {e:?}"))?;
         let sweep = &v["sweep"];
 
         assert_eq!(
@@ -10016,6 +10058,7 @@ mod tests {
              voids every cursor the caller holds"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A file the sweep cannot read is NAMED, and makes the sweep incomplete.
@@ -10024,13 +10067,14 @@ mod tests {
     /// it could not open would report "no matches" for a call that is sitting
     /// in it. The one file nobody looked in is exactly the one that matters.
     #[tokio::test]
-    async fn an_unreadable_capture_is_named_and_makes_the_sweep_incomplete() {
+    async fn an_unreadable_capture_is_named_and_makes_the_sweep_incomplete() -> Result<(), TestError>
+    {
         let root = sweep_root(
             "unreadable",
             &[("good.pcap", "tests/pcap-samples/sip-rtp-g711.pcap")],
             &[("broken.pcap", b"not a capture at all")],
-        );
-        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
 
         let r = srv
             .find_in_captures(Parameters(FindInCapturesParams {
@@ -10038,8 +10082,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("the sweep succeeds even when a file does not");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+            .map_err(|e| format!("the sweep succeeds even when a file does not: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("payload is JSON: {e:?}"))?;
         let sweep = &v["sweep"];
 
         assert!(
@@ -10051,7 +10096,7 @@ mod tests {
             "a file went unread, so an empty result cannot mean the call is \
              absent: {sweep}"
         );
-        let unreadable = sweep["unreadable"].as_array().expect("an unreadable list");
+        let unreadable = sweep["unreadable"].as_array().ok_or("an unreadable list")?;
         assert_eq!(unreadable.len(), 1, "{sweep}");
         assert_eq!(unreadable[0]["filename"], "broken.pcap");
         assert!(
@@ -10061,11 +10106,12 @@ mod tests {
             "a file is never listed as unreadable without saying why: {sweep}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A file limit stops the sweep and says so.
     #[tokio::test]
-    async fn a_file_limit_stops_the_sweep_and_marks_it_incomplete() {
+    async fn a_file_limit_stops_the_sweep_and_marks_it_incomplete() -> Result<(), TestError> {
         let root = sweep_root(
             "capped",
             &[
@@ -10073,8 +10119,8 @@ mod tests {
                 ("b.pcap", "tests/pcap-samples/sip-rtp-g711.pcap"),
             ],
             &[],
-        );
-        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
 
         let r = srv
             .find_in_captures(Parameters(FindInCapturesParams {
@@ -10083,8 +10129,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("the sweep succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).expect("payload is JSON");
+            .map_err(|e| format!("the sweep succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&r)?).map_err(|e| format!("payload is JSON: {e:?}"))?;
         let sweep = &v["sweep"];
 
         assert_eq!(sweep["files_examined"], 1);
@@ -10095,6 +10142,7 @@ mod tests {
             "one of two files was read: absence is not established"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A malformed filter is refused before any file is opened.
@@ -10102,64 +10150,70 @@ mod tests {
     /// Reading a spool to discover the expression was never valid is a cost
     /// the caller pays for nothing.
     #[tokio::test]
-    async fn a_malformed_filter_is_refused_before_the_sweep_starts() {
-        let root = sweep_root("badfilter", &[], &[]);
-        let srv = server_with_dialog("loaded@test").with_file_root(&root);
+    async fn a_malformed_filter_is_refused_before_the_sweep_starts() -> Result<(), TestError> {
+        let root = sweep_root("badfilter", &[], &[])?;
+        let srv = server_with_dialog("loaded@test")?.with_file_root(&root);
         let err = srv
             .find_in_captures(Parameters(FindInCapturesParams {
                 filter: "state ==".to_string(),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unparseable filter is invalid_params");
+            .err()
+            .ok_or("an unparseable filter is invalid_params")?;
         assert!(
             format!("{err:?}").contains("filter"),
             "the refusal must name the parameter: {err:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// Without `--mcp-file-root` the tool says so rather than sweeping nothing.
     #[tokio::test]
-    async fn find_in_captures_without_a_file_root_says_so() {
-        let err = server_with_dialog("loaded@test")
+    async fn find_in_captures_without_a_file_root_says_so() -> Result<(), TestError> {
+        let err = server_with_dialog("loaded@test")?
             .find_in_captures(Parameters(FindInCapturesParams {
                 filter: "state == failed".to_string(),
                 ..Default::default()
             }))
             .await
-            .expect_err("file tools are disabled without a root");
+            .err()
+            .ok_or("file tools are disabled without a root")?;
         assert!(
             format!("{err:?}").contains("--mcp-file-root"),
             "the refusal must name the flag that enables it: {err:?}"
         );
+        Ok(())
     }
 
     /// The assertion is on the BYTES, not just the refusal: a guard that
     /// refuses after opening the file with truncation has already destroyed it,
     /// and would pass a test that only checked for an error.
     #[test]
-    fn a_write_refuses_a_name_that_already_exists() {
+    fn a_write_refuses_a_name_that_already_exists() -> Result<(), TestError> {
         let root = std::env::temp_dir().join(format!("sipnab-mcp-clobber-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
 
         let staged = root.join("staged.pcap");
         let original = b"a capture somebody staged here".to_vec();
-        std::fs::write(&staged, &original).expect("seed the staged capture");
+        std::fs::write(&staged, &original)
+            .map_err(|e| format!("seed the staged capture: {e:?}"))?;
 
-        let srv = server_with_dialog("clobber@test").with_file_root(&root);
+        let srv = server_with_dialog("clobber@test")?.with_file_root(&root);
 
         let err = srv
             .resolve_in_root_for_write("staged.pcap")
-            .expect_err("writing over an existing file must be refused");
+            .err()
+            .ok_or("writing over an existing file must be refused")?;
         let msg = format!("{err:?}");
         assert!(
             msg.contains("exists"),
             "the refusal must say the file is already there: {msg}"
         );
         assert_eq!(
-            std::fs::read(&staged).expect("read back"),
+            std::fs::read(&staged).map_err(|e| format!("read back: {e:?}"))?,
             original,
             "the existing file's bytes must be untouched by the refused write"
         );
@@ -10167,9 +10221,10 @@ mod tests {
         // Anti-vacuity: a name that is NOT taken still resolves, or this guard
         // would be refusing every export rather than the destructive ones.
         srv.resolve_in_root_for_write("brand-new.pcap")
-            .expect("a free name must still be writable");
+            .map_err(|e| format!("a free name must still be writable: {e:?}"))?;
 
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// `capture_status` reports SIP the portrange skipped (#95).
@@ -10190,16 +10245,16 @@ mod tests {
     /// test below gives about key presence: a field that appears only once
     /// something has happened is a field no client learns exists.
     #[tokio::test]
-    async fn capture_status_carries_what_the_capture_declined() {
+    async fn capture_status_carries_what_the_capture_declined() -> Result<(), TestError> {
         let result = empty_server()
             .capture_status()
             .await
-            .expect("capture_status");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("capture_status: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         let seen = v["caveats"]["media_creating_commands"]
             .as_u64()
-            .unwrap_or_else(|| panic!("declined work must be a number on every response: {v}"));
+            .ok_or_else(|| format!("declined work must be a number on every response: {v}"))?;
 
         // The tally is process-global and shared with every other test in this
         // binary, so this is a DELTA. An exact figure would be true only until
@@ -10208,16 +10263,17 @@ mod tests {
         let after_result = empty_server()
             .capture_status()
             .await
-            .expect("capture_status");
-        let after: serde_json::Value = serde_json::from_str(&text_of(&after_result)).unwrap();
+            .map_err(|e| format!("capture_status: {e:?}"))?;
+        let after: serde_json::Value = serde_json::from_str(&text_of(&after_result)?)?;
         assert!(
             after["caveats"]["media_creating_commands"]
                 .as_u64()
-                .expect("still a number")
+                .ok_or("still a number")?
                 > seen,
             "a media-creating command went past and the count did not move; the \
              key is wired to nothing: {after}"
         );
+        Ok(())
     }
 
     /// `dialog_count` alone reads as "how much was there". On the corpus it was
@@ -10232,12 +10288,12 @@ mod tests {
     /// the defect was a field that did not exist, and a client that cannot see
     /// the key cannot see the loss whatever number would have been in it.
     #[tokio::test]
-    async fn capture_status_carries_the_unanalyzed_sip_count() {
+    async fn capture_status_carries_the_unanalyzed_sip_count() -> Result<(), TestError> {
         let result = empty_server()
             .capture_status()
             .await
-            .expect("capture_status");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("capture_status: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert!(
             v.get("unanalysed_sip_messages").is_some(),
@@ -10250,8 +10306,11 @@ mod tests {
         );
         // Present on `stats` too, and the two must not drift into naming the
         // same fact differently.
-        let stats = empty_server().capture_status().await.expect("stats");
-        let sv: serde_json::Value = serde_json::from_str(&text_of(&stats)).unwrap();
+        let stats = empty_server()
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats: {e:?}"))?;
+        let sv: serde_json::Value = serde_json::from_str(&text_of(&stats)?)?;
         for key in ["unanalysed_sip_messages", "unanalysed_busiest_ports"] {
             assert!(
                 sv.get(key).is_some(),
@@ -10259,6 +10318,7 @@ mod tests {
                  or a client learns the loss from one tool and not the other"
             );
         }
+        Ok(())
     }
 
     /// A lint finding cites the frame it was drawn from, and stays silent when
@@ -10274,7 +10334,7 @@ mod tests {
     /// finding citing frame 0 of nothing manufactures the confidence the whole
     /// mechanism exists to prevent.
     #[test]
-    fn a_finding_cites_its_frame_or_says_nothing() {
+    fn a_finding_cites_its_frame_or_says_nothing() -> Result<(), TestError> {
         use crate::capture::packet::{FrameOrigin, FrameRef};
 
         let raw = build_sip(
@@ -10290,7 +10350,7 @@ mod tests {
             b"",
         );
         let ts = chrono::Utc::now();
-        let mut msg = parse_at(&raw, ts);
+        let mut msg = parse_at(&raw, ts)?;
         msg.frame = Some(FrameRef {
             // Whole frame.
             bytes: None,
@@ -10302,7 +10362,7 @@ mod tests {
             },
             kind: crate::capture::packet::FrameSource::Wire,
         });
-        let mut unciteable = parse_at(&raw, ts);
+        let mut unciteable = parse_at(&raw, ts)?;
         unciteable.frame = None;
         let messages = vec![msg, unciteable];
 
@@ -10341,6 +10401,7 @@ mod tests {
              message: {:?}",
             stray[0]
         );
+        Ok(())
     }
 
     /// A stream cites the frame it began in, and stays silent when it cannot.
@@ -10356,15 +10417,19 @@ mod tests {
     /// real pointer, and a stream citing frame 0 of nothing is worse than one
     /// citing nothing at all.
     #[test]
-    fn a_stream_cites_its_frame_or_says_nothing() {
+    fn a_stream_cites_its_frame_or_says_nothing() -> Result<(), TestError> {
         use crate::capture::packet::{FrameOrigin, FrameRef};
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream::{RtpStream, StreamKey};
 
         let key = StreamKey {
             ssrc: 0x1a2b_3c4d,
-            src: "192.0.2.1:10000".parse().expect("src"),
-            dst: "192.0.2.2:20000".parse().expect("dst"),
+            src: "192.0.2.1:10000"
+                .parse()
+                .map_err(|e| format!("src: {e:?}"))?,
+            dst: "192.0.2.2:20000"
+                .parse()
+                .map_err(|e| format!("dst: {e:?}"))?,
         };
         let header = RtpHeader {
             version: 2,
@@ -10407,6 +10472,7 @@ mod tests {
             "a stream with NO pointer must omit the key, not emit an empty or \
              zero one: {without}"
         );
+        Ok(())
     }
 
     /// A pointer whose source escapes the file root is refused, not followed.
@@ -10436,11 +10502,12 @@ mod tests {
     /// actually takes.
     #[cfg(unix)]
     #[tokio::test]
-    async fn show_evidence_follows_a_pointer_into_the_capture_being_read() {
+    async fn show_evidence_follows_a_pointer_into_the_capture_being_read() -> Result<(), TestError>
+    {
         let base =
             std::env::temp_dir().join(format!("sipnab-show-evidence-self-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&base).expect("mkdir root");
+        std::fs::create_dir_all(&base).map_err(|e| format!("mkdir root: {e:?}"))?;
         let capture = base.join("under-analysis.pcap");
         std::fs::copy(
             concat!(
@@ -10449,7 +10516,7 @@ mod tests {
             ),
             &capture,
         )
-        .expect("seed the capture under analysis");
+        .map_err(|e| format!("seed the capture under analysis: {e:?}"))?;
 
         // The server is READING this capture — so it is a protected input,
         // exactly as it would be in production.
@@ -10458,7 +10525,7 @@ mod tests {
             &[],
             false,
         );
-        let srv = server_with_dialog("self@test")
+        let srv = server_with_dialog("self@test")?
             .with_file_root(&base)
             .with_protected_inputs(protected);
 
@@ -10468,8 +10535,8 @@ mod tests {
                 max_bytes: None,
             }))
             .await
-            .expect("the call succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("the call succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(
             v["resolved"], 1,
@@ -10483,20 +10550,21 @@ mod tests {
             "the frame bytes must be returned, not just a success flag: {v}"
         );
         let _ = std::fs::remove_dir_all(&base);
+        Ok(())
     }
 
     /// A pointer into a member of an archive in the file root resolves: the
     /// archive is confined to the root by name, exactly as a plain capture
     /// is, and the member is read out of it.
     #[tokio::test]
-    async fn show_evidence_follows_a_pointer_into_an_archive_member() {
-        let root = sweep_root("evidence-archive", &[], &[]);
+    async fn show_evidence_follows_a_pointer_into_an_archive_member() -> Result<(), TestError> {
+        let root = sweep_root("evidence-archive", &[], &[])?;
         tgz_into(
             &root,
             "set.tgz",
             &[("x/reg.pcap", "tests/pcap-samples/sip-register.pcap")],
-        );
-        let srv = server_with_dialog("archive@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("archive@test")?.with_file_root(&root);
         let pointer = format!("{}/set.tgz/x/reg.pcap#0", root.display());
         let result = srv
             .show_evidence(Parameters(ShowEvidenceParams {
@@ -10504,26 +10572,28 @@ mod tests {
                 max_bytes: None,
             }))
             .await
-            .expect("the call succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+            .map_err(|e| format!("the call succeeds: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(v["resolved"], 1, "{v}");
         let hex = v["frames"][0]["hex"].as_str().unwrap_or_default();
         assert!(hex.split_whitespace().count() >= 8, "{v}");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An archive OUTSIDE the root is not reachable through a member label,
     /// any more than a capture outside it is through its path.
     #[tokio::test]
-    async fn show_evidence_refuses_an_archive_member_outside_the_root() {
-        let root = sweep_root("evidence-archive-in", &[], &[]);
-        let outside = sweep_root("evidence-archive-out", &[], &[]);
+    async fn show_evidence_refuses_an_archive_member_outside_the_root() -> Result<(), TestError> {
+        let root = sweep_root("evidence-archive-in", &[], &[])?;
+        let outside = sweep_root("evidence-archive-out", &[], &[])?;
         tgz_into(
             &outside,
             "set.tgz",
             &[("x/reg.pcap", "tests/pcap-samples/sip-register.pcap")],
-        );
-        let srv = server_with_dialog("archive@test").with_file_root(&root);
+        )?;
+        let srv = server_with_dialog("archive@test")?.with_file_root(&root);
         let pointer = format!("{}/set.tgz/x/reg.pcap#0", outside.display());
         let result = srv
             .show_evidence(Parameters(ShowEvidenceParams {
@@ -10531,11 +10601,13 @@ mod tests {
                 max_bytes: None,
             }))
             .await
-            .expect("the call answers");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+            .map_err(|e| format!("the call answers: {e:?}"))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(v["resolved"], 0, "{v}");
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
+        Ok(())
     }
 
     /// `resolve_in_root`, so a crafted pointer can at worst name a file the
@@ -10546,7 +10618,7 @@ mod tests {
     /// while the read succeeds.
     #[cfg(unix)]
     #[tokio::test]
-    async fn show_evidence_refuses_a_pointer_that_escapes_the_file_root() {
+    async fn show_evidence_refuses_a_pointer_that_escapes_the_file_root() -> Result<(), TestError> {
         let base = std::env::temp_dir().join(format!(
             "sipnab-show-evidence-escape-{}",
             std::process::id()
@@ -10554,8 +10626,8 @@ mod tests {
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(&root).expect("mkdir root");
-        std::fs::create_dir_all(&outside).expect("mkdir outside");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
+        std::fs::create_dir_all(&outside).map_err(|e| format!("mkdir outside: {e:?}"))?;
         // A REAL capture, so that a bypass of the confinement would actually
         // succeed and return frame bytes. Seeding junk here would make the test
         // pass for the wrong reason: the resolver would reject it as an
@@ -10569,9 +10641,9 @@ mod tests {
             ),
             &secret,
         )
-        .expect("seed a real capture outside the root");
+        .map_err(|e| format!("seed a real capture outside the root: {e:?}"))?;
 
-        let srv = server_with_dialog("esc@test").with_file_root(&root);
+        let srv = server_with_dialog("esc@test")?.with_file_root(&root);
         let result = srv
             .show_evidence(Parameters(ShowEvidenceParams {
                 refs: vec![
@@ -10582,8 +10654,10 @@ mod tests {
                 max_bytes: None,
             }))
             .await
-            .expect("the call itself succeeds; individual pointers are refused");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| {
+                format!("the call itself succeeds; individual pointers are refused: {e:?}")
+            })?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(
             v["resolved"], 0,
@@ -10592,7 +10666,8 @@ mod tests {
         // The frame the bypass would return, computed independently so this
         // asserts on the real bytes rather than on a marker string.
         let leaked_hex = {
-            let raw = std::fs::read(&secret).expect("read the outside capture");
+            let raw =
+                std::fs::read(&secret).map_err(|e| format!("read the outside capture: {e:?}"))?;
             raw.iter()
                 .skip(40)
                 .take(8)
@@ -10606,7 +10681,7 @@ mod tests {
             "bytes from the capture outside the root reached the response -- \
              the confinement was bypassed: {body}"
         );
-        for frame in v["frames"].as_array().expect("frames") {
+        for frame in v["frames"].as_array().ok_or("frames")? {
             assert_eq!(frame["status"], "unresolvable", "{frame}");
             assert!(
                 frame["hex"].is_null(),
@@ -10614,6 +10689,7 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&base);
+        Ok(())
     }
 
     /// A pointer naming a live device says it cannot be followed, and says why.
@@ -10622,25 +10698,26 @@ mod tests {
     /// to seek to. Reconstructing something and presenting it as evidence is
     /// the defect `export_capture` had; this reports the limit instead.
     #[tokio::test]
-    async fn show_evidence_says_a_live_pointer_has_no_frames_to_follow() {
+    async fn show_evidence_says_a_live_pointer_has_no_frames_to_follow() -> Result<(), TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-show-evidence-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
-        let result = server_with_dialog("live@test")
+        let result = server_with_dialog("live@test")?
             .with_file_root(&root)
             .show_evidence(Parameters(ShowEvidenceParams {
                 refs: vec!["eth0#17".to_string()],
                 max_bytes: None,
             }))
             .await
-            .expect("show_evidence");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("show_evidence: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(v["resolved"], 0);
         assert_eq!(v["frames"][0]["status"], "unresolvable");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An empty batch is refused rather than answered with an empty list.
@@ -10648,31 +10725,33 @@ mod tests {
     /// `resolved: 0` over no pointers and `resolved: 0` over three that all
     /// failed are different facts, and only one of them is a caller error.
     #[tokio::test]
-    async fn show_evidence_refuses_an_empty_batch() {
+    async fn show_evidence_refuses_an_empty_batch() -> Result<(), TestError> {
         let err = empty_server()
             .show_evidence(Parameters(ShowEvidenceParams {
                 refs: vec![],
                 max_bytes: None,
             }))
             .await
-            .expect_err("an empty ref list must be refused");
+            .err()
+            .ok_or("an empty ref list must be refused")?;
         assert!(
             err.message.contains("at least one"),
             "the refusal must say what was wrong: {}",
             err.message
         );
+        Ok(())
     }
 
     /// One unfollowable pointer does not discard the rest of the batch, and the
     /// summary counts what actually resolved.
     #[tokio::test]
-    async fn show_evidence_reports_each_pointer_independently() {
+    async fn show_evidence_reports_each_pointer_independently() -> Result<(), TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-show-evidence-mixed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
-        let result = server_with_dialog("mixed@test")
+        let result = server_with_dialog("mixed@test")?
             .with_file_root(&root)
             .show_evidence(Parameters(ShowEvidenceParams {
                 refs: vec![
@@ -10682,8 +10761,8 @@ mod tests {
                 max_bytes: None,
             }))
             .await
-            .expect("show_evidence");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("show_evidence: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(v["requested"], 2, "every pointer is accounted for: {v}");
         assert_eq!(
@@ -10696,7 +10775,7 @@ mod tests {
         // both reasons must be present rather than a single generic refusal.
         let reasons: Vec<String> = v["frames"]
             .as_array()
-            .expect("frames")
+            .ok_or("frames")?
             .iter()
             .map(|f| f["reason"].as_str().unwrap_or_default().to_string())
             .collect();
@@ -10710,25 +10789,27 @@ mod tests {
              must not share one message: {reasons:?}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// An ordinary name inside the root still resolves, so the check above is
     /// not simply refusing everything.
     #[cfg(unix)]
     #[test]
-    fn a_plain_name_inside_the_file_root_still_resolves() {
+    fn a_plain_name_inside_the_file_root_still_resolves() -> Result<(), TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-mcp-root-plain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
-        let srv = server_with_dialog("plain@test").with_file_root(&root);
+        let srv = server_with_dialog("plain@test")?.with_file_root(&root);
         let path = srv
             .resolve_in_root("out.pcap")
-            .expect("a bare name inside the root must resolve");
+            .map_err(|e| format!("a bare name inside the root must resolve: {e:?}"))?;
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("out.pcap"));
 
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// The handshake must name sipnab, not whichever MCP crate we build on.
@@ -10741,8 +10822,8 @@ mod tests {
     /// regression: a future refactor that drops the explicit assignment would
     /// still produce a well-formed handshake naming the wrong software.
     #[test]
-    fn the_handshake_names_sipnab_and_not_the_transport_crate() {
-        let info = server_with_dialog("id@test").get_info();
+    fn the_handshake_names_sipnab_and_not_the_transport_crate() -> Result<(), TestError> {
+        let info = server_with_dialog("id@test")?.get_info();
 
         assert_eq!(info.server_info.name, "sipnab");
         assert_eq!(info.server_info.version, env!("CARGO_PKG_VERSION"));
@@ -10755,6 +10836,7 @@ mod tests {
             !info.server_info.version.is_empty(),
             "an empty version is not an identity"
         );
+        Ok(())
     }
 
     /// The bundle catalog and the router agree exactly: every registered tool
@@ -10767,7 +10849,7 @@ mod tests {
         target_os = "linux"
     ))]
     #[test]
-    fn the_bundle_catalog_is_exactly_the_registered_tools() {
+    fn the_bundle_catalog_is_exactly_the_registered_tools() -> Result<(), TestError> {
         let registered: std::collections::BTreeSet<String> =
             empty_server().registered_tool_names().into_iter().collect();
         let catalog: std::collections::BTreeSet<String> = crate::mcp_profile::BUNDLES
@@ -10781,6 +10863,7 @@ mod tests {
             "tools in no bundle: {unbundled:?}; bundled names no tool answers to: \
              {unregistered:?}"
         );
+        Ok(())
     }
 
     /// What each bundle costs a client on `tools/list` by default (output
@@ -10797,7 +10880,7 @@ mod tests {
         target_os = "linux"
     ))]
     #[test]
-    fn each_bundle_stays_within_its_byte_budget() {
+    fn each_bundle_stays_within_its_byte_budget() -> Result<(), TestError> {
         const CEILINGS: &[(&str, usize)] = &[
             ("core", 11_000),
             ("signaling", 22_000),
@@ -10816,23 +10899,25 @@ mod tests {
             .tool_router
             .list_all()
             .iter()
-            .map(|t| {
-                (
+            .map(|t| -> Result<_, TestError> {
+                Ok((
                     t.name.to_string(),
-                    serde_json::to_string(t).expect("serializes").len(),
-                )
+                    serde_json::to_string(t)
+                        .map_err(|e| format!("serializes: {e:?}"))?
+                        .len(),
+                ))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let mut over = Vec::new();
         for (bundle, ceiling) in CEILINGS {
             let bytes: usize = if *bundle == crate::mcp_profile::FULL {
                 sizes.values().sum()
             } else {
                 crate::mcp_profile::bundle(bundle)
-                    .expect("a built-in bundle")
+                    .ok_or("a built-in bundle")?
                     .iter()
-                    .map(|t| sizes.get(*t).copied().expect("a registered tool"))
-                    .sum()
+                    .map(|t| sizes.get(*t).copied().ok_or("a registered tool"))
+                    .sum::<Result<usize, _>>()?
             };
             if bytes > *ceiling {
                 over.push(format!("{bundle}: {bytes} > {ceiling}"));
@@ -10843,12 +10928,13 @@ mod tests {
             "every bundle and full carry a ceiling"
         );
         assert!(over.is_empty(), "bundles over their byte budget: {over:?}");
+        Ok(())
     }
 
     /// Output schemas are dropped from `tools/list` unless asked for, and kept
     /// when they are. The input schemas stay either way.
     #[test]
-    fn output_schemas_are_dropped_unless_asked_for() {
+    fn output_schemas_are_dropped_unless_asked_for() -> Result<(), TestError> {
         let with = |on: bool| {
             empty_server()
                 .with_output_schemas(on)
@@ -10865,17 +10951,18 @@ mod tests {
             with(true).iter().any(|t| t.output_schema.is_some()),
             "on keeps them"
         );
+        Ok(())
     }
 
     /// The handshake names the tools a client was given and the bundles it
     /// was not, so an agent missing a tool knows it exists.
     #[test]
-    fn the_handshake_names_the_loaded_tools_and_the_other_bundles() {
+    fn the_handshake_names_the_loaded_tools_and_the_other_bundles() -> Result<(), TestError> {
         let sel = crate::mcp_profile::resolve(
             &["relay".to_string(), "get_sdp_timeline".to_string()],
             &std::collections::BTreeMap::new(),
         )
-        .expect("known names");
+        .map_err(|e| format!("known names: {e:?}"))?;
         let text = empty_server()
             .with_tool_selection(&sel)
             .get_info()
@@ -10896,20 +10983,22 @@ mod tests {
         // A bundle a custom bundle already loads whole is not "other".
         let mut custom = std::collections::BTreeMap::new();
         custom.insert("voice".to_string(), vec!["media".to_string()]);
-        let sel = crate::mcp_profile::resolve(&["voice".to_string()], &custom).expect("ok");
+        let sel = crate::mcp_profile::resolve(&["voice".to_string()], &custom)
+            .map_err(|e| format!("ok: {e:?}"))?;
         let text = empty_server()
             .with_tool_selection(&sel)
             .get_info()
             .instructions
             .unwrap_or_default();
-        let others = &text[text.find("Other bundles").expect("others listed")..];
+        let others = &text[text.find("Other bundles").ok_or("others listed")?..];
         assert!(!others.contains("media"), "{text}");
+        Ok(())
     }
 
     /// The handshake tells every client, before it calls anything, whether
     /// this server can change another system and on what.
     #[test]
-    fn the_handshake_says_which_actions_are_enabled() {
+    fn the_handshake_says_which_actions_are_enabled() -> Result<(), TestError> {
         let text = |srv: SipnabMcp| srv.get_info().instructions.unwrap_or_default();
         let default = text(empty_server());
         assert!(
@@ -10922,7 +11011,7 @@ mod tests {
                     &["tfps:mcp".to_string()],
                     &[],
                 )
-                .expect("valid"),
+                .map_err(|e| format!("valid: {e:?}"))?,
             ),
         );
         assert!(
@@ -10936,24 +11025,25 @@ mod tests {
                     &["tfps:rest".to_string()],
                     &[],
                 )
-                .expect("valid"),
+                .map_err(|e| format!("valid: {e:?}"))?,
             ),
         );
         assert!(
             rest_only.contains("changes no external system"),
             "enabled for REST only, MCP still acts on nothing: {rest_only}"
         );
+        Ok(())
     }
 
     /// A server whose dialog store holds one dialog (`call_id`) with an
     /// INVITE followed by a 200 OK (two messages).
-    fn server_with_dialog(call_id: &str) -> SipnabMcp {
+    fn server_with_dialog(call_id: &str) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(100, false);
-        ds.process_message(invite(call_id, base_ts()));
-        ds.process_message(ok200(call_id, base_ts()));
+        ds.process_message(invite(call_id, base_ts())?);
+        ds.process_message(ok200(call_id, base_ts())?);
         let ds = Arc::new(RwLock::new(ds));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        SipnabMcp::new(ds, ss)
+        Ok(SipnabMcp::new(ds, ss))
     }
 
     /// A server whose dialogs ALL share one `created_at`.
@@ -10966,20 +11056,24 @@ mod tests {
     /// Call-IDs are inserted in an order that disagrees with their sort order,
     /// so a sort that leaves ties in store order is visibly different from one
     /// that orders them by Call-ID.
-    fn server_with_simultaneous_dialogs(call_ids: &[&str]) -> SipnabMcp {
+    fn server_with_simultaneous_dialogs(call_ids: &[&str]) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(100, false);
         for id in call_ids {
-            ds.process_message(invite(id, base_ts()));
-            ds.process_message(ok200(id, base_ts()));
+            ds.process_message(invite(id, base_ts())?);
+            ds.process_message(ok200(id, base_ts())?);
         }
-        SipnabMcp::new(
+        Ok(SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
             Arc::new(RwLock::new(StreamStore::new(100))),
-        )
+        ))
     }
 
     /// One page of `list_dialogs`, as parsed JSON.
-    async fn page(server: &SipnabMcp, limit: u32, cursor: Option<&str>) -> serde_json::Value {
+    async fn page(
+        server: &SipnabMcp,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, TestError> {
         let result = server
             .list_dialogs(Parameters(ListDialogsParams {
                 filter: None,
@@ -10988,8 +11082,9 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect("list_dialogs should succeed");
-        serde_json::from_str(&text_of(&result)).expect("valid JSON page")
+            .map_err(|e| format!("list_dialogs should succeed: {e:?}"))?;
+        Ok(serde_json::from_str(&text_of(&result)?)
+            .map_err(|e| format!("valid JSON page: {e:?}"))?)
     }
 
     /// Paging through dialogs that share a timestamp loses none and repeats none.
@@ -11005,17 +11100,17 @@ mod tests {
     /// A mutation dropping `.then_with(|| a.call_id.cmp(&b.call_id))` from the
     /// sort survived every capture-driven test in the suite. This one fails.
     #[tokio::test]
-    async fn list_dialogs_pages_through_dialogs_sharing_one_timestamp() {
+    async fn list_dialogs_pages_through_dialogs_sharing_one_timestamp() -> Result<(), TestError> {
         // Inserted in an order that is not sorted order.
-        let server = server_with_simultaneous_dialogs(&["d@h", "b@h", "e@h", "a@h", "c@h"]);
+        let server = server_with_simultaneous_dialogs(&["d@h", "b@h", "e@h", "a@h", "c@h"])?;
 
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..10 {
-            let v = page(&server, 2, cursor.as_deref()).await;
+            let v = page(&server, 2, cursor.as_deref()).await?;
             assert_eq!(v["total_matched"], 5, "the store holds 5: {v}");
-            for d in v["dialogs"].as_array().expect("dialogs") {
-                seen.push(d["call_id"].as_str().expect("call_id").to_string());
+            for d in v["dialogs"].as_array().ok_or("dialogs")? {
+                seen.push(d["call_id"].as_str().ok_or("call_id")?.to_string());
             }
             match v["next_cursor"].as_str() {
                 Some(c) => cursor = Some(c.to_string()),
@@ -11029,6 +11124,7 @@ mod tests {
             "every dialog exactly once, in Call-ID order within the shared \
              instant; got {seen:?}"
         );
+        Ok(())
     }
 
     /// Extract the text body of the first content item.
@@ -11040,21 +11136,21 @@ mod tests {
     /// which works for both shapes — and, unlike indexing past a fixed offset,
     /// does not start silently asserting against the note if a tool stops
     /// emitting one.
-    fn text_of(result: &CallToolResult) -> String {
+    fn text_of(result: &CallToolResult) -> Result<String, TestError> {
         let note = crate::mcp::shape::untrusted_note();
-        result
+        Ok(result
             .content
             .iter()
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("result should carry a payload block that is not the note")
+            .ok_or("result should carry a payload block that is not the note")?)
     }
 
     /// The shared exhausted flag flows through to `source_exhausted`:
     /// false while unset, true after the capture owner stores it.
     #[tokio::test]
-    async fn tail_dialogs_reports_source_exhausted_from_shared_flag() {
+    async fn tail_dialogs_reports_source_exhausted_from_shared_flag() -> Result<(), TestError> {
         // The tool description promises source_exhausted=true once the pcap
         // source is fully consumed; an LLM polling tail_dialogs to know when
         // a replay is done relies on it.
@@ -11064,9 +11160,9 @@ mod tests {
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams::default()))
             .await
-            .expect("tail_dialogs should not error");
-        let json: serde_json::Value =
-            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+            .map_err(|e| format!("tail_dialogs should not error: {e:?}"))?;
+        let json: serde_json::Value = serde_json::from_str(&text_of(&result)?)
+            .map_err(|e| format!("valid JSON response: {e:?}"))?;
         assert_eq!(
             json["source_exhausted"], false,
             "flag unset ⇒ source not exhausted"
@@ -11076,28 +11172,30 @@ mod tests {
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams::default()))
             .await
-            .expect("tail_dialogs should not error");
-        let json: serde_json::Value =
-            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+            .map_err(|e| format!("tail_dialogs should not error: {e:?}"))?;
+        let json: serde_json::Value = serde_json::from_str(&text_of(&result)?)
+            .map_err(|e| format!("valid JSON response: {e:?}"))?;
         assert_eq!(
             json["source_exhausted"], true,
             "flag set ⇒ source_exhausted must be reported"
         );
+        Ok(())
     }
 
     /// With no capture owner attached, `source_exhausted` stays false.
     #[tokio::test]
-    async fn tail_dialogs_without_flag_reports_not_exhausted() {
+    async fn tail_dialogs_without_flag_reports_not_exhausted() -> Result<(), TestError> {
         // No capture owner attached (e.g. unit contexts): stay false rather
         // than lying about EOF.
         let server = empty_server();
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams::default()))
             .await
-            .expect("tail_dialogs should not error");
-        let json: serde_json::Value =
-            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+            .map_err(|e| format!("tail_dialogs should not error: {e:?}"))?;
+        let json: serde_json::Value = serde_json::from_str(&text_of(&result)?)
+            .map_err(|e| format!("valid JSON response: {e:?}"))?;
         assert_eq!(json["source_exhausted"], false);
+        Ok(())
     }
 
     /// The configured cap REACHES a real response, not just the helper.
@@ -11110,12 +11208,12 @@ mod tests {
     /// So: drive `list_dialogs` on a server built with a small cap and count
     /// the rows that come back.
     #[tokio::test]
-    async fn the_row_cap_bounds_an_actual_list_response() {
+    async fn the_row_cap_bounds_an_actual_list_response() -> Result<(), TestError> {
         let server =
-            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"]).with_row_cap(2);
+            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"])?.with_row_cap(2);
         // Ask for far more than the cap allows.
-        let v = page(&server, 100, None).await;
-        let rows = v["dialogs"].as_array().expect("dialogs array").len();
+        let v = page(&server, 100, None).await?;
+        let rows = v["dialogs"].as_array().ok_or("dialogs array")?.len();
         assert_eq!(
             rows, 2,
             "with_row_cap(2) must bound the response; got {rows} rows, so the \
@@ -11125,32 +11223,40 @@ mod tests {
         // And a cap ABOVE the old constant must be honored, or the setting can
         // only ever tighten — half a knob.
         let wide =
-            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"]).with_row_cap(4);
-        let v = page(&wide, 100, None).await;
-        assert_eq!(v["dialogs"].as_array().unwrap().len(), 4);
+            server_with_simultaneous_dialogs(&["a@h", "b@h", "c@h", "d@h", "e@h"])?.with_row_cap(4);
+        let v = page(&wide, 100, None).await?;
+        assert_eq!(
+            v["dialogs"]
+                .as_array()
+                .ok_or("v[\"dialogs\"].as_array() is None")?
+                .len(),
+            4
+        );
+        Ok(())
     }
 
     /// An empty store yields an empty JSON array, not an error.
     #[tokio::test]
-    async fn list_dialogs_empty_store_returns_empty() {
+    async fn list_dialogs_empty_store_returns_empty() -> Result<(), TestError> {
         let server = empty_server();
         let result = server
             .list_dialogs(Parameters(ListDialogsParams::default()))
             .await
-            .expect("list_dialogs should not error on empty store");
+            .map_err(|e| format!("list_dialogs should not error on empty store: {e:?}"))?;
         // Inspect the wrapped JSON content.
         let content = &result.content[0];
-        let raw = content.as_text().expect("should be text-able").text.clone();
+        let raw = content.as_text().ok_or("should be text-able")?.text.clone();
         // Empty list → "[]"
         assert!(
             raw.contains("[]"),
             "empty store should return [], got: {raw}"
         );
+        Ok(())
     }
 
     /// An unparseable filter expression errors with invalid_params (-32602).
     #[tokio::test]
-    async fn list_dialogs_with_invalid_filter_returns_invalid_params() {
+    async fn list_dialogs_with_invalid_filter_returns_invalid_params() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .list_dialogs(Parameters(ListDialogsParams {
@@ -11158,15 +11264,18 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("invalid filter must error");
+            .err()
+            .ok_or("invalid filter must error")?;
         // ErrorData has a code field; invalid_params is -32602.
-        let json = serde_json::to_value(err).expect("error should serialize");
+        let json =
+            serde_json::to_value(err).map_err(|e| format!("error should serialize: {e:?}"))?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
-    async fn get_dialog_report_unknown_call_id_errors() {
+    async fn get_dialog_report_unknown_call_id_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .get_dialog_report(Parameters(GetDialogReportParams {
@@ -11174,14 +11283,17 @@ mod tests {
                 format: None,
             }))
             .await
-            .expect_err("unknown call_id must error");
-        let json = serde_json::to_value(err).expect("error should serialize");
+            .err()
+            .ok_or("unknown call_id must error")?;
+        let json =
+            serde_json::to_value(err).map_err(|e| format!("error should serialize: {e:?}"))?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// An unsupported format string errors with invalid_params (-32602).
     #[tokio::test]
-    async fn get_dialog_report_unknown_format_errors() {
+    async fn get_dialog_report_unknown_format_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .get_dialog_report(Parameters(GetDialogReportParams {
@@ -11189,14 +11301,17 @@ mod tests {
                 format: Some("yaml".to_string()),
             }))
             .await
-            .expect_err("unknown format must error");
-        let json = serde_json::to_value(err).expect("error should serialize");
+            .err()
+            .ok_or("unknown format must error")?;
+        let json =
+            serde_json::to_value(err).map_err(|e| format!("error should serialize: {e:?}"))?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// An unknown diagnostic alias errors with invalid_params (-32602).
     #[tokio::test]
-    async fn find_problems_unknown_alias_errors() {
+    async fn find_problems_unknown_alias_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .find_problems(Parameters(FindProblemsParams {
@@ -11204,40 +11319,46 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("unknown alias must error");
-        let json = serde_json::to_value(err).expect("error should serialize");
+            .err()
+            .ok_or("unknown alias must error")?;
+        let json =
+            serde_json::to_value(err).map_err(|e| format!("error should serialize: {e:?}"))?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// The default "problems" kind on an empty store yields an empty list.
     #[tokio::test]
-    async fn find_problems_default_kind_returns_empty_list_on_empty_store() {
+    async fn find_problems_default_kind_returns_empty_list_on_empty_store() -> Result<(), TestError>
+    {
         let server = empty_server();
         let result = server
             .find_problems(Parameters(FindProblemsParams::default()))
             .await
-            .expect("find_problems on empty store should succeed");
+            .map_err(|e| format!("find_problems on empty store should succeed: {e:?}"))?;
         let content = &result.content[0];
-        let raw = content.as_text().expect("should be text-able").text.clone();
+        let raw = content.as_text().ok_or("should be text-able")?.text.clone();
         assert!(raw.contains("[]"), "empty store → empty list, got: {raw}");
+        Ok(())
     }
 
     // ── list_dialogs success path with populated store ───────────────
 
     /// A populated store returns a summary naming the dialog and its party.
     #[tokio::test]
-    async fn list_dialogs_returns_summary_for_populated_store() {
-        let server = server_with_dialog("call-list@x");
+    async fn list_dialogs_returns_summary_for_populated_store() -> Result<(), TestError> {
+        let server = server_with_dialog("call-list@x")?;
         let result = server
             .list_dialogs(Parameters(ListDialogsParams::default()))
             .await
-            .expect("list_dialogs should succeed");
-        let raw = text_of(&result);
+            .map_err(|e| format!("list_dialogs should succeed: {e:?}"))?;
+        let raw = text_of(&result)?;
         assert!(
             raw.contains("call-list@x"),
             "summary must name the dialog: {raw}"
         );
         assert!(raw.contains("alice"), "from_user should appear: {raw}");
+        Ok(())
     }
 
     // ── get_dialog_report success paths ──────────────────────────────
@@ -11245,43 +11366,46 @@ mod tests {
     /// The default JSON format re-parses into a structured object, not a
     /// stringified blob.
     #[tokio::test]
-    async fn get_dialog_report_json_returns_structured_object() {
-        let server = server_with_dialog("rep@x");
+    async fn get_dialog_report_json_returns_structured_object() -> Result<(), TestError> {
+        let server = server_with_dialog("rep@x")?;
         let result = server
             .get_dialog_report(Parameters(GetDialogReportParams {
                 call_id: "rep@x".to_string(),
                 format: None,
             }))
             .await
-            .expect("report should succeed");
-        let raw = text_of(&result);
+            .map_err(|e| format!("report should succeed: {e:?}"))?;
+        let raw = text_of(&result)?;
         // JSON path re-parses to structured JSON; it must be a JSON object.
-        let v: serde_json::Value = serde_json::from_str(&raw).expect("report is JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&raw).map_err(|e| format!("report is JSON: {e:?}"))?;
         assert!(v.is_object(), "json report should be an object, got: {raw}");
+        Ok(())
     }
 
     /// Markdown format yields non-empty text that is not standalone JSON.
     #[tokio::test]
-    async fn get_dialog_report_markdown_returns_text() {
-        let server = server_with_dialog("repmd@x");
+    async fn get_dialog_report_markdown_returns_text() -> Result<(), TestError> {
+        let server = server_with_dialog("repmd@x")?;
         let result = server
             .get_dialog_report(Parameters(GetDialogReportParams {
                 call_id: "repmd@x".to_string(),
                 format: Some("markdown".to_string()),
             }))
             .await
-            .expect("markdown report should succeed");
-        let raw = text_of(&result);
+            .map_err(|e| format!("markdown report should succeed: {e:?}"))?;
+        let raw = text_of(&result)?;
         assert!(!raw.is_empty(), "markdown report must be non-empty");
         // markdown report is not valid standalone JSON
         assert!(serde_json::from_str::<serde_json::Value>(&raw).is_err());
+        Ok(())
     }
 
     // ── get_dialog ───────────────────────────────────────────────────
 
     /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
-    async fn get_dialog_unknown_call_id_errors() {
+    async fn get_dialog_unknown_call_id_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .get_dialog(Parameters(GetDialogParams {
@@ -11290,15 +11414,17 @@ mod tests {
                 cursor: None,
             }))
             .await
-            .expect_err("unknown call_id must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown call_id must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// A full fetch returns all messages, complete=true, and a null cursor.
     #[tokio::test]
-    async fn get_dialog_returns_messages_and_completion() {
-        let server = server_with_dialog("dlg@x");
+    async fn get_dialog_returns_messages_and_completion() -> Result<(), TestError> {
+        let server = server_with_dialog("dlg@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
                 call_id: "dlg@x".to_string(),
@@ -11306,12 +11432,19 @@ mod tests {
                 cursor: None,
             }))
             .await
-            .expect("get_dialog should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["total_messages"], 2);
         assert_eq!(v["complete"], true);
         assert!(v["next_cursor"].is_null());
-        assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            v["messages"]
+                .as_array()
+                .ok_or("v[\"messages\"].as_array() is None")?
+                .len(),
+            2
+        );
+        Ok(())
     }
 
     /// `get_dialog`'s default `max_messages` (the `None` arm) is capped by
@@ -11320,8 +11453,8 @@ mod tests {
     /// messages than any other list tool would — the "the knob silently does
     /// nothing" failure `shape.rs` documents as worse than no knob.
     #[tokio::test]
-    async fn get_dialog_default_max_messages_respects_row_cap() {
-        let server = server_with_dialog("cap@x").with_row_cap(1);
+    async fn get_dialog_default_max_messages_respects_row_cap() -> Result<(), TestError> {
+        let server = server_with_dialog("cap@x")?.with_row_cap(1);
         let result = server
             .get_dialog(Parameters(GetDialogParams {
                 call_id: "cap@x".to_string(),
@@ -11329,15 +11462,19 @@ mod tests {
                 cursor: None,
             }))
             .await
-            .expect("get_dialog should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         // The dialog carries 2 messages; with a row cap of 1 the default page
         // must return at most 1, not the uncapped default of 100.
         assert_eq!(
-            v["messages"].as_array().unwrap().len(),
+            v["messages"]
+                .as_array()
+                .ok_or("v[\"messages\"].as_array() is None")?
+                .len(),
             1,
             "None max_messages must be clamped to row_cap (1), got {v}"
         );
+        Ok(())
     }
 
     /// `search_by_time` carries the response-level untrusted-data note, like
@@ -11345,8 +11482,8 @@ mod tests {
     /// the only tool in the file returning a raw, attacker-chosen `call_id`
     /// with no note to cover it.
     #[tokio::test]
-    async fn search_by_time_carries_the_untrusted_note() {
-        let server = server_with_dialog("note@x");
+    async fn search_by_time_carries_the_untrusted_note() -> Result<(), TestError> {
+        let server = server_with_dialog("note@x")?;
         let result = server
             .search_by_time(Parameters(SearchByTimeParams {
                 start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
@@ -11357,7 +11494,7 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect("search_by_time should succeed");
+            .map_err(|e| format!("search_by_time should succeed: {e:?}"))?;
         let note = crate::mcp::shape::untrusted_note();
         assert!(
             result
@@ -11368,12 +11505,13 @@ mod tests {
             "search_by_time returns a raw call_id, so it must carry the \
              untrusted-data note like every sibling tool"
         );
+        Ok(())
     }
 
     /// A page smaller than the dialog yields complete=false and next_cursor.
     #[tokio::test]
-    async fn get_dialog_pagination_yields_next_cursor() {
-        let server = server_with_dialog("page@x");
+    async fn get_dialog_pagination_yields_next_cursor() -> Result<(), TestError> {
+        let server = server_with_dialog("page@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
                 call_id: "page@x".to_string(),
@@ -11381,18 +11519,25 @@ mod tests {
                 cursor: Some(0),
             }))
             .await
-            .expect("get_dialog should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["total_messages"], 2);
         assert_eq!(v["complete"], false);
         assert_eq!(v["next_cursor"], 1);
-        assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            v["messages"]
+                .as_array()
+                .ok_or("v[\"messages\"].as_array() is None")?
+                .len(),
+            1
+        );
+        Ok(())
     }
 
     /// A cursor past the last message yields an empty page, complete=true.
     #[tokio::test]
-    async fn get_dialog_cursor_past_end_returns_empty_slice() {
-        let server = server_with_dialog("end@x");
+    async fn get_dialog_cursor_past_end_returns_empty_slice() -> Result<(), TestError> {
+        let server = server_with_dialog("end@x")?;
         let result = server
             .get_dialog(Parameters(GetDialogParams {
                 call_id: "end@x".to_string(),
@@ -11400,18 +11545,24 @@ mod tests {
                 cursor: Some(99),
             }))
             .await
-            .expect("get_dialog should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        assert!(v["messages"].as_array().unwrap().is_empty());
+            .map_err(|e| format!("get_dialog should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert!(
+            v["messages"]
+                .as_array()
+                .ok_or("v[\"messages\"].as_array() is None")?
+                .is_empty()
+        );
         assert_eq!(v["complete"], true);
         assert!(v["next_cursor"].is_null());
+        Ok(())
     }
 
     // ── get_message ──────────────────────────────────────────────────
 
     /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
-    async fn get_message_unknown_call_id_errors() {
+    async fn get_message_unknown_call_id_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .get_message(Parameters(GetMessageParams {
@@ -11419,65 +11570,75 @@ mod tests {
                 index: 0,
             }))
             .await
-            .expect_err("unknown call_id must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown call_id must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// An out-of-range index errors (-32602) and the message names the range.
     #[tokio::test]
-    async fn get_message_index_out_of_range_errors() {
-        let server = server_with_dialog("msgoob@x");
+    async fn get_message_index_out_of_range_errors() -> Result<(), TestError> {
+        let server = server_with_dialog("msgoob@x")?;
         let err = server
             .get_message(Parameters(GetMessageParams {
                 call_id: "msgoob@x".to_string(),
                 index: 99,
             }))
             .await
-            .expect_err("out-of-range index must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("out-of-range index must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
         assert!(
-            json["message"].as_str().unwrap().contains("out of range"),
+            json["message"]
+                .as_str()
+                .ok_or("json[\"message\"].as_str() is None")?
+                .contains("out of range"),
             "message should mention range: {json}"
         );
+        Ok(())
     }
 
     /// A valid index returns the message as a structured JSON object.
     #[tokio::test]
-    async fn get_message_returns_structured_message() {
-        let server = server_with_dialog("msg@x");
+    async fn get_message_returns_structured_message() -> Result<(), TestError> {
+        let server = server_with_dialog("msg@x")?;
         let result = server
             .get_message(Parameters(GetMessageParams {
                 call_id: "msg@x".to_string(),
                 index: 0,
             }))
             .await
-            .expect("get_message should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("get_message should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert!(v.is_object(), "message should serialize to a JSON object");
+        Ok(())
     }
 
     // ── render_ladder ────────────────────────────────────────────────
 
     /// An unsupported ladder format errors with invalid_params (-32602).
     #[tokio::test]
-    async fn render_ladder_unknown_format_errors() {
-        let server = server_with_dialog("ladfmt@x");
+    async fn render_ladder_unknown_format_errors() -> Result<(), TestError> {
+        let server = server_with_dialog("ladfmt@x")?;
         let err = server
             .render_ladder(Parameters(RenderLadderParams {
                 call_id: "ladfmt@x".to_string(),
                 format: Some("html".to_string()),
             }))
             .await
-            .expect_err("unknown format must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown format must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
-    async fn render_ladder_unknown_call_id_errors() {
+    async fn render_ladder_unknown_call_id_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .render_ladder(Parameters(RenderLadderParams {
@@ -11485,33 +11646,36 @@ mod tests {
                 format: None,
             }))
             .await
-            .expect_err("unknown call_id must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown call_id must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// Text format renders a non-empty ladder for a tracked dialog.
     #[tokio::test]
-    async fn render_ladder_text_format_returns_non_empty() {
-        let server = server_with_dialog("lad@x");
+    async fn render_ladder_text_format_returns_non_empty() -> Result<(), TestError> {
+        let server = server_with_dialog("lad@x")?;
         let result = server
             .render_ladder(Parameters(RenderLadderParams {
                 call_id: "lad@x".to_string(),
                 format: Some("text".to_string()),
             }))
             .await
-            .expect("render_ladder should succeed");
+            .map_err(|e| format!("render_ladder should succeed: {e:?}"))?;
         assert!(
-            !text_of(&result).is_empty(),
+            !text_of(&result)?.is_empty(),
             "ladder text must be non-empty"
         );
+        Ok(())
     }
 
     // ── rtp_stats ────────────────────────────────────────────────────
 
     /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
-    async fn rtp_stats_unknown_call_id_errors() {
+    async fn rtp_stats_unknown_call_id_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .rtp_stats(Parameters(RtpStatsParams {
@@ -11519,26 +11683,34 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("unknown call_id must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown call_id must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// A media-less dialog yields an empty streams array plus a diagnosis.
     #[tokio::test]
-    async fn rtp_stats_no_streams_returns_empty_streams_array() {
-        let server = server_with_dialog("rtp@x");
+    async fn rtp_stats_no_streams_returns_empty_streams_array() -> Result<(), TestError> {
+        let server = server_with_dialog("rtp@x")?;
         let result = server
             .rtp_stats(Parameters(RtpStatsParams {
                 call_id: Some("rtp@x".to_string()),
                 ..Default::default()
             }))
             .await
-            .expect("rtp_stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("rtp_stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["call_id"], "rtp@x");
-        assert!(v["streams"].as_array().unwrap().is_empty());
+        assert!(
+            v["streams"]
+                .as_array()
+                .ok_or("v[\"streams\"].as_array() is None")?
+                .is_empty()
+        );
         assert!(v.get("diagnosis").is_some());
+        Ok(())
     }
 
     /// Build a server holding two streams: one linked to a dialog, one
@@ -11602,7 +11774,7 @@ mod tests {
     /// API. Telling an agent a count it cannot expand is the same defect the
     /// page object was added to fix, one surface over.
     #[tokio::test]
-    async fn rtp_stats_can_return_only_the_orphaned_streams() {
+    async fn rtp_stats_can_return_only_the_orphaned_streams() -> Result<(), TestError> {
         let server = server_with_one_orphan_and_one_linked();
 
         let only_orphans = server
@@ -11611,9 +11783,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("sweep should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&only_orphans)).unwrap();
-        let rows = v["streams"].as_array().expect("streams array");
+            .map_err(|e| format!("sweep should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&only_orphans)?)?;
+        let rows = v["streams"].as_array().ok_or("streams array")?;
         assert_eq!(rows.len(), 1, "one of the two streams is orphaned: {v}");
         assert_eq!(rows[0]["orphaned"], true);
 
@@ -11623,9 +11795,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("sweep should succeed");
-        let v2: serde_json::Value = serde_json::from_str(&text_of(&only_linked)).unwrap();
-        let rows2 = v2["streams"].as_array().expect("streams array");
+            .map_err(|e| format!("sweep should succeed: {e:?}"))?;
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&only_linked)?)?;
+        let rows2 = v2["streams"].as_array().ok_or("streams array")?;
         assert_eq!(rows2.len(), 1, "the other one is claimed: {v2}");
         assert_eq!(rows2[0]["orphaned"], false);
 
@@ -11634,9 +11806,16 @@ mod tests {
         let all = server
             .rtp_stats(Parameters(RtpStatsParams::default()))
             .await
-            .expect("sweep should succeed");
-        let v3: serde_json::Value = serde_json::from_str(&text_of(&all)).unwrap();
-        assert_eq!(v3["streams"].as_array().unwrap().len(), 2);
+            .map_err(|e| format!("sweep should succeed: {e:?}"))?;
+        let v3: serde_json::Value = serde_json::from_str(&text_of(&all)?)?;
+        assert_eq!(
+            v3["streams"]
+                .as_array()
+                .ok_or("v3[\"streams\"].as_array() is None")?
+                .len(),
+            2
+        );
+        Ok(())
     }
 
     /// `get_dialog_report` and `render_ladder` are per-Call-ID, so the
@@ -11660,16 +11839,17 @@ mod tests {
     /// that only checked the payload was non-empty would have passed
     /// throughout.
     #[tokio::test]
-    async fn the_default_capture_report_format_is_actually_json() {
+    async fn the_default_capture_report_format_is_actually_json() -> Result<(), TestError> {
         let server = server_with_one_orphan_and_one_linked();
 
         let result = server
             .get_capture_report(Parameters(GetCaptureReportParams { format: None }))
             .await
-            .expect("report should render");
+            .map_err(|e| format!("report should render: {e:?}"))?;
 
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result))
-            .expect("the default format is json, so the payload must parse as json");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?).map_err(|e| {
+            format!("the default format is json, so the payload must parse as json: {e:?}")
+        })?;
         assert!(
             v.is_object(),
             "the default format is json and must return an object a client can \
@@ -11689,23 +11869,24 @@ mod tests {
                 format: Some("text".to_string()),
             }))
             .await
-            .expect("text report should render");
+            .map_err(|e| format!("text report should render: {e:?}"))?;
         assert!(
-            !text_of(&text).trim().is_empty(),
+            !text_of(&text)?.trim().is_empty(),
             "a capture with no findings still gets a line, because silence is \
              indistinguishable from the tool not having run"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn get_capture_report_answers_for_the_whole_capture() {
+    async fn get_capture_report_answers_for_the_whole_capture() -> Result<(), TestError> {
         let server = server_with_one_orphan_and_one_linked();
 
         let text = server
             .get_capture_report(Parameters(GetCaptureReportParams { format: None }))
             .await
-            .expect("report should render");
-        let body = text_of(&text);
+            .map_err(|e| format!("report should render: {e:?}"))?;
+        let body = text_of(&text)?;
         assert!(
             !body.trim().is_empty(),
             "a capture with no findings still gets a line, because silence is \
@@ -11719,9 +11900,11 @@ mod tests {
                 format: Some("yaml".to_string()),
             }))
             .await
-            .expect_err("unknown format must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("unknown format must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// Rows are bounded on this surface with unusual rigour -- `--mcp-max-rows`,
@@ -11729,15 +11912,16 @@ mod tests {
     /// `call_id` and `state` for a page of dialogs still paid for `timing`,
     /// `frame`, `updated_at` and two fenced display names on every row.
     #[tokio::test]
-    async fn a_fields_projection_narrows_the_row_without_losing_its_identity() {
-        let server = server_with_dialog("fields@x");
+    async fn a_fields_projection_narrows_the_row_without_losing_its_identity()
+    -> Result<(), TestError> {
+        let server = server_with_dialog("fields@x")?;
 
         let full = server
             .list_dialogs(Parameters(ListDialogsParams::default()))
             .await
-            .expect("list should succeed");
-        let fv: serde_json::Value = serde_json::from_str(&text_of(&full)).unwrap();
-        let wide = fv["dialogs"][0].as_object().expect("a row").len();
+            .map_err(|e| format!("list should succeed: {e:?}"))?;
+        let fv: serde_json::Value = serde_json::from_str(&text_of(&full)?)?;
+        let wide = fv["dialogs"][0].as_object().ok_or("a row")?.len();
         assert!(wide > 3, "the unprojected row is wide: {wide}");
 
         let narrow = server
@@ -11746,9 +11930,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("projection should succeed");
-        let nv: serde_json::Value = serde_json::from_str(&text_of(&narrow)).unwrap();
-        let row = nv["dialogs"][0].as_object().expect("a row");
+            .map_err(|e| format!("projection should succeed: {e:?}"))?;
+        let nv: serde_json::Value = serde_json::from_str(&text_of(&narrow)?)?;
+        let row = nv["dialogs"][0].as_object().ok_or("a row")?;
 
         assert!(
             row.contains_key("state"),
@@ -11767,27 +11951,30 @@ mod tests {
         // counts and the cursor are how the agent knows what it did not get.
         assert!(nv.get("total_matched").is_some());
         assert!(nv.get("capture_identity").is_some());
+        Ok(())
     }
 
     /// A typo must fail loudly. Silently returning rows missing the field the
     /// caller asked for is the shape of bug that gets read as "no such data".
     #[tokio::test]
-    async fn an_unknown_projection_field_is_refused_by_name() {
-        let server = server_with_dialog("typo@x");
+    async fn an_unknown_projection_field_is_refused_by_name() -> Result<(), TestError> {
+        let server = server_with_dialog("typo@x")?;
         let err = server
             .list_dialogs(Parameters(ListDialogsParams {
                 fields: Some(vec!["statte".to_string()]),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unknown field must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("an unknown field must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
         let msg = json["message"].as_str().unwrap_or_default();
         assert!(
             msg.contains("statte") && msg.contains("state"),
             "the error must name the typo AND the legal set: {msg}"
         );
+        Ok(())
     }
 
     // ── aggregate_dialogs ────────────────────────────────────────────
@@ -11798,8 +11985,8 @@ mod tests {
     /// with that number." The page object fixed ONE count. Every other count
     /// was still done in the model's head, over a page it had to fetch first.
     #[tokio::test]
-    async fn aggregate_dialogs_counts_in_the_store_not_in_the_model() {
-        let server = server_with_dialog("agg@x");
+    async fn aggregate_dialogs_counts_in_the_store_not_in_the_model() -> Result<(), TestError> {
+        let server = server_with_dialog("agg@x")?;
 
         let result = server
             .aggregate_dialogs(Parameters(AggregateDialogsParams {
@@ -11807,27 +11994,37 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("aggregate should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("aggregate should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(v["group_by"], "state");
-        let buckets = v["buckets"].as_array().expect("buckets array");
+        let buckets = v["buckets"].as_array().ok_or("buckets array")?;
         assert!(!buckets.is_empty(), "one dialog produces one bucket: {v}");
-        let total: u64 = buckets.iter().map(|b| b["count"].as_u64().unwrap()).sum();
+        let total: u64 = buckets
+            .iter()
+            .map(|b| b["count"].as_u64().ok_or("a bucket count"))
+            .sum::<Result<u64, _>>()?;
         assert_eq!(
-            total + v["other_count"].as_u64().unwrap(),
-            v["total_matched"].as_u64().unwrap(),
+            total
+                + v["other_count"]
+                    .as_u64()
+                    .ok_or("v[\"other_count\"].as_u64() is None")?,
+            v["total_matched"]
+                .as_u64()
+                .ok_or("v[\"total_matched\"].as_u64() is None")?,
             "the buckets plus the remainder must account for every matched \
              dialog, or the agent is counting a subset it cannot see: {v}"
         );
+        Ok(())
     }
 
     /// One dimension only. The positioning doc draws the line at analysis
     /// rather than a query engine, and this is where the slope starts: two
     /// dimensions is a pivot table, and a pivot table wants a UI.
     #[tokio::test]
-    async fn aggregate_dialogs_refuses_a_second_dimension_and_an_unknown_one() {
-        let server = server_with_dialog("agg2@x");
+    async fn aggregate_dialogs_refuses_a_second_dimension_and_an_unknown_one()
+    -> Result<(), TestError> {
+        let server = server_with_dialog("agg2@x")?;
 
         for bad in ["state,method", "created_at", "payload"] {
             let err = server
@@ -11836,8 +12033,9 @@ mod tests {
                     ..Default::default()
                 }))
                 .await
-                .expect_err("a second dimension or an unknown key must be refused");
-            let json = serde_json::to_value(err).unwrap();
+                .err()
+                .ok_or("a second dimension or an unknown key must be refused")?;
+            let json = serde_json::to_value(err)?;
             assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
             let msg = json["message"].as_str().unwrap_or_default();
             assert!(
@@ -11846,6 +12044,7 @@ mod tests {
                  again: {msg}"
             );
         }
+        Ok(())
     }
 
     /// Grouping by a sender-written field puts attacker-controlled text in
@@ -11854,8 +12053,9 @@ mod tests {
     /// fences them (#139); a state name or a status code is not, because
     /// sipnab derived those.
     #[tokio::test]
-    async fn sender_written_bucket_values_are_fenced_and_derived_ones_are_not() {
-        let server = server_with_dialog("fence-agg@x");
+    async fn sender_written_bucket_values_are_fenced_and_derived_ones_are_not()
+    -> Result<(), TestError> {
+        let server = server_with_dialog("fence-agg@x")?;
 
         let ua = server
             .aggregate_dialogs(Parameters(AggregateDialogsParams {
@@ -11863,9 +12063,9 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("aggregate should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&ua)).unwrap();
-        let value = v["buckets"][0]["value"].as_str().expect("a bucket value");
+            .map_err(|e| format!("aggregate should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&ua)?)?;
+        let value = v["buckets"][0]["value"].as_str().ok_or("a bucket value")?;
         assert!(
             value.contains(super::super::shape::UNTRUSTED_OPEN),
             "a User-Agent is written by the sender and must be fenced: {value:?}"
@@ -11877,14 +12077,15 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect("aggregate should succeed");
-        let v2: serde_json::Value = serde_json::from_str(&text_of(&state)).unwrap();
-        let derived = v2["buckets"][0]["value"].as_str().expect("a bucket value");
+            .map_err(|e| format!("aggregate should succeed: {e:?}"))?;
+        let v2: serde_json::Value = serde_json::from_str(&text_of(&state)?)?;
+        let derived = v2["buckets"][0]["value"].as_str().ok_or("a bucket value")?;
         assert!(
             !derived.contains(super::super::shape::UNTRUSTED_OPEN),
             "a dialog state is sipnab's own word and fencing it would tell the \
              agent to distrust the analysis: {derived:?}"
         );
+        Ok(())
     }
 
     /// `list_captures` returned `{filename, bytes}` and nothing else, so the
@@ -11894,20 +12095,23 @@ mod tests {
     /// "which of these rotated files could hold this call" cost the capture
     /// the agent was already working on.
     #[tokio::test]
-    async fn list_captures_says_when_each_file_starts() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    async fn list_captures_says_when_each_file_starts() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path().join("root");
-        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/pcap-samples/sip-rtp-g711.pcap"),
             root.join("rotated-01.pcap"),
         )
-        .expect("seed a real capture");
+        .map_err(|e| format!("seed a real capture: {e:?}"))?;
 
-        let srv = server_with_dialog("caps@x").with_file_root(&root);
-        let result = srv.list_captures().await.expect("list_captures");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let srv = server_with_dialog("caps@x")?.with_file_root(&root);
+        let result = srv
+            .list_captures()
+            .await
+            .map_err(|e| format!("list_captures: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         let row = &v["captures"][0];
 
         assert_eq!(row["filename"], "rotated-01.pcap");
@@ -11916,6 +12120,7 @@ mod tests {
             first.contains('T') && first.contains(':'),
             "a real capture must report when it starts, as RFC 3339: {row}"
         );
+        Ok(())
     }
 
     // ── resources ────────────────────────────────────────────────────
@@ -11926,15 +12131,18 @@ mod tests {
     /// live capture matters most -- the client has no filesystem, so the tool
     /// succeeded and the agent still could not obtain the bytes.
     #[test]
-    fn an_exported_file_is_readable_as_a_resource() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_exported_file_is_readable_as_a_resource() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path().join("root");
-        std::fs::create_dir_all(&root).expect("mkdir root");
-        std::fs::write(root.join("evidence.pcap"), b"\xd4\xc3\xb2\xa1rest").expect("seed");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
+        std::fs::write(root.join("evidence.pcap"), b"\xd4\xc3\xb2\xa1rest")
+            .map_err(|e| format!("seed: {e:?}"))?;
 
-        let srv = server_with_dialog("res@x").with_file_root(&root);
+        let srv = server_with_dialog("res@x")?.with_file_root(&root);
 
-        let listed = srv.resource_list().expect("resource_list should succeed");
+        let listed = srv
+            .resource_list()
+            .map_err(|e| format!("resource_list should succeed: {e:?}"))?;
         assert!(
             listed.iter().any(|r| r.name == "evidence.pcap"),
             "the file under --mcp-file-root must be listed: {listed:?}"
@@ -11943,31 +12151,34 @@ mod tests {
             .iter()
             .find(|r| r.name == "evidence.pcap")
             .map(|r| r.uri.clone())
-            .expect("a uri");
+            .ok_or("a uri")?;
 
         let read = srv
             .resource_read(&uri)
-            .expect("resource_read should succeed");
+            .map_err(|e| format!("resource_read should succeed: {e:?}"))?;
         assert_eq!(read.len(), 1, "one file, one content block");
+        Ok(())
     }
 
     /// The sandbox is the SAME one the file tools use. A resource URI is
     /// another way to name a file, so it must not be another way to leave the
     /// root.
     #[test]
-    fn a_resource_uri_cannot_escape_the_file_root() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_resource_uri_cannot_escape_the_file_root() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let root = dir.path().join("root");
-        std::fs::create_dir_all(&root).expect("mkdir root");
-        let srv = server_with_dialog("esc@x").with_file_root(&root);
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
+        let srv = server_with_dialog("esc@x")?.with_file_root(&root);
 
         for bad in ["sipnab:///../etc/passwd", "sipnab:///sub/dir.pcap"] {
             let err = srv
                 .resource_read(bad)
-                .expect_err("a path must be refused, not resolved");
-            let json = serde_json::to_value(err).unwrap();
+                .err()
+                .ok_or("a path must be refused, not resolved")?;
+            let json = serde_json::to_value(err)?;
             assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
         }
+        Ok(())
     }
 
     // ── completions (PB3) ────────────────────────────────────────────
@@ -11988,10 +12199,10 @@ mod tests {
     /// limit. The cap has to be the SAME number, not a second one that happens
     /// to be smaller today.
     #[test]
-    fn completions_are_bounded_by_the_operators_row_cap() {
+    fn completions_are_bounded_by_the_operators_row_cap() -> Result<(), TestError> {
         let ids: Vec<String> = (0..6).map(|i| format!("cap-{i}@10.0.0.1")).collect();
         let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
-        let srv = server_with_simultaneous_dialogs(&refs).with_row_cap(2);
+        let srv = server_with_simultaneous_dialogs(&refs)?.with_row_cap(2);
 
         let c = srv.completion_for(
             &template_ref("sipnab://live/dialogs/{call_id}"),
@@ -12011,6 +12222,7 @@ mod tests {
             c.has_more,
             "a client told 2 of 6 narrows; a client told 2 believes it has them all"
         );
+        Ok(())
     }
 
     /// The diagnostic aliases complete, and they are exactly the vocabulary
@@ -12020,7 +12232,7 @@ mod tests {
     /// the assertion cannot pass by both sides being wrong in the same
     /// direction — which is precisely how a hand-copied vocabulary goes stale.
     #[test]
-    fn filter_alias_completions_are_the_names_the_expander_accepts() {
+    fn filter_alias_completions_are_the_names_the_expander_accepts() -> Result<(), TestError> {
         let srv = empty_server();
         let offered = srv
             .completion_for(&template_ref("sipnab://filter/{alias}"), "alias", "")
@@ -12042,6 +12254,7 @@ mod tests {
             offered, expected,
             "the offered vocabulary is not the whole one"
         );
+        Ok(())
     }
 
     /// Reading an alias returns the expansion THIS server would use.
@@ -12052,7 +12265,8 @@ mod tests {
     /// in. An operator who tuned `[diagnosis]` has a `slow-setup` that means
     /// something else, and until now there was no way to read it over MCP.
     #[test]
-    fn reading_a_filter_alias_returns_the_expansion_this_server_would_use() {
+    fn reading_a_filter_alias_returns_the_expansion_this_server_would_use() -> Result<(), TestError>
+    {
         let tuned = crate::sip::dsl::AliasThresholds {
             pdd_secs: 2.5,
             ..crate::sip::dsl::AliasThresholds::default()
@@ -12066,13 +12280,14 @@ mod tests {
 
         let read = srv
             .resource_read("sipnab://filter/slow-setup")
-            .expect("the alias resource must resolve");
+            .map_err(|e| format!("the alias resource must resolve: {e:?}"))?;
         assert_eq!(read.len(), 1, "one alias, one content block");
         let text = match &read[0] {
             rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
-            other => panic!("expected text, got {other:?}"),
+            other => return Err(format!("expected text, got {other:?}").into()),
         };
-        let v: serde_json::Value = serde_json::from_str(&text).expect("the payload is JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?;
         assert_eq!(v["alias"], "slow-setup");
         assert_eq!(
             v["expands_to"], "pdd > 2.5",
@@ -12080,18 +12295,22 @@ mod tests {
              threshold, which is the one fact it exists to carry: {v}"
         );
         // And it is DSL a client can hand straight to `filter`.
-        crate::sip::dsl::FilterExpr::parse(v["expands_to"].as_str().expect("a string"))
-            .expect("the expansion must parse as the filter the client will send");
+        crate::sip::dsl::FilterExpr::parse(v["expands_to"].as_str().ok_or("a string")?).map_err(
+            |e| format!("the expansion must parse as the filter the client will send: {e:?}"),
+        )?;
+        Ok(())
     }
 
     /// An alias nothing expands is refused by name, not answered emptily.
     #[test]
-    fn reading_an_unknown_filter_alias_is_refused() {
+    fn reading_an_unknown_filter_alias_is_refused() -> Result<(), TestError> {
         let err = empty_server()
             .resource_read("sipnab://filter/no-such-alias")
-            .expect_err("an unknown alias must be refused");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("an unknown alias must be refused")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     // ── search_messages ──────────────────────────────────────────────
@@ -12107,14 +12326,16 @@ mod tests {
 
     /// An empty query errors with invalid_params (-32602).
     #[tokio::test]
-    async fn search_messages_empty_query_errors() {
+    async fn search_messages_empty_query_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .search_messages(Parameters(search_params("", None)))
             .await
-            .expect_err("empty query must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("empty query must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// A query matching nothing returns an empty page that SAYS it is empty.
@@ -12122,56 +12343,59 @@ mod tests {
     /// `total_matched: 0` rather than a bare `[]`: the two used to be the same
     /// bytes as a capped page of a thousand matches.
     #[tokio::test]
-    async fn search_messages_no_match_returns_empty() {
-        let server = server_with_dialog("srch@x");
+    async fn search_messages_no_match_returns_empty() -> Result<(), TestError> {
+        let server = server_with_dialog("srch@x")?;
         let result = server
             .search_messages(Parameters(search_params("zzz-no-such-token", None)))
             .await
-            .expect("search should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("search should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["hits"].as_array().map(Vec::len), Some(0));
         assert_eq!(v["returned"], 0);
         assert_eq!(v["total_matched"], 0);
         assert_eq!(v["truncated"], false);
         assert!(v["next_cursor"].is_null());
+        Ok(())
     }
 
     /// An upper-cased query still matches the lower-cased From header.
     #[tokio::test]
-    async fn search_messages_case_insensitive_hit() {
-        let server = server_with_dialog("srch2@x");
+    async fn search_messages_case_insensitive_hit() -> Result<(), TestError> {
+        let server = server_with_dialog("srch2@x")?;
         let result = server
             // Upper-cased query against lower-cased "alice".
             .search_messages(Parameters(search_params("ALICE", Some(10))))
             .await
-            .expect("search should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        let hits = v["hits"].as_array().expect("hits array").clone();
+            .map_err(|e| format!("search should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        let hits = v["hits"].as_array().ok_or("hits array")?.clone();
         assert!(!hits.is_empty(), "should match the From header");
         assert_eq!(hits[0]["call_id"], "srch2@x");
         assert!(
             hits[0]["snippet"]
                 .as_str()
-                .unwrap()
+                .ok_or(" is None")?
                 .to_lowercase()
                 .contains("alice")
         );
+        Ok(())
     }
 
     /// The field scan still matches each searchable field: the method
     /// (case-insensitively), the numeric status code, and the User-Agent.
     #[tokio::test]
-    async fn search_messages_matches_each_field() {
-        let server = server_with_dialog("srch3@x");
+    async fn search_messages_matches_each_field() -> Result<(), TestError> {
+        let server = server_with_dialog("srch3@x")?;
         for q in ["InViTe", "200", "testua"] {
             let result = server
                 .search_messages(Parameters(search_params(q, Some(10))))
                 .await
-                .expect("search should succeed");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-            let hits = v["hits"].as_array().expect("hits array");
+                .map_err(|e| format!("search should succeed: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+            let hits = v["hits"].as_array().ok_or("hits array")?;
             assert!(!hits.is_empty(), "query {q:?} should match a field");
         }
+        Ok(())
     }
 
     /// A capped `search_messages` page reports the matches it withheld, and its
@@ -12189,7 +12413,7 @@ mod tests {
     /// says whether more remain, and following `next_cursor` yields each hit
     /// once — no gap, no repeat.
     #[tokio::test]
-    async fn search_messages_pages_every_hit_exactly_once() {
+    async fn search_messages_pages_every_hit_exactly_once() -> Result<(), TestError> {
         let server = empty_server();
         {
             let mut ds = server.dialog_store.write();
@@ -12207,8 +12431,8 @@ mod tests {
                 // always counted those responses, and the two surfaces
                 // disagreeing about what a capture contains is the defect.
                 let at = base_ts() + chrono::Duration::seconds(n);
-                ds.process_message(invite(&format!("page-{n}@x"), at));
-                ds.process_message(ok200(&format!("page-{n}@x"), at));
+                ds.process_message(invite(&format!("page-{n}@x"), at)?);
+                ds.process_message(ok200(&format!("page-{n}@x"), at)?);
             }
         }
 
@@ -12222,19 +12446,19 @@ mod tests {
                     cursor: cursor.clone(),
                 }))
                 .await
-                .expect("search should succeed");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+                .map_err(|e| format!("search should succeed: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
             assert_eq!(
                 v["total_matched"], 10,
                 "every page must report the STORE's match count, not the \
                  page's: {v}"
             );
-            let hits = v["hits"].as_array().expect("hits").clone();
+            let hits = v["hits"].as_array().ok_or("hits")?.clone();
             assert_eq!(hits.len(), 1, "asked for one row");
             assert_eq!(v["returned"], 1);
             seen.push((
-                hits[0]["call_id"].as_str().expect("call_id").to_string(),
-                hits[0]["message_index"].as_u64().expect("index"),
+                hits[0]["call_id"].as_str().ok_or("call_id")?.to_string(),
+                hits[0]["message_index"].as_u64().ok_or("index")?,
             ));
             cursor = v["next_cursor"].as_str().map(str::to_string);
             if cursor.is_none() {
@@ -12249,6 +12473,7 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), 10, "a hit was returned twice: {seen:?}");
+        Ok(())
     }
 
     /// A malformed cursor is an error, not a silent restart from the top.
@@ -12256,8 +12481,8 @@ mod tests {
     /// Restarting would loop a paging agent forever while it believed it was
     /// making progress — the same reason `dialog_page` refuses one.
     #[tokio::test]
-    async fn search_messages_rejects_a_malformed_cursor() {
-        let server = server_with_dialog("srch4@x");
+    async fn search_messages_rejects_a_malformed_cursor() -> Result<(), TestError> {
+        let server = server_with_dialog("srch4@x")?;
         let err = server
             .search_messages(Parameters(SearchMessagesParams {
                 query: "INVITE".to_string(),
@@ -12265,9 +12490,11 @@ mod tests {
                 cursor: Some("yesterday|srch4@x#0000000000".to_string()),
             }))
             .await
-            .expect_err("a non-RFC-3339 cursor must be refused");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("a non-RFC-3339 cursor must be refused")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// The cursor's index half orders numerically, not as raw text.
@@ -12278,7 +12505,7 @@ mod tests {
     /// nowhere. Asserted on the ordering the pager relies on rather than on the
     /// padding width, so the test survives a wider field.
     #[test]
-    fn hit_identity_orders_message_indices_numerically() {
+    fn hit_identity_orders_message_indices_numerically() -> Result<(), TestError> {
         assert!(
             hit_identity("call@x", 2) < hit_identity("call@x", 10),
             "message 2 must sort before message 10"
@@ -12288,6 +12515,7 @@ mod tests {
             hit_identity("aaa@x", 999) < hit_identity("aab@x", 0),
             "the Call-ID is the primary key within one instant"
         );
+        Ok(())
     }
 
     // ── ascii_contains_ci ────────────────────────────────────────────
@@ -12295,12 +12523,13 @@ mod tests {
     /// The zero-allocation matcher folds ASCII case, honors substrings, and
     /// rejects a needle longer than the haystack (empty needle always hits).
     #[test]
-    fn ascii_contains_ci_folds_case_and_bounds() {
+    fn ascii_contains_ci_folds_case_and_bounds() -> Result<(), TestError> {
         assert!(ascii_contains_ci("INVITE", b"invite"));
         assert!(ascii_contains_ci("User-Agent: TestUA/1.0", b"testua"));
         assert!(ascii_contains_ci("anything", b""));
         assert!(!ascii_contains_ci("abc", b"abcd"));
         assert!(!ascii_contains_ci("hello", b"xyz"));
+        Ok(())
     }
 
     /// The raw scan finds a header the field list never looked at.
@@ -12318,7 +12547,7 @@ mod tests {
     /// The bytes here are what a real message carries in the headers the old
     /// field list skipped.
     #[test]
-    fn the_raw_scan_reaches_headers_the_field_list_skipped() {
+    fn the_raw_scan_reaches_headers_the_field_list_skipped() -> Result<(), TestError> {
         let msg = b"NOTIFY sip:a@example.com SIP/2.0\r\n\
                     Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sub-mes-1\r\n\
                     Event: dialog-info\r\n\
@@ -12340,6 +12569,7 @@ mod tests {
             !ascii_contains_ci_bytes(msg, b"terminated"),
             "the raw scan reports a value the message does not carry"
         );
+        Ok(())
     }
 
     /// The byte scan and the string scan agree.
@@ -12347,7 +12577,7 @@ mod tests {
     /// `ascii_contains_ci` delegates to the byte version now, so a divergence
     /// would mean the two surfaces answer differently for the same text.
     #[test]
-    fn the_byte_scan_and_the_string_scan_agree() {
+    fn the_byte_scan_and_the_string_scan_agree() -> Result<(), TestError> {
         for (hay, needle) in [
             ("INVITE", b"invite".as_slice()),
             ("User-Agent: TestUA/1.0", b"testua".as_slice()),
@@ -12362,13 +12592,14 @@ mod tests {
                 String::from_utf8_lossy(needle)
             );
         }
+        Ok(())
     }
 
     // ── tail_dialogs ─────────────────────────────────────────────────
 
     /// A non-RFC-3339 cursor errors with invalid_params (-32602).
     #[tokio::test]
-    async fn tail_dialogs_invalid_cursor_errors() {
+    async fn tail_dialogs_invalid_cursor_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .tail_dialogs(Parameters(TailDialogsParams {
@@ -12377,32 +12608,41 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect_err("bad cursor must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("bad cursor must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// Omitting the cursor returns every dialog and sets next_cursor.
     #[tokio::test]
-    async fn tail_dialogs_no_cursor_returns_all_with_next_cursor() {
-        let server = server_with_dialog("tail@x");
+    async fn tail_dialogs_no_cursor_returns_all_with_next_cursor() -> Result<(), TestError> {
+        let server = server_with_dialog("tail@x")?;
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams::default()))
             .await
-            .expect("tail should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        assert_eq!(v["dialogs"].as_array().unwrap().len(), 1);
+            .map_err(|e| format!("tail should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert_eq!(
+            v["dialogs"]
+                .as_array()
+                .ok_or("v[\"dialogs\"].as_array() is None")?
+                .len(),
+            1
+        );
         assert!(
             v["next_cursor"].is_string(),
             "next_cursor set when dialogs returned"
         );
         assert_eq!(v["source_exhausted"], false);
+        Ok(())
     }
 
     /// A cursor after every update filters all dialogs; next_cursor is null.
     #[tokio::test]
-    async fn tail_dialogs_future_cursor_filters_everything() {
-        let server = server_with_dialog("tailf@x");
+    async fn tail_dialogs_future_cursor_filters_everything() -> Result<(), TestError> {
+        let server = server_with_dialog("tailf@x")?;
         // A cursor strictly after the dialog's updated_at filters it out.
         let future = "2099-01-01T00:00:00Z".to_string();
         let result = server
@@ -12412,16 +12652,22 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect("tail should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        assert!(v["dialogs"].as_array().unwrap().is_empty());
+            .map_err(|e| format!("tail should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        assert!(
+            v["dialogs"]
+                .as_array()
+                .ok_or("v[\"dialogs\"].as_array() is None")?
+                .is_empty()
+        );
         assert!(v["next_cursor"].is_null(), "no dialogs → null cursor");
+        Ok(())
     }
 
     /// Follow `next_cursor` pages to exhaustion and return every call_id
     /// seen, in arrival order. Bounded so a broken cursor cannot loop
     /// forever.
-    async fn drain_tail_pages(server: &SipnabMcp, limit: u32) -> Vec<String> {
+    async fn drain_tail_pages(server: &SipnabMcp, limit: u32) -> Result<Vec<String>, TestError> {
         let mut seen: Vec<String> = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..20 {
@@ -12432,21 +12678,28 @@ mod tests {
                     fields: None,
                 }))
                 .await
-                .expect("tail should succeed");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-            let dialogs = v["dialogs"].as_array().unwrap();
+                .map_err(|e| format!("tail should succeed: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+            let dialogs = v["dialogs"]
+                .as_array()
+                .ok_or("v[\"dialogs\"].as_array() is None")?;
             if dialogs.is_empty() {
                 break;
             }
             for d in dialogs {
-                seen.push(d["call_id"].as_str().unwrap().to_string());
+                seen.push(
+                    d["call_id"]
+                        .as_str()
+                        .ok_or("d[\"call_id\"].as_str() is None")?
+                        .to_string(),
+                );
             }
             cursor = v["next_cursor"].as_str().map(str::to_string);
             if cursor.is_none() {
                 break;
             }
         }
-        seen
+        Ok(seen)
     }
 
     /// Paging with a small limit must eventually visit every dialog exactly
@@ -12454,7 +12707,7 @@ mod tests {
     /// order (regression: truncating before sorting let `next_cursor` jump
     /// past dialogs that were never returned).
     #[tokio::test]
-    async fn tail_dialogs_paging_visits_every_dialog_exactly_once() {
+    async fn tail_dialogs_paging_visits_every_dialog_exactly_once() -> Result<(), TestError> {
         let mut ds = DialogStore::new(100, false);
         // Insertion order is the reverse of updated_at order: the first
         // inserted dialog has the newest timestamp. A pass that takes the
@@ -12463,13 +12716,13 @@ mod tests {
         // older ones forever.
         for i in 0..5u32 {
             let ts = base_ts() + chrono::Duration::seconds(i64::from(50 - 10 * i));
-            ds.process_message(invite(&format!("page{i}@x"), ts));
+            ds.process_message(invite(&format!("page{i}@x"), ts)?);
         }
         let ds = Arc::new(RwLock::new(ds));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let server = SipnabMcp::new(ds, ss);
 
-        let seen = drain_tail_pages(&server, 2).await;
+        let seen = drain_tail_pages(&server, 2).await?;
 
         let mut sorted = seen.clone();
         sorted.sort();
@@ -12478,34 +12731,36 @@ mod tests {
             sorted, expected,
             "every dialog must be seen exactly once; saw {seen:?}"
         );
+        Ok(())
     }
 
     /// Dialogs sharing the same `updated_at` must not be lost when a page
     /// boundary splits the tie group (regression: a bare-timestamp cursor
     /// with a strict `>` filter dropped the unreturned half forever).
     #[tokio::test]
-    async fn tail_dialogs_tied_updated_at_survives_page_boundary() {
+    async fn tail_dialogs_tied_updated_at_survives_page_boundary() -> Result<(), TestError> {
         let mut ds = DialogStore::new(100, false);
-        ds.process_message(invite("tie-a@x", base_ts()));
-        ds.process_message(invite("tie-b@x", base_ts()));
+        ds.process_message(invite("tie-a@x", base_ts())?);
+        ds.process_message(invite("tie-b@x", base_ts())?);
         let ds = Arc::new(RwLock::new(ds));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         let server = SipnabMcp::new(ds, ss);
 
-        let mut seen = drain_tail_pages(&server, 1).await;
+        let mut seen = drain_tail_pages(&server, 1).await?;
         seen.sort();
         assert_eq!(
             seen,
             vec!["tie-a@x".to_string(), "tie-b@x".to_string()],
             "both tied dialogs must be seen exactly once"
         );
+        Ok(())
     }
 
     /// A bare RFC 3339 cursor (the pre-compound format) is still accepted
     /// and keeps its strictly-after semantics.
     #[tokio::test]
-    async fn tail_dialogs_bare_timestamp_cursor_still_supported() {
-        let server = server_with_dialog("bare@x");
+    async fn tail_dialogs_bare_timestamp_cursor_still_supported() -> Result<(), TestError> {
+        let server = server_with_dialog("bare@x")?;
         // Equal to the dialog's updated_at → strictly-after excludes it.
         let result = server
             .tail_dialogs(Parameters(TailDialogsParams {
@@ -12514,12 +12769,16 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect("tail should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("tail should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert!(
-            v["dialogs"].as_array().unwrap().is_empty(),
+            v["dialogs"]
+                .as_array()
+                .ok_or("v[\"dialogs\"].as_array() is None")?
+                .is_empty(),
             "bare timestamp cursor keeps strictly-after semantics"
         );
+        Ok(())
     }
 
     // ── security_findings ────────────────────────────────────────────
@@ -12530,13 +12789,13 @@ mod tests {
     /// answer a fully-armed server gives for a clean capture. An agent asked
     /// "were we attacked?" read it as "no", on a server that was not looking.
     #[tokio::test]
-    async fn security_findings_says_when_nothing_is_armed() {
+    async fn security_findings_says_when_nothing_is_armed() -> Result<(), TestError> {
         let server = empty_server();
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("no engine → an empty page, not an error");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("no engine → an empty page, not an error: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["findings"].as_array().map(Vec::len), Some(0));
         assert_eq!(v["total_matched"], 0);
         assert_eq!(
@@ -12549,12 +12808,13 @@ mod tests {
             note.contains("nothing was watching"),
             "the note must distinguish an unwatched capture from a clean one: {v}"
         );
+        Ok(())
     }
 
     /// An armed server reports WHICH detectors are armed, so "no fraud
     /// findings" can be told apart from "fraud was never watched for".
     #[tokio::test]
-    async fn security_findings_names_the_armed_detectors() {
+    async fn security_findings_names_the_armed_detectors() -> Result<(), TestError> {
         let engine = Arc::new(RwLock::new(AlertEngine::new(vec![], None)));
         let server = empty_server()
             .with_alert_engine(engine)
@@ -12562,8 +12822,8 @@ mod tests {
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("security_findings should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["detection_armed"], true);
         assert_eq!(
             v["armed_kinds"],
@@ -12575,6 +12835,7 @@ mod tests {
             v["note"].is_null(),
             "the not-armed note must not appear on an armed server: {v}"
         );
+        Ok(())
     }
 
     /// A caller cannot make the server advertise a kind it would then refuse.
@@ -12584,18 +12845,20 @@ mod tests {
     /// that errors. The declaration is filtered to the vocabulary rather than
     /// trusted.
     #[tokio::test]
-    async fn armed_kinds_never_advertises_a_kind_the_filter_would_refuse() {
+    async fn armed_kinds_never_advertises_a_kind_the_filter_would_refuse() -> Result<(), TestError>
+    {
         let server = empty_server().with_armed_detections(["scanner", "bogus", "reg-flood"]);
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("security_findings should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(
             v["armed_kinds"],
             serde_json::json!(["scanner"]),
             "only names `kinds` accepts may be advertised: {v}"
         );
+        Ok(())
     }
 
     /// A kind outside the vocabulary is refused by name, `find_problems`-style.
@@ -12604,7 +12867,7 @@ mod tests {
     /// grammar uses for the same detector, and it used to return `[]` — the
     /// bytes of a quiet capture — on a capture full of registration floods.
     #[tokio::test]
-    async fn security_findings_refuses_an_unknown_kind() {
+    async fn security_findings_refuses_an_unknown_kind() -> Result<(), TestError> {
         let server = empty_server();
         for bad in ["reg-flood", "not-a-kind", "Scanner"] {
             let outcome = server
@@ -12615,9 +12878,12 @@ mod tests {
                 }))
                 .await;
             let Err(err) = outcome else {
-                panic!("kind {bad:?} must be refused, not silently matched against nothing");
+                return Err(format!(
+                    "kind {bad:?} must be refused, not silently matched against nothing"
+                )
+                .into());
             };
-            let json = serde_json::to_value(err).unwrap();
+            let json = serde_json::to_value(err)?;
             assert_eq!(json["code"], -32602, "kind {bad:?}: {json}");
             let msg = json["message"].as_str().unwrap_or_default();
             for known in SECURITY_FINDING_KINDS {
@@ -12628,12 +12894,13 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The near-miss hint names the right spelling rather than only the wrong
     /// one, because `reg-flood` and `reg_flood` are one detector.
     #[tokio::test]
-    async fn security_findings_suggests_the_underscore_spelling() {
+    async fn security_findings_suggests_the_underscore_spelling() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .security_findings(Parameters(SecurityFindingsParams {
@@ -12642,14 +12909,16 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect_err("reg-flood must be refused");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("reg-flood must be refused")?;
+        let json = serde_json::to_value(err)?;
         let msg = json["message"].as_str().unwrap_or_default();
         assert!(
             msg.contains("did you mean 'reg_flood'"),
             "an operator who wrote --alert reg-flood:50/10s reaches for that \
              spelling here first: {msg}"
         );
+        Ok(())
     }
 
     /// The four names the tool accepts are the four the detectors file under.
@@ -12660,11 +12929,11 @@ mod tests {
     /// invalid. `src/app/batch.rs` is where every `DeferredAlert` is built, and
     /// its `kind:` literals are the ground truth.
     #[test]
-    fn security_findings_kinds_match_the_names_the_detectors_file_under() {
+    fn security_findings_kinds_match_the_names_the_detectors_file_under() -> Result<(), TestError> {
         let batch = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/batch.rs"),
         )
-        .expect("batch.rs must be readable");
+        .map_err(|e| format!("batch.rs must be readable: {e:?}"))?;
         let mut filed: Vec<String> = batch
             .lines()
             .filter_map(|l| l.trim().strip_prefix("kind: \""))
@@ -12689,11 +12958,12 @@ mod tests {
              a finding no caller can filter for; a name here and not there is a \
              filter that can only ever return nothing."
         );
+        Ok(())
     }
 
     /// A non-RFC-3339 `since` errors with invalid_params (-32602).
     #[tokio::test]
-    async fn security_findings_invalid_since_errors() {
+    async fn security_findings_invalid_since_errors() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .security_findings(Parameters(SecurityFindingsParams {
@@ -12702,14 +12972,16 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect_err("bad since must error");
-        let json = serde_json::to_value(err).unwrap();
+            .err()
+            .ok_or("bad since must error")?;
+        let json = serde_json::to_value(err)?;
         assert_eq!(json["code"], -32602);
+        Ok(())
     }
 
     /// A fired finding comes back with its rule name and source IP.
     #[tokio::test]
-    async fn security_findings_with_engine_returns_recorded_finding() {
+    async fn security_findings_with_engine_returns_recorded_finding() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.fire(
             "scanner",
@@ -12726,22 +12998,23 @@ mod tests {
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("security_findings should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
-        let arr = v["findings"].as_array().expect("findings array");
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        let arr = v["findings"].as_array().ok_or("findings array")?;
         assert_eq!(arr.len(), 1);
         assert_eq!(v["returned"], 1);
         assert_eq!(v["total_matched"], 1);
         assert_eq!(v["truncated"], false);
         assert_eq!(arr[0]["rule_name"], "scanner");
         assert_eq!(arr[0]["src_ip"], "127.0.0.1");
+        Ok(())
     }
 
     /// The findings page carries each armed detector's observation gap, so an
     /// agent handed an empty `findings` list from a one-way capture is told
     /// the detector could not see, rather than left to report a clean bill.
     #[tokio::test]
-    async fn security_findings_carries_the_observation_gaps() {
+    async fn security_findings_carries_the_observation_gaps() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.set_observation_gap(
             "reg_flood",
@@ -12759,11 +13032,11 @@ mod tests {
         let result = server
             .security_findings(Parameters(SecurityFindingsParams::default()))
             .await
-            .expect("security_findings should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         let gaps = v["observation_gaps"]
             .as_array()
-            .expect("observation_gaps array");
+            .ok_or("observation_gaps array")?;
         assert_eq!(gaps.len(), 1, "{v}");
         assert_eq!(gaps[0]["rule_name"], "reg_flood");
         assert_eq!(gaps[0]["reason"], "unanswered");
@@ -12775,6 +13048,7 @@ mod tests {
                 .is_some_and(|d| d.contains("2 of 5")),
             "{v}"
         );
+        Ok(())
     }
 
     /// A capped findings page reports how many it withheld.
@@ -12783,7 +13057,7 @@ mod tests {
     /// could not distinguish "two findings" from "two of two hundred" — the
     /// same defect as the bare array, one layer down.
     #[tokio::test]
-    async fn security_findings_reports_what_the_limit_withheld() {
+    async fn security_findings_reports_what_the_limit_withheld() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         for n in 0..5u8 {
             engine.fire(
@@ -12804,19 +13078,20 @@ mod tests {
                 limit: Some(2),
             }))
             .await
-            .expect("security_findings should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["returned"], 2);
         assert_eq!(
             v["total_matched"], 5,
             "the page must count the findings it did not send: {v}"
         );
         assert_eq!(v["truncated"], true);
+        Ok(())
     }
 
     /// The kinds filter excludes findings from other rule names.
     #[tokio::test]
-    async fn security_findings_kinds_filter_excludes_other_rules() {
+    async fn security_findings_kinds_filter_excludes_other_rules() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.fire("scanner", localhost(), "scan", chrono::Utc::now());
         let engine = Arc::new(RwLock::new(engine));
@@ -12832,70 +13107,80 @@ mod tests {
                 limit: None,
             }))
             .await
-            .expect("security_findings should succeed");
+            .map_err(|e| format!("security_findings should succeed: {e:?}"))?;
         // Only "scanner" recorded; filtering on "fraud" yields none — and says
         // so with a total rather than a bare empty array.
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["findings"].as_array().map(Vec::len), Some(0));
         assert_eq!(v["total_matched"], 0);
+        Ok(())
     }
 
     // ── diagnostic + analysis tools ──────────────────────────────────
 
     /// The registry lookup answers with a class, not a guess.
     #[tokio::test]
-    async fn explain_response_code_uses_the_registry() {
+    async fn explain_response_code_uses_the_registry() -> Result<(), TestError> {
         let server = empty_server();
         let r = server
             .explain_response_code(Parameters(ExplainCodeParams { code: 488 }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert_eq!(v["code"], 488);
         assert_eq!(v["class"], "failure");
         assert_eq!(v["registered"], true);
-        assert!(v["explanation"].as_str().unwrap().contains("Codec"));
+        assert!(
+            v["explanation"]
+                .as_str()
+                .ok_or("v[\"explanation\"].as_str() is None")?
+                .contains("Codec")
+        );
+        Ok(())
     }
 
     /// 401 is a challenge, not a failure — the distinction the dialog state
     /// machine was fixed for, and an agent must get it too.
     #[tokio::test]
-    async fn explain_response_code_calls_401_a_challenge() {
+    async fn explain_response_code_calls_401_a_challenge() -> Result<(), TestError> {
         let r = empty_server()
             .explain_response_code(Parameters(ExplainCodeParams { code: 401 }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert_eq!(v["class"], "challenge");
+        Ok(())
     }
 
     /// An unregistered code is reported as unregistered rather than invented.
     #[tokio::test]
-    async fn explain_response_code_admits_an_unknown_code() {
+    async fn explain_response_code_admits_an_unknown_code() -> Result<(), TestError> {
         let r = empty_server()
             .explain_response_code(Parameters(ExplainCodeParams { code: 699 }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert_eq!(v["registered"], false);
         assert!(v["explanation"].is_null());
+        Ok(())
     }
 
     /// Out of range is an error, not a shrug.
     #[tokio::test]
-    async fn explain_response_code_rejects_a_non_sip_code() {
+    async fn explain_response_code_rejects_a_non_sip_code() -> Result<(), TestError> {
         assert!(
             empty_server()
                 .explain_response_code(Parameters(ExplainCodeParams { code: 42 }))
                 .await
                 .is_err()
         );
+        Ok(())
     }
 
     /// An unknown Call-ID is invalid_params, not an empty result that reads
     /// like a healthy call.
     #[tokio::test]
-    async fn triage_call_rejects_an_unknown_call_id() {
+    async fn triage_call_rejects_an_unknown_call_id() -> Result<(), TestError> {
         assert!(
             empty_server()
                 .triage_call(Parameters(CallIdParams {
@@ -12904,6 +13189,7 @@ mod tests {
                 .await
                 .is_err()
         );
+        Ok(())
     }
 
     /// A normally-cleared call reports WHY it ended.
@@ -12914,10 +13200,10 @@ mod tests {
     /// the far end was out of order" were the same answer, and only the
     /// second closes a ticket.
     #[tokio::test]
-    async fn triage_call_reports_the_termination_cause() {
+    async fn triage_call_reports_the_termination_cause() -> Result<(), TestError> {
         let mut ds = DialogStore::new(100, false);
-        ds.process_message(invite("term@x", base_ts()));
-        ds.process_message(ok200("term@x", base_ts()));
+        ds.process_message(invite("term@x", base_ts())?);
+        ds.process_message(ok200("term@x", base_ts())?);
         let raw = build_sip(
             "BYE sip:bob@example.com SIP/2.0",
             &[
@@ -12931,7 +13217,7 @@ mod tests {
             ],
             b"",
         );
-        ds.process_message(parse_at(&raw, base_ts()));
+        ds.process_message(parse_at(&raw, base_ts())?);
         let server = SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
             Arc::new(RwLock::new(StreamStore::new(100))),
@@ -12942,8 +13228,8 @@ mod tests {
                 call_id: "term@x".into(),
             }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert_eq!(v["termination"]["cause_code"], 38);
         assert_eq!(v["termination"]["cause_text"], "Network out of order");
         assert_eq!(v["termination"]["protocol"], "Q.850");
@@ -12952,44 +13238,47 @@ mod tests {
             v["verdict"], "none",
             "a cleanly cleared call is not a fault, whatever cause it named"
         );
+        Ok(())
     }
 
     /// A call that never said why it ended omits the block rather than
     /// carrying a null an agent has to interpret.
     #[tokio::test]
-    async fn triage_call_omits_termination_when_nothing_named_a_cause() {
-        let r = server_with_dialog("noterm@x")
+    async fn triage_call_omits_termination_when_nothing_named_a_cause() -> Result<(), TestError> {
+        let r = server_with_dialog("noterm@x")?
             .triage_call(Parameters(CallIdParams {
                 call_id: "noterm@x".into(),
             }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert!(
             v.get("termination").is_none(),
             "expected no termination block, got {:?}",
             v.get("termination")
         );
+        Ok(())
     }
 
     /// A dialog with no REGISTER says so rather than reporting healthy
     /// registration for a call that never attempted one.
     #[tokio::test]
-    async fn diagnose_registration_declines_a_non_register_dialog() {
-        let server = server_with_dialog("reg@x");
+    async fn diagnose_registration_declines_a_non_register_dialog() -> Result<(), TestError> {
+        let server = server_with_dialog("reg@x")?;
         let r = server
             .diagnose_registration(Parameters(CallIdParams {
                 call_id: "reg@x".into(),
             }))
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&r)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&r)?)?;
         assert_eq!(v["applicable"], false);
+        Ok(())
     }
 
     /// A malformed window is rejected before any scanning happens.
     #[tokio::test]
-    async fn search_by_time_rejects_a_bad_timestamp() {
+    async fn search_by_time_rejects_a_bad_timestamp() -> Result<(), TestError> {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
@@ -13003,11 +13292,12 @@ mod tests {
                 .await
                 .is_err()
         );
+        Ok(())
     }
 
     /// An end at or before the start is an error, not silently empty.
     #[tokio::test]
-    async fn search_by_time_rejects_an_inverted_window() {
+    async fn search_by_time_rejects_an_inverted_window() -> Result<(), TestError> {
         assert!(
             empty_server()
                 .search_by_time(Parameters(SearchByTimeParams {
@@ -13021,6 +13311,7 @@ mod tests {
                 .await
                 .is_err()
         );
+        Ok(())
     }
 
     /// `truncated: true` is no longer a dead end: the cursor reaches the rest.
@@ -13032,8 +13323,8 @@ mod tests {
     /// dialogs share one `created_at`, which is what a burst of calls looks
     /// like and what a bare-timestamp cursor loses half of.
     #[tokio::test]
-    async fn search_by_time_cursor_reaches_every_dialog_in_the_window() {
-        let server = server_with_simultaneous_dialogs(&["t-c@x", "t-a@x", "t-b@x"]);
+    async fn search_by_time_cursor_reaches_every_dialog_in_the_window() -> Result<(), TestError> {
+        let server = server_with_simultaneous_dialogs(&["t-c@x", "t-a@x", "t-b@x"])?;
         let window = |cursor: Option<String>| SearchByTimeParams {
             start: (base_ts() - chrono::Duration::seconds(1)).to_rfc3339(),
             end: Some((base_ts() + chrono::Duration::seconds(1)).to_rfc3339()),
@@ -13049,14 +13340,14 @@ mod tests {
             let result = server
                 .search_by_time(Parameters(window(cursor.clone())))
                 .await
-                .expect("search_by_time should succeed");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+                .map_err(|e| format!("search_by_time should succeed: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
             assert_eq!(
                 v["total_matched"], 3,
                 "the window's total must not shrink as paging advances: {v}"
             );
-            for d in v["dialogs"].as_array().expect("dialogs") {
-                seen.push(d["call_id"].as_str().expect("call_id").to_string());
+            for d in v["dialogs"].as_array().ok_or("dialogs")? {
+                seen.push(d["call_id"].as_str().ok_or("call_id")?.to_string());
             }
             cursor = v["next_cursor"].as_str().map(str::to_string);
             if cursor.is_none() {
@@ -13076,11 +13367,12 @@ mod tests {
             ],
             "every dialog in the window must be reachable exactly once"
         );
+        Ok(())
     }
 
     /// A malformed `search_by_time` cursor is refused, not treated as absent.
     #[tokio::test]
-    async fn search_by_time_rejects_a_malformed_cursor() {
+    async fn search_by_time_rejects_a_malformed_cursor() -> Result<(), TestError> {
         let err = empty_server()
             .search_by_time(Parameters(SearchByTimeParams {
                 start: "2026-01-01T00:00:00Z".into(),
@@ -13091,8 +13383,10 @@ mod tests {
                 fields: None,
             }))
             .await
-            .expect_err("a non-RFC-3339 cursor must be refused");
-        assert_eq!(serde_json::to_value(err).unwrap()["code"], -32602);
+            .err()
+            .ok_or("a non-RFC-3339 cursor must be refused")?;
+        assert_eq!(serde_json::to_value(err)?["code"], -32602);
+        Ok(())
     }
 
     // ── capture_status / server_capabilities ─────────────────────────
@@ -13104,51 +13398,63 @@ mod tests {
     /// afternoon of capture ends here". Getting it backwards would make the
     /// destructive tool confidently safe.
     #[tokio::test]
-    async fn capture_status_live_without_output_is_unsaved() {
+    async fn capture_status_live_without_output_is_unsaved() -> Result<(), TestError> {
         let server = empty_server().with_capture_context(CaptureContext {
             live: true,
             name: "eth0".into(),
             started: std::time::Instant::now(),
             writing_to: None,
         });
-        let result = server.capture_status().await.expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["source"], "live");
         assert_eq!(v["name"], "eth0");
         assert_eq!(
             v["unsaved"], true,
             "live packets held only in memory are unsaved"
         );
+        Ok(())
     }
 
     /// The same capture, writing to a file, is not unsaved.
     #[tokio::test]
-    async fn capture_status_live_with_output_is_saved() {
+    async fn capture_status_live_with_output_is_saved() -> Result<(), TestError> {
         let server = empty_server().with_capture_context(CaptureContext {
             live: true,
             name: "eth0".into(),
             started: std::time::Instant::now(),
             writing_to: Some("/tmp/out.pcap".into()),
         });
-        let result = server.capture_status().await.expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["unsaved"], false);
         assert_eq!(v["writing_to"], "/tmp/out.pcap");
+        Ok(())
     }
 
     /// A file replay is on disk by definition, so never unsaved.
     #[tokio::test]
-    async fn capture_status_file_replay_is_never_unsaved() {
+    async fn capture_status_file_replay_is_never_unsaved() -> Result<(), TestError> {
         let server = empty_server().with_capture_context(CaptureContext {
             live: false,
             name: "/caps/a.pcap".into(),
             started: std::time::Instant::now(),
             writing_to: None,
         });
-        let result = server.capture_status().await.expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["source"], "file");
         assert_eq!(v["unsaved"], false);
+        Ok(())
     }
 
     /// With no context attached the tool says "unknown" rather than guessing.
@@ -13156,45 +13462,54 @@ mod tests {
     /// A wrong "live" here is worse than an admission of ignorance: it is what
     /// an agent consults to decide whether stopping destroys anything.
     #[tokio::test]
-    async fn capture_status_without_context_reports_unknown() {
-        let result = empty_server().capture_status().await.expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+    async fn capture_status_without_context_reports_unknown() -> Result<(), TestError> {
+        let result = empty_server()
+            .capture_status()
+            .await
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["source"], "unknown");
         assert_eq!(v["unsaved"], false);
         assert!(v["name"].is_null());
+        Ok(())
     }
 
     /// Capabilities are read from `cfg!`, so they cannot claim a feature the
     /// binary does not have. Under `--all-features` mcp is necessarily on,
     /// since this test only compiles when it is.
     #[tokio::test]
-    async fn server_capabilities_reports_compiled_features() {
+    async fn server_capabilities_reports_compiled_features() -> Result<(), TestError> {
         let result = empty_server()
             .server_capabilities()
             .await
-            .expect("succeeds");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("succeeds: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
-        let feats: Vec<String> = serde_json::from_value(v["features"].clone()).unwrap();
+        let feats: Vec<String> = serde_json::from_value(v["features"].clone())?;
         assert!(feats.contains(&"mcp".to_string()), "got {feats:?}");
         assert_eq!(v["can_decrypt"], cfg!(feature = "tls"));
         assert_eq!(v["can_plugins"], cfg!(feature = "plugins"));
+        Ok(())
     }
 
     // ── stats ────────────────────────────────────────────────────────
 
     /// Empty stores report schema_version 2 and all-zero counters.
     #[tokio::test]
-    async fn stats_empty_store_all_zero() {
+    async fn stats_empty_store_all_zero() -> Result<(), TestError> {
         let server = empty_server();
-        let result = server.capture_status().await.expect("stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["schema_version"], 2);
         assert_eq!(v["dialog_count"], 0);
         assert_eq!(v["stream_count"], 0);
         assert_eq!(v["orphaned_stream_count"], 0);
         assert_eq!(v["active_dialog_count"], 0);
         assert_eq!(v["active_call_count"], 0);
+        Ok(())
     }
 
     /// `stats` publishes the two gauges as separate keys, and the version says
@@ -13207,10 +13522,13 @@ mod tests {
     /// `dialog_store::tests::active_call_count_excludes_setup_and_subscriptions`,
     /// which can build the mixed-state store this fixture cannot.
     #[tokio::test]
-    async fn stats_separates_dialog_and_call_gauges() {
+    async fn stats_separates_dialog_and_call_gauges() -> Result<(), TestError> {
         let server = empty_server();
-        let result = server.capture_status().await.expect("stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert!(
             v.get("active_dialog_count").is_some(),
@@ -13225,6 +13543,7 @@ mod tests {
             "narrowing active_call_count without bumping the version leaves \
              every existing dashboard silently reading a different quantity"
         );
+        Ok(())
     }
 
     /// `stats` reports the SIP that `--portrange` excluded, always.
@@ -13242,11 +13561,14 @@ mod tests {
     /// wrong is a field the reader never learns exists, and this reader cannot
     /// ask a follow-up question.
     #[tokio::test]
-    async fn stats_reports_the_sip_left_outside_the_port_range() {
+    async fn stats_reports_the_sip_left_outside_the_port_range() -> Result<(), TestError> {
         crate::pipeline::reset_portrange_skips();
         let server = empty_server();
-        let result = server.capture_status().await.expect("stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert!(
             v.get("unanalysed_sip_messages").is_some(),
@@ -13259,6 +13581,7 @@ mod tests {
             "the per-port breakdown must be an array, empty when nothing was \
              skipped: {v}"
         );
+        Ok(())
     }
 
     /// `capture_status` reports the SIP-over-WebSocket the port set excluded,
@@ -13284,7 +13607,8 @@ mod tests {
     /// an agent to widen the wrong flag.
     #[tokio::test]
     #[serial_test::serial(ws_port_skips)]
-    async fn capture_status_reports_the_websocket_left_outside_the_port_set() {
+    async fn capture_status_reports_the_websocket_left_outside_the_port_set()
+    -> Result<(), TestError> {
         crate::capture::websocket::set_ws_port_range(None);
         crate::pipeline::reset_ws_port_skips();
         crate::pipeline::reset_portrange_skips();
@@ -13293,11 +13617,14 @@ mod tests {
             let result = empty_server()
                 .capture_status()
                 .await
-                .expect("capture_status should succeed");
-            serde_json::from_str::<serde_json::Value>(&text_of(&result)).expect("valid JSON")
+                .map_err(|e| format!("capture_status should succeed: {e:?}"))?;
+            Ok::<_, TestError>(
+                serde_json::from_str::<serde_json::Value>(&text_of(&result)?)
+                    .map_err(|e| format!("valid JSON: {e:?}"))?,
+            )
         };
 
-        let quiet = status().await;
+        let quiet = status().await?;
         assert_eq!(
             quiet["unanalysed_websocket_messages"], 0,
             "the count must be present at zero, or a reader who cannot ask a \
@@ -13361,7 +13688,7 @@ mod tests {
              declined — that is the loss this field has to disclose"
         );
 
-        let after = status().await;
+        let after = status().await?;
         assert_eq!(
             after["unanalysed_websocket_messages"], 1,
             "the declined SIP-over-WebSocket must reach the MCP answer, or a \
@@ -13381,6 +13708,7 @@ mod tests {
         );
 
         crate::pipeline::reset_ws_port_skips();
+        Ok(())
     }
 
     /// `stats` carries the capture-quality block, always, with the three
@@ -13398,10 +13726,13 @@ mod tests {
     /// different remedies — and "raise the buffer" is the wrong answer to
     /// two of them.
     #[tokio::test]
-    async fn stats_reports_capture_quality_with_the_three_losses_apart() {
+    async fn stats_reports_capture_quality_with_the_three_losses_apart() -> Result<(), TestError> {
         let server = empty_server();
-        let result = server.capture_status().await.expect("stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         let q = &v["capture_quality"];
         assert!(q.is_object(), "capture_quality must always be present: {v}");
@@ -13438,12 +13769,13 @@ mod tests {
             q["degraded"].is_boolean(),
             "capture_quality.degraded must be a boolean: {q}"
         );
+        Ok(())
     }
 
     /// The degraded flag follows the counters rather than being independent
     /// state, in both directions and for each of the three counters alone.
     #[test]
-    fn capture_quality_degraded_tracks_each_counter() {
+    fn capture_quality_degraded_tracks_each_counter() -> Result<(), TestError> {
         use crate::output::prometheus::CaptureQuality;
 
         let clean: CaptureQualityJson = CaptureQuality::default().into();
@@ -13466,16 +13798,21 @@ mod tests {
             let json: CaptureQualityJson = quality.into();
             assert!(json.degraded, "{quality:?} must serialize as degraded");
         }
+        Ok(())
     }
 
     /// A store with one dialog and no streams reports counts 1 and 0.
     #[tokio::test]
-    async fn stats_counts_dialogs() {
-        let server = server_with_dialog("stat@x");
-        let result = server.capture_status().await.expect("stats should succeed");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+    async fn stats_counts_dialogs() -> Result<(), TestError> {
+        let server = server_with_dialog("stat@x")?;
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("stats should succeed: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["dialog_count"], 1);
         assert_eq!(v["stream_count"], 0);
+        Ok(())
     }
 
     // ── open_capture and capture identity ────────────────────────────
@@ -13495,24 +13832,24 @@ mod tests {
 
     /// A temp directory that is a valid `--mcp-file-root`, holding a copy of
     /// the G.711 fixture under `name`.
-    fn root_with_capture(dir: &str, name: &str) -> std::path::PathBuf {
+    fn root_with_capture(dir: &str, name: &str) -> Result<std::path::PathBuf, TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-open-capture-{dir}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("create the file root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("create the file root: {e:?}"))?;
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/pcap-samples/sip-rtp-g711.pcap"),
             root.join(name),
         )
-        .expect("stage the fixture");
-        root
+        .map_err(|e| format!("stage the fixture: {e:?}"))?;
+        Ok(root)
     }
 
     /// Without the flag the tool refuses and names the flag, so an agent
     /// learns what to ask the operator for rather than that sipnab is broken.
     #[tokio::test]
-    async fn open_capture_is_refused_without_the_opt_in_flag() {
+    async fn open_capture_is_refused_without_the_opt_in_flag() -> Result<(), TestError> {
         let server = exhausted_server();
         let err = server
             .open_capture(
@@ -13522,18 +13859,20 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect_err("must refuse");
+            .err()
+            .ok_or("must refuse")?;
         assert!(
             err.message.contains("--mcp-allow-open-capture"),
             "the refusal must name the flag; got {err:?}"
         );
+        Ok(())
     }
 
     /// The refusal comes BEFORE any path handling: a server that did not opt
     /// in must not reveal whether the file exists, and must not report the
     /// file-root error instead of the one that actually applies.
     #[tokio::test]
-    async fn the_opt_in_refusal_precedes_the_path_check() {
+    async fn the_opt_in_refusal_precedes_the_path_check() -> Result<(), TestError> {
         let server = exhausted_server();
         let err = server
             .open_capture(
@@ -13543,17 +13882,19 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect_err("must refuse");
+            .err()
+            .ok_or("must refuse")?;
         assert!(
             err.message.contains("--mcp-allow-open-capture"),
             "the flag refusal must come first; got {err:?}"
         );
+        Ok(())
     }
 
     /// With the flag but no `--mcp-file-root`, the shared resolver refuses and
     /// names the missing flag — the same rule every file tool applies.
     #[tokio::test]
-    async fn open_capture_needs_a_file_root() {
+    async fn open_capture_needs_a_file_root() -> Result<(), TestError> {
         let server = exhausted_server().with_open_capture();
         let err = server
             .open_capture(
@@ -13563,18 +13904,20 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect_err("must refuse");
+            .err()
+            .ok_or("must refuse")?;
         assert!(
             err.message.contains("--mcp-file-root"),
             "the refusal must name the root flag; got {err:?}"
         );
+        Ok(())
     }
 
     /// A path is refused exactly as it is for every other file tool, because
     /// this reuses `resolve_in_root` rather than resolving paths its own way.
     #[tokio::test]
-    async fn open_capture_refuses_anything_that_is_not_a_bare_filename() {
-        let root = root_with_capture("traversal", "ok.pcap");
+    async fn open_capture_refuses_anything_that_is_not_a_bare_filename() -> Result<(), TestError> {
+        let root = root_with_capture("traversal", "ok.pcap")?;
         let server = exhausted_server().with_open_capture().with_file_root(&root);
         for bad in ["../escape.pcap", "/etc/passwd", "sub/dir.pcap", ".."] {
             let err = server
@@ -13585,19 +13928,21 @@ mod tests {
                     Extension(crate::mcp::elicit::Confirm::unavailable()),
                 )
                 .await
-                .expect_err("must refuse a path");
+                .err()
+                .ok_or("must refuse a path")?;
             assert!(
                 err.message.contains("bare filename") || err.message.contains("resolves outside"),
                 "'{bad}' must be refused for what it is; got {err:?}"
             );
         }
+        Ok(())
     }
 
     /// A live capture's writer never finishes, so a second writer would race
     /// it for the life of the process. That refusal has no opt-out.
     #[tokio::test]
-    async fn open_capture_refuses_while_the_source_is_live() {
-        let root = root_with_capture("live", "next.pcap");
+    async fn open_capture_refuses_while_the_source_is_live() -> Result<(), TestError> {
+        let root = root_with_capture("live", "next.pcap")?;
         let server = empty_server()
             .with_open_capture()
             .with_file_root(&root)
@@ -13616,18 +13961,20 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect_err("must refuse a live source");
+            .err()
+            .ok_or("must refuse a live source")?;
         assert!(
             err.message.contains("capturing live"),
             "the refusal must say why; got {err:?}"
         );
+        Ok(())
     }
 
     /// While the original reader is still filling the stores it is the one
     /// writer, and the tool waits rather than joining it.
     #[tokio::test]
-    async fn open_capture_refuses_while_the_source_is_still_reading() {
-        let root = root_with_capture("unexhausted", "next.pcap");
+    async fn open_capture_refuses_while_the_source_is_still_reading() -> Result<(), TestError> {
+        let root = root_with_capture("unexhausted", "next.pcap")?;
         let server = empty_server()
             .with_open_capture()
             .with_file_root(&root)
@@ -13646,11 +13993,13 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect_err("must refuse an unfinished source");
+            .err()
+            .ok_or("must refuse an unfinished source")?;
         assert!(
             err.message.contains("source_exhausted"),
             "the refusal must name the field to poll; got {err:?}"
         );
+        Ok(())
     }
 
     /// The swap must reach every clone, because HTTP clones the server per
@@ -13658,16 +14007,18 @@ mod tests {
     /// calling session saw the new capture and every other session kept
     /// reading the old name.
     #[tokio::test]
-    async fn a_swap_is_visible_to_every_clone_of_the_server() {
-        let root = root_with_capture("clone", "second.pcap");
+    async fn a_swap_is_visible_to_every_clone_of_the_server() -> Result<(), TestError> {
+        let root = root_with_capture("clone", "second.pcap")?;
         let server = exhausted_server().with_open_capture().with_file_root(&root);
         // The clone stands in for a second HTTP session.
         let other_session = server.clone();
 
         let before: serde_json::Value = serde_json::from_str(&text_of(
-            &other_session.capture_status().await.expect("status"),
-        ))
-        .unwrap();
+            &other_session
+                .capture_status()
+                .await
+                .map_err(|e| format!("status: {e:?}"))?,
+        )?)?;
         assert_eq!(before["name"], "first.pcap");
 
         server
@@ -13678,12 +14029,14 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect("the swap should be accepted");
+            .map_err(|e| format!("the swap should be accepted: {e:?}"))?;
 
         let after: serde_json::Value = serde_json::from_str(&text_of(
-            &other_session.capture_status().await.expect("status"),
-        ))
-        .unwrap();
+            &other_session
+                .capture_status()
+                .await
+                .map_err(|e| format!("status: {e:?}"))?,
+        )?)?;
         assert!(
             after["name"]
                 .as_str()
@@ -13696,13 +14049,14 @@ mod tests {
             before["capture_identity"]["instance"], after["capture_identity"]["instance"],
             "the capture instance must change on a swap, in every session"
         );
+        Ok(())
     }
 
     /// Two loads at once would have two writers filling one store. The second
     /// call is refused while the first is running.
     #[tokio::test]
-    async fn a_second_load_is_refused_while_one_is_running() {
-        let root = root_with_capture("concurrent", "second.pcap");
+    async fn a_second_load_is_refused_while_one_is_running() -> Result<(), TestError> {
+        let root = root_with_capture("concurrent", "second.pcap")?;
         let server = exhausted_server().with_open_capture().with_file_root(&root);
         server
             .open_capture(
@@ -13712,7 +14066,7 @@ mod tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect("the first swap should be accepted");
+            .map_err(|e| format!("the first swap should be accepted: {e:?}"))?;
 
         // Racy by nature: the load may already have finished on a fast box,
         // in which case a second call is legitimately allowed. Assert the
@@ -13732,29 +14086,39 @@ mod tests {
                     Extension(crate::mcp::elicit::Confirm::unavailable()),
                 )
                 .await
-                .expect_err("a concurrent load must be refused");
+                .err()
+                .ok_or("a concurrent load must be refused")?;
             assert!(
                 err.message.contains("still loading"),
                 "the refusal must name the running load; got {err:?}"
             );
         }
+        Ok(())
     }
 
     /// Every response that describes the whole store carries the identity, so
     /// a consumer holding a cursor can tell a continuation from a new capture.
     #[tokio::test]
-    async fn whole_store_responses_carry_the_capture_identity() {
-        let server = server_with_dialog("ident@x");
+    async fn whole_store_responses_carry_the_capture_identity() -> Result<(), TestError> {
+        let server = server_with_dialog("ident@x")?;
         let calls: Vec<(&str, serde_json::Value)> = vec![
             (
                 "capture_status",
-                serde_json::from_str(&text_of(&server.capture_status().await.expect("status")))
-                    .unwrap(),
+                serde_json::from_str(&text_of(
+                    &server
+                        .capture_status()
+                        .await
+                        .map_err(|e| format!("status: {e:?}"))?,
+                )?)?,
             ),
             (
                 "capture_status",
-                serde_json::from_str(&text_of(&server.capture_status().await.expect("stats")))
-                    .unwrap(),
+                serde_json::from_str(&text_of(
+                    &server
+                        .capture_status()
+                        .await
+                        .map_err(|e| format!("stats: {e:?}"))?,
+                )?)?,
             ),
             (
                 "list_dialogs",
@@ -13762,9 +14126,8 @@ mod tests {
                     &server
                         .list_dialogs(Parameters(ListDialogsParams::default()))
                         .await
-                        .expect("list"),
-                ))
-                .unwrap(),
+                        .map_err(|e| format!("list: {e:?}"))?,
+                )?)?,
             ),
             (
                 "tail_dialogs",
@@ -13776,9 +14139,8 @@ mod tests {
                             fields: None,
                         }))
                         .await
-                        .expect("tail"),
-                ))
-                .unwrap(),
+                        .map_err(|e| format!("tail: {e:?}"))?,
+                )?)?,
             ),
         ];
         for (tool, v) in calls {
@@ -13792,6 +14154,7 @@ mod tests {
                 "{tool} carries no store generations: {v}"
             );
         }
+        Ok(())
     }
 
     /// `capture_health` carries no `capture_identity`, and that is a decision.
@@ -13805,8 +14168,8 @@ mod tests {
     /// the moment to re-argue the locking, not to discover it later from a
     /// health poll that started blocking.
     #[tokio::test]
-    async fn capture_health_carries_no_capture_identity() {
-        let server = server_with_dialog("health@x");
+    async fn capture_health_carries_no_capture_identity() -> Result<(), TestError> {
+        let server = server_with_dialog("health@x")?;
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
                 // One second, the smallest window the tool accepts: this test
@@ -13817,9 +14180,8 @@ mod tests {
                     Extension(crate::mcp::progress::Progress::silent()),
                 )
                 .await
-                .expect("health"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("health: {e:?}"))?,
+        )?)?;
         assert!(
             v["capture_identity"].is_null(),
             "capture_health grew a capture_identity: {v}"
@@ -13829,13 +14191,14 @@ mod tests {
             v["schema_version"].is_u64(),
             "capture_health did not answer at all: {v}"
         );
+        Ok(())
     }
 
     /// `capture_health` reports the capture-source table: held, the
     /// `max_capture_sources` limit, and refusals. Read-only: no tool sets it.
     #[tokio::test]
-    async fn capture_health_reports_the_capture_source_table() {
-        let server = server_with_dialog("sources@x");
+    async fn capture_health_reports_the_capture_source_table() -> Result<(), TestError> {
+        let server = server_with_dialog("sources@x")?;
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
                 .capture_health(
@@ -13843,33 +14206,41 @@ mod tests {
                     Extension(crate::mcp::progress::Progress::silent()),
                 )
                 .await
-                .expect("health"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("health: {e:?}"))?,
+        )?)?;
         let t = &v["capture_sources"];
         assert!(t["held"].is_u64() && t["refused"].is_u64(), "{v}");
         // Other tests may raise the process-wide limit for a moment, never
         // lower it, so the default is a floor.
         assert!(
-            t["limit"].as_u64().expect("limit")
+            t["limit"].as_u64().ok_or("limit")?
                 >= crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES as u64,
             "{v}"
         );
+        Ok(())
     }
 
     /// The generation must move when the store does, or the etag says
     /// "unchanged" about a store that changed.
     #[tokio::test]
-    async fn the_generation_moves_when_the_store_does() {
-        let server = server_with_dialog("gen@x");
-        let before: serde_json::Value =
-            serde_json::from_str(&text_of(&server.capture_status().await.expect("stats"))).unwrap();
+    async fn the_generation_moves_when_the_store_does() -> Result<(), TestError> {
+        let server = server_with_dialog("gen@x")?;
+        let before: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .capture_status()
+                .await
+                .map_err(|e| format!("stats: {e:?}"))?,
+        )?)?;
         {
             let mut ds = server.dialog_store.write();
-            ds.process_message(invite("gen2@x", base_ts()));
+            ds.process_message(invite("gen2@x", base_ts())?);
         }
-        let after: serde_json::Value =
-            serde_json::from_str(&text_of(&server.capture_status().await.expect("stats"))).unwrap();
+        let after: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .capture_status()
+                .await
+                .map_err(|e| format!("stats: {e:?}"))?,
+        )?)?;
         assert_eq!(
             before["capture_identity"]["instance"], after["capture_identity"]["instance"],
             "a new message is the same capture"
@@ -13883,6 +14254,7 @@ mod tests {
                     .unwrap_or(0),
             "the dialog generation must move: {before} then {after}"
         );
+        Ok(())
     }
 
     /// `server_capabilities` names the libpcap this process runs — the same
@@ -13890,11 +14262,13 @@ mod tests {
     /// behind this server names netmap before it asks for a `netmap:` device
     /// and reads `No such device exists` as a typo.
     #[tokio::test]
-    async fn server_capabilities_reports_the_running_libpcap() {
+    async fn server_capabilities_reports_the_running_libpcap() -> Result<(), TestError> {
         let v: serde_json::Value = serde_json::from_str(&text_of(
-            &empty_server().server_capabilities().await.expect("caps"),
-        ))
-        .unwrap();
+            &empty_server()
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("caps: {e:?}"))?,
+        )?)?;
         let want = crate::capture::libpcap::running();
         assert_eq!(v["libpcap"]["banner"], want.banner.as_str());
         assert_eq!(v["libpcap"]["version"], serde_json::json!(want.version));
@@ -13902,6 +14276,7 @@ mod tests {
             v["libpcap"]["named_backends"],
             serde_json::json!(want.named_backends)
         );
+        Ok(())
     }
 
     /// The conversion carries every field, driven by the published musl
@@ -13909,28 +14284,31 @@ mod tests {
     /// links a distribution libpcap that names none, and a conversion that
     /// dropped the list would pass against it.
     #[test]
-    fn the_libpcap_block_carries_what_the_banner_names() {
+    fn the_libpcap_block_carries_what_the_banner_names() -> Result<(), TestError> {
         let report = crate::capture::libpcap::parse_banner(
             "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
         );
         assert_eq!(
-            serde_json::to_value(LibpcapJson::from(&report)).unwrap(),
+            serde_json::to_value(LibpcapJson::from(&report))?,
             serde_json::json!({
                 "banner": "libpcap version 1.10.6 (64-bit time_t, with TPACKET_V3 and netmap)",
                 "version": "1.10.6",
                 "named_backends": ["netmap"],
             })
         );
+        Ok(())
     }
 
     /// The operator's opt-ins are reportable, so an agent can check before it
     /// is refused rather than after.
     #[tokio::test]
-    async fn server_capabilities_reports_the_runtime_flags() {
+    async fn server_capabilities_reports_the_runtime_flags() -> Result<(), TestError> {
         let plain: serde_json::Value = serde_json::from_str(&text_of(
-            &empty_server().server_capabilities().await.expect("caps"),
-        ))
-        .unwrap();
+            &empty_server()
+                .server_capabilities()
+                .await
+                .map_err(|e| format!("caps: {e:?}"))?,
+        )?)?;
         assert_eq!(plain["runtime"]["mcp_allow_open_capture"], false);
         assert_eq!(plain["runtime"]["mcp_allow_shutdown"], false);
         assert!(plain["runtime"]["mcp_file_root"].is_null());
@@ -13942,15 +14320,15 @@ mod tests {
                 .with_file_root("/var/spool/sipnab-exports")
                 .server_capabilities()
                 .await
-                .expect("caps"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("caps: {e:?}"))?,
+        )?)?;
         assert_eq!(opted["runtime"]["mcp_allow_open_capture"], true);
         assert_eq!(opted["runtime"]["mcp_allow_shutdown"], true);
         assert_eq!(
             opted["runtime"]["mcp_file_root"],
             "/var/spool/sipnab-exports"
         );
+        Ok(())
     }
 
     // ── The conformance-linter tools ────────────────────────────────
@@ -13963,7 +14341,7 @@ mod tests {
     /// become selectable, and the refusal that names the vocabulary has to
     /// name it too.
     #[test]
-    fn every_advertised_rule_selector_parses() {
+    fn every_advertised_rule_selector_parses() -> Result<(), TestError> {
         let names = rule_selector_names();
         for name in &names {
             assert!(
@@ -13987,6 +14365,7 @@ mod tests {
         // One keystroke from rfc3261, and nothing cites it. Accepting it would
         // return an empty finding list that reads as a clean call.
         assert!(RuleSelector::parse("rfc3621").is_none(), "uncited RFC");
+        Ok(())
     }
 
     /// `explain_rule` reports the selectors that would include the rule, and
@@ -13996,21 +14375,21 @@ mod tests {
     /// A selector listed there that does not select the rule sends a caller
     /// away with an empty finding list and no reason for it.
     #[tokio::test]
-    async fn explain_rule_lists_selectors_that_really_select_it() {
+    async fn explain_rule_lists_selectors_that_really_select_it() -> Result<(), TestError> {
         for rule in crate::sip::lint::RULES {
             let result = empty_server()
                 .explain_rule(Parameters(ExplainRuleParams {
                     rule_id: rule.id.to_string(),
                 }))
                 .await
-                .expect("explain_rule");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+                .map_err(|e| format!("explain_rule: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
             assert_eq!(v["rfc"], rule.rfc, "{}", rule.id);
             assert_eq!(v["section"], rule.section, "{}", rule.id);
             assert_eq!(v["url"], rule.url(), "{}", rule.id);
 
-            let listed: Vec<String> = serde_json::from_value(v["rulesets"].clone()).unwrap();
+            let listed: Vec<String> = serde_json::from_value(v["rulesets"].clone())?;
             let expected: Vec<String> = rule_selector_names()
                 .into_iter()
                 .filter(|n| RuleSelector::parse(n).is_some_and(|s| s.contains(rule)))
@@ -14022,24 +14401,27 @@ mod tests {
                 rule.id
             );
         }
+        Ok(())
     }
 
     /// An unknown rule identifier is refused, and the refusal names the
     /// catalog rather than returning an empty answer that reads as "clean".
     #[tokio::test]
-    async fn explain_rule_refuses_an_unknown_identifier_by_name() {
+    async fn explain_rule_refuses_an_unknown_identifier_by_name() -> Result<(), TestError> {
         let err = empty_server()
             .explain_rule(Parameters(ExplainRuleParams {
                 rule_id: "SIP-9999-1-INVENTED".to_string(),
             }))
             .await
-            .expect_err("an unknown rule must not succeed");
+            .err()
+            .ok_or("an unknown rule must not succeed")?;
         assert!(
             err.message.contains("SIP-9999-1-INVENTED")
                 && err.message.contains(crate::sip::lint::BRANCH_COOKIE.id),
             "the refusal must name the bad identifier and the real ones: {}",
             err.message
         );
+        Ok(())
     }
 
     /// An unknown ruleset selector is refused by name.
@@ -14048,9 +14430,10 @@ mod tests {
     /// alternative: the caller reads more findings than it selected and
     /// believes the filter worked.
     #[test]
-    fn an_unknown_ruleset_is_refused_and_the_vocabulary_named() {
+    fn an_unknown_ruleset_is_refused_and_the_vocabulary_named() -> Result<(), TestError> {
         let err = parse_rule_selectors(Some(&vec!["rfc3621".to_string()]))
-            .expect_err("a typo'd RFC number must not silently widen the run");
+            .err()
+            .ok_or("a typo'd RFC number must not silently widen the run")?;
         assert!(
             err.message.contains("rfc3621") && err.message.contains("observation"),
             "the refusal must name the bad selector and the valid ones: {}",
@@ -14058,22 +14441,25 @@ mod tests {
         );
         assert!(
             parse_rule_selectors(None)
-                .expect("omitted is legal")
+                .map_err(|e| format!("omitted is legal: {e:?}"))?
                 .is_empty(),
             "no selector means no filtering"
         );
+        Ok(())
     }
 
     /// An unknown severity is refused by name too.
     #[test]
-    fn an_unknown_severity_is_refused_by_name() {
+    fn an_unknown_severity_is_refused_by_name() -> Result<(), TestError> {
         let err = parse_min_severity(Some(&"catastrophe".to_string()))
-            .expect_err("an unknown severity must not silently become info");
+            .err()
+            .ok_or("an unknown severity must not silently become info")?;
         assert!(err.message.contains("catastrophe"), "{}", err.message);
         assert_eq!(
-            parse_min_severity(Some(&"WARN".to_string())).expect("alias"),
+            parse_min_severity(Some(&"WARN".to_string())).map_err(|e| format!("alias: {e:?}"))?,
             crate::sip::lint::Severity::Warning
         );
+        Ok(())
     }
 
     /// The rules that could not run are reported, grouped by reason.
@@ -14081,13 +14467,16 @@ mod tests {
     /// A rule that did not run and a rule that found nothing produce identical
     /// finding lists, so without this an agent reads "no findings" as "clean".
     #[test]
-    fn a_run_names_the_rules_it_could_not_evaluate() {
+    fn a_run_names_the_rules_it_could_not_evaluate() -> Result<(), TestError> {
         let with_media = skipped_rules(LintRun::WholeDialog { media: true });
         let ids: Vec<&str> = with_media
             .iter()
-            .flat_map(|g| g["rule_ids"].as_array().unwrap())
-            .map(|v| v.as_str().unwrap())
-            .collect();
+            .map(|g| g["rule_ids"].as_array().ok_or("a rule_ids array"))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().ok_or("a rule id string"))
+            .collect::<Result<_, _>>()?;
         assert_eq!(
             ids,
             [crate::sip::lint::RTCP_MUX_UNANSWERED.id],
@@ -14097,9 +14486,12 @@ mod tests {
         let no_media = skipped_rules(LintRun::WholeDialog { media: false });
         let ids: Vec<&str> = no_media
             .iter()
-            .flat_map(|g| g["rule_ids"].as_array().unwrap())
-            .map(|v| v.as_str().unwrap())
-            .collect();
+            .map(|g| g["rule_ids"].as_array().ok_or("a rule_ids array"))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .map(|v| v.as_str().ok_or("a rule id string"))
+            .collect::<Result<_, _>>()?;
         for rule in crate::sip::lint::RULES {
             if rule.scope() == crate::sip::lint::Scope::Media {
                 assert!(ids.contains(&rule.id), "{} needs media", rule.id);
@@ -14112,8 +14504,13 @@ mod tests {
         assert_eq!(one.len(), 3, "three reasons, not twelve copies: {one:?}");
         let skipped: usize = one
             .iter()
-            .map(|g| g["rule_ids"].as_array().unwrap().len())
-            .sum();
+            .map(|g| {
+                g["rule_ids"]
+                    .as_array()
+                    .map(Vec::len)
+                    .ok_or("a rule_ids array")
+            })
+            .sum::<Result<usize, _>>()?;
         let message_scoped = crate::sip::lint::RULES
             .iter()
             .filter(|r| r.scope() == crate::sip::lint::Scope::Message)
@@ -14123,6 +14520,7 @@ mod tests {
             crate::sip::lint::RULES.len(),
             "every rule is either message-scoped or accounted for as skipped"
         );
+        Ok(())
     }
 
     /// `lint_dialog` returns the citation as data, not folded into prose.
@@ -14132,10 +14530,10 @@ mod tests {
     /// plausibly. Flattening them into the explanation would leave the tool
     /// working and the guarantee gone.
     #[tokio::test]
-    async fn lint_dialog_returns_rfc_and_section_as_separate_fields() {
+    async fn lint_dialog_returns_rfc_and_section_as_separate_fields() -> Result<(), TestError> {
         // The stock INVITE fixture carries no Max-Forwards, which §8.1.1.6
         // makes a UAC insert into every request it originates.
-        let server = server_with_dialog("lint-1@example.com");
+        let server = server_with_dialog("lint-1@example.com")?;
         let result = server
             .lint_dialog(Parameters(LintDialogParams {
                 call_id: "lint-1@example.com".to_string(),
@@ -14144,14 +14542,14 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect("lint_dialog");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("lint_dialog: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
-        let findings = v["findings"].as_array().expect("findings array");
+        let findings = v["findings"].as_array().ok_or("findings array")?;
         let hit = findings
             .iter()
             .find(|f| f["rule_id"] == crate::sip::lint::MAX_FORWARDS_MISSING.id)
-            .unwrap_or_else(|| panic!("the INVITE has no Max-Forwards: {v}"));
+            .ok_or_else(|| format!("the INVITE has no Max-Forwards: {v}"))?;
         assert_eq!(hit["rfc"], 3261, "rfc is a number, not prose");
         assert_eq!(hit["section"], "8.1.1.6", "section is a string, not prose");
         assert_eq!(hit["severity"], "warning");
@@ -14159,13 +14557,14 @@ mod tests {
         assert!(hit["observed"].is_string() && hit["expected"].is_string());
         assert_eq!(hit["message_index"], 0);
         assert_eq!(v["rtp_streams_observed"], 0);
+        Ok(())
     }
 
     /// A ruleset selector narrows the run, and an RFC selector that no rule
     /// cites returns nothing rather than everything.
     #[tokio::test]
-    async fn lint_dialog_rulesets_narrow_the_findings() {
-        let server = server_with_dialog("lint-2@example.com");
+    async fn lint_dialog_rulesets_narrow_the_findings() -> Result<(), TestError> {
+        let server = server_with_dialog("lint-2@example.com")?;
         let run = async |sets: Option<Vec<&str>>, min: Option<&str>| {
             let result = server
                 .lint_dialog(Parameters(LintDialogParams {
@@ -14176,32 +14575,34 @@ mod tests {
                     suppression_file: None,
                 }))
                 .await
-                .expect("lint_dialog");
-            serde_json::from_str::<serde_json::Value>(&text_of(&result)).unwrap()
+                .map_err(|e| format!("lint_dialog: {e:?}"))?;
+            Ok::<_, TestError>(serde_json::from_str::<serde_json::Value>(&text_of(
+                &result,
+            )?)?)
         };
 
-        let all = run(None, None).await;
+        let all = run(None, None).await?;
         assert!(all["finding_count"].as_u64().unwrap_or(0) > 0);
 
         // Every finding here cites RFC 3261, so RFC 3264 must select none of
         // them — an empty answer, not the full catalog.
-        let other_rfc = run(Some(vec!["rfc3264"]), None).await;
+        let other_rfc = run(Some(vec!["rfc3264"]), None).await?;
         assert_eq!(other_rfc["finding_count"], 0, "{other_rfc}");
         assert_eq!(other_rfc["rulesets"][0], "rfc3264");
 
-        let same_rfc = run(Some(vec!["rfc3261"]), None).await;
+        let same_rfc = run(Some(vec!["rfc3261"]), None).await?;
         assert_eq!(same_rfc["finding_count"], all["finding_count"]);
 
         // `severity_min` drops the quieter findings, and it is the engine's
         // own filter rather than a second implementation here.
-        let loud = run(None, Some("error")).await;
+        let loud = run(None, Some("error")).await?;
         assert_eq!(loud["finding_count"], 0, "nothing here is an error: {loud}");
         assert_eq!(loud["severity_min"], "error");
 
         // An empty list runs everything, and the echo has to agree with that.
         // Reporting `rulesets: []` beside a full run describes a filter that
         // selected nothing, next to findings that came from every rule.
-        let empty = run(Some(vec![]), None).await;
+        let empty = run(Some(vec![]), None).await?;
         assert_eq!(empty["finding_count"], all["finding_count"]);
         assert_eq!(
             empty["rulesets"],
@@ -14209,6 +14610,7 @@ mod tests {
             "an empty selector list runs the whole catalog and must say so: \
              {empty}"
         );
+        Ok(())
     }
 
     /// The suppression disclosure is present even when nothing was suppressed.
@@ -14218,8 +14620,8 @@ mod tests {
     /// second says none were. Same reasoning as `stats` carrying
     /// `unanalysed_sip_messages` at zero.
     #[tokio::test]
-    async fn a_run_with_no_suppressions_still_reports_the_disclosure() {
-        let server = server_with_dialog("supp-0@example.com");
+    async fn a_run_with_no_suppressions_still_reports_the_disclosure() -> Result<(), TestError> {
+        let server = server_with_dialog("supp-0@example.com")?;
         let result = server
             .lint_dialog(Parameters(LintDialogParams {
                 call_id: "supp-0@example.com".to_string(),
@@ -14228,8 +14630,8 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect("lint_dialog");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("lint_dialog: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert!(
             v.get("suppressions").is_some(),
@@ -14243,22 +14645,23 @@ mod tests {
             serde_json::json!({"suppressed": 0, "below_severity": 0, "capped": 0}),
             "all three counters reported, at zero"
         );
+        Ok(())
     }
 
     /// An explicit suppression file applies, is named, and its effect is counted.
     #[tokio::test]
-    async fn an_explicit_suppression_file_is_applied_named_and_counted() {
+    async fn an_explicit_suppression_file_is_applied_named_and_counted() -> Result<(), TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-mcp-supp-explicit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("root: {e:?}"))?;
         std::fs::write(
             root.join(".sipnablint"),
             "# the carrier strips these\nSIP-3261-8.1.1.6-MAX-FORWARDS-MISSING\n",
         )
-        .expect("write");
+        .map_err(|e| format!("write: {e:?}"))?;
 
-        let server = server_with_dialog("supp-1@example.com").with_file_root(&root);
+        let server = server_with_dialog("supp-1@example.com")?.with_file_root(&root);
 
         let before = {
             let r = server
@@ -14269,8 +14672,8 @@ mod tests {
                     suppression_file: None,
                 }))
                 .await
-                .expect("lint_dialog");
-            serde_json::from_str::<serde_json::Value>(&text_of(&r)).unwrap()
+                .map_err(|e| format!("lint_dialog: {e:?}"))?;
+            serde_json::from_str::<serde_json::Value>(&text_of(&r)?)?
         };
         let hits = before["finding_count"].as_u64().unwrap_or(0);
         assert!(hits > 0, "the fixture INVITE has no Max-Forwards: {before}");
@@ -14284,8 +14687,8 @@ mod tests {
                     suppression_file: Some(".sipnablint".to_string()),
                 }))
                 .await
-                .expect("lint_dialog");
-            serde_json::from_str::<serde_json::Value>(&text_of(&r)).unwrap()
+                .map_err(|e| format!("lint_dialog: {e:?}"))?;
+            serde_json::from_str::<serde_json::Value>(&text_of(&r)?)?
         };
 
         assert_eq!(
@@ -14309,6 +14712,7 @@ mod tests {
             serde_json::json!(["SIP-3261-8.1.1.6-MAX-FORWARDS-MISSING"])
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// A named suppression file that cannot be read is an error.
@@ -14317,12 +14721,12 @@ mod tests {
     /// their file was meant to silence, and they would read the difference as
     /// "my patterns matched nothing".
     #[tokio::test]
-    async fn a_named_suppression_file_that_is_missing_is_refused() {
+    async fn a_named_suppression_file_that_is_missing_is_refused() -> Result<(), TestError> {
         let root =
             std::env::temp_dir().join(format!("sipnab-mcp-supp-missing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("root");
-        let server = server_with_dialog("supp-2@example.com").with_file_root(&root);
+        std::fs::create_dir_all(&root).map_err(|e| format!("root: {e:?}"))?;
+        let server = server_with_dialog("supp-2@example.com")?.with_file_root(&root);
 
         let err = server
             .lint_dialog(Parameters(LintDialogParams {
@@ -14332,19 +14736,21 @@ mod tests {
                 suppression_file: Some("absent.sipnablint".to_string()),
             }))
             .await
-            .expect_err("a named file that is not there must not silently lint everything");
+            .err()
+            .ok_or("a named file that is not there must not silently lint everything")?;
         assert!(
             err.message.contains("absent.sipnablint"),
             "the refusal names the file: {}",
             err.message
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     /// `validate_message` carries the same disclosure as `lint_dialog`.
     #[tokio::test]
-    async fn validate_message_reports_the_suppression_disclosure_too() {
-        let server = server_with_dialog("supp-3@example.com");
+    async fn validate_message_reports_the_suppression_disclosure_too() -> Result<(), TestError> {
+        let server = server_with_dialog("supp-3@example.com")?;
         let result = server
             .validate_message(Parameters(ValidateMessageParams {
                 call_id: "supp-3@example.com".to_string(),
@@ -14352,18 +14758,19 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect("validate_message");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("validate_message: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert!(v.get("suppressions").is_some(), "{v}");
         assert_eq!(v["findings_withheld"]["suppressed"], 0);
         assert_eq!(v["findings_withheld"]["below_severity"], 0);
         assert_eq!(v["findings_withheld"]["capped"], 0);
+        Ok(())
     }
 
     /// A severity floor is reported as its own reason, not as suppression.
     #[tokio::test]
-    async fn the_severity_floor_is_counted_apart_from_suppression() {
-        let server = server_with_dialog("supp-4@example.com");
+    async fn the_severity_floor_is_counted_apart_from_suppression() -> Result<(), TestError> {
+        let server = server_with_dialog("supp-4@example.com")?;
         let result = server
             .lint_dialog(Parameters(LintDialogParams {
                 call_id: "supp-4@example.com".to_string(),
@@ -14372,8 +14779,8 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect("lint_dialog");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("lint_dialog: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
         assert_eq!(v["finding_count"], 0);
         assert!(
             v["findings_withheld"]["below_severity"]
@@ -14386,13 +14793,14 @@ mod tests {
             v["findings_withheld"]["suppressed"], 0,
             "and not attributed to a suppression file nobody wrote"
         );
+        Ok(())
     }
 
     /// `validate_message` reads one message and says which rules it could not
     /// reach, so its shorter list is not read as a cleaner message.
     #[tokio::test]
-    async fn validate_message_reports_the_rules_it_could_not_reach() {
-        let server = server_with_dialog("lint-3@example.com");
+    async fn validate_message_reports_the_rules_it_could_not_reach() -> Result<(), TestError> {
+        let server = server_with_dialog("lint-3@example.com")?;
         let result = server
             .validate_message(Parameters(ValidateMessageParams {
                 call_id: "lint-3@example.com".to_string(),
@@ -14400,18 +14808,21 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect("validate_message");
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            .map_err(|e| format!("validate_message: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
 
         assert_eq!(v["message_index"], 0);
         assert_eq!(v["message_count"], 2);
         let ids: Vec<&str> = v["rules_not_evaluated"]
             .as_array()
-            .expect("groups")
+            .ok_or("groups")?
             .iter()
-            .flat_map(|g| g["rule_ids"].as_array().unwrap())
-            .map(|x| x.as_str().unwrap())
-            .collect();
+            .map(|g| g["rule_ids"].as_array().ok_or("a rule_ids array"))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .map(|x| x.as_str().ok_or("a rule id string"))
+            .collect::<Result<_, _>>()?;
         assert!(
             ids.contains(&crate::sip::lint::PT_UNDECLARED.id)
                 && ids.contains(&crate::sip::lint::ACK_CSEQ_MISMATCH.id),
@@ -14426,8 +14837,10 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect_err("out of range");
+            .err()
+            .ok_or("out of range")?;
         assert!(err.message.contains("out of range"), "{}", err.message);
+        Ok(())
     }
 
     /// `validate_message` findings cite the frame they were drawn from — and
@@ -14460,7 +14873,7 @@ mod tests {
     /// as a real pointer, and a finding citing frame 0 of nothing is exactly
     /// the manufactured confidence #128 exists to prevent.
     #[tokio::test]
-    async fn validate_message_findings_cite_their_frame_or_say_nothing() {
+    async fn validate_message_findings_cite_their_frame_or_say_nothing() -> Result<(), TestError> {
         use crate::capture::packet::{FrameOrigin, FrameRef};
 
         // Every request carries a pre-RFC-3261 branch, so BRANCH_COOKIE fires
@@ -14482,8 +14895,8 @@ mod tests {
         };
         // Distinct ordinals AND distinct digests, so a pointer that came from
         // the wrong message cannot pass by coincidence.
-        let framed = |cseq: u32, ordinal: u64, digest: u64| {
-            let mut msg = parse_at(&pre_3261(cseq), base_ts());
+        let framed = |cseq: u32, ordinal: u64, digest: u64| -> Result<_, TestError> {
+            let mut msg = parse_at(&pre_3261(cseq), base_ts())?;
             msg.frame = Some(FrameRef {
                 // Whole frame.
                 bytes: None,
@@ -14495,15 +14908,15 @@ mod tests {
                 },
                 kind: crate::capture::packet::FrameSource::Wire,
             });
-            msg
+            Ok(msg)
         };
 
-        let mut unciteable = parse_at(&pre_3261(3), base_ts());
+        let mut unciteable = parse_at(&pre_3261(3), base_ts())?;
         unciteable.frame = None;
 
         let mut ds = DialogStore::new(100, false);
-        ds.process_message(framed(1, 41, 0x6d1f_4c0a_9b2e_7a53));
-        ds.process_message(framed(2, 77, 0x0b3c_8e19_54d7_a260));
+        ds.process_message(framed(1, 41, 0x6d1f_4c0a_9b2e_7a53)?);
+        ds.process_message(framed(2, 77, 0x0b3c_8e19_54d7_a260)?);
         ds.process_message(unciteable);
         let server = SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
@@ -14518,9 +14931,10 @@ mod tests {
                     suppression_file: None,
                 }))
                 .await
-                .expect("validate_message");
-            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("valid JSON");
-            let findings = v["findings"].as_array().expect("findings").clone();
+                .map_err(|e| format!("validate_message: {e:?}"))?;
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)
+                .map_err(|e| format!("valid JSON: {e:?}"))?;
+            let findings = v["findings"].as_array().ok_or("findings")?.clone();
             // Without this the rest of the test is a property of an empty
             // list: "every finding carries a pointer" is satisfied by a clean
             // message, and not one line of the projection runs.
@@ -14531,17 +14945,17 @@ mod tests {
                 "message {index} has to actually trip a message-scoped \
                  rule: {v}"
             );
-            findings
+            Ok::<_, TestError>(findings)
         };
 
-        for f in validate(0).await {
+        for f in validate(0).await? {
             assert_eq!(
                 f["frame_ref"], "calls.pcap#41@6d1f4c0a9b2e7a53",
                 "a finding on a message with a pointer must carry it, digest \
                  and all -- the same projection lint_dialog uses: {f:?}"
             );
         }
-        for f in validate(1).await {
+        for f in validate(1).await? {
             assert_eq!(
                 f["frame_ref"], "calls.pcap#77@0b3c8e1954d7a260",
                 "and must cite ITS OWN frame: message 1 is where a projection \
@@ -14549,13 +14963,14 @@ mod tests {
                  with a projection handed the dialog: {f:?}"
             );
         }
-        for f in validate(2).await {
+        for f in validate(2).await? {
             assert!(
                 f.get("frame_ref").is_none(),
                 "a finding on a message with NO pointer must omit the key \
                  entirely, not emit an empty or zero one: {f:?}"
             );
         }
+        Ok(())
     }
 
     // ── capture_health ──────────────────────────────────────────────────
@@ -14598,12 +15013,13 @@ mod tests {
     /// Without this the no-string gate could pass because the walker never
     /// recursed, which is the way a recursive checker fails silently.
     #[test]
-    fn the_json_leaf_walker_finds_a_string_nested_two_levels_down() {
+    fn the_json_leaf_walker_finds_a_string_nested_two_levels_down() -> Result<(), TestError> {
         let v = serde_json::json!({"a": 1, "b": [{"c": "leaked"}, {"d": 2}]});
         let (mut strings, mut leaves) = (Vec::new(), 0usize);
         json_leaves(&v, &mut strings, &mut leaves);
         assert_eq!(strings, vec!["leaked".to_string()]);
         assert_eq!(leaves, 3);
+        Ok(())
     }
 
     /// A fully populated `CaptureHealth`, every enum variant represented.
@@ -14700,8 +15116,10 @@ mod tests {
     /// hold a string cannot leak one. If a `String` is ever added to
     /// `CaptureHealth` or anything nested in it, this fails.
     #[test]
-    fn a_populated_capture_health_response_carries_no_string_value_anywhere() {
-        let value = serde_json::to_value(populated_health()).expect("serialize CaptureHealth");
+    fn a_populated_capture_health_response_carries_no_string_value_anywhere()
+    -> Result<(), TestError> {
+        let value = serde_json::to_value(populated_health())
+            .map_err(|e| format!("serialize CaptureHealth: {e:?}"))?;
         let (mut strings, mut leaves) = (Vec::new(), 0usize);
         json_leaves(&value, &mut strings, &mut leaves);
 
@@ -14736,6 +15154,7 @@ mod tests {
              deliberately — a drop here means the walker stopped reaching part \
              of the tree, which is how the string check goes quietly vacuous."
         );
+        Ok(())
     }
 
     /// Both enums travel as small integers, and no code is zero.
@@ -14745,14 +15164,14 @@ mod tests {
     /// zero so a zeroed or defaulted struct can never be mistaken for a real
     /// answer — the same reason `attachment` exists at all.
     #[test]
-    fn the_response_enums_travel_as_non_zero_integer_codes() {
+    fn the_response_enums_travel_as_non_zero_integer_codes() -> Result<(), TestError> {
         for (attachment, code) in [
             (CaptureAttachment::NotAttached, 1),
             (CaptureAttachment::LiveInterface, 2),
             (CaptureAttachment::ReplayedFile, 3),
         ] {
             assert_eq!(
-                serde_json::to_value(attachment).expect("serialize"),
+                serde_json::to_value(attachment).map_err(|e| format!("serialize: {e:?}"))?,
                 serde_json::json!(code)
             );
         }
@@ -14764,15 +15183,16 @@ mod tests {
             (UndecodableReasonCode::DecodeError, 5),
         ] {
             assert_eq!(
-                serde_json::to_value(reason).expect("serialize"),
+                serde_json::to_value(reason).map_err(|e| format!("serialize: {e:?}"))?,
                 serde_json::json!(code)
             );
         }
+        Ok(())
     }
 
     /// Each `UndecodableReason` splits into its code and the number it carries.
     #[test]
-    fn every_undecodable_reason_splits_into_a_code_and_its_number() {
+    fn every_undecodable_reason_splits_into_a_code_and_its_number() -> Result<(), TestError> {
         use crate::capture::UndecodableReason as R;
         let cases = [
             (
@@ -14807,29 +15227,49 @@ mod tests {
         for (reason, code, number) in cases {
             assert_eq!(UndecodableReasonCode::split(reason), (code, number));
         }
+        Ok(())
     }
 
     /// The sampling window is clamped to the cap, and zero is refused.
     #[test]
-    fn the_sample_window_is_clamped_to_the_cap_and_zero_is_refused() {
+    fn the_sample_window_is_clamped_to_the_cap_and_zero_is_refused() -> Result<(), TestError> {
         assert_eq!(MAX_SAMPLE_SECONDS, 30);
-        assert_eq!(resolve_sample_seconds(1).expect("1 second"), 1);
-        assert_eq!(resolve_sample_seconds(29).expect("29 seconds"), 29);
-        assert_eq!(resolve_sample_seconds(30).expect("30 seconds"), 30);
-        assert_eq!(resolve_sample_seconds(31).expect("31 clamps"), 30);
-        assert_eq!(resolve_sample_seconds(u32::MAX).expect("MAX clamps"), 30);
+        assert_eq!(
+            resolve_sample_seconds(1).map_err(|e| format!("1 second: {e:?}"))?,
+            1
+        );
+        assert_eq!(
+            resolve_sample_seconds(29).map_err(|e| format!("29 seconds: {e:?}"))?,
+            29
+        );
+        assert_eq!(
+            resolve_sample_seconds(30).map_err(|e| format!("30 seconds: {e:?}"))?,
+            30
+        );
+        assert_eq!(
+            resolve_sample_seconds(31).map_err(|e| format!("31 clamps: {e:?}"))?,
+            30
+        );
+        assert_eq!(
+            resolve_sample_seconds(u32::MAX).map_err(|e| format!("MAX clamps: {e:?}"))?,
+            30
+        );
 
-        let err = resolve_sample_seconds(0).expect_err("zero must be refused");
+        let err = resolve_sample_seconds(0)
+            .err()
+            .ok_or("zero must be refused")?;
         assert_eq!(
             err.message,
             "sample_seconds must be at least 1. A zero-second window observes \
              nothing, and a response of zero deltas reads as a quiet capture."
         );
+        Ok(())
     }
 
     /// Totals, deltas and both fractions, computed from two snapshots.
     #[test]
-    fn capture_health_reports_totals_deltas_and_both_undecoded_fractions() {
+    fn capture_health_reports_totals_deltas_and_both_undecoded_fractions() -> Result<(), TestError>
+    {
         use crate::capture::{UndecodableReason as R, UndecodableTally};
 
         let before = HealthSample {
@@ -14933,12 +15373,13 @@ mod tests {
         assert_eq!(health.undecodable_reasons_dropped, 4);
         assert_eq!(health.dialogs_tracked, 42);
         assert_eq!(health.streams_tracked, 18);
+        Ok(())
     }
 
     /// A capture with nothing on it reports a zero fraction, not a division by
     /// zero rendered as `null`.
     #[test]
-    fn an_empty_window_reports_a_zero_undecoded_fraction() {
+    fn an_empty_window_reports_a_zero_undecoded_fraction() -> Result<(), TestError> {
         let sample = HealthSample {
             counters: CaptureCounters::default(),
             reasons: Vec::new(),
@@ -14960,17 +15401,18 @@ mod tests {
         assert_eq!(health.undecoded_fraction_in_window, 0.0);
         // A NaN would serialize as `null`, which an agent reads as "no answer"
         // rather than "nothing was undecodable".
-        let value = serde_json::to_value(&health).expect("serialize");
+        let value = serde_json::to_value(&health).map_err(|e| format!("serialize: {e:?}"))?;
         assert_eq!(value["undecoded_fraction"], serde_json::json!(0.0));
         assert_eq!(
             value["undecoded_fraction_in_window"],
             serde_json::json!(0.0)
         );
+        Ok(())
     }
 
     /// The attachment code names live, file, and nothing at all.
     #[test]
-    fn the_attachment_code_distinguishes_live_file_and_nothing_attached() {
+    fn the_attachment_code_distinguishes_live_file_and_nothing_attached() -> Result<(), TestError> {
         assert_eq!(attachment_of(None), CaptureAttachment::NotAttached);
         let ctx = |live| CaptureContext {
             live,
@@ -14986,11 +15428,12 @@ mod tests {
             attachment_of(Some(&ctx(false))),
             CaptureAttachment::ReplayedFile
         );
+        Ok(())
     }
 
     /// A zero window is refused by the tool itself, before it sleeps.
     #[tokio::test]
-    async fn capture_health_refuses_a_zero_second_window() {
+    async fn capture_health_refuses_a_zero_second_window() -> Result<(), TestError> {
         let server = empty_server();
         let err = server
             .capture_health(
@@ -14998,12 +15441,14 @@ mod tests {
                 Extension(crate::mcp::progress::Progress::silent()),
             )
             .await
-            .expect_err("a zero-second window must be refused");
+            .err()
+            .ok_or("a zero-second window must be refused")?;
         assert_eq!(
             err.message,
             "sample_seconds must be at least 1. A zero-second window observes \
              nothing, and a response of zero deltas reads as a quiet capture."
         );
+        Ok(())
     }
 
     /// End to end: the tool waits the window out and says nothing is attached.
@@ -15012,7 +15457,8 @@ mod tests {
     /// "nothing attached" rather than a set of zeros that look like a silent
     /// but healthy wire.
     #[tokio::test]
-    async fn capture_health_observes_a_real_window_and_reports_no_attachment() {
+    async fn capture_health_observes_a_real_window_and_reports_no_attachment()
+    -> Result<(), TestError> {
         let server = empty_server();
         let started = std::time::Instant::now();
         let result = server
@@ -15021,9 +15467,10 @@ mod tests {
                 Extension(crate::mcp::progress::Progress::silent()),
             )
             .await
-            .expect("capture_health");
+            .map_err(|e| format!("capture_health: {e:?}"))?;
         let elapsed = started.elapsed();
-        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).expect("json");
+        let v: serde_json::Value =
+            serde_json::from_str(&text_of(&result)?).map_err(|e| format!("json: {e:?}"))?;
 
         assert_eq!(v["schema_version"], 1);
         assert_eq!(v["attachment"], 1, "1 is 'no capture attached': {v}");
@@ -15043,16 +15490,16 @@ mod tests {
         //
         // What this test owns is the wiring, and the exact claim available for
         // that is the SHAPE that reached the wire.
-        let keys = |value: &serde_json::Value| -> Vec<String> {
-            value
+        let keys = |value: &serde_json::Value| -> Result<Vec<String>, TestError> {
+            Ok(value
                 .as_object()
-                .expect("object")
+                .ok_or("object")?
                 .keys()
                 .cloned()
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>())
         };
         assert_eq!(
-            keys(&v),
+            keys(&v)?,
             vec![
                 "attachment",
                 "capture_sources",
@@ -15071,7 +15518,7 @@ mod tests {
         );
         for block in ["totals", "in_window"] {
             assert_eq!(
-                keys(&v[block]),
+                keys(&v[block])?,
                 vec![
                     "interface_dropped",
                     "invalid_timestamps",
@@ -15083,7 +15530,7 @@ mod tests {
             );
         }
         assert_eq!(
-            keys(&v["window"]),
+            keys(&v["window"])?,
             vec!["applied_seconds", "observed_ms", "requested_seconds"]
         );
 
@@ -15094,11 +15541,12 @@ mod tests {
             elapsed >= std::time::Duration::from_secs(1),
             "the handler returned in {elapsed:?} without waiting out the window"
         );
-        let observed = v["window"]["observed_ms"].as_u64().expect("observed_ms");
+        let observed = v["window"]["observed_ms"].as_u64().ok_or("observed_ms")?;
         assert!(
             (1_000..10_000).contains(&observed),
             "observed_ms was {observed}, which is not one second of wall clock"
         );
+        Ok(())
     }
 
     /// The tool is registered and annotated `readOnlyHint`.
@@ -15106,16 +15554,17 @@ mod tests {
     /// The annotation is a promise to the client, so it is checked on the
     /// registered tool rather than read off the attribute in the source.
     #[test]
-    fn capture_health_is_registered_and_annotated_read_only() {
+    fn capture_health_is_registered_and_annotated_read_only() -> Result<(), TestError> {
         let router = SipnabMcp::tool_router();
         let tool = router
             .get("capture_health")
-            .expect("capture_health must be registered");
+            .ok_or("capture_health must be registered")?;
         let annotations = tool
             .annotations
             .as_ref()
-            .expect("capture_health must carry tool annotations");
+            .ok_or("capture_health must carry tool annotations")?;
         assert_eq!(annotations.read_only_hint, Some(true));
+        Ok(())
     }
 
     /// Every registered tool is annotated, and the writes are exactly the
@@ -15138,7 +15587,8 @@ mod tests {
     ///    fails here by name. Checking only "every tool has annotations" would
     ///    pass while a tool that deletes something claimed to be read-only.
     #[test]
-    fn every_tool_is_annotated_and_the_writes_are_exactly_the_expected_seven() {
+    fn every_tool_is_annotated_and_the_writes_are_exactly_the_expected_seven()
+    -> Result<(), TestError> {
         /// name, destructive_hint, idempotent_hint.
         ///
         /// Both hints are meaningful ONLY when `read_only_hint` is false (MCP
@@ -15224,11 +15674,11 @@ mod tests {
         for (name, destructive, idempotent) in WRITES {
             let tool = router
                 .get(name)
-                .unwrap_or_else(|| panic!("{name} must be registered"));
+                .ok_or_else(|| format!("{name} must be registered"))?;
             let ann = tool
                 .annotations
                 .as_ref()
-                .unwrap_or_else(|| panic!("{name} must carry annotations"));
+                .ok_or_else(|| format!("{name} must carry annotations"))?;
             assert_eq!(
                 ann.destructive_hint,
                 Some(*destructive),
@@ -15240,6 +15690,7 @@ mod tests {
                 "{name}: idempotent_hint"
             );
         }
+        Ok(())
     }
 
     // ---- per-tool token scoping -------------------------------------------
@@ -15256,7 +15707,7 @@ mod tests {
     /// AND not read-only -- is refused to a `full` token over HTTP, and an
     /// `actions` token reaches every tool. Reading must not imply acting.
     #[test]
-    fn a_full_scope_is_refused_by_exactly_the_action_tools() {
+    fn a_full_scope_is_refused_by_exactly_the_action_tools() -> Result<(), TestError> {
         let router = empty_server().tool_router; // the router dispatch uses
         let mut refused = Vec::new();
         for tool in router.list_all() {
@@ -15280,10 +15731,11 @@ mod tests {
             ["actions_revert", "tfps_ban", "tfps_unban"],
             "the action tools are exactly the open-world, non-read-only ones"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_read_scope_is_refused_by_exactly_the_non_read_only_tools() {
+    fn a_read_scope_is_refused_by_exactly_the_non_read_only_tools() -> Result<(), TestError> {
         let router = empty_server().tool_router; // the router dispatch uses
         let mut accepted = Vec::new();
         let mut refused = Vec::new();
@@ -15356,13 +15808,14 @@ mod tests {
             "the tools a read token cannot call must be exactly the \
              non-read-only set"
         );
+        Ok(())
     }
 
     /// A full scope reaches every registered tool, local writes included,
     /// except the action tools, which change a system outside sipnab and need
     /// an `actions` token (see `a_full_scope_is_refused_by_exactly_the_action_tools`).
     #[test]
-    fn a_full_scope_reaches_every_tool() {
+    fn a_full_scope_reaches_every_tool() -> Result<(), TestError> {
         let router = empty_server().tool_router; // the router dispatch uses
         for tool in router.list_all() {
             let name = tool.name.to_string();
@@ -15374,14 +15827,16 @@ mod tests {
                 "{name}: a full scope must never be refused"
             );
         }
+        Ok(())
     }
 
     /// An unknown tool produces no scope refusal: dispatch's own "tool not
     /// found" is the accurate answer, and a scope error naming a nonexistent
     /// tool would misreport both what happened and what the token lacks.
     #[test]
-    fn an_unknown_tool_is_left_for_dispatch_to_refuse() {
+    fn an_unknown_tool_is_left_for_dispatch_to_refuse() -> Result<(), TestError> {
         assert!(scope_refusal(crate::auth::SCOPE_READ, "no_such_tool", None).is_none());
+        Ok(())
     }
 
     /// A tool with no annotations (or none that decide read-onlyness) is
@@ -15390,7 +15845,7 @@ mod tests {
     /// this server — the annotation gate above forbids such a tool — but the
     /// fail-closed branch has to be pinned or a refactor could flip it.
     #[test]
-    fn an_unannotated_tool_fails_closed_under_a_narrow_scope() {
+    fn an_unannotated_tool_fails_closed_under_a_narrow_scope() -> Result<(), TestError> {
         let mut tool = rmcp::model::Tool::default();
         // Assigned via an explicit Cow, NOT `name = "…"`: the docs drift gate
         // greps this file for that exact shape to enumerate registered tools,
@@ -15400,25 +15855,28 @@ mod tests {
             scope_refusal(crate::auth::SCOPE_READ, "hypothetical", Some(&tool)).is_some(),
             "no annotation must mean no access for a narrow scope"
         );
+        Ok(())
     }
 
     /// With no cap configured, the permit gate is a no-op that never refuses
     /// and hands out nothing to hold. Pinned so a future default cannot start
     /// silently bounding a deployment that asked for none.
     #[test]
-    fn no_cap_never_refuses_a_call() {
+    fn no_cap_never_refuses_a_call() -> Result<(), TestError> {
         let none: Option<Arc<tokio::sync::Semaphore>> = None;
         for _ in 0..1000 {
-            let permit = acquire_call_permit(&none).expect("no cap must never refuse");
+            let permit = acquire_call_permit(&none)
+                .map_err(|e| format!("no cap must never refuse: {e:?}"))?;
             assert!(permit.is_none(), "no cap must hand out no permit to hold");
         }
+        Ok(())
     }
 
     /// `with_max_concurrent(0)` is the documented spelling of "unlimited" and
     /// must leave the cap off — not install a zero-permit semaphore that
     /// refuses the very first call and wedges the server shut.
     #[test]
-    fn a_zero_cap_means_unlimited_not_a_dead_server() {
+    fn a_zero_cap_means_unlimited_not_a_dead_server() -> Result<(), TestError> {
         let server = empty_server().with_max_concurrent(0);
         assert!(
             server.call_limiter.is_none(),
@@ -15426,9 +15884,10 @@ mod tests {
         );
         assert!(
             acquire_call_permit(&server.call_limiter)
-                .expect("a 0 cap must admit every call")
+                .map_err(|e| format!("a 0 cap must admit every call: {e:?}"))?
                 .is_none()
         );
+        Ok(())
     }
 
     /// The cap actually bounds: with room for two, the third call is refused
@@ -15437,7 +15896,7 @@ mod tests {
     /// This drives the same function `call_tool` calls, so it tests the effect
     /// (a real refusal at the boundary), not a restatement of the predicate.
     #[test]
-    fn the_cap_refuses_the_call_that_would_exceed_it() {
+    fn the_cap_refuses_the_call_that_would_exceed_it() -> Result<(), TestError> {
         let server = empty_server().with_max_concurrent(2);
         assert!(
             server.call_limiter.is_some(),
@@ -15445,14 +15904,15 @@ mod tests {
         );
 
         let p1 = acquire_call_permit(&server.call_limiter)
-            .expect("1st call admitted")
-            .expect("a cap must hand out a permit to hold");
+            .map_err(|e| format!("1st call admitted: {e:?}"))?
+            .ok_or("a cap must hand out a permit to hold")?;
         let p2 = acquire_call_permit(&server.call_limiter)
-            .expect("2nd call admitted")
-            .expect("permit");
+            .map_err(|e| format!("2nd call admitted: {e:?}"))?
+            .ok_or("permit")?;
 
         let refusal = acquire_call_permit(&server.call_limiter)
-            .expect_err("a third call over a cap of two must be refused");
+            .err()
+            .ok_or("a third call over a cap of two must be refused")?;
         assert_eq!(
             refusal.code.0, AT_CAPACITY_CODE,
             "an at-capacity refusal must carry the retryable server-error code, \
@@ -15467,20 +15927,22 @@ mod tests {
         // Freeing one slot admits exactly one more call, then refuses again.
         drop(p1);
         let p3 = acquire_call_permit(&server.call_limiter)
-            .expect("a freed slot must admit the next call")
-            .expect("permit");
+            .map_err(|e| format!("a freed slot must admit the next call: {e:?}"))?
+            .ok_or("permit")?;
         acquire_call_permit(&server.call_limiter)
-            .expect_err("with two permits held again, the cap must refuse once more");
+            .err()
+            .ok_or("with two permits held again, the cap must refuse once more")?;
 
         drop(p2);
         drop(p3);
+        Ok(())
     }
 
     /// With no rate limit configured, the per-peer gate is a no-op that never
     /// refuses — pinned so a future default cannot start silently throttling a
     /// deployment that asked for none.
     #[test]
-    fn no_rate_limit_never_refuses_a_call() {
+    fn no_rate_limit_never_refuses_a_call() -> Result<(), TestError> {
         let server = empty_server();
         assert!(
             server.rate_limiter.is_none(),
@@ -15493,6 +15955,7 @@ mod tests {
                 "no rate limit must never refuse"
             );
         }
+        Ok(())
     }
 
     /// A `per_second` of `0` is the documented spelling of "unlimited"
@@ -15500,7 +15963,7 @@ mod tests {
     /// that refuses the very first call and wedges the server shut, which is
     /// the failure `--mcp-max-concurrent` documents for its own zero.
     #[test]
-    fn a_zero_rate_limit_means_unlimited_not_a_dead_server() {
+    fn a_zero_rate_limit_means_unlimited_not_a_dead_server() -> Result<(), TestError> {
         let server = empty_server()
             .with_rate_limit_per_peer(0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         assert!(
@@ -15511,6 +15974,7 @@ mod tests {
             rate_limit_refusal(&server.rate_limiter, None, std::time::Instant::now()).is_none(),
             "a 0 rate limit must admit every call"
         );
+        Ok(())
     }
 
     /// The rate limit actually bounds arrivals: with three calls a second
@@ -15522,7 +15986,7 @@ mod tests {
     /// The window is stepped by passing `now`, never by sleeping: a limiter
     /// whose test sleeps for a second is a limiter nobody runs.
     #[test]
-    fn the_rate_limit_refuses_the_call_that_exceeds_it() {
+    fn the_rate_limit_refuses_the_call_that_exceeds_it() -> Result<(), TestError> {
         let server = empty_server()
             .with_rate_limit_per_peer(3, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         assert!(
@@ -15541,7 +16005,7 @@ mod tests {
         }
 
         let refusal = rate_limit_refusal(&server.rate_limiter, peer, now)
-            .expect("a fourth call inside a 3/s window must be refused");
+            .ok_or("a fourth call inside a 3/s window must be refused")?;
         assert_eq!(
             refusal.code.0, AT_CAPACITY_CODE,
             "a rate-limit refusal must carry the same retryable server-error \
@@ -15577,6 +16041,7 @@ mod tests {
             1,
             "an admitted call must not count as a refusal"
         );
+        Ok(())
     }
 
     /// A caller refused because the peer table is full is told THAT, not that
@@ -15588,7 +16053,7 @@ mod tests {
     /// loop that does not exist, which is why the two refusals do not share
     /// one sentence.
     #[test]
-    fn a_full_peer_table_refuses_with_its_own_reason() {
+    fn a_full_peer_table_refuses_with_its_own_reason() -> Result<(), TestError> {
         let server = empty_server()
             .with_rate_limit_per_peer(1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
         let now = std::time::Instant::now();
@@ -15601,13 +16066,14 @@ mod tests {
         }
         let newcomer: PeerKey = Some(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
         let refusal = rate_limit_refusal(&server.rate_limiter, newcomer, now)
-            .expect("a peer the table cannot account for must be refused, not waved through");
+            .ok_or("a peer the table cannot account for must be refused, not waved through")?;
         assert!(
             refusal.message.contains("distinct peers"),
             "the refusal must name the real cause, not an allowance this peer \
              never touched: {}",
             refusal.message
         );
+        Ok(())
     }
 
     /// Extensions carrying HTTP `Parts` stamped with `auth` (or nothing) —
@@ -15615,17 +16081,19 @@ mod tests {
     /// is inserted, so the peer renders as `unknown-peer`; these tests are
     /// about the admission record, not the socket.
     #[cfg(feature = "mcp-http")]
-    fn http_extensions(auth: Option<crate::mcp::transport::McpAuth>) -> rmcp::model::Extensions {
+    fn http_extensions(
+        auth: Option<crate::mcp::transport::McpAuth>,
+    ) -> Result<rmcp::model::Extensions, TestError> {
         let request = axum::http::Request::builder()
             .body(())
-            .expect("build request");
+            .map_err(|e| format!("build request: {e:?}"))?;
         let (mut parts, ()) = request.into_parts();
         if let Some(auth) = auth {
             parts.extensions.insert(auth);
         }
         let mut extensions = rmcp::model::Extensions::default();
         extensions.insert(parts);
-        extensions
+        Ok(extensions)
     }
 
     /// The admission record maps to the scope dispatch enforces: a verified
@@ -15633,24 +16101,24 @@ mod tests {
     /// verifier), a missing stamp, and stdio are all full.
     #[cfg(feature = "mcp-http")]
     #[test]
-    fn scope_of_maps_each_admission_record() {
+    fn scope_of_maps_each_admission_record() -> Result<(), TestError> {
         use crate::mcp::transport::McpAuth;
 
         assert_eq!(
             scope_of(&http_extensions(Some(McpAuth::BearerVerified {
                 scope: crate::auth::SCOPE_READ.to_string(),
                 token_id: Some("agent".to_string()),
-            }))),
+            }))?),
             crate::auth::SCOPE_READ,
             "a verified token's scope claim is the scope dispatch enforces"
         );
         assert_eq!(
-            scope_of(&http_extensions(Some(McpAuth::Unauthenticated))),
+            scope_of(&http_extensions(Some(McpAuth::Unauthenticated))?),
             crate::auth::SCOPE_FULL,
             "loopback-without-verifier is full: the boundary is network position"
         );
         assert_eq!(
-            scope_of(&http_extensions(None)),
+            scope_of(&http_extensions(None)?),
             crate::auth::SCOPE_FULL,
             "a missing admission record stays full; the audit line already \
              flags it as no-admission-record"
@@ -15661,6 +16129,7 @@ mod tests {
             "stdio holds every scope: process ownership is the boundary, and \
              an action is still refused unless --allow-action enables it for MCP"
         );
+        Ok(())
     }
 
     /// The caller field names WHICH token made the call, and says nothing at
@@ -15681,13 +16150,13 @@ mod tests {
     /// must produce no key.
     #[cfg(feature = "mcp-http")]
     #[test]
-    fn the_caller_field_names_the_token_or_says_nothing() {
+    fn the_caller_field_names_the_token_or_says_nothing() -> Result<(), TestError> {
         use crate::mcp::transport::McpAuth;
 
         let named = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
             scope: crate::auth::SCOPE_READ.to_string(),
             token_id: Some("ci-runner-1".to_string()),
-        })));
+        }))?);
         assert_eq!(
             named, "unknown-peer bearer-verified scope=read token=ci-runner-1",
             "a verified token must be named by the id it was minted with — the \
@@ -15699,7 +16168,7 @@ mod tests {
         let static_secret = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
             scope: crate::auth::SCOPE_FULL.to_string(),
             token_id: None,
-        })));
+        }))?);
         assert_eq!(
             static_secret, "unknown-peer bearer-verified scope=full",
             "a static secret has no id; the field must be absent, not blank"
@@ -15708,11 +16177,11 @@ mod tests {
         for (what, caller) in [
             (
                 "loopback with no verifier configured",
-                caller_of(&http_extensions(Some(McpAuth::Unauthenticated))),
+                caller_of(&http_extensions(Some(McpAuth::Unauthenticated))?),
             ),
             (
                 "a missing admission record",
-                caller_of(&http_extensions(None)),
+                caller_of(&http_extensions(None)?),
             ),
             ("stdio", caller_of(&rmcp::model::Extensions::default())),
             ("a static secret", static_secret.clone()),
@@ -15728,6 +16197,7 @@ mod tests {
             "stdio",
             "stdio names the boundary it can prove and nothing else"
         );
+        Ok(())
     }
 
     /// An action's journal record names its caller the way REST does: a
@@ -15735,28 +16205,29 @@ mod tests {
     /// HTTP caller by its address, and stdio as `stdio`.
     #[cfg(feature = "mcp-http")]
     #[test]
-    fn an_actions_caller_is_named_as_the_journal_names_it() {
+    fn an_actions_caller_is_named_as_the_journal_names_it() -> Result<(), TestError> {
         use crate::mcp::transport::McpAuth;
         assert_eq!(
             action_caller(&http_extensions(Some(McpAuth::BearerVerified {
                 scope: crate::auth::SCOPE_ACTIONS.to_string(),
                 token_id: Some("agent-7".to_string()),
-            }))),
+            }))?),
             "token:agent-7"
         );
         assert_eq!(
             action_caller(&http_extensions(Some(McpAuth::BearerVerified {
                 scope: crate::auth::SCOPE_ACTIONS.to_string(),
                 token_id: None,
-            }))),
+            }))?),
             "token"
         );
         assert_eq!(
-            action_caller(&http_extensions(Some(McpAuth::Unauthenticated))),
+            action_caller(&http_extensions(Some(McpAuth::Unauthenticated))?),
             "peer:unknown-peer"
         );
-        assert_eq!(action_caller(&http_extensions(None)), "peer:unknown-peer");
+        assert_eq!(action_caller(&http_extensions(None)?), "peer:unknown-peer");
         assert_eq!(action_caller(&rmcp::model::Extensions::default()), "stdio");
+        Ok(())
     }
 
     /// A token id cannot forge a field or a line on the audit record, and
@@ -15775,24 +16246,25 @@ mod tests {
     /// half-measure could satisfy.
     #[cfg(feature = "mcp-http")]
     #[test]
-    fn a_hostile_token_id_cannot_forge_a_field_or_run_away_with_the_line() {
+    fn a_hostile_token_id_cannot_forge_a_field_or_run_away_with_the_line() -> Result<(), TestError>
+    {
         use crate::mcp::transport::McpAuth;
 
         /// The rendered `token=` value from a bearer-verified call with `id`.
-        fn token_field(id: &str) -> String {
+        fn token_field(id: &str) -> Result<String, TestError> {
             let caller = caller_of(&http_extensions(Some(McpAuth::BearerVerified {
                 scope: crate::auth::SCOPE_FULL.to_string(),
                 token_id: Some(id.to_string()),
-            })));
+            }))?);
             let rendered = caller
                 .strip_prefix("unknown-peer bearer-verified scope=full token=")
                 .unwrap_or_else(|| {
                     panic!("the id must render as the caller's token field: {caller}")
                 });
-            rendered.to_string()
+            Ok(rendered.to_string())
         }
 
-        let forged = token_field("x\" outcome=ok caller=\"10.0.0.1\nsecond line\r\t");
+        let forged = token_field("x\" outcome=ok caller=\"10.0.0.1\nsecond line\r\t")?;
         assert!(
             !forged.contains(['"', '\n', '\r', ' ', '\t', '\\', '=']),
             "an id must not be able to close the quoted caller field, separate a \
@@ -15804,7 +16276,7 @@ mod tests {
              {forged}"
         );
 
-        let bounded = token_field(&"z".repeat(4096));
+        let bounded = token_field(&"z".repeat(4096))?;
         assert!(
             bounded.len() < 128,
             "an unbounded id must not run away with the audit line ({} bytes)",
@@ -15820,21 +16292,22 @@ mod tests {
         // render verbatim, so the encoding never shows up on a real line.
         for id in ["tok-1754500000000000", "ci-runner-1", "alice@example.com"] {
             assert_eq!(
-                token_field(id),
+                token_field(id)?,
                 id,
                 "an ordinary id must survive verbatim; the encoding is for the \
                  hostile case only"
             );
         }
+        Ok(())
     }
 
     // ---- save_findings: the one write verb, and its dead end ----------------
 
     #[tokio::test]
-    async fn save_findings_is_refused_on_a_stock_server() {
+    async fn save_findings_is_refused_on_a_stock_server() -> Result<(), TestError> {
         // Off unless armed, like shutdown_server and open_capture. A default
         // install must accept no writes at all.
-        let server = server_with_dialog("w1@x");
+        let server = server_with_dialog("w1@x")?;
         let err = server
             .save_findings(Parameters(SaveFindingsParams {
                 summary: "anything".into(),
@@ -15842,16 +16315,18 @@ mod tests {
                 detail: None,
             }))
             .await
-            .expect_err("a stock server must refuse to record");
+            .err()
+            .ok_or("a stock server must refuse to record")?;
         assert!(
             format!("{err:?}").contains("--mcp-allow-save-findings"),
             "the refusal must name the flag that would permit it: {err:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn an_armed_server_records_and_reports_what_it_did() {
-        let server = server_with_dialog("w2@x").with_save_findings();
+    async fn an_armed_server_records_and_reports_what_it_did() -> Result<(), TestError> {
+        let server = server_with_dialog("w2@x")?.with_save_findings();
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
                 .save_findings(Parameters(SaveFindingsParams {
@@ -15860,9 +16335,8 @@ mod tests {
                     detail: None,
                 }))
                 .await
-                .expect("armed server records"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("armed server records: {e:?}"))?,
+        )?)?;
         assert_eq!(v["seq"], 0);
         assert_eq!(v["recorded_total"], 1);
         assert_eq!(v["truncated"], false);
@@ -15870,11 +16344,12 @@ mod tests {
         assert_eq!(v["readable_over_mcp"], false);
         // Provenance, same as every other response on this surface.
         assert!(v["capture_identity"]["dialog_generation"].is_u64());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn an_empty_summary_is_refused_rather_than_recorded() {
-        let server = server_with_dialog("w3@x").with_save_findings();
+    async fn an_empty_summary_is_refused_rather_than_recorded() -> Result<(), TestError> {
+        let server = server_with_dialog("w3@x")?.with_save_findings();
         for blank in ["", "   ", "\t\n"] {
             assert!(
                 server
@@ -15888,6 +16363,7 @@ mod tests {
                 "a blank summary records nothing but takes a sequence number"
             );
         }
+        Ok(())
     }
 
     /// THE test for this feature. Everything else checks that the write works;
@@ -15900,9 +16376,9 @@ mod tests {
     /// plausibly surface it. A test that merely checked "no tool is named
     /// list_findings" would pass while the text leaked through search.
     #[tokio::test]
-    async fn a_recorded_finding_is_reachable_from_no_read_tool() {
+    async fn a_recorded_finding_is_reachable_from_no_read_tool() -> Result<(), TestError> {
         const MARKER: &str = "ZZQX-agent-written-marker-never-on-any-wire";
-        let server = server_with_dialog("w4@x").with_save_findings();
+        let server = server_with_dialog("w4@x")?.with_save_findings();
         server
             .save_findings(Parameters(SaveFindingsParams {
                 summary: MARKER.into(),
@@ -15910,12 +16386,17 @@ mod tests {
                 detail: Some(MARKER.into()),
             }))
             .await
-            .expect("recorded");
+            .map_err(|e| format!("recorded: {e:?}"))?;
 
         let reads = vec![
             (
                 "capture_status",
-                text_of(&server.capture_status().await.expect("stats")),
+                text_of(
+                    &server
+                        .capture_status()
+                        .await
+                        .map_err(|e| format!("stats: {e:?}"))?,
+                )?,
             ),
             (
                 "list_dialogs",
@@ -15928,8 +16409,8 @@ mod tests {
                             fields: None,
                         }))
                         .await
-                        .expect("list"),
-                ),
+                        .map_err(|e| format!("list: {e:?}"))?,
+                )?,
             ),
             (
                 "tail_dialogs",
@@ -15941,8 +16422,8 @@ mod tests {
                             fields: None,
                         }))
                         .await
-                        .expect("tail"),
-                ),
+                        .map_err(|e| format!("tail: {e:?}"))?,
+                )?,
             ),
             (
                 "get_dialog",
@@ -15954,8 +16435,8 @@ mod tests {
                             max_messages: None,
                         }))
                         .await
-                        .expect("get"),
-                ),
+                        .map_err(|e| format!("get: {e:?}"))?,
+                )?,
             ),
         ];
         for (tool, body) in reads {
@@ -15964,6 +16445,7 @@ mod tests {
                 "{tool} returned agent-written text; the annotation is no longer a dead end"
             );
         }
+        Ok(())
     }
 
     // ---- find_correlated: the strategy name is the point --------------------
@@ -15972,7 +16454,7 @@ mod tests {
     /// identifier match, and carries no timing gap — because the gap is not
     /// why they matched, and attaching it would invite a reader to weigh it.
     #[tokio::test]
-    async fn find_correlated_names_the_strategy_that_actually_matched() {
+    async fn find_correlated_names_the_strategy_that_actually_matched() -> Result<(), TestError> {
         const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
         const B: &str = "47755a9de7794ba387653f2099600ef2";
         let ds = {
@@ -15982,13 +16464,13 @@ mod tests {
                 "Session-ID",
                 &format!("{A};remote={B}"),
                 base_ts(),
-            ));
+            )?);
             ds.process_message(invite_with_header(
                 "leg-b@core",
                 "Session-ID",
                 &format!("{B};remote={A}"),
                 base_ts(),
-            ));
+            )?);
             Arc::new(RwLock::new(ds))
         };
         let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
@@ -16000,9 +16482,8 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("correlates"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("correlates: {e:?}"))?,
+        )?)?;
 
         assert_eq!(v["total_matched"], 1);
         assert_eq!(v["legs"][0]["call_id"], "leg-b@core");
@@ -16016,6 +16497,7 @@ mod tests {
             v["heuristic_only"], false,
             "an identifier match is not a hypothesis"
         );
+        Ok(())
     }
 
     /// Two isolated legs, three seconds and two subnets apart, carrying only
@@ -16024,7 +16506,7 @@ mod tests {
     /// SYNTHETIC: `P-Charging-Vector` is in no fixture and no capture this
     /// repository can reach. RFC 2606 names, RFC 5737 addresses, invented
     /// sequence numbers.
-    fn charging_vector_pair(a: &str, b: &str) -> Arc<RwLock<DialogStore>> {
+    fn charging_vector_pair(a: &str, b: &str) -> Result<Arc<RwLock<DialogStore>>, TestError> {
         let mut ds = DialogStore::new(100, false);
         for (call_id, vector, host, ts) in [
             ("leg-a@access", a, "192.0.2.1", base_ts()),
@@ -16048,9 +16530,9 @@ mod tests {
                 ],
                 b"",
             );
-            ds.process_message(parse_at(&raw, ts));
+            ds.process_message(parse_at(&raw, ts)?);
         }
-        Arc::new(RwLock::new(ds))
+        Ok(Arc::new(RwLock::new(ds)))
     }
 
     /// RFC 7315's `related-icid` — the parameter that addresses a B2BUA —
@@ -16062,12 +16544,13 @@ mod tests {
     /// icid, so like every other strategy here the response carries the
     /// strategy's NAME and never the value it matched on.
     #[tokio::test]
-    async fn find_correlated_reports_a_related_icid_match_as_an_identifier_match() {
+    async fn find_correlated_reports_a_related_icid_match_as_an_identifier_match()
+    -> Result<(), TestError> {
         const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         let ds = charging_vector_pair(
             &format!("icid-value={A_ICID}"),
             &format!("icid-value=SBC1.example.net-1718452800-0002;related-icid={A_ICID}"),
-        );
+        )?;
         let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
 
         let body = text_of(
@@ -16077,9 +16560,10 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("correlates"),
-        );
-        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+                .map_err(|e| format!("correlates: {e:?}"))?,
+        )?;
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("json: {e:?}"))?;
 
         assert_eq!(v["total_matched"], 1);
         assert_eq!(v["legs"][0]["call_id"], "leg-b@core");
@@ -16106,6 +16590,7 @@ mod tests {
             "the charging identifier must not reach the response; it is \
              operator-internal and the strategy NAME is the finding"
         );
+        Ok(())
     }
 
     /// Plain `icid-value` equality is a DIFFERENT strategy with a different
@@ -16116,12 +16601,13 @@ mod tests {
     /// The two live in one test file precisely so a change that collapses them
     /// into one name fails here.
     #[tokio::test]
-    async fn find_correlated_reports_a_plain_icid_match_under_its_own_name() {
+    async fn find_correlated_reports_a_plain_icid_match_under_its_own_name() -> Result<(), TestError>
+    {
         const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         let ds = charging_vector_pair(
             &format!("icid-value={ICID};icid-generated-at=192.0.2.1"),
             &format!("orig-ioi=home1.example.net;icid-value=\"{ICID}\""),
-        );
+        )?;
         let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
 
         let body = text_of(
@@ -16131,9 +16617,10 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("correlates"),
-        );
-        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+                .map_err(|e| format!("correlates: {e:?}"))?,
+        )?;
+        let v: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| format!("json: {e:?}"))?;
 
         assert_eq!(v["total_matched"], 1);
         assert_eq!(v["legs"][0]["strategy"], "charging_vector_icid");
@@ -16144,16 +16631,18 @@ mod tests {
             !body.contains(ICID) && !body.contains("192.0.2.1"),
             "neither the icid nor the generating address may reach the response"
         );
+        Ok(())
     }
 
     /// The negative control on the same surface: one character apart is a
     /// different call, and the tool says so by answering with nothing.
     #[tokio::test]
-    async fn find_correlated_reports_nothing_for_icids_one_character_apart() {
+    async fn find_correlated_reports_nothing_for_icids_one_character_apart() -> Result<(), TestError>
+    {
         let ds = charging_vector_pair(
             "icid-value=P-CSCF1.example.net-1718452800-0001",
             "icid-value=P-CSCF1.example.net-1718452800-0002",
-        );
+        )?;
         let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
@@ -16162,21 +16651,22 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("answers"),
-        ))
-        .expect("json");
+                .map_err(|e| format!("answers: {e:?}"))?,
+        )?)
+        .map_err(|e| format!("json: {e:?}"))?;
         assert_eq!(v["total_matched"], 0);
         assert_eq!(
             v["heuristic_only"], false,
             "no legs is not the same as legs we guessed at"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID correlates with nothing, and does NOT claim the
     /// answer was heuristic — there was no answer at all.
     #[tokio::test]
-    async fn an_unknown_call_id_returns_nothing_and_claims_nothing() {
-        let server = server_with_dialog("known@x");
+    async fn an_unknown_call_id_returns_nothing_and_claims_nothing() -> Result<(), TestError> {
+        let server = server_with_dialog("known@x")?;
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
                 .find_correlated(Parameters(FindCorrelatedParams {
@@ -16184,15 +16674,15 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("answers"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("answers: {e:?}"))?,
+        )?)?;
         assert_eq!(v["total_matched"], 0);
         assert_eq!(
             v["heuristic_only"], false,
             "no legs is not the same as legs we guessed at"
         );
         assert!(v["capture_identity"]["dialog_generation"].is_u64());
+        Ok(())
     }
 
     /// `capture_health` carries the clock state, and it stays counters-only.
@@ -16201,8 +16691,8 @@ mod tests {
     /// without leaking packet data, so a new field has to be integers and
     /// booleans — never a daemon name, a server address or a hostname.
     #[tokio::test]
-    async fn capture_health_reports_the_clock_without_leaking_anything() {
-        let server = server_with_dialog("clk@x");
+    async fn capture_health_reports_the_clock_without_leaking_anything() -> Result<(), TestError> {
+        let server = server_with_dialog("clk@x")?;
         let v: serde_json::Value = serde_json::from_str(&text_of(
             &server
                 .capture_health(
@@ -16210,9 +16700,8 @@ mod tests {
                     Extension(crate::mcp::progress::Progress::silent()),
                 )
                 .await
-                .expect("health"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("health: {e:?}"))?,
+        )?)?;
 
         let clock = &v["clock"];
         assert!(
@@ -16226,12 +16715,13 @@ mod tests {
         // Counters-only: every value under `clock` is a number or a bool. A
         // string here would be an NTP server address or a daemon name, which is
         // exactly what this tool promises never to send.
-        for (k, val) in clock.as_object().expect("clock is an object") {
+        for (k, val) in clock.as_object().ok_or("clock is an object")? {
             assert!(
                 val.is_number() || val.is_boolean(),
                 "clock.{k} is {val}, which is not a counter"
             );
         }
+        Ok(())
     }
 
     /// `capture_health` carries the HEP listener's aggregate counts, integers
@@ -16239,7 +16729,8 @@ mod tests {
     /// addresses and ids stay in `hep_senders`: this tool promises numbers.
     #[cfg(feature = "hep")]
     #[tokio::test]
-    async fn capture_health_carries_the_hep_listeners_counts_and_nothing_else() {
+    async fn capture_health_carries_the_hep_listeners_counts_and_nothing_else()
+    -> Result<(), TestError> {
         use crate::capture::hep_roster::{
             HepRefusal, HepRoster, RosterState, SenderTrust, hep_source_label,
         };
@@ -16252,10 +16743,12 @@ mod tests {
             chrono::Utc::now(),
         );
         for (id, peer) in [(7u32, "192.0.2.7"), (9, "192.0.2.9")] {
-            let peer: std::net::IpAddr = peer.parse().expect("literal");
+            let peer: std::net::IpAddr = peer.parse().map_err(|e| format!("literal: {e:?}"))?;
             state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), t);
         }
-        let bad: std::net::IpAddr = "203.0.113.66".parse().expect("literal");
+        let bad: std::net::IpAddr = "203.0.113.66"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         state.refused(HepRefusal::Malformed, bad, t);
         let (_tx, rx) = crate::capture::channel::packet_channel(8);
         let meter = rx.meter();
@@ -16269,15 +16762,15 @@ mod tests {
                         Extension(crate::mcp::progress::Progress::silent()),
                     )
                     .await
-                    .expect("health"),
-            ))
-            .expect("json");
-            v
+                    .map_err(|e| format!("health: {e:?}"))?,
+            )?)
+            .map_err(|e| format!("json: {e:?}"))?;
+            Ok::<_, TestError>(v)
         };
-        let v = health(server_with_dialog("hep@x").with_capture_meter(Some(meter))).await;
+        let v = health(server_with_dialog("hep@x")?.with_capture_meter(Some(meter))).await?;
         let hep = v["hep"]
             .as_object()
-            .expect("a listener's counts are present");
+            .ok_or("a listener's counts are present")?;
         assert_eq!(v["hep"]["senders_tracked"], 2);
         assert_eq!(v["hep"]["packets_refused"], 1);
         assert_eq!(v["hep"]["packets_received"], 3);
@@ -16285,18 +16778,19 @@ mod tests {
             assert!(val.is_u64(), "hep.{k} is {val}, which is not a counter");
         }
 
-        let without = health(server_with_dialog("nohep@x")).await;
+        let without = health(server_with_dialog("nohep@x")?).await?;
         assert!(
             without.get("hep").is_none(),
             "no listener, no hep key: {without}"
         );
+        Ok(())
     }
 
     /// An identifier match carries NO clock, because the clock is not why the
     /// legs matched. Attaching it would invite a reader to weigh a number with
     /// no bearing on the answer.
     #[tokio::test]
-    async fn an_identifier_match_carries_no_timing_clock() {
+    async fn an_identifier_match_carries_no_timing_clock() -> Result<(), TestError> {
         const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
         const B: &str = "47755a9de7794ba387653f2099600ef2";
         let ds = {
@@ -16306,13 +16800,13 @@ mod tests {
                 "Session-ID",
                 &format!("{A};remote={B}"),
                 base_ts(),
-            ));
+            )?);
             ds.process_message(invite_with_header(
                 "leg-b@core",
                 "Session-ID",
                 &format!("{B};remote={A}"),
                 base_ts(),
-            ));
+            )?);
             Arc::new(RwLock::new(ds))
         };
         let server = SipnabMcp::new(ds, Arc::new(RwLock::new(StreamStore::new(100))));
@@ -16323,15 +16817,15 @@ mod tests {
                     limit: None,
                 }))
                 .await
-                .expect("correlates"),
-        ))
-        .unwrap();
+                .map_err(|e| format!("correlates: {e:?}"))?,
+        )?)?;
 
         assert_eq!(v["legs"][0]["strategy"], "session_id");
         assert!(
             v["timing_clock"].is_null(),
             "null means no time-based match was returned, not that the clock is fine"
         );
+        Ok(())
     }
 }
 
@@ -16370,11 +16864,12 @@ mod in_process_handler_tests {
     use serde_json::{Value, json};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed capture time, so no fixture depends on the clock.
     fn ts() -> chrono::DateTime<chrono::Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
-            .single()
-            .expect("a literal instant")
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_781_524_800) // 2026-06-15T12:00:00Z
     }
 
     fn server_over(ds: DialogStore, ss: StreamStore) -> SipnabMcp {
@@ -16386,7 +16881,10 @@ mod in_process_handler_tests {
     }
 
     /// An INVITE for `call_id`, optionally carrying `(content_type, body)`.
-    fn invite(call_id: &str, body: Option<(&str, &[u8])>) -> crate::sip::SipMessage {
+    fn invite(
+        call_id: &str,
+        body: Option<(&str, &[u8])>,
+    ) -> Result<crate::sip::SipMessage, TestError> {
         let mut headers = vec![
             "Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bKinproc".to_string(),
             "From: <sip:alice@example.com>;tag=a1".to_string(),
@@ -16400,7 +16898,7 @@ mod in_process_handler_tests {
         }
         headers.push(format!("Content-Length: {}", bytes.len()));
         let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             &crate::test_utils::build_sip_message(
                 "INVITE sip:bob@example.com SIP/2.0",
                 &refs,
@@ -16413,7 +16911,7 @@ mod in_process_handler_tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("the fixture INVITE parses")
+        .map_err(|e| format!("the fixture INVITE parses: {e:?}"))?)
     }
 
     fn dialogs(messages: Vec<crate::sip::SipMessage>) -> DialogStore {
@@ -16425,15 +16923,15 @@ mod in_process_handler_tests {
     }
 
     /// The JSON payload of a tool result.
-    fn payload(result: &CallToolResult) -> Value {
+    fn payload(result: &CallToolResult) -> Result<Value, TestError> {
         let text = result
             .content
             .iter()
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .next()
-            .expect("a payload block");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     // ── siprec_metadata ─────────────────────────────────────────────
@@ -16454,30 +16952,30 @@ mod in_process_handler_tests {
 </recording>\r\n";
 
     /// A dialog whose INVITE carries SDP and the metadata as multipart parts.
-    fn recorded_call(call_id: &str) -> DialogStore {
+    fn recorded_call(call_id: &str) -> Result<DialogStore, TestError> {
         let body = format!(
             "--OSS\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
              --OSS\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{RS_METADATA}\r\n--OSS--"
         );
-        dialogs(vec![invite(
+        Ok(dialogs(vec![invite(
             call_id,
             Some(("multipart/mixed; boundary=OSS", body.as_bytes())),
-        )])
+        )?]))
     }
 
     /// A recorded call reaches the agent with its session, mode, parties and
     /// streams, each stream naming its `m=` label and the party that sends it.
     #[tokio::test]
-    async fn siprec_metadata_reports_what_a_recorded_invite_carried() {
+    async fn siprec_metadata_reports_what_a_recorded_invite_carried() -> Result<(), TestError> {
         let call = "rec@example.invalid";
         let v = payload(
-            &server_over(recorded_call(call), StreamStore::new(16))
+            &server_over(recorded_call(call)?, StreamStore::new(16))
                 .siprec_metadata(Parameters(SiprecMetadataParams {
                     call_id: call.to_string(),
                 }))
                 .await
-                .expect("a held call is answered"),
-        );
+                .map_err(|e| format!("a held call is answered: {e:?}"))?,
+        )?;
         assert_eq!(v["recorded"], true, "{v}");
         assert_eq!(v["call_id"], call);
         assert_eq!(v["schema_version"], 1);
@@ -16491,24 +16989,26 @@ mod in_process_handler_tests {
         let bob = streams
             .iter()
             .find(|s| s["stream_id"] == "s-bob")
-            .unwrap_or_else(|| panic!("no s-bob stream: {v}"));
+            .ok_or_else(|| format!("no s-bob stream: {v}"))?;
         assert_eq!(bob["label"], "1");
         assert_eq!(bob["participant_id"], "p-bob", "the sender owns the stream");
+        Ok(())
     }
 
     /// A call with no metadata is `recorded: false`, worded so it cannot be
     /// read as "nobody recorded this call".
     #[tokio::test]
-    async fn siprec_metadata_for_a_plain_call_does_not_claim_it_went_unrecorded() {
+    async fn siprec_metadata_for_a_plain_call_does_not_claim_it_went_unrecorded()
+    -> Result<(), TestError> {
         let call = "plain@example.invalid";
         let v = payload(
-            &server_over(dialogs(vec![invite(call, None)]), StreamStore::new(16))
+            &server_over(dialogs(vec![invite(call, None)?]), StreamStore::new(16))
                 .siprec_metadata(Parameters(SiprecMetadataParams {
                     call_id: call.to_string(),
                 }))
                 .await
-                .expect("a held call is answered"),
-        );
+                .map_err(|e| format!("a held call is answered: {e:?}"))?,
+        )?;
         assert_eq!(v["recorded"], false);
         assert!(v.get("siprec").is_none(), "{v}");
         assert!(
@@ -16517,33 +17017,42 @@ mod in_process_handler_tests {
                 .is_some_and(|r| r.contains("none reached the capture point")),
             "{v}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID is refused by name, even beside a recorded call it
     /// could otherwise be mistaken for.
     #[tokio::test]
-    async fn siprec_metadata_refuses_an_unknown_call_by_name() {
-        let err = server_over(recorded_call("held@example.invalid"), StreamStore::new(16))
+    async fn siprec_metadata_refuses_an_unknown_call_by_name() -> Result<(), TestError> {
+        let err = server_over(recorded_call("held@example.invalid")?, StreamStore::new(16))
             .siprec_metadata(Parameters(SiprecMetadataParams {
                 call_id: "absent@example.invalid".to_string(),
             }))
             .await
-            .expect_err("an unknown call must be refused");
+            .err()
+            .ok_or("an unknown call must be refused")?;
         assert_eq!(err.code.0, -32602);
         assert!(
             err.message.contains("absent@example.invalid"),
             "{}",
             err.message
         );
+        Ok(())
     }
 
     // ── media_diagnostics ───────────────────────────────────────────
 
     /// Record `marks.len()` PCMU packets on one stream, the i-th carrying DSCP
     /// `marks[i]`.
-    fn rtp(ss: &mut StreamStore, src_port: u16, dst_port: u16, ssrc: u32, marks: &[Option<u8>]) {
+    fn rtp(
+        ss: &mut StreamStore,
+        src_port: u16,
+        dst_port: u16,
+        ssrc: u32,
+        marks: &[Option<u8>],
+    ) -> Result<(), TestError> {
         for (i, dscp) in marks.iter().enumerate() {
-            let seq = u16::try_from(i).expect("a few packets");
+            let seq = u16::try_from(i).map_err(|e| format!("a few packets: {e:?}"))?;
             let parsed = ParsedPacket {
                 frame_bytes: None,
                 frame: None,
@@ -16578,12 +17087,13 @@ mod in_process_handler_tests {
             };
             ss.process_rtp(&parsed, &hdr, ts());
         }
+        Ok(())
     }
 
     /// A call with two streams: one marked EF and re-marked to best effort in
     /// flight, which the far end also reported on over RTCP (RR and XR); and
     /// one on which no IP header -- so no marking -- was ever observed.
-    fn call_with_media(call_id: &str) -> SipnabMcp {
+    fn call_with_media(call_id: &str) -> Result<SipnabMcp, TestError> {
         use crate::rtp::rtcp::{
             ExtendedReport, ReceiverReport, ReceptionReport, RtcpPacket, VoipMetrics, XrBlock,
         };
@@ -16594,8 +17104,8 @@ mod in_process_handler_tests {
             30000,
             0x1111,
             &[Some(46), Some(46), Some(0)],
-        );
-        rtp(&mut ss, 40002, 30002, 0x2222, &[None, None]);
+        )?;
+        rtp(&mut ss, 40002, 30002, 0x2222, &[None, None])?;
         ss.link_to_dialog(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 30000, call_id);
         ss.link_to_dialog(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 30002, call_id);
         ss.process_rtcp(
@@ -16642,15 +17152,15 @@ mod in_process_handler_tests {
             ts(),
             None,
         );
-        server_over(dialogs(vec![invite(call_id, None)]), ss)
+        Ok(server_over(dialogs(vec![invite(call_id, None)?]), ss))
     }
 
     /// The stream row for one SSRC.
-    fn stream_row<'a>(v: &'a Value, ssrc: &str) -> &'a Value {
-        v["streams"]
+    fn stream_row<'a>(v: &'a Value, ssrc: &str) -> Result<&'a Value, TestError> {
+        Ok(v["streams"]
             .as_array()
             .and_then(|rows| rows.iter().find(|r| r["ssrc"] == ssrc))
-            .unwrap_or_else(|| panic!("no stream {ssrc} in {v}"))
+            .ok_or_else(|| format!("no stream {ssrc} in {v}"))?)
     }
 
     /// Each stream reports its marking, jitter grounding, delay provenance and
@@ -16658,20 +17168,21 @@ mod in_process_handler_tests {
     /// unmarked; and the far end's RTCP claims sit under their own key, only
     /// on the stream they were about.
     #[tokio::test]
-    async fn media_diagnostics_reports_each_streams_facts_and_whose_they_are() {
+    async fn media_diagnostics_reports_each_streams_facts_and_whose_they_are()
+    -> Result<(), TestError> {
         let call = "media@example.invalid";
         let v = payload(
-            &call_with_media(call)
+            &call_with_media(call)?
                 .media_diagnostics(Parameters(MediaDiagnosticsParams {
                     call_id: call.to_string(),
                 }))
                 .await
-                .expect("a held call is answered"),
-        );
+                .map_err(|e| format!("a held call is answered: {e:?}"))?,
+        )?;
         assert_eq!(v["applicable"], true, "{v}");
         assert_eq!(v["streams"].as_array().map(Vec::len), Some(2));
 
-        let marked = stream_row(&v, "0x00001111");
+        let marked = stream_row(&v, "0x00001111")?;
         assert_eq!(marked["packets"], 3);
         assert_eq!(marked["qos"]["marking_observed"], true);
         assert_eq!(marked["qos"]["dscp"], 46);
@@ -16697,28 +17208,30 @@ mod in_process_handler_tests {
             "a remote claim is labeled as one: {reported}"
         );
 
-        let unmarked = stream_row(&v, "0x00002222");
+        let unmarked = stream_row(&v, "0x00002222")?;
         assert_eq!(unmarked["qos"]["marking_observed"], false);
         assert!(unmarked["qos"].get("dscp").is_none(), "{unmarked}");
         assert!(
             unmarked.get("endpoint_reported").is_none(),
             "nothing reported is absent, never an empty claim: {unmarked}"
         );
+        Ok(())
     }
 
     /// A call with no media is not applicable, and says it is not a clean bill
     /// of health.
     #[tokio::test]
-    async fn media_diagnostics_for_a_call_without_media_is_not_a_clean_bill() {
+    async fn media_diagnostics_for_a_call_without_media_is_not_a_clean_bill()
+    -> Result<(), TestError> {
         let call = "silent@example.invalid";
         let v = payload(
-            &server_over(dialogs(vec![invite(call, None)]), StreamStore::new(16))
+            &server_over(dialogs(vec![invite(call, None)?]), StreamStore::new(16))
                 .media_diagnostics(Parameters(MediaDiagnosticsParams {
                     call_id: call.to_string(),
                 }))
                 .await
-                .expect("a held call is answered"),
-        );
+                .map_err(|e| format!("a held call is answered: {e:?}"))?,
+        )?;
         assert_eq!(v["applicable"], false);
         assert!(v.get("streams").is_none(), "{v}");
         assert!(
@@ -16727,23 +17240,26 @@ mod in_process_handler_tests {
                 .is_some_and(|r| r.contains("not a clean bill of health")),
             "{v}"
         );
+        Ok(())
     }
 
     /// An unknown Call-ID is refused by name.
     #[tokio::test]
-    async fn media_diagnostics_refuses_an_unknown_call_by_name() {
+    async fn media_diagnostics_refuses_an_unknown_call_by_name() -> Result<(), TestError> {
         let err = empty()
             .media_diagnostics(Parameters(MediaDiagnosticsParams {
                 call_id: "absent@example.invalid".to_string(),
             }))
             .await
-            .expect_err("an unknown call must be refused");
+            .err()
+            .ok_or("an unknown call must be refused")?;
         assert_eq!(err.code.0, -32602);
         assert!(
             err.message.contains("absent@example.invalid"),
             "{}",
             err.message
         );
+        Ok(())
     }
 
     // ── stop_tls_capture against a capture that exists ──────────────
@@ -16758,7 +17274,8 @@ mod in_process_handler_tests {
     /// running: the worker removes the probes, and saying otherwise would tell
     /// an agent the kernel is clean while probes are still attached.
     #[tokio::test]
-    async fn stopping_a_running_capture_asks_it_to_stop_without_claiming_it_has() {
+    async fn stopping_a_running_capture_asks_it_to_stop_without_claiming_it_has()
+    -> Result<(), TestError> {
         let handle = Arc::new(super::super::tls_capture::TlsCapture::new_for_test(
             vec!["/lib/libssl.so.3:SSL_write".to_string()],
             "cap-run",
@@ -16770,8 +17287,8 @@ mod in_process_handler_tests {
             &with_capture(&handle)
                 .stop_tls_capture()
                 .await
-                .expect("stopping is always answered"),
-        );
+                .map_err(|e| format!("stopping is always answered: {e:?}"))?,
+        )?;
         assert!(
             handle.stop.load(std::sync::atomic::Ordering::Relaxed),
             "the stop was requested of the worker"
@@ -16786,12 +17303,13 @@ mod in_process_handler_tests {
                 .is_some_and(|s| s.contains("Stop requested")),
             "{v}"
         );
+        Ok(())
     }
 
     /// A capture that has finished reports how it ended: what the kernel
     /// dropped, and why it stopped.
     #[tokio::test]
-    async fn stopping_a_finished_capture_reports_how_it_ended() {
+    async fn stopping_a_finished_capture_reports_how_it_ended() -> Result<(), TestError> {
         let handle = Arc::new(super::super::tls_capture::TlsCapture::new_for_test(
             vec!["/lib/libssl.so.3:SSL_write".to_string()],
             "cap-done",
@@ -16808,8 +17326,8 @@ mod in_process_handler_tests {
             &with_capture(&handle)
                 .stop_tls_capture()
                 .await
-                .expect("stopping is always answered"),
-        );
+                .map_err(|e| format!("stopping is always answered: {e:?}"))?,
+        )?;
         assert_eq!(v["running"], false, "{v}");
         assert_eq!(v["lost"], 2);
         assert_eq!(v["error"], "attach failed: no tracefs");
@@ -16819,33 +17337,40 @@ mod in_process_handler_tests {
                 .is_some_and(|s| s.contains("has stopped")),
             "{v}"
         );
+        Ok(())
     }
 
     // ── protocol methods, over a session ────────────────────────────
 
     /// Send one request and return its response, skipping anything else the
     /// server writes in between.
-    async fn ask(client: &mut Client, id: i64, method: &str, params: Value) -> Value {
+    async fn ask(
+        client: &mut Client,
+        id: i64,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, TestError> {
         client
             .send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await;
         for _ in 0..32 {
             let message = client.next().await;
             if message["id"] == id {
-                return message;
+                return Ok(message);
             }
         }
-        panic!("no response to {method} among the next 32 messages");
+        Err(format!("no response to {method} among the next 32 messages").into())
     }
 
     /// Every served prompt is listed, one can be fetched by name, and a name
     /// nothing serves is refused with the vocabulary.
     #[tokio::test]
-    async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() {
+    async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() -> Result<(), TestError>
+    {
         let (running, mut client) = connect(empty(), json!({})).await;
         let served = super::super::prompts::all();
 
-        let listed = ask(&mut client, 2, "prompts/list", json!({})).await;
+        let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
         let names: Vec<&str> = listed["result"]["prompts"]
             .as_array()
             .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
@@ -16854,7 +17379,7 @@ mod in_process_handler_tests {
         assert_eq!(names, expected, "{listed}");
 
         let first = &served[0];
-        let got = ask(&mut client, 3, "prompts/get", json!({"name": first.name})).await;
+        let got = ask(&mut client, 3, "prompts/get", json!({"name": first.name})).await?;
         assert_eq!(got["result"]["description"], first.description, "{got}");
         assert_eq!(got["result"]["messages"][0]["role"], "user");
         assert_eq!(got["result"]["messages"][0]["content"]["text"], first.text);
@@ -16865,7 +17390,7 @@ mod in_process_handler_tests {
             "prompts/get",
             json!({"name": "no-such-workflow"}),
         )
-        .await;
+        .await?;
         assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
         let message = unknown["error"]["message"].as_str().unwrap_or_default();
         assert!(
@@ -16873,12 +17398,13 @@ mod in_process_handler_tests {
             "the refusal names what was asked and what is served: {message}"
         );
         drop(running);
+        Ok(())
     }
 
     /// The file-root template is advertised only when a file root exists,
     /// because a template is a promise that its URIs resolve.
     #[tokio::test]
-    async fn the_file_template_is_advertised_only_with_a_file_root() {
+    async fn the_file_template_is_advertised_only_with_a_file_root() -> Result<(), TestError> {
         let templates = |v: &Value| -> Vec<String> {
             v["result"]["resourceTemplates"]
                 .as_array()
@@ -16890,7 +17416,7 @@ mod in_process_handler_tests {
                 .unwrap_or_default()
         };
         let (running, mut client) = connect(empty(), json!({})).await;
-        let bare = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await);
+        let bare = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await?);
         drop(running);
         assert!(
             bare.iter().any(|t| t == "sipnab://live/dialogs/{call_id}"),
@@ -16901,24 +17427,26 @@ mod in_process_handler_tests {
             "{bare:?}"
         );
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
-        let rooted = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await);
+        let rooted = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await?);
         drop(running);
         assert!(
             rooted.iter().any(|t| t == "sipnab:///{filename}"),
             "{rooted:?}"
         );
         assert_eq!(rooted.len(), bare.len() + 1, "{rooted:?}");
+        Ok(())
     }
 
     /// Files under the root are listed as resources.
     #[tokio::test]
-    async fn files_under_the_root_are_listed_as_resources() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("listed.pcap"), b"not really a pcap").expect("write");
+    async fn files_under_the_root_are_listed_as_resources() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("listed.pcap"), b"not really a pcap")
+            .map_err(|e| format!("write: {e:?}"))?;
         let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
-        let v = ask(&mut client, 2, "resources/list", json!({})).await;
+        let v = ask(&mut client, 2, "resources/list", json!({})).await?;
         drop(running);
         assert!(
             v["result"]["resources"]
@@ -16926,17 +17454,19 @@ mod in_process_handler_tests {
                 .is_some_and(|r| r.iter().any(|r| r["name"] == "listed.pcap")),
             "{v}"
         );
+        Ok(())
     }
 
     /// A Call-ID completes from the dialogs the store holds now; an argument
     /// the template does not have completes to nothing rather than to another
     /// argument's vocabulary.
     #[tokio::test]
-    async fn a_call_id_completes_from_live_state_and_a_foreign_argument_to_nothing() {
+    async fn a_call_id_completes_from_live_state_and_a_foreign_argument_to_nothing()
+    -> Result<(), TestError> {
         let server = server_over(
             dialogs(vec![
-                invite("alpha@example.invalid", None),
-                invite("beta@example.invalid", None),
+                invite("alpha@example.invalid", None)?,
+                invite("beta@example.invalid", None)?,
             ]),
             StreamStore::new(16),
         );
@@ -16948,7 +17478,7 @@ mod in_process_handler_tests {
             "completion/complete",
             json!({"ref": reference, "argument": {"name": "call_id", "value": "al"}}),
         )
-        .await;
+        .await?;
         assert_eq!(
             hit["result"]["completion"]["values"],
             json!(["alpha@example.invalid"]),
@@ -16962,19 +17492,21 @@ mod in_process_handler_tests {
             "completion/complete",
             json!({"ref": reference, "argument": {"name": "rule_id", "value": "al"}}),
         )
-        .await;
+        .await?;
         drop(running);
         assert_eq!(
             foreign["result"]["completion"]["values"],
             json!([]),
             "{foreign}"
         );
+        Ok(())
     }
 
     /// Only a live view can be subscribed to; a subscription can be removed
     /// once, and removing one this connection does not hold is refused.
     #[tokio::test]
-    async fn only_a_live_view_subscribes_and_an_unheld_subscription_cannot_be_removed() {
+    async fn only_a_live_view_subscribes_and_an_unheld_subscription_cannot_be_removed()
+    -> Result<(), TestError> {
         let (running, mut client) = connect(empty(), json!({})).await;
         let live = super::super::live::DIALOG_LIST_URI;
 
@@ -16984,7 +17516,7 @@ mod in_process_handler_tests {
             "resources/subscribe",
             json!({"uri": "sipnab:///capture.pcap"}),
         )
-        .await;
+        .await?;
         assert_eq!(file["error"]["code"], -32602, "{file}");
         assert!(
             file["error"]["message"]
@@ -16993,7 +17525,7 @@ mod in_process_handler_tests {
             "the refusal names the views that can be: {file}"
         );
 
-        let held = ask(&mut client, 3, "resources/subscribe", json!({"uri": live})).await;
+        let held = ask(&mut client, 3, "resources/subscribe", json!({"uri": live})).await?;
         assert!(held["result"].is_object(), "{held}");
         let removed = ask(
             &mut client,
@@ -17001,7 +17533,7 @@ mod in_process_handler_tests {
             "resources/unsubscribe",
             json!({"uri": live}),
         )
-        .await;
+        .await?;
         assert!(removed["result"].is_object(), "{removed}");
         let again = ask(
             &mut client,
@@ -17009,7 +17541,7 @@ mod in_process_handler_tests {
             "resources/unsubscribe",
             json!({"uri": live}),
         )
-        .await;
+        .await?;
         drop(running);
         assert_eq!(again["error"]["code"], -32602, "{again}");
         assert!(
@@ -17018,6 +17550,7 @@ mod in_process_handler_tests {
                 .is_some_and(|m| m.contains("not subscribed")),
             "{again}"
         );
+        Ok(())
     }
 }
 
@@ -17032,6 +17565,9 @@ mod archive_password_tests {
     use rmcp::handler::server::tool::Extension;
     use rmcp::handler::server::wrapper::Parameters;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     fn empty_server() -> SipnabMcp {
         SipnabMcp::new(
             Arc::new(RwLock::new(DialogStore::new(100, false))),
@@ -17045,15 +17581,15 @@ mod archive_password_tests {
 
     /// A file root holding an AES ZIP of the G.711 fixture, locked with the
     /// minted password `label`.
-    fn root_with_locked_zip(tag: &str, label: &str) -> std::path::PathBuf {
+    fn root_with_locked_zip(tag: &str, label: &str) -> Result<std::path::PathBuf, TestError> {
         let root = std::env::temp_dir().join(format!("sipnab-mcp-pw-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
         let pcap = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/pcap-samples/sip-rtp-g711.pcap"),
         )
-        .expect("fixture");
+        .map_err(|e| format!("fixture: {e:?}"))?;
         std::fs::write(
             root.join("evidence.zip"),
             crate::capture::archive::zipped::testutil::build(
@@ -17064,8 +17600,8 @@ mod archive_password_tests {
                 ),
             ),
         )
-        .expect("write zip");
-        root
+        .map_err(|e| format!("write zip: {e:?}"))?;
+        Ok(root)
     }
 
     fn params_of<T: serde::de::DeserializeOwned>(v: serde_json::Value) -> Result<T, String> {
@@ -17073,7 +17609,7 @@ mod archive_password_tests {
     }
 
     #[test]
-    fn the_file_opening_tools_refuse_an_argument_they_do_not_take() {
+    fn the_file_opening_tools_refuse_an_argument_they_do_not_take() -> Result<(), TestError> {
         let extra = |base: serde_json::Value| {
             let mut v = base;
             v["archive_password"] = serde_json::json!("x");
@@ -17096,10 +17632,11 @@ mod archive_password_tests {
         assert!(params_of::<ShowEvidenceParams>(extra(serde_json::json!({"refs": []}))).is_err());
         // And still accept what they do take.
         assert!(params_of::<OpenCaptureParams>(serde_json::json!({"filename": "a.zip"})).is_ok());
+        Ok(())
     }
 
     #[test]
-    fn a_password_argument_is_refused_naming_the_operator_s_ways() {
+    fn a_password_argument_is_refused_naming_the_operator_s_ways() -> Result<(), TestError> {
         let args = |k: &str| -> rmcp::model::JsonObject {
             let mut m = rmcp::model::JsonObject::new();
             m.insert("filename".into(), serde_json::json!("a.zip"));
@@ -17113,7 +17650,7 @@ mod archive_password_tests {
             "zip_passphrase",
         ] {
             let why = password_argument_refusal(Some(&args(key)))
-                .unwrap_or_else(|| panic!("{key} must be refused"));
+                .ok_or_else(|| format!("{key} must be refused"))?;
             // Plain messages: `why` is derived from arguments that carry the
             // test secret, and CodeQL (rust/cleartext-logging, alerts 424 and
             // 425) follows that into an assert's formatted output.
@@ -17134,10 +17671,11 @@ mod archive_password_tests {
         fine.insert("filename".into(), serde_json::json!("a.zip"));
         assert!(password_argument_refusal(Some(&fine)).is_none());
         assert!(password_argument_refusal(None).is_none());
+        Ok(())
     }
 
     #[test]
-    fn the_audit_line_never_carries_a_password_like_value() {
+    fn the_audit_line_never_carries_a_password_like_value() -> Result<(), TestError> {
         let mut m = rmcp::model::JsonObject::new();
         m.insert("filename".into(), serde_json::json!("a.zip"));
         m.insert("password".into(), serde_json::json!(secret("mcp-audit")));
@@ -17147,10 +17685,11 @@ mod archive_password_tests {
             line.contains("[REDACTED]") && line.contains("a.zip"),
             "{line}"
         );
+        Ok(())
     }
 
     #[test]
-    fn no_tool_input_schema_has_a_password_like_property() {
+    fn no_tool_input_schema_has_a_password_like_property() -> Result<(), TestError> {
         let server = empty_server();
         let tools = server.tool_router.list_all();
         assert!(tools.len() > 20, "the router lists its tools");
@@ -17169,17 +17708,22 @@ mod archive_password_tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Poll `capture_status` until the load finishes, and return it.
-    async fn loaded(server: &SipnabMcp) -> serde_json::Value {
+    async fn loaded(server: &SipnabMcp) -> Result<serde_json::Value, TestError> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
-            let v: serde_json::Value =
-                serde_json::from_str(&tests_text(&server.capture_status().await.expect("status")))
-                    .expect("json");
+            let v: serde_json::Value = serde_json::from_str(&tests_text(
+                &server
+                    .capture_status()
+                    .await
+                    .map_err(|e| format!("status: {e:?}"))?,
+            )?)
+            .map_err(|e| format!("json: {e:?}"))?;
             if v["load"]["done"] == true {
-                return v;
+                return Ok(v);
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -17189,15 +17733,15 @@ mod archive_password_tests {
         }
     }
 
-    fn tests_text(result: &CallToolResult) -> String {
+    fn tests_text(result: &CallToolResult) -> Result<String, TestError> {
         let note = crate::mcp::shape::untrusted_note();
-        result
+        Ok(result
             .content
             .iter()
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("payload")
+            .ok_or("payload")?)
     }
 
     fn server_on(root: &std::path::Path) -> SipnabMcp {
@@ -17208,10 +17752,11 @@ mod archive_password_tests {
     }
 
     #[tokio::test]
-    async fn the_operator_s_configured_password_opens_an_archive() {
-        let root = root_with_locked_zip("opens", "mcp-right");
+    async fn the_operator_s_configured_password_opens_an_archive() -> Result<(), TestError> {
+        let root = root_with_locked_zip("opens", "mcp-right")?;
         let server = server_on(&root).with_archive_candidates(vec![Candidate {
-            password: ArchivePassword::from_bytes(secret("mcp-right").as_bytes()).expect("valid"),
+            password: ArchivePassword::from_bytes(secret("mcp-right").as_bytes())
+                .map_err(|e| format!("valid: {e:?}"))?,
             source: Source::File,
         }]);
         server
@@ -17222,16 +17767,18 @@ mod archive_password_tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect("accepted");
-        let status = loaded(&server).await;
+            .map_err(|e| format!("accepted: {e:?}"))?;
+        let status = loaded(&server).await?;
         assert!(status["load"]["error"].is_null(), "{status}");
         assert!(!server.dialog_store.read().is_empty(), "{status}");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_locked_archive_tells_the_agent_how_the_operator_supplies_one() {
-        let root = root_with_locked_zip("locked", "mcp-locked");
+    async fn a_locked_archive_tells_the_agent_how_the_operator_supplies_one()
+    -> Result<(), TestError> {
+        let root = root_with_locked_zip("locked", "mcp-locked")?;
         let server = server_on(&root);
         server
             .open_capture(
@@ -17241,8 +17788,8 @@ mod archive_password_tests {
                 Extension(crate::mcp::elicit::Confirm::unavailable()),
             )
             .await
-            .expect("accepted");
-        let status = loaded(&server).await;
+            .map_err(|e| format!("accepted: {e:?}"))?;
+        let status = loaded(&server).await?;
         let text = status.to_string();
         assert!(text.contains("encrypted_no_password"), "{text}");
         assert!(text.contains("--archive-password-file"), "{text}");
@@ -17251,18 +17798,24 @@ mod archive_password_tests {
             "the guidance is for the operator, not an invitation to the agent: {text}"
         );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn listing_marks_a_locked_archive_without_trying_a_password() {
-        let root = root_with_locked_zip("list", "mcp-list");
+    async fn listing_marks_a_locked_archive_without_trying_a_password() -> Result<(), TestError> {
+        let root = root_with_locked_zip("list", "mcp-list")?;
         let server = server_on(&root);
-        let v: serde_json::Value =
-            serde_json::from_str(&tests_text(&server.list_captures().await.expect("list")))
-                .expect("json");
+        let v: serde_json::Value = serde_json::from_str(&tests_text(
+            &server
+                .list_captures()
+                .await
+                .map_err(|e| format!("list: {e:?}"))?,
+        )?)
+        .map_err(|e| format!("json: {e:?}"))?;
         let entry = &v["captures"][0];
         assert_eq!(entry["filename"], "evidence.zip");
         assert_eq!(entry["encrypted"], true, "{v}");
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
     }
 }

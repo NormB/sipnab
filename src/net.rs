@@ -287,10 +287,13 @@ mod tests {
     //! Transport-proto string and IANA-number mapping tests.
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// `as_str` and the `Display` impl must yield the same canonical tag for
     /// every transport variant.
     #[test]
-    fn as_str_and_display_agree() {
+    fn as_str_and_display_agree() -> Result<(), TestError> {
         for (proto, s) in [
             (TransportProto::Udp, "UDP"),
             (TransportProto::Tcp, "TCP"),
@@ -302,12 +305,13 @@ mod tests {
             assert_eq!(proto.as_str(), s);
             assert_eq!(proto.to_string(), s);
         }
+        Ok(())
     }
 
     /// Each transport reports its IANA IP protocol number, with TLS and WS
     /// (TCP framings) reporting TCP's 6 rather than a tag of their own.
     #[test]
-    fn ip_proto_number_maps_to_iana_transport() {
+    fn ip_proto_number_maps_to_iana_transport() -> Result<(), TestError> {
         // The IP sub-protocol number is printed. TLS and WS both ride
         // on TCP, so they report TCP's number (6), never their own tag.
         assert_eq!(TransportProto::Udp.ip_proto_number(), 17);
@@ -316,6 +320,7 @@ mod tests {
         assert_eq!(TransportProto::Tls.ip_proto_number(), 6);
         assert_eq!(TransportProto::Ws.ip_proto_number(), 6);
         assert_eq!(TransportProto::Wss.ip_proto_number(), 6);
+        Ok(())
     }
     /// An IPv6 endpoint is bracketed, so it can be read back.
     ///
@@ -325,9 +330,12 @@ mod tests {
     /// string is the participant IDENTITY, so an ambiguous one can merge two
     /// distinct endpoints onto one lifeline.
     #[test]
-    fn an_ipv6_endpoint_is_bracketed() {
-        let v6: std::net::IpAddr = "2001:db8::1".parse().expect("literal");
+    fn an_ipv6_endpoint_is_bracketed() -> Result<(), TestError> {
+        let v6: std::net::IpAddr = "2001:db8::1"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         assert_eq!(endpoint_label(v6, 5060), "[2001:db8::1]:5060");
+        Ok(())
     }
 
     /// The bracketed form round-trips through `SocketAddr`.
@@ -335,7 +343,7 @@ mod tests {
     /// The property that makes it unambiguous, asserted rather than asserted
     /// about: if the standard library can parse it back, so can a reader.
     #[test]
-    fn every_endpoint_label_parses_back_to_itself() {
+    fn every_endpoint_label_parses_back_to_itself() -> Result<(), TestError> {
         for (ip, port) in [
             ("198.51.100.7", 5060u16),
             ("2001:db8::1", 5060),
@@ -343,21 +351,25 @@ mod tests {
             ("::1", 1),
             ("::ffff:198.51.100.7", 5060),
         ] {
-            let addr: std::net::IpAddr = ip.parse().expect("literal");
+            let addr: std::net::IpAddr = ip.parse().map_err(|e| format!("literal: {e:?}"))?;
             let label = endpoint_label(addr, port);
             let parsed: std::net::SocketAddr = label
                 .parse()
-                .unwrap_or_else(|e| panic!("{label} does not parse back: {e}"));
+                .map_err(|e| format!("{label} does not parse back: {e}"))?;
             assert_eq!(parsed.ip(), addr, "{label}");
             assert_eq!(parsed.port(), port, "{label}");
         }
+        Ok(())
     }
 
     /// IPv4 is not bracketed, because it never needed to be.
     #[test]
-    fn an_ipv4_endpoint_is_not_bracketed() {
-        let v4: std::net::IpAddr = "198.51.100.7".parse().expect("literal");
+    fn an_ipv4_endpoint_is_not_bracketed() -> Result<(), TestError> {
+        let v4: std::net::IpAddr = "198.51.100.7"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         assert_eq!(endpoint_label(v4, 5060), "198.51.100.7:5060");
+        Ok(())
     }
 
     /// Two IPv6 endpoints that differ only in their zero-run stay distinct.
@@ -368,12 +380,19 @@ mod tests {
     /// lifeline. `Display` canonicalizes the spelling, and brackets keep the
     /// port from blurring into the address.
     #[test]
-    fn distinct_ipv6_endpoints_do_not_collide() {
-        let a: std::net::IpAddr = "2001:db8::1".parse().expect("literal");
-        let b: std::net::IpAddr = "2001:db8::2".parse().expect("literal");
+    fn distinct_ipv6_endpoints_do_not_collide() -> Result<(), TestError> {
+        let a: std::net::IpAddr = "2001:db8::1"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        let b: std::net::IpAddr = "2001:db8::2"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         assert_ne!(endpoint_label(a, 5060), endpoint_label(b, 5060));
         // Same address, two spellings: one label, so they are ONE lifeline.
-        let spelled: std::net::IpAddr = "2001:0db8:0000::0001".parse().expect("literal");
+        let spelled: std::net::IpAddr = "2001:0db8:0000::0001"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         assert_eq!(endpoint_label(a, 5060), endpoint_label(spelled, 5060));
+        Ok(())
     }
 }

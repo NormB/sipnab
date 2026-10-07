@@ -471,6 +471,9 @@ pub fn report_notice() -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     // Every test here builds a `RunIntegrity` directly and never touches the
     // process-global counters. libtest runs the lib tests of one binary in
     // parallel threads of ONE process, so a test that recorded a failure would
@@ -479,7 +482,7 @@ mod tests {
     // `tests/partial_run_exit_code_test.rs`, which runs the real binary.
 
     #[test]
-    fn a_clean_run_declares_nothing() {
+    fn a_clean_run_declares_nothing() -> Result<(), TestError> {
         let clean = RunIntegrity {
             files_given: 3,
             files_read_in_full: 3,
@@ -490,10 +493,11 @@ mod tests {
         assert_eq!(clean.ndjson_line(), None);
         assert_eq!(clean.report_notice(), None);
         assert!(clean.reasons().is_empty());
+        Ok(())
     }
 
     #[test]
-    fn a_lost_file_is_incomplete_and_says_which_counts() {
+    fn a_lost_file_is_incomplete_and_says_which_counts() -> Result<(), TestError> {
         let lost = RunIntegrity {
             files_given: 4,
             files_read_in_full: 3,
@@ -513,13 +517,14 @@ mod tests {
         let line = lost.ndjson_line().unwrap_or_default();
         assert!(line.ends_with('\n'), "NDJSON line must end in a newline");
         assert!(!line[..line.len() - 1].contains('\n'), "one line: {line}");
+        Ok(())
     }
 
     /// An archive that could not be unpacked to its end is data missing from
     /// the input even when every capture that DID come out was read in full,
     /// and the reason says the archive, not "0 of 20 files".
     #[test]
-    fn an_archive_cut_short_is_incomplete_and_says_so() {
+    fn an_archive_cut_short_is_incomplete_and_says_so() -> Result<(), TestError> {
         let cut = RunIntegrity {
             files_given: 20,
             files_read_in_full: 20,
@@ -534,10 +539,11 @@ mod tests {
             cut.to_json()["sipnab_run"]["archives"]["cut_short"],
             serde_json::json!(true)
         );
+        Ok(())
     }
 
     #[test]
-    fn a_failed_plugin_is_incomplete_and_counts_the_loaded_ones() {
+    fn a_failed_plugin_is_incomplete_and_counts_the_loaded_ones() -> Result<(), TestError> {
         let p = RunIntegrity {
             plugins_requested: 3,
             plugins_failed: 1,
@@ -552,10 +558,11 @@ mod tests {
             "{:?}",
             p.reasons()
         );
+        Ok(())
     }
 
     #[test]
-    fn retention_is_reported_without_failing_the_run() {
+    fn retention_is_reported_without_failing_the_run() -> Result<(), TestError> {
         let r = RunIntegrity {
             files_given: 1,
             files_read_in_full: 1,
@@ -583,6 +590,7 @@ mod tests {
             serde_json::json!(2)
         );
         assert_eq!(v["sipnab_run"]["input_complete"], serde_json::json!(true));
+        Ok(())
     }
 
     /// A partial read still emits the trailer, and retention rides along.
@@ -591,7 +599,7 @@ mod tests {
     /// the trailer on `input_complete` must not lose the retention figure when
     /// the trailer fires for a real reason.
     #[test]
-    fn a_partial_read_emits_the_trailer_and_carries_retention_inside_it() {
+    fn a_partial_read_emits_the_trailer_and_carries_retention_inside_it() -> Result<(), TestError> {
         let r = RunIntegrity {
             files_given: 2,
             files_read_in_full: 1,
@@ -609,7 +617,7 @@ mod tests {
         );
         let line = r
             .ndjson_line()
-            .expect("a partial read must declare itself in the stream");
+            .ok_or("a partial read must declare itself in the stream")?;
         assert!(
             line.contains("\"sipnab_run\""),
             "the trailer must be keyed so a reader can tell it from a dialog: {line}"
@@ -620,11 +628,12 @@ mod tests {
             serde_json::json!(7),
             "retention must survive inside the trailer it no longer triggers"
         );
+        Ok(())
     }
 
     /// A clean run declares nothing at all, in either channel.
     #[test]
-    fn a_clean_run_emits_no_trailer_and_no_notice() {
+    fn a_clean_run_emits_no_trailer_and_no_notice() -> Result<(), TestError> {
         let r = RunIntegrity {
             files_given: 1,
             files_read_in_full: 1,
@@ -634,10 +643,11 @@ mod tests {
         assert!(!r.is_degraded());
         assert!(r.ndjson_line().is_none());
         assert!(r.report_notice().is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_requested_stop_is_not_a_loss() {
+    fn a_requested_stop_is_not_a_loss() -> Result<(), TestError> {
         // `--count 100` over a 27-file set: stopped early, nothing lost.
         let limited = RunIntegrity {
             files_given: 27,
@@ -650,10 +660,11 @@ mod tests {
         assert!(limited.input_complete());
         assert!(!limited.is_degraded());
         assert_eq!(limited.ndjson_line(), None);
+        Ok(())
     }
 
     #[test]
-    fn the_report_notice_names_every_reason() {
+    fn the_report_notice_names_every_reason() -> Result<(), TestError> {
         let both = RunIntegrity {
             files_given: 1,
             files_stopped_early: 1,
@@ -670,5 +681,6 @@ mod tests {
             3,
             "{notice}"
         );
+        Ok(())
     }
 }

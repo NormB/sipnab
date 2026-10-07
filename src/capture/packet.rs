@@ -916,6 +916,9 @@ impl Packet {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build a packet with the given source name.
     fn packet_from(source: &str) -> Packet {
         Packet {
@@ -939,47 +942,50 @@ mod tests {
     /// that recovers it from a written-down pointer, so there is one rule
     /// rather than two that can disagree.
     #[test]
-    fn a_uprobe_source_name_mints_a_uprobe_pointer() {
+    fn a_uprobe_source_name_mints_a_uprobe_pointer() -> Result<(), TestError> {
         let r = packet_from("uprobe:opensips/1234")
             .frame_ref()
-            .expect("a source name and an origin make a pointer");
+            .ok_or("a source name and an origin make a pointer")?;
         assert!(
             matches!(r.source_kind(), FrameSource::Uprobe { pid: 1234, .. }),
             "a uprobe packet must not mint a Wire pointer: {:?}",
             r.source_kind()
         );
+        Ok(())
     }
 
     /// An ordinary capture source is still Wire, so the recovery cannot
     /// quietly reclassify real frames as something with no bytes behind them.
     #[test]
-    fn an_ordinary_source_name_still_mints_a_wire_pointer() {
-        let r = packet_from("eth0").frame_ref().expect("pointer");
+    fn an_ordinary_source_name_still_mints_a_wire_pointer() -> Result<(), TestError> {
+        let r = packet_from("eth0").frame_ref().ok_or("pointer")?;
         assert!(matches!(r.source_kind(), FrameSource::Wire));
         let r = packet_from("/pcaps/calls.pcap")
             .frame_ref()
-            .expect("pointer");
+            .ok_or("pointer")?;
         assert!(matches!(r.source_kind(), FrameSource::Wire));
+        Ok(())
     }
 
     // ── Interning a source never leaks per packet ────────────────────────
 
     #[test]
-    fn the_interner_holds_one_copy_per_name() {
+    fn the_interner_holds_one_copy_per_name() -> Result<(), TestError> {
         let mut t = SourceInterner::new(8);
-        let a = t.intern("hep:1@10.0.0.1").expect("room");
+        let a = t.intern("hep:1@10.0.0.1").ok_or("room")?;
         for _ in 0..100 {
-            let again = t.intern(&String::from("hep:1@10.0.0.1")).expect("held");
+            let again = t.intern(&String::from("hep:1@10.0.0.1")).ok_or("held")?;
             assert!(std::ptr::eq(a, again));
         }
         assert_eq!(t.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn a_lowered_cap_refuses_new_names_and_keeps_the_ones_held() {
+    fn a_lowered_cap_refuses_new_names_and_keeps_the_ones_held() -> Result<(), TestError> {
         let mut t = SourceInterner::new(10);
-        let a = t.intern("a").expect("room");
-        t.intern("b").expect("room");
+        let a = t.intern("a").ok_or("room")?;
+        t.intern("b").ok_or("room")?;
         t.set_cap(2);
         assert_eq!(t.cap(), 2);
         assert!(
@@ -987,7 +993,7 @@ mod tests {
             "at the new cap a new name is refused"
         );
         assert!(
-            std::ptr::eq(t.intern("a").expect("held"), a),
+            std::ptr::eq(t.intern("a").ok_or("held")?, a),
             "held names still answer"
         );
         t.set_cap(3);
@@ -995,10 +1001,11 @@ mod tests {
             t.intern("c").is_some(),
             "a raised cap admits new names again"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_process_table_reports_its_counts_and_takes_its_limit() {
+    fn the_process_table_reports_its_counts_and_takes_its_limit() -> Result<(), TestError> {
         // Only ever RAISED here: the table is shared by every test in this
         // binary, and lowering it could refuse another test's source.
         set_max_capture_sources(DEFAULT_MAX_CAPTURE_SOURCES + 1);
@@ -1011,13 +1018,14 @@ mod tests {
             "a new source is counted as held"
         );
         set_max_capture_sources(DEFAULT_MAX_CAPTURE_SOURCES);
+        Ok(())
     }
 
     #[test]
-    fn a_full_interner_refuses_new_names_counts_them_and_keeps_the_old() {
+    fn a_full_interner_refuses_new_names_counts_them_and_keeps_the_old() -> Result<(), TestError> {
         let mut t = SourceInterner::new(2);
-        let a = t.intern("a").expect("room");
-        t.intern("b").expect("room");
+        let a = t.intern("a").ok_or("room")?;
+        t.intern("b").ok_or("room")?;
         assert!(
             t.intern("c").is_none(),
             "past the cap a new name is refused"
@@ -1026,9 +1034,10 @@ mod tests {
         assert_eq!(t.refused(), 2, "and counted");
         assert_eq!(t.len(), 2, "nothing more was leaked");
         assert!(
-            std::ptr::eq(t.intern("a").expect("still held"), a),
+            std::ptr::eq(t.intern("a").ok_or("still held")?, a),
             "names already held still answer"
         );
+        Ok(())
     }
 
     /// The process table is shared by every test in this binary, so the
@@ -1036,7 +1045,8 @@ mod tests {
     /// on the first refusal, naming the cap and the counter that keeps
     /// counting after it.
     #[test]
-    fn only_the_first_refusal_carries_a_warning_naming_the_cap_and_the_metric() {
+    fn only_the_first_refusal_carries_a_warning_naming_the_cap_and_the_metric()
+    -> Result<(), TestError> {
         let mut t = SourceInterner::new(1);
         let got = t.intern("a");
         assert_eq!(
@@ -1045,7 +1055,7 @@ mod tests {
             "an admitted name warns nothing"
         );
         let got = t.intern("b");
-        let w = t.refusal_warning(got).expect("the first refusal warns");
+        let w = t.refusal_warning(got).ok_or("the first refusal warns")?;
         assert!(
             w.contains("max_capture_sources (1)")
                 && w.contains("sipnab_capture_sources_refused_total"),
@@ -1063,6 +1073,7 @@ mod tests {
             None,
             "later refusals are only counted"
         );
+        Ok(())
     }
 
     /// A HEP or uprobe packet, built the way their readers build one: a fresh
@@ -1096,48 +1107,50 @@ mod tests {
     /// HEP packet sent, on a workload that should hold flat. The same text
     /// must intern to the same pointer, however many `Arc`s carry it.
     #[test]
-    fn a_source_rebuilt_for_every_packet_is_interned_once() {
+    fn a_source_rebuilt_for_every_packet_is_interned_once() -> Result<(), TestError> {
         let first = per_packet_source_packet("7@10.1.0.1-once", 0)
             .frame_locator()
-            .expect("both halves")
+            .ok_or("both halves")?
             .source;
         for ordinal in 1..1_000 {
             let again = per_packet_source_packet("7@10.1.0.1-once", ordinal)
                 .frame_locator()
-                .expect("both halves")
+                .ok_or("both halves")?
                 .source;
             assert!(
                 std::ptr::eq(first, again),
                 "packet {ordinal} interned its source anew: a leaked copy per packet"
             );
         }
+        Ok(())
     }
 
     /// Two senders taking turns must not leak on every switch, which a
     /// remember-the-last-one cache would.
     #[test]
-    fn alternating_sources_intern_once_each() {
+    fn alternating_sources_intern_once_each() -> Result<(), TestError> {
         let a0 = per_packet_source_packet("1@10.1.0.1-alt", 0)
             .frame_locator()
-            .expect("a")
+            .ok_or("a")?
             .source;
         let b0 = per_packet_source_packet("2@10.1.0.2-alt", 1)
             .frame_locator()
-            .expect("b")
+            .ok_or("b")?
             .source;
         for n in 0..500u64 {
             let a = per_packet_source_packet("1@10.1.0.1-alt", 2 * n)
                 .frame_locator()
-                .expect("a")
+                .ok_or("a")?
                 .source;
             let b = per_packet_source_packet("2@10.1.0.2-alt", 2 * n + 1)
                 .frame_locator()
-                .expect("b")
+                .ok_or("b")?
                 .source;
             assert!(
                 std::ptr::eq(a, a0) && std::ptr::eq(b, b0),
                 "switch {n} leaked a copy"
             );
         }
+        Ok(())
     }
 }

@@ -744,6 +744,9 @@ mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every name the CLI accepts in [`FLAGS`]' spelling: long flags without
     /// dashes, positionals as `<VALUE_NAME>`. `help` and `version` are clap's.
     fn cli_names() -> BTreeSet<String> {
@@ -775,9 +778,9 @@ mod tests {
             .collect()
     }
 
-    fn read(rel: &str) -> String {
+    fn read(rel: &str) -> Result<String, TestError> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+        Ok(std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?)
     }
 
     /// What is wrong with `table` against the names the CLI defines: names
@@ -845,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn every_flag_has_exactly_one_row() {
+    fn every_flag_has_exactly_one_row() -> Result<(), TestError> {
         let compiled_out: Vec<&str> = FEATURE_GATED
             .iter()
             .filter(|(_, feature)| !feature_enabled(feature))
@@ -863,10 +866,11 @@ mod tests {
             errors.len(),
             errors.join("\n")
         );
+        Ok(())
     }
 
     #[test]
-    fn every_config_key_is_named_once() {
+    fn every_config_key_is_named_once() -> Result<(), TestError> {
         let errors = key_errors(&config_keys(), FLAGS, FILE_ONLY);
         assert!(
             errors.is_empty(),
@@ -874,6 +878,7 @@ mod tests {
             errors.len(),
             errors.join("\n")
         );
+        Ok(())
     }
 
     fn names(v: &[&str]) -> BTreeSet<String> {
@@ -887,7 +892,7 @@ mod tests {
     }
 
     #[test]
-    fn a_complete_flag_table_passes() {
+    fn a_complete_flag_table_passes() -> Result<(), TestError> {
         let t = [
             ("device", Link::Key("capture", "device", Merge::Override)),
             ("json", Link::PerRun),
@@ -896,55 +901,61 @@ mod tests {
             flag_errors(&names(&["device", "json"]), &t),
             Vec::<String>::new()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_flag_with_no_row_is_reported_by_name() {
+    fn a_flag_with_no_row_is_reported_by_name() -> Result<(), TestError> {
         let t = [("device", Link::PerRun)];
         assert_eq!(
             flag_errors(&names(&["device", "json"]), &t),
             vec!["not classified: json"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_flag_listed_twice_is_reported() {
+    fn a_flag_listed_twice_is_reported() -> Result<(), TestError> {
         let t = [("json", Link::PerRun), ("json", Link::Input)];
         assert_eq!(
             flag_errors(&names(&["json"]), &t),
             vec!["listed twice: json"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_row_for_a_flag_the_cli_lacks_is_reported() {
+    fn a_row_for_a_flag_the_cli_lacks_is_reported() -> Result<(), TestError> {
         let t = [("json", Link::PerRun), ("jsno", Link::PerRun)];
         assert_eq!(
             flag_errors(&names(&["json"]), &t),
             vec!["not a flag the CLI defines: jsno"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_complete_key_half_passes() {
+    fn a_complete_key_half_passes() -> Result<(), TestError> {
         let keys = keyset(&[("capture", "device"), ("theme", "accent")]);
         let t = [("device", Link::Key("capture", "device", Merge::Override))];
         let file_only_list = [("theme", "accent", FileOnly::Tui)];
         assert_eq!(key_errors(&keys, &t, &file_only_list), Vec::<String>::new());
+        Ok(())
     }
 
     #[test]
-    fn an_unclassified_key_is_reported() {
+    fn an_unclassified_key_is_reported() -> Result<(), TestError> {
         let keys = keyset(&[("capture", "device"), ("capture", "snaplen")]);
         let t = [("device", Link::Key("capture", "device", Merge::Override))];
         assert_eq!(
             key_errors(&keys, &t, &[]),
             vec!["unclassified key: [capture] snaplen"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_key_both_flagged_and_file_only_is_reported() {
+    fn a_key_both_flagged_and_file_only_is_reported() -> Result<(), TestError> {
         let keys = keyset(&[("capture", "device")]);
         let t = [("device", Link::Key("capture", "device", Merge::Override))];
         let file_only_list = [("capture", "device", FileOnly::Tuning)];
@@ -952,10 +963,11 @@ mod tests {
             key_errors(&keys, &t, &file_only_list),
             vec![r#"[capture] device is file-only but ["--device"] set it"#]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_file_only_key_listed_twice_is_reported() {
+    fn a_file_only_key_listed_twice_is_reported() -> Result<(), TestError> {
         let keys = keyset(&[("theme", "accent")]);
         let file_only_list = [
             ("theme", "accent", FileOnly::Tui),
@@ -965,10 +977,11 @@ mod tests {
             key_errors(&keys, &[], &file_only_list),
             vec!["[theme] accent is file-only twice"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_key_the_config_file_does_not_accept_is_reported() {
+    fn a_key_the_config_file_does_not_accept_is_reported() -> Result<(), TestError> {
         let keys = keyset(&[("capture", "device")]);
         let t = [
             ("device", Link::Key("capture", "device", Merge::Override)),
@@ -978,6 +991,7 @@ mod tests {
             key_errors(&keys, &t, &[]),
             vec!["[capture] snaplenn is not a key the config file accepts"]
         );
+        Ok(())
     }
 
     /// Long flags clap hides from `--help`: internal hooks, not documented.
@@ -1172,12 +1186,12 @@ mod tests {
 
     /// Gate and fixer in one: the reference must already read as the fixer
     /// would write it. `SIPNAB_SETTINGS_APPLY=1` writes the fix instead.
-    fn hold_reference(rel: &str, fix: fn(&str) -> (String, Vec<String>)) {
-        let md = read(rel);
+    fn hold_reference(rel: &str, fix: fn(&str) -> (String, Vec<String>)) -> Result<(), TestError> {
+        let md = read(rel)?;
         let (fixed, errors) = fix(&md);
         if std::env::var_os("SIPNAB_SETTINGS_APPLY").is_some() && fixed != md {
             let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-            std::fs::write(&p, &fixed).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+            std::fs::write(&p, &fixed).map_err(|e| format!("{}: {e}", p.display()))?;
         }
         let stale: Vec<String> = md
             .lines()
@@ -1197,16 +1211,19 @@ mod tests {
             stale.len(),
             stale.join("\n")
         );
+        Ok(())
     }
 
     #[test]
-    fn every_cli_reference_row_says_its_config_key() {
-        hold_reference("docs/cli-reference.md", fix_cli_reference);
+    fn every_cli_reference_row_says_its_config_key() -> Result<(), TestError> {
+        hold_reference("docs/cli-reference.md", fix_cli_reference)?;
+        Ok(())
     }
 
     #[test]
-    fn every_config_key_has_a_row_naming_its_flags() {
-        hold_reference("docs/config-reference.md", fix_config_reference);
+    fn every_config_key_has_a_row_naming_its_flags() -> Result<(), TestError> {
+        hold_reference("docs/config-reference.md", fix_config_reference)?;
+        Ok(())
     }
 
     const DEV: (&str, Link) = ("device", Link::Key("capture", "device", Merge::Override));
@@ -1216,7 +1233,7 @@ mod tests {
     }
 
     #[test]
-    fn the_fixer_appends_the_key_to_a_keyed_row() {
+    fn the_fixer_appends_the_key_to_a_keyed_row() -> Result<(), TestError> {
         let md = "| `-d`, `--device` | `<IFACE>` | -- | Capture interface |\n";
         let (out, errors) = fix_cli_reference_with(md, &[DEV], &none());
         assert!(errors.is_empty(), "{errors:?}");
@@ -1224,28 +1241,31 @@ mod tests {
             out,
             "| `-d`, `--device` | `<IFACE>` | -- | Capture interface. Config: `[capture] device` |\n"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_fixer_does_not_double_a_full_stop() {
+    fn the_fixer_does_not_double_a_full_stop() -> Result<(), TestError> {
         let md = "| `--device` | x | -- | Capture interface. |\n";
         let (out, _) = fix_cli_reference_with(md, &[DEV], &none());
         assert_eq!(
             out,
             "| `--device` | x | -- | Capture interface. Config: `[capture] device` |\n"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_fixer_leaves_a_correct_row_unchanged() {
+    fn the_fixer_leaves_a_correct_row_unchanged() -> Result<(), TestError> {
         let md = "| `--device` | x | -- | Interface. Config: `[capture] device` |\n";
         let (out, errors) = fix_cli_reference_with(md, &[DEV], &none());
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(out, md);
+        Ok(())
     }
 
     #[test]
-    fn the_fixer_refuses_to_guess_over_a_different_key() {
+    fn the_fixer_refuses_to_guess_over_a_different_key() -> Result<(), TestError> {
         let md = "| `--device` | x | -- | Interface. Config: `[capture] devices` |\n";
         let (out, errors) = fix_cli_reference_with(md, &[DEV], &none());
         assert_eq!(out, md, "a wrong key is for a person, not rewritten");
@@ -1253,35 +1273,39 @@ mod tests {
             errors,
             vec!["--device: row names another key than Config: `[capture] device`"]
         );
+        Ok(())
     }
 
     #[test]
-    fn the_fixer_reports_a_key_on_a_flag_the_table_does_not_link() {
+    fn the_fixer_reports_a_key_on_a_flag_the_table_does_not_link() -> Result<(), TestError> {
         let md = "| `--json` | -- | off | NDJSON. Config: `[display] json` |\n";
         let (_, errors) = fix_cli_reference_with(md, &[("json", Link::PerRun)], &none());
         assert_eq!(
             errors,
             vec!["--json: row names a key; src/settings.rs links none"]
         );
+        Ok(())
     }
 
     #[test]
-    fn the_fixer_reports_a_visible_flag_with_no_row() {
+    fn the_fixer_reports_a_visible_flag_with_no_row() -> Result<(), TestError> {
         let (_, errors) =
             fix_cli_reference_with("no table here\n", &[("json", Link::PerRun)], &none());
         assert_eq!(errors, vec!["--json: no row in docs/cli-reference.md"]);
+        Ok(())
     }
 
     #[test]
-    fn a_hidden_flag_needs_no_row() {
+    fn a_hidden_flag_needs_no_row() -> Result<(), TestError> {
         let hidden = names(&["panic-selftest"]);
         let (_, errors) =
             fix_cli_reference_with("x\n", &[("panic-selftest", Link::Action)], &hidden);
         assert!(errors.is_empty(), "{errors:?}");
+        Ok(())
     }
 
     #[test]
-    fn the_positional_filter_is_matched_by_its_value_name() {
+    fn the_positional_filter_is_matched_by_its_value_name() -> Result<(), TestError> {
         let t = [(
             "<BPF_FILTER>",
             Link::Key("capture", "bpf_filter", Merge::Override),
@@ -1290,18 +1314,20 @@ mod tests {
         let (out, errors) = fix_cli_reference_with(md, &t, &none());
         assert!(errors.is_empty(), "{errors:?}");
         assert!(out.contains("Config: `[capture] bpf_filter` |"), "{out}");
+        Ok(())
     }
 
     #[test]
-    fn a_flag_with_a_value_suffix_is_still_found() {
+    fn a_flag_with_a_value_suffix_is_still_found() -> Result<(), TestError> {
         let t = [("capture-tunnels", Link::Pending)];
         let md = "| `--capture-tunnels[=PORTS]` | x | off | Tunnels |\n";
         let (_, errors) = fix_cli_reference_with(md, &t, &none());
         assert!(errors.is_empty(), "{errors:?}");
+        Ok(())
     }
 
     #[test]
-    fn every_merge_has_its_own_sentence() {
+    fn every_merge_has_its_own_sentence() -> Result<(), TestError> {
         assert_eq!(
             flag_sentence(&[("portrange", Merge::Override)]),
             "`--portrange` overrides it"
@@ -1325,6 +1351,7 @@ mod tests {
             ]),
             "`--bpf-file` overrides it; `<BPF_FILTER>` overrides it"
         );
+        Ok(())
     }
 
     fn cfg_md(row: &str) -> String {
@@ -1334,7 +1361,7 @@ mod tests {
     }
 
     #[test]
-    fn the_config_fixer_names_the_flag_in_a_row_that_does_not() {
+    fn the_config_fixer_names_the_flag_in_a_row_that_does_not() -> Result<(), TestError> {
         let md = cfg_md("| `device` | string | -- | Default interface |");
         let (out, errors) =
             fix_config_reference_with(&md, &[DEV], &keyset(&[("capture", "device")]));
@@ -1343,19 +1370,21 @@ mod tests {
             out.contains("| Default interface. `--device` overrides it |"),
             "{out}"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_config_fixer_leaves_a_row_that_names_the_flag() {
+    fn the_config_fixer_leaves_a_row_that_names_the_flag() -> Result<(), TestError> {
         let md = cfg_md("| `device` | string | -- | Interface; `--device` wins |");
         let (out, _) = fix_config_reference_with(&md, &[DEV], &keyset(&[("capture", "device")]));
         assert_eq!(out, md);
+        Ok(())
     }
 
     /// A row naming one of a key's flags still gets a sentence for each flag
     /// it does not name: here the switch's off flag.
     #[test]
-    fn the_config_fixer_names_each_flag_a_row_lacks() {
+    fn the_config_fixer_names_each_flag_a_row_lacks() -> Result<(), TestError> {
         let t = [
             (
                 "kill-scanner",
@@ -1377,10 +1406,11 @@ mod tests {
         let (again, _) =
             fix_config_reference_with(&out, &t, &keyset(&[("security", "kill_scanner")]));
         assert_eq!(again, out, "a row naming every flag is left alone");
+        Ok(())
     }
 
     #[test]
-    fn the_config_fixer_reports_a_key_with_no_row() {
+    fn the_config_fixer_reports_a_key_with_no_row() -> Result<(), TestError> {
         let md = cfg_md("| `device` | string | -- | Interface. `--device` overrides it |");
         let keys = keyset(&[("capture", "device"), ("capture", "snaplen")]);
         let (_, errors) = fix_config_reference_with(&md, &[DEV], &keys);
@@ -1388,10 +1418,11 @@ mod tests {
             errors,
             vec!["[capture] snaplen: no row in docs/config-reference.md"]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_row_belongs_to_the_heading_above_it_in_any_style() {
+    fn a_row_belongs_to_the_heading_above_it_in_any_style() -> Result<(), TestError> {
         for heading in ["### [capture]", "### `[capture]`", "## `[capture]`"] {
             let md = format!("{heading}\n\n| `device` | s | -- | Interface |\n");
             let (out, errors) =
@@ -1399,10 +1430,11 @@ mod tests {
             assert!(errors.is_empty(), "{heading}: {errors:?}");
             assert!(out.contains("`--device` overrides it"), "{heading}: {out}");
         }
+        Ok(())
     }
 
     #[test]
-    fn a_same_named_key_in_another_section_is_not_confused() {
+    fn a_same_named_key_in_another_section_is_not_confused() -> Result<(), TestError> {
         let md = "### [display]\n\n| `device` | s | -- | Not the capture one |\n";
         let keys = keyset(&[("capture", "device")]);
         let (out, errors) = fix_config_reference_with(md, &[DEV], &keys);
@@ -1414,10 +1446,11 @@ mod tests {
             errors,
             vec!["[capture] device: no row in docs/config-reference.md"]
         );
+        Ok(())
     }
 
     #[test]
-    fn the_fixers_reach_a_fixed_point_on_the_real_references() {
+    fn the_fixers_reach_a_fixed_point_on_the_real_references() -> Result<(), TestError> {
         for (rel, fix) in [
             (
                 "docs/cli-reference.md",
@@ -1425,16 +1458,17 @@ mod tests {
             ),
             ("docs/config-reference.md", fix_config_reference),
         ] {
-            let (once, _) = fix(&read(rel));
+            let (once, _) = fix(&read(rel)?);
             let (twice, _) = fix(&once);
             assert_eq!(once, twice, "{rel}: a second pass of the fixer changed it");
         }
+        Ok(())
     }
 
     /// Each feature-gated flag is in the CLI exactly when its feature is
     /// compiled in. CI's feature matrix runs this both ways.
     #[test]
-    fn a_feature_gated_flag_exists_exactly_when_its_feature_is_on() {
+    fn a_feature_gated_flag_exists_exactly_when_its_feature_is_on() -> Result<(), TestError> {
         let cli = cli_names();
         for (flag, feature) in FEATURE_GATED {
             assert_eq!(
@@ -1443,14 +1477,15 @@ mod tests {
                 "--{flag} and feature {feature:?} disagree in this build"
             );
         }
+        Ok(())
     }
 
     /// FEATURE_GATED names every `#[cfg(feature = ...)]` argument in cli.rs,
     /// so a newly gated flag cannot pass the gate in one build and fail it in
     /// another.
     #[test]
-    fn the_feature_gated_list_matches_cli_rs() {
-        let src = read("src/cli.rs");
+    fn the_feature_gated_list_matches_cli_rs() -> Result<(), TestError> {
+        let src = read("src/cli.rs")?;
         let lines: Vec<&str> = src.lines().map(str::trim).collect();
         let mut gated = Vec::new();
         for (i, line) in lines.iter().enumerate() {
@@ -1491,6 +1526,7 @@ mod tests {
             gated, listed,
             "FEATURE_GATED must list exactly the feature-gated flags in src/cli.rs"
         );
+        Ok(())
     }
 
     /// A switch a file can turn on and no flag can turn off is the defect the
@@ -1498,7 +1534,7 @@ mod tests {
     /// to a list on purpose: `--syslog` and `--alert-json` each add an alert
     /// channel to `[security] alert`, and neither is a switch.
     #[test]
-    fn no_switch_is_one_way() {
+    fn no_switch_is_one_way() -> Result<(), TestError> {
         let either: Vec<&str> = FLAGS
             .iter()
             .filter(|(_, l)| matches!(l, Link::Key(_, _, Merge::Either)))
@@ -1509,11 +1545,12 @@ mod tests {
             vec!["alert-json", "syslog"],
             "a one-way switch needs its off flag"
         );
+        Ok(())
     }
 
     /// Every switch's off flag forces the same key off.
     #[test]
-    fn every_off_flag_forces_its_key_off() {
+    fn every_off_flag_forces_its_key_off() -> Result<(), TestError> {
         for (off, key) in [
             ("no-hep-parse", ("capture", "hep_parse")),
             ("rtp", ("capture", "no_rtp")),
@@ -1527,6 +1564,7 @@ mod tests {
             let row = FLAGS.iter().find(|(f, _)| *f == off).map(|(_, l)| *l);
             assert_eq!(row, Some(Link::Key(key.0, key.1, Merge::Off)), "--{off}");
         }
+        Ok(())
     }
 
     /// Where a switch's key is read outside its resolver in `src/cli.rs`, as
@@ -1589,16 +1627,17 @@ mod tests {
     }
 
     #[test]
-    fn no_switch_is_decided_outside_its_resolver() {
+    fn no_switch_is_decided_outside_its_resolver() -> Result<(), TestError> {
         let hits = inline_switch_reads(&rust_sources());
         assert!(
             hits.is_empty(),
             "switch keys read inline instead of through their Cli resolver: {hits:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_inline_read_scan_reports_a_flag_or_key_merge() {
+    fn the_inline_read_scan_reports_a_flag_or_key_merge() -> Result<(), TestError> {
         let files = vec![(
             "src/app/x.rs".to_string(),
             "let k = cli.security_args.kill_scanner || config.security.kill_scanner.unwrap_or(false);\n\
@@ -1610,10 +1649,11 @@ mod tests {
             inline_switch_reads(&files),
             vec!["src/app/x.rs:1", "src/app/x.rs:2"]
         );
+        Ok(())
     }
 
     #[test]
-    fn the_pending_count_is_recorded_and_only_falls() {
+    fn the_pending_count_is_recorded_and_only_falls() -> Result<(), TestError> {
         let n = FLAGS.iter().filter(|(_, l)| *l == Link::Pending).count();
         assert_eq!(
             n, PENDING_FLAGS,
@@ -1621,5 +1661,6 @@ mod tests {
              Lower PENDING_FLAGS when a flag gets its key; a new flag gets a key, \
              not a Pending row."
         );
+        Ok(())
     }
 }

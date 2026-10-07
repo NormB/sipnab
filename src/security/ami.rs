@@ -326,6 +326,9 @@ pub fn reset_for_test() {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Recording aggregates by pair, and never by the account named.
     ///
     /// One AMI session reconnecting in a loop is one finding with a count, not
@@ -343,13 +346,13 @@ mod tests {
     /// two tests resetting it around each other's counting is how this first
     /// went red.
     #[test]
-    fn sightings_aggregate_by_pair_and_not_by_account() {
+    fn sightings_aggregate_by_pair_and_not_by_account() -> Result<(), TestError> {
         let mut map = SightingCounts::default();
-        let a: std::net::IpAddr = "198.51.100.10".parse().expect("src");
-        let b: std::net::IpAddr = "198.51.100.20".parse().expect("dst");
+        let a: std::net::IpAddr = "198.51.100.10".parse().map_err(|e| format!("src: {e:?}"))?;
+        let b: std::net::IpAddr = "198.51.100.20".parse().map_err(|e| format!("dst: {e:?}"))?;
         for account in ["admin", "operator", "admin"] {
             let payload = format!("Action: login\r\nUsername: {account}\r\nSecret: x\r\n");
-            let o = observe(payload.as_bytes()).expect("each login is recognized");
+            let o = observe(payload.as_bytes()).ok_or("each login is recognized")?;
             record_into(&mut map, &o, a, b, AMI_DEFAULT_PORT);
         }
         let found = findings_from(&map);
@@ -357,13 +360,14 @@ mod tests {
         assert_eq!(found[0].count, 3);
         assert_eq!(found[0].dst_port, AMI_DEFAULT_PORT);
         assert!(found[0].default_port);
-        let rendered = serde_json::to_string(&found).expect("serializes");
+        let rendered = serde_json::to_string(&found).map_err(|e| format!("serializes: {e:?}"))?;
         for account in ["admin", "operator"] {
             assert!(
                 !rendered.contains(account),
                 "an account name reached the aggregate: {rendered}"
             );
         }
+        Ok(())
     }
 
     /// A manager interface moved off 5038 is still reported.
@@ -372,12 +376,12 @@ mod tests {
     /// service is the one most likely to think nobody can find it, and a rule
     /// keyed on 5038 would agree.
     #[test]
-    fn a_manager_interface_on_another_port_is_still_found() {
+    fn a_manager_interface_on_another_port_is_still_found() -> Result<(), TestError> {
         let mut map = SightingCounts::default();
-        let a: std::net::IpAddr = "198.51.100.10".parse().expect("src");
-        let b: std::net::IpAddr = "198.51.100.20".parse().expect("dst");
+        let a: std::net::IpAddr = "198.51.100.10".parse().map_err(|e| format!("src: {e:?}"))?;
+        let b: std::net::IpAddr = "198.51.100.20".parse().map_err(|e| format!("dst: {e:?}"))?;
         let o = observe(b"Action: login\r\nUsername: admin\r\nSecret: x\r\n")
-            .expect("a login is recognized");
+            .ok_or("a login is recognized")?;
         record_into(&mut map, &o, a, b, 15038);
         let found = findings_from(&map);
         assert_eq!(found.len(), 1);
@@ -387,29 +391,32 @@ mod tests {
             "the port is reported as non-default rather than the finding being \
              withheld"
         );
+        Ok(())
     }
 
     /// Nothing recorded reports nothing, rather than an empty finding.
     #[test]
-    fn no_sightings_report_nothing() {
+    fn no_sightings_report_nothing() -> Result<(), TestError> {
         assert!(findings_from(&SightingCounts::default()).is_empty());
+        Ok(())
     }
 
     /// A greeting is evidence of the protocol, not of a leak.
     #[test]
-    fn the_banner_alone_is_not_a_credential_finding() {
-        let o = observe(b"Asterisk Call Manager/9.0.0\r\n").expect("the banner matches");
+    fn the_banner_alone_is_not_a_credential_finding() -> Result<(), TestError> {
+        let o = observe(b"Asterisk Call Manager/9.0.0\r\n").ok_or("the banner matches")?;
         assert_eq!(
             o,
             AmiObservation::Banner {
                 version: Some("9.0.0".to_string())
             }
         );
+        Ok(())
     }
 
     /// The version is reported and never required.
     #[test]
-    fn any_version_matches_and_a_missing_one_still_does() {
+    fn any_version_matches_and_a_missing_one_still_does() -> Result<(), TestError> {
         for (payload, want) in [
             (&b"Asterisk Call Manager/2.10.6\r\n"[..], Some("2.10.6")),
             (&b"Asterisk Call Manager/9.0.0\r\n"[..], Some("9.0.0")),
@@ -423,13 +430,14 @@ mod tests {
                 "payload {payload:?}"
             );
         }
+        Ok(())
     }
 
     /// The finding: a password crossed the wire.
     #[test]
-    fn a_login_reports_the_account_and_never_the_secret() {
+    fn a_login_reports_the_account_and_never_the_secret() -> Result<(), TestError> {
         let payload = b"Action: login\r\nUsername: admin\r\nSecret: hunter2\r\n\r\n";
-        let o = observe(payload).expect("a login matches");
+        let o = observe(payload).ok_or("a login matches")?;
         assert_eq!(
             o,
             AmiObservation::CleartextLogin {
@@ -438,18 +446,19 @@ mod tests {
             }
         );
         // The value must not survive anywhere in the observation.
-        let rendered = serde_json::to_string(&o).expect("serializes");
+        let rendered = serde_json::to_string(&o).map_err(|e| format!("serializes: {e:?}"))?;
         assert!(
             !rendered.contains("hunter2"),
             "the secret reached the finding: {rendered}"
         );
+        Ok(())
     }
 
     /// RFC-style header names are case-insensitive in practice, and AMI
     /// clients differ. A detector that matched one spelling would miss the
     /// deployments that use another.
     #[test]
-    fn the_action_and_its_fields_are_matched_case_insensitively() {
+    fn the_action_and_its_fields_are_matched_case_insensitively() -> Result<(), TestError> {
         for payload in [
             &b"action: login\r\nusername: admin\r\nsecret: x\r\n"[..],
             &b"ACTION: LOGIN\r\nUSERNAME: admin\r\nSECRET: x\r\n"[..],
@@ -466,6 +475,7 @@ mod tests {
                 "payload {payload:?} is a cleartext login"
             );
         }
+        Ok(())
     }
 
     /// A login with no `Secret:` line is still reported, and says so.
@@ -474,9 +484,9 @@ mod tests {
     /// exposure and reporting it as a cleartext password would be wrong, so
     /// the flag carries the difference rather than the detector guessing.
     #[test]
-    fn a_login_without_a_secret_line_is_not_reported_as_one() {
+    fn a_login_without_a_secret_line_is_not_reported_as_one() -> Result<(), TestError> {
         let o = observe(b"Action: login\r\nUsername: admin\r\nAuthType: MD5\r\n")
-            .expect("a login matches");
+            .ok_or("a login matches")?;
         assert_eq!(
             o,
             AmiObservation::CleartextLogin {
@@ -484,11 +494,12 @@ mod tests {
                 secret_present: false,
             }
         );
+        Ok(())
     }
 
     /// Ordinary traffic is not a finding.
     #[test]
-    fn nothing_else_matches() {
+    fn nothing_else_matches() -> Result<(), TestError> {
         for payload in [
             &b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"[..],
             &b"INVITE sip:bob@example.com SIP/2.0\r\n"[..],
@@ -498,23 +509,25 @@ mod tests {
         ] {
             assert_eq!(observe(payload), None, "payload {payload:?}");
         }
+        Ok(())
     }
 
     /// A crafted username cannot spend the screen, and binary cannot reach it.
     #[test]
-    fn an_echoed_value_is_bounded_and_printable() {
+    fn an_echoed_value_is_bounded_and_printable() -> Result<(), TestError> {
         let long = "A".repeat(4096);
         let payload = format!("Action: login\r\nUsername: {long}\r\nSecret: x\r\n");
-        let o = observe(payload.as_bytes()).expect("a login matches");
+        let o = observe(payload.as_bytes()).ok_or("a login matches")?;
         let AmiObservation::CleartextLogin { username, .. } = o else {
-            panic!("expected a login");
+            return Err("expected a login".into());
         };
-        let username = username.expect("a username is echoed");
+        let username = username.ok_or("a username is echoed")?;
         assert!(
             username.chars().count() <= MAX_AMI_VALUE_CHARS,
             "username is {} chars, over the {MAX_AMI_VALUE_CHARS} bound",
             username.chars().count()
         );
+        Ok(())
     }
 
     /// A payload that is not UTF-8 is not a reason to miss the login.
@@ -523,7 +536,7 @@ mod tests {
     /// Decoding lossily rather than refusing keeps a detector from going quiet
     /// on the one packet somebody corrupted.
     #[test]
-    fn invalid_utf8_does_not_hide_a_login() {
+    fn invalid_utf8_does_not_hide_a_login() -> Result<(), TestError> {
         let mut payload = b"Action: login\r\nUsername: ad".to_vec();
         payload.push(0xff);
         payload.extend_from_slice(b"min\r\nSecret: x\r\n");
@@ -537,5 +550,6 @@ mod tests {
             ),
             "a lossy decode must still see the login"
         );
+        Ok(())
     }
 }

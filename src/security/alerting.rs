@@ -1116,17 +1116,20 @@ pub fn send_to_syslog(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
     use std::net::Ipv4Addr;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Every legacy alert placeholder reaches an `--alert-exec` hook as its
     /// own variable's value, as ONE word: a detail string with spaces and a
     /// `*` is neither split nor glob-expanded (CWE-78), whatever quoting the
     /// operator put around the placeholder.
     #[test]
-    fn legacy_alert_placeholders_reach_the_hook_as_one_word() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("glob-would-match-this"), b"").expect("seed file");
+    fn legacy_alert_placeholders_reach_the_hook_as_one_word() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("glob-would-match-this"), b"")
+            .map_err(|e| format!("seed file: {e:?}"))?;
         for (name, var) in [
             ("src", "SIPNAB_SRC"),
             ("rule", "SIPNAB_RULE"),
@@ -1144,7 +1147,7 @@ mod tests {
                     .env(var, &value)
                     .current_dir(dir.path())
                     .output()
-                    .expect("sh should run");
+                    .map_err(|e| format!("sh should run: {e:?}"))?;
                 assert_eq!(
                     String::from_utf8_lossy(&out.stdout),
                     format!("<{value}>"),
@@ -1152,6 +1155,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A fixed source IP used across the alerting tests.
@@ -1166,16 +1170,19 @@ mod tests {
     /// sleeping. That is what makes these deterministic and what makes the
     /// engine give the same answer on a replay as it did live.
     fn at(secs: i64) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap() + chrono::Duration::seconds(secs)
+        chrono::DateTime::UNIX_EPOCH
+            + chrono::TimeDelta::seconds(1_705_320_000)
+            + chrono::Duration::seconds(secs) // 2024-01-15T12:00:00Z
     }
 
     /// A multibyte final character is rejected as an invalid suffix instead
     /// of panicking on a non-boundary `split_at`.
     #[test]
-    fn parse_duration_multibyte_suffix_is_invalid() {
+    fn parse_duration_multibyte_suffix_is_invalid() -> Result<(), TestError> {
         assert_eq!(parse_duration("10µ"), None);
         assert_eq!(parse_duration("5秒"), None);
         assert_eq!(parse_duration("µ"), None);
+        Ok(())
     }
 
     /// A window/cooldown whose value overflows `u64` seconds once the `m`/`h`
@@ -1183,7 +1190,7 @@ mod tests {
     /// panicked in debug and wrapped in release; `--alert-rule` window and
     /// cooldown fields flow here from operator-supplied text.
     #[test]
-    fn parse_duration_overflow_is_rejected_not_panic() {
+    fn parse_duration_overflow_is_rejected_not_panic() -> Result<(), TestError> {
         assert_eq!(parse_duration("18446744073709551615m"), None);
         assert_eq!(parse_duration("18446744073709551615h"), None);
         // The largest hour count that still fits keeps working.
@@ -1192,12 +1199,13 @@ mod tests {
             Some(Duration::from_secs(18_446_744_073_709_551_600))
         );
         assert_eq!(parse_duration("5124095576030432h"), None);
+        Ok(())
     }
 
     /// A basic rule parses name/threshold/window and defaults cooldown to 2x.
     #[test]
-    fn parse_rule_basic() {
-        let rule = AlertRule::parse("scanner:10/1m").expect("should parse");
+    fn parse_rule_basic() -> Result<(), TestError> {
+        let rule = AlertRule::parse("scanner:10/1m").map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(rule.name, "scanner");
         assert_eq!(rule.threshold, 10);
         assert_eq!(rule.window, Duration::from_secs(60));
@@ -1206,65 +1214,75 @@ mod tests {
             Duration::from_secs(120),
             "default cooldown should be 2x window"
         );
+        Ok(())
     }
 
     /// An explicit cooldown segment overrides the 2x-window default.
     #[test]
-    fn parse_rule_with_cooldown() {
-        let rule = AlertRule::parse("reg-flood:50/10s:5m").expect("should parse");
+    fn parse_rule_with_cooldown() -> Result<(), TestError> {
+        let rule =
+            AlertRule::parse("reg-flood:50/10s:5m").map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(rule.name, "reg_flood");
         assert_eq!(rule.threshold, 50);
         assert_eq!(rule.window, Duration::from_secs(10));
         assert_eq!(rule.cooldown, Duration::from_secs(300));
+        Ok(())
     }
 
     /// The `h` suffix parses windows and default cooldown in hours.
     #[test]
-    fn parse_rule_hours() {
-        let rule = AlertRule::parse("slow-scan:100/1h").expect("should parse");
+    fn parse_rule_hours() -> Result<(), TestError> {
+        let rule =
+            AlertRule::parse("slow-scan:100/1h").map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(rule.window, Duration::from_secs(3600));
         assert_eq!(rule.cooldown, Duration::from_secs(7200));
+        Ok(())
     }
 
     /// A rule without a `:` separator fails to parse.
     #[test]
-    fn parse_rule_invalid_no_colon() {
+    fn parse_rule_invalid_no_colon() -> Result<(), TestError> {
         let result = AlertRule::parse("invalid-rule");
         assert!(result.is_err(), "should fail without colon separator");
+        Ok(())
     }
 
     /// A rule without a `/` between threshold and window fails to parse.
     #[test]
-    fn parse_rule_invalid_no_slash() {
+    fn parse_rule_invalid_no_slash() -> Result<(), TestError> {
         let result = AlertRule::parse("bad:10");
         assert!(result.is_err(), "should fail without slash separator");
+        Ok(())
     }
 
     /// A non-numeric threshold fails to parse.
     #[test]
-    fn parse_rule_invalid_threshold() {
+    fn parse_rule_invalid_threshold() -> Result<(), TestError> {
         let result = AlertRule::parse("bad:abc/1m");
         assert!(result.is_err(), "should fail with non-numeric threshold");
+        Ok(())
     }
 
     /// An invalid window suffix fails to parse.
     #[test]
-    fn parse_rule_invalid_window() {
+    fn parse_rule_invalid_window() -> Result<(), TestError> {
         let result = AlertRule::parse("bad:10/1x");
         assert!(result.is_err(), "should fail with invalid window suffix");
+        Ok(())
     }
 
     /// A rule with an empty name fails to parse.
     #[test]
-    fn parse_rule_empty_name() {
+    fn parse_rule_empty_name() -> Result<(), TestError> {
         let result = AlertRule::parse(":10/1m");
         assert!(result.is_err(), "should fail with empty name");
+        Ok(())
     }
 
     /// A second alert for the same source within the cooldown is suppressed.
     #[test]
-    fn cooldown_suppresses_second_alert() {
-        let rule = AlertRule::parse("test:1/1s:10m").expect("parse");
+    fn cooldown_suppresses_second_alert() -> Result<(), TestError> {
+        let rule = AlertRule::parse("test:1/1s:10m").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
 
         let first = engine.fire("test", test_ip(), "first alert", at(0));
@@ -1272,6 +1290,7 @@ mod tests {
 
         let second = engine.fire("test", test_ip(), "second alert", at(0));
         assert!(!second, "second alert within cooldown should be suppressed");
+        Ok(())
     }
 
     /// A finding is stamped with CAPTURE time, not wall-clock. Offline a whole
@@ -1280,7 +1299,7 @@ mod tests {
     /// reader reconstructs and the `iter_findings` since-cursor, which filters
     /// on the timestamp. The rate logic already runs on the capture-time `now`.
     #[test]
-    fn a_finding_is_stamped_with_capture_time_not_wall_clock() {
+    fn a_finding_is_stamped_with_capture_time_not_wall_clock() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.set_findings_capacity(10);
         assert!(engine.fire("scanner", test_ip(), "probe", at(1000)));
@@ -1296,12 +1315,13 @@ mod tests {
             "a finding must carry the capture time it fired at, not the wall-clock \
              moment the process happened to run"
         );
+        Ok(())
     }
 
     /// Different source IPs have independent cooldowns.
     #[test]
-    fn different_sources_independent_cooldown() {
-        let rule = AlertRule::parse("test:1/1s:10m").expect("parse");
+    fn different_sources_independent_cooldown() -> Result<(), TestError> {
+        let rule = AlertRule::parse("test:1/1s:10m").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
 
         let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -1312,6 +1332,7 @@ mod tests {
             engine.fire("test", ip2, "alert from ip2", at(0)),
             "different source should fire independently"
         );
+        Ok(())
     }
 
     /// A threshold of five needs five events before anything fires.
@@ -1327,8 +1348,8 @@ mod tests {
     /// pass: every event is eligible to fire, and only the threshold can hold
     /// the first four back.
     #[test]
-    fn a_threshold_of_five_needs_five_events() {
-        let rule = AlertRule::parse("test:5/60s:0s").expect("parse");
+    fn a_threshold_of_five_needs_five_events() -> Result<(), TestError> {
+        let rule = AlertRule::parse("test:5/60s:0s").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
 
         for i in 1..=4 {
@@ -1341,6 +1362,7 @@ mod tests {
             engine.fire("test", test_ip(), "event", at(5)),
             "the fifth event reaches the threshold and must fire"
         );
+        Ok(())
     }
 
     /// Events that fall outside the window do not accumulate toward it.
@@ -1349,8 +1371,8 @@ mod tests {
     /// events spread across an hour are not "five events in a minute", and a
     /// rule that counted them would alert on ordinary traffic given enough time.
     #[test]
-    fn events_older_than_the_window_do_not_count() {
-        let rule = AlertRule::parse("test:3/60s:0s").expect("parse");
+    fn events_older_than_the_window_do_not_count() -> Result<(), TestError> {
+        let rule = AlertRule::parse("test:3/60s:0s").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
 
         // Three events, but 100 seconds apart — never three inside any minute.
@@ -1367,6 +1389,7 @@ mod tests {
             engine.fire("test", test_ip(), "event", at(220)),
             "at(200), at(210) and at(220) are three events inside 60s"
         );
+        Ok(())
     }
 
     /// The window is measured in capture time, so a replay behaves like live.
@@ -1376,8 +1399,8 @@ mod tests {
     /// in a file would count toward every threshold — which is exactly the
     /// defect that made the scanner detectors read a replayed trunk as a flood.
     #[test]
-    fn the_window_follows_packet_time_not_wall_time() {
-        let rule = AlertRule::parse("test:2/10s:0s").expect("parse");
+    fn the_window_follows_packet_time_not_wall_time() -> Result<(), TestError> {
+        let rule = AlertRule::parse("test:2/10s:0s").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
 
         // Two events an hour apart in CAPTURE time, delivered back to back in
@@ -1388,11 +1411,12 @@ mod tests {
             "an hour apart in the capture is not two events in ten seconds, \
              however fast the file was read"
         );
+        Ok(())
     }
 
     /// An alert type with no matching rule falls back to the 60s default cooldown.
     #[test]
-    fn unknown_rule_uses_default_cooldown() {
+    fn unknown_rule_uses_default_cooldown() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
 
         let first = engine.fire("unknown-rule", test_ip(), "test", at(0));
@@ -1403,50 +1427,43 @@ mod tests {
             !second,
             "second alert should be suppressed by default cooldown"
         );
+        Ok(())
     }
 
     // ── Phase 8.3 FindingsHistory ────────────────────────────────────
 
     /// Each post-cooldown firing is recorded in the ring buffer, newest first.
     #[test]
-    fn findings_history_records_each_post_cooldown_fire() {
+    fn findings_history_records_each_post_cooldown_fire() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         // Default cooldown is 60s; fire from different IPs so no cooldown.
-        engine.fire(
-            "scanner",
-            "10.0.0.1".parse().unwrap(),
-            "ua=friendly-scanner",
-            at(0),
-        );
-        engine.fire(
-            "scanner",
-            "10.0.0.2".parse().unwrap(),
-            "ua=sipvicious",
-            at(0),
-        );
-        engine.fire("fraud", "10.0.0.3".parse().unwrap(), "irsf", at(0));
+        engine.fire("scanner", "10.0.0.1".parse()?, "ua=friendly-scanner", at(0));
+        engine.fire("scanner", "10.0.0.2".parse()?, "ua=sipvicious", at(0));
+        engine.fire("fraud", "10.0.0.3".parse()?, "irsf", at(0));
         let all = engine.iter_findings(&[], None, 100);
         assert_eq!(all.len(), 3);
         // Newest first
         assert_eq!(all[0].rule_name, "fraud");
         assert_eq!(all[2].rule_name, "scanner");
+        Ok(())
     }
 
     /// `iter_findings` filters stored findings by rule kind.
     #[test]
-    fn findings_history_filter_by_kind() {
+    fn findings_history_filter_by_kind() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
-        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "a", at(0));
-        engine.fire("fraud", "10.0.0.2".parse().unwrap(), "b", at(0));
-        engine.fire("scanner", "10.0.0.3".parse().unwrap(), "c", at(0));
+        engine.fire("scanner", "10.0.0.1".parse()?, "a", at(0));
+        engine.fire("fraud", "10.0.0.2".parse()?, "b", at(0));
+        engine.fire("scanner", "10.0.0.3".parse()?, "c", at(0));
         let scanner_only = engine.iter_findings(&["scanner"], None, 100);
         assert_eq!(scanner_only.len(), 2);
         assert!(scanner_only.iter().all(|f| f.rule_name == "scanner"));
+        Ok(())
     }
 
     /// The bounded ring buffer evicts oldest-first, keeping the most recent.
     #[test]
-    fn findings_history_eviction_keeps_most_recent() {
+    fn findings_history_eviction_keeps_most_recent() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.set_findings_capacity(5);
         for i in 0..2000u32 {
@@ -1466,14 +1483,15 @@ mod tests {
         assert_eq!(all.len(), 5, "ring buffer must hold exactly 5");
         // The most recent entry should be seq=1999.
         assert!(all[0].detail.contains("seq=1999"));
+        Ok(())
     }
 
     /// Cooldown-suppressed firings are not recorded in the findings history.
     #[test]
-    fn findings_history_cooldown_suppression_does_not_record() {
-        let rule = AlertRule::parse("scanner:1/1s:10m").expect("parse");
+    fn findings_history_cooldown_suppression_does_not_record() -> Result<(), TestError> {
+        let rule = AlertRule::parse("scanner:1/1s:10m").map_err(|e| format!("parse: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
-        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let ip: IpAddr = "10.0.0.1".parse()?;
         let first = engine.fire("scanner", ip, "first", at(0));
         let second = engine.fire("scanner", ip, "second", at(0));
         assert!(first);
@@ -1485,45 +1503,55 @@ mod tests {
             "suppressed firings must NOT appear in history"
         );
         assert!(all[0].detail.contains("first"));
+        Ok(())
     }
 
     /// A zero findings capacity disables retention entirely.
     #[test]
-    fn findings_history_zero_capacity_disables_retention() {
+    fn findings_history_zero_capacity_disables_retention() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         engine.set_findings_capacity(0);
-        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "x", at(0));
+        engine.fire("scanner", "10.0.0.1".parse()?, "x", at(0));
         let all = engine.iter_findings(&[], None, 100);
         assert_eq!(all.len(), 0);
+        Ok(())
     }
 
     // ── Security regression tests ────────────────────────────────────
 
     /// CR and LF in a log value are each replaced with a space.
     #[test]
-    fn sanitize_log_value_strips_crlf() {
+    fn sanitize_log_value_strips_crlf() -> Result<(), TestError> {
         let result = sanitize_log_value("hello\r\nworld");
         assert_eq!(
             result, "hello  world",
             "\\r and \\n should each be replaced with a space"
         );
+        Ok(())
     }
 
     /// A JSON alert line carries the expected `alert`/`src`/`detail`/`ts` fields.
     #[test]
-    fn alert_json_line_has_expected_fields() {
-        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 24, 1, 2, 3).unwrap();
+    fn alert_json_line_has_expected_fields() -> Result<(), TestError> {
+        let ts = chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_782_262_923); // 2026-06-24T01:02:03Z
         let line = alert_json_line(
             "scanner",
             test_ip(),
             "method=OPTIONS detection=enumeration",
             ts,
         );
-        let v: serde_json::Value = serde_json::from_str(&line).expect("valid JSON line");
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("valid JSON line: {e:?}"))?;
         assert_eq!(v["alert"], "scanner");
         assert_eq!(v["src"], "10.0.0.1");
         assert_eq!(v["detail"], "method=OPTIONS detection=enumeration");
-        assert!(v["ts"].as_str().unwrap().starts_with("2026-06-24T01:02:03"));
+        assert!(
+            v["ts"]
+                .as_str()
+                .ok_or("v[\"ts\"].as_str() is None")?
+                .starts_with("2026-06-24T01:02:03")
+        );
+        Ok(())
     }
 
     // ── Shared tumbling-window rate limiter ──────────────────────────
@@ -1533,7 +1561,7 @@ mod tests {
     /// it.
     #[cfg(feature = "native")]
     #[test]
-    fn the_window_rolls_on_the_clock_not_on_events() {
+    fn the_window_rolls_on_the_clock_not_on_events() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(3, 1);
         for i in 0..3 {
             assert!(w.allows(at(0)), "event {i} of 3 is inside the budget");
@@ -1541,17 +1569,19 @@ mod tests {
         }
         assert!(!w.allows(at(0)), "the fourth event in one second is over");
         assert!(w.allows(at(1)), "a second later the window has rolled");
+        Ok(())
     }
 
     /// A limit of zero disables the limiter, matching `--exec-rate-limit 0`.
     #[cfg(feature = "native")]
     #[test]
-    fn a_zero_limit_disables_the_window() {
+    fn a_zero_limit_disables_the_window() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(0, 1);
         for _ in 0..1000 {
             assert!(w.allows(at(0)), "a zero limit must never deny");
             w.record();
         }
+        Ok(())
     }
 
     /// A backwards clock must not roll the window.
@@ -1562,7 +1592,7 @@ mod tests {
     /// for one.
     #[cfg(feature = "native")]
     #[test]
-    fn a_backwards_clock_does_not_roll_the_window() {
+    fn a_backwards_clock_does_not_roll_the_window() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(2, 60);
         assert!(w.allows(at(3600)));
         w.record();
@@ -1573,30 +1603,33 @@ mod tests {
             "an hour-old stamp must not hand out a fresh window"
         );
         assert!(!w.allows(at(-86_400)), "nor must a stamp a day old");
+        Ok(())
     }
 
     /// A zero-length window is clamped to one second rather than silently
     /// disabling the limit that was asked for.
     #[cfg(feature = "native")]
     #[test]
-    fn a_zero_length_window_is_clamped() {
+    fn a_zero_length_window_is_clamped() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(1, 0);
         assert!(w.allows(at(0)));
         w.record();
         assert!(!w.allows(at(0)), "a 0s window must not roll on every event");
         assert!(w.allows(at(1)));
+        Ok(())
     }
 
     /// Checking does not book: an action that was allowed but never happened
     /// (a spawn that errored) must not spend the budget it was granted.
     #[cfg(feature = "native")]
     #[test]
-    fn checking_the_budget_does_not_spend_it() {
+    fn checking_the_budget_does_not_spend_it() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(1, 1);
         assert!(w.allows(at(0)));
         assert!(w.allows(at(0)), "an unbooked check must not consume budget");
         w.record();
         assert!(!w.allows(at(0)), "the booked event did consume it");
+        Ok(())
     }
 
     /// An event that has been allowed but not yet booked still counts, when
@@ -1608,7 +1641,7 @@ mod tests {
     /// and the in-flight decision is declared here in the meantime.
     #[cfg(feature = "native")]
     #[test]
-    fn a_reserved_event_counts_against_the_budget_before_it_is_booked() {
+    fn a_reserved_event_counts_against_the_budget_before_it_is_booked() -> Result<(), TestError> {
         let mut w = TumblingWindow::new(1, 1);
         assert!(w.allows(at(0)), "the first event fits");
         assert!(
@@ -1641,18 +1674,20 @@ mod tests {
             rolls.allows_with_reserved(at(5), 0),
             "a new window starts empty"
         );
+        Ok(())
     }
 
     /// Drops are logged at 1, 10, 100, … and nowhere in between.
     #[cfg(feature = "native")]
     #[test]
-    fn order_of_magnitude_boundaries() {
+    fn order_of_magnitude_boundaries() -> Result<(), TestError> {
         for n in [1u64, 10, 100, 1000, 10_000_000] {
             assert!(is_order_of_magnitude(n), "{n} is a power of ten");
         }
         for n in [0u64, 2, 11, 99, 101, 999, 1001] {
             assert!(!is_order_of_magnitude(n), "{n} is not a power of ten");
         }
+        Ok(())
     }
 
     // ── Per-source alert-exec budgets ────────────────────────────────
@@ -1661,10 +1696,10 @@ mod tests {
     /// that has not is unaffected by it.
     #[cfg(feature = "native")]
     #[test]
-    fn one_source_exhausting_its_budget_does_not_affect_another() {
+    fn one_source_exhausting_its_budget_does_not_affect_another() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         let noisy = test_ip();
-        let quiet: IpAddr = "10.0.0.2".parse().expect("valid IP");
+        let quiet: IpAddr = "10.0.0.2".parse().map_err(|e| format!("valid IP: {e:?}"))?;
 
         for i in 0..MAX_EXEC_PER_SOURCE_PER_MINUTE {
             assert!(
@@ -1674,7 +1709,7 @@ mod tests {
             engine
                 .exec_per_source
                 .get_mut(&noisy)
-                .expect("bucket exists after allows")
+                .ok_or("bucket exists after allows")?
                 .record();
         }
         assert!(
@@ -1689,6 +1724,7 @@ mod tests {
             engine.source_allows_exec(noisy, at(60)),
             "a capture minute later the source's window has rolled"
         );
+        Ok(())
     }
 
     /// The per-source exec budget is exactly three spawns per capture minute.
@@ -1704,7 +1740,7 @@ mod tests {
     /// budget across distinct sources instead of concentrating it on one.
     #[cfg(feature = "native")]
     #[test]
-    fn the_per_source_exec_budget_is_three_a_minute() {
+    fn the_per_source_exec_budget_is_three_a_minute() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         let misidentified = test_ip();
 
@@ -1718,7 +1754,7 @@ mod tests {
             engine
                 .exec_per_source
                 .get_mut(&misidentified)
-                .expect("bucket exists after allows")
+                .ok_or("bucket exists after allows")?
                 .record();
         }
 
@@ -1729,6 +1765,7 @@ mod tests {
              and one misidentified peer now forks more of the operator's \
              command than the blast radius this bound exists to hold"
         );
+        Ok(())
     }
 
     /// The per-source budget map is bounded and evicts least-recently-used.
@@ -1739,7 +1776,7 @@ mod tests {
     /// stamp, because capture stamps tie.
     #[cfg(feature = "native")]
     #[test]
-    fn per_source_exec_budgets_are_bounded() {
+    fn per_source_exec_budgets_are_bounded() -> Result<(), TestError> {
         let mut engine = AlertEngine::new(vec![], None);
         let victim = test_ip();
 
@@ -1749,7 +1786,7 @@ mod tests {
             engine
                 .exec_per_source
                 .get_mut(&victim)
-                .expect("bucket exists after allows")
+                .ok_or("bucket exists after allows")?
                 .record();
         }
         assert!(
@@ -1771,19 +1808,22 @@ mod tests {
             engine.source_allows_exec(victim, at(0)),
             "cap regressed: the victim's spent budget survived the flood"
         );
+        Ok(())
     }
 
     /// A crafted detail string stays escaped inside `detail` and cannot inject
     /// sibling JSON fields.
     #[test]
-    fn alert_json_line_escapes_adversarial_detail() {
+    fn alert_json_line_escapes_adversarial_detail() -> Result<(), TestError> {
         // a crafted detail (embedded quote/brace) must stay inside the string,
         // not break the line or inject a sibling field.
         let ts = chrono::Utc::now();
         let line = alert_json_line("scanner", test_ip(), r#"ua="evil","injected":1"#, ts);
-        let v: serde_json::Value = serde_json::from_str(&line).expect("still valid JSON");
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("still valid JSON: {e:?}"))?;
         assert!(v.get("injected").is_none(), "no injected field");
         assert_eq!(v["detail"], r#"ua="evil","injected":1"#);
+        Ok(())
     }
 
     /// A source address in the 12.0.0.0/8 test range, distinct per `i`.
@@ -1798,8 +1838,8 @@ mod tests {
     /// and one windows, and a spoofed-source flood on a live interface was a
     /// remote allocation with no ceiling.
     #[test]
-    fn the_event_map_stays_bounded_when_no_source_reaches_its_threshold() {
-        let rule = AlertRule::parse("scanner:5/1m").expect("a valid rule");
+    fn the_event_map_stays_bounded_when_no_source_reaches_its_threshold() -> Result<(), TestError> {
+        let rule = AlertRule::parse("scanner:5/1m").map_err(|e| format!("a valid rule: {e:?}"))?;
         let mut engine = AlertEngine::new(vec![rule], None);
         for i in 0..=MAX_COOLDOWN_ENTRIES {
             assert!(
@@ -1813,12 +1853,14 @@ mod tests {
              a flood of sources that never reach a threshold grew it without bound",
             engine.events.len()
         );
+        Ok(())
     }
 
     /// The cooldown map stays bounded under a flood of sources that all
     /// fire, and the source that fired least recently is the one forgotten.
     #[test]
-    fn the_cooldown_map_stays_bounded_and_forgets_the_least_recent_firing() {
+    fn the_cooldown_map_stays_bounded_and_forgets_the_least_recent_firing() -> Result<(), TestError>
+    {
         let mut engine = AlertEngine::new(vec![], None);
         for i in 0..MAX_COOLDOWN_ENTRIES {
             assert!(engine.fire("scanner", flood_ip(i), "probe", at(0)));
@@ -1847,5 +1889,6 @@ mod tests {
                 .contains_key(&(flood_ip(1), "scanner".to_string())),
             "the next-oldest firing survives"
         );
+        Ok(())
     }
 }

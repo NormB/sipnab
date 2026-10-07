@@ -626,7 +626,9 @@ impl DecryptedExport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     // ── Frames built by hand, and a checksum checker ─────────────────────
 
@@ -634,7 +636,7 @@ mod tests {
     const B4: [u8; 4] = [10, 0, 0, 2];
 
     fn t(ms: i64) -> DateTime<Utc> {
-        Utc.timestamp_millis_opt(1_700_000_000_000 + ms).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_700_000_000_000 + ms)
     }
 
     fn sum16(data: &[u8]) -> u32 {
@@ -806,10 +808,10 @@ mod tests {
     // ── Rebuilding one frame ─────────────────────────────────────────────
 
     #[test]
-    fn a_rebuilt_udp_frame_carries_the_decrypted_rtp() {
+    fn a_rebuilt_udp_frame_carries_the_decrypted_rtp() -> Result<(), TestError> {
         let srtp = [RTP_PLAIN, &[0xab; 10][..]].concat();
         let p = pkt(0, udp_frame(A4, B4, 40_000, 50_000, &srtp));
-        let f = rebuild_udp(&p, RTP_PLAIN).expect("rebuilt");
+        let f = rebuild_udp(&p, RTP_PLAIN).ok_or("rebuilt")?;
         assert_eq!(
             &f[42..],
             RTP_PLAIN,
@@ -820,27 +822,29 @@ mod tests {
             &p.data[..14],
             "the link-layer header is the captured one"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_rebuilt_udp_frame_states_its_new_length() {
+    fn a_rebuilt_udp_frame_states_its_new_length() -> Result<(), TestError> {
         let srtp = [RTP_PLAIN, &[0xab; 10][..]].concat();
         let p = pkt(0, udp_frame(A4, B4, 40_000, 50_000, &srtp));
-        let f = rebuild_udp(&p, RTP_PLAIN).expect("rebuilt");
+        let f = rebuild_udp(&p, RTP_PLAIN).ok_or("rebuilt")?;
         let udp_len = u16::from_be_bytes([f[38], f[39]]);
         assert_eq!(usize::from(udp_len), 8 + RTP_PLAIN.len());
         let ip_total = u16::from_be_bytes([f[16], f[17]]);
         assert_eq!(usize::from(ip_total), 20 + 8 + RTP_PLAIN.len());
         assert_eq!(f.len(), 14 + 20 + 8 + RTP_PLAIN.len());
+        Ok(())
     }
 
     #[test]
-    fn a_rebuilt_ipv4_udp_frame_has_valid_checksums() {
+    fn a_rebuilt_ipv4_udp_frame_has_valid_checksums() -> Result<(), TestError> {
         let p = pkt(
             0,
             udp_frame(A4, B4, 40_000, 50_000, &[RTP_PLAIN, &[1; 10][..]].concat()),
         );
-        let f = rebuild_udp(&p, RTP_PLAIN).expect("rebuilt");
+        let f = rebuild_udp(&p, RTP_PLAIN).ok_or("rebuilt")?;
         let (ip, l4, pseudo) = v4_parts(&f);
         assert!(verifies(&[ip]), "IPv4 header checksum");
         assert!(verifies(&[&pseudo, l4]), "UDP checksum");
@@ -849,15 +853,16 @@ mod tests {
             &[0, 0],
             "a UDP checksum is written, not left empty"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_rebuilt_ipv6_udp_frame_has_its_length_and_mandatory_checksum() {
+    fn a_rebuilt_ipv6_udp_frame_has_its_length_and_mandatory_checksum() -> Result<(), TestError> {
         let p = pkt(
             0,
             udp6_frame(40_000, 50_000, &[RTP_PLAIN, &[1; 10][..]].concat()),
         );
-        let f = rebuild_udp(&p, RTP_PLAIN).expect("rebuilt");
+        let f = rebuild_udp(&p, RTP_PLAIN).ok_or("rebuilt")?;
         let plen = u16::from_be_bytes([f[18], f[19]]);
         assert_eq!(usize::from(plen), 8 + RTP_PLAIN.len());
         let l4 = &f[54..];
@@ -868,19 +873,21 @@ mod tests {
             verifies(&[&pseudo, l4]),
             "UDP checksum over the IPv6 pseudo-header"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_fragment_is_not_rebuilt() {
+    fn a_fragment_is_not_rebuilt() -> Result<(), TestError> {
         let mut frame = udp_frame(A4, B4, 40_000, 50_000, &[RTP_PLAIN, &[1; 10][..]].concat());
         frame[20] = 0x20; // more fragments
         assert!(rebuild_udp(&pkt(0, frame), RTP_PLAIN).is_none());
+        Ok(())
     }
 
     // ── SRTP through the export ──────────────────────────────────────────
 
     #[test]
-    fn decrypted_srtp_is_written_as_its_rtp_and_counted() {
+    fn decrypted_srtp_is_written_as_its_rtp_and_counted() -> Result<(), TestError> {
         let mut x = export();
         x.captured(&pkt(
             0,
@@ -892,10 +899,11 @@ mod tests {
         assert_eq!(&out[0].1[42..], RTP_PLAIN);
         assert_eq!(out[0].2, Some(Source::Srtp));
         assert_eq!(x.counts().rtp_from_srtp, 1);
+        Ok(())
     }
 
     #[test]
-    fn srtp_in_a_fragment_is_written_as_captured_and_counted() {
+    fn srtp_in_a_fragment_is_written_as_captured_and_counted() -> Result<(), TestError> {
         let mut frame = udp_frame(A4, B4, 40_000, 50_000, &[RTP_PLAIN, &[1; 10][..]].concat());
         frame[20] = 0x20;
         let mut x = export();
@@ -905,10 +913,11 @@ mod tests {
         assert_eq!(out[0].1, frame, "as captured");
         assert_eq!(x.counts().not_rebuildable, 1);
         assert_eq!(x.counts().rtp_from_srtp, 0);
+        Ok(())
     }
 
     #[test]
-    fn rtcp_beside_decrypted_srtp_is_counted_as_srtcp_copied() {
+    fn rtcp_beside_decrypted_srtp_is_counted_as_srtcp_copied() -> Result<(), TestError> {
         let mut x = export();
         x.captured(&pkt(
             0,
@@ -932,12 +941,14 @@ mod tests {
             3,
             "RTCP is still written as captured"
         );
+        Ok(())
     }
 
     // ── TLS: one frame per message, the connection replaced (D2) ─────────
 
     #[test]
-    fn a_decrypted_message_is_one_tcp_frame_holding_exactly_that_message() {
+    fn a_decrypted_message_is_one_tcp_frame_holding_exactly_that_message() -> Result<(), TestError>
+    {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
@@ -962,22 +973,24 @@ mod tests {
             u16::from_be_bytes([rebuilt[0].1[36], rebuilt[0].1[37]]),
             5061
         );
+        Ok(())
     }
 
     #[test]
-    fn rebuilt_tcp_frames_have_valid_checksums() {
+    fn rebuilt_tcp_frames_have_valid_checksums() -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
         let out = written(&mut x);
-        let f = &out.iter().find(|w| w.2.is_some()).expect("rebuilt").1;
+        let f = &out.iter().find(|w| w.2.is_some()).ok_or("rebuilt")?.1;
         let (ip, l4, pseudo) = v4_parts(f);
         assert!(verifies(&[ip]), "IPv4 header checksum");
         assert!(verifies(&[&pseudo, l4]), "TCP checksum");
+        Ok(())
     }
 
     #[test]
-    fn sequence_numbers_run_on_per_direction() {
+    fn sequence_numbers_run_on_per_direction() -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
@@ -996,10 +1009,11 @@ mod tests {
             101 + INVITE.len() as u32,
             "the next frame starts where the last one ended"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_ack_is_the_other_directions_next_sequence() {
+    fn the_ack_is_the_other_directions_next_sequence() -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
@@ -1015,10 +1029,12 @@ mod tests {
         );
         assert_eq!(tcp_ack(&out[1].1), 101 + INVITE.len() as u32);
         assert_eq!(tcp_ack(&out[0].1), 901);
+        Ok(())
     }
 
     #[test]
-    fn a_decrypted_connections_captured_segments_are_replaced_and_counted() {
+    fn a_decrypted_connections_captured_segments_are_replaced_and_counted() -> Result<(), TestError>
+    {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
@@ -1030,10 +1046,12 @@ mod tests {
         );
         assert_eq!(x.counts().segments_replaced, 6);
         assert_eq!(x.counts().sip_from_tls, 1);
+        Ok(())
     }
 
     #[test]
-    fn a_connection_that_never_decrypts_is_written_as_captured_and_counted() {
+    fn a_connection_that_never_decrypts_is_written_as_captured_and_counted() -> Result<(), TestError>
+    {
         let mut x = export();
         tls_connection(&mut x);
         let out = written(&mut x);
@@ -1045,10 +1063,11 @@ mod tests {
             "the four segments that carried TLS"
         );
         assert_eq!(x.counts().segments_replaced, 0);
+        Ok(())
     }
 
     #[test]
-    fn traffic_that_was_never_encrypted_is_written_byte_for_byte() {
+    fn traffic_that_was_never_encrypted_is_written_byte_for_byte() -> Result<(), TestError> {
         let mut x = export();
         let frames = [
             udp_frame(A4, B4, 5060, 5060, INVITE),
@@ -1063,20 +1082,23 @@ mod tests {
             frames.to_vec()
         );
         assert_eq!(x.counts(), &ExportCounts::default());
+        Ok(())
     }
 
     #[test]
-    fn a_message_whose_connection_was_never_captured_is_counted_not_rebuilt() {
+    fn a_message_whose_connection_was_never_captured_is_counted_not_rebuilt()
+    -> Result<(), TestError> {
         let mut x = export();
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Tls);
         assert!(written(&mut x).is_empty());
         assert_eq!(x.counts().not_rebuildable, 1);
+        Ok(())
     }
 
     // ── WSS (D3) and frame comments ──────────────────────────────────────
 
     #[test]
-    fn a_wss_message_is_written_as_plain_sip_and_says_wss() {
+    fn a_wss_message_is_written_as_plain_sip_and_says_wss() -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.sip_decrypted(sa(A4, 40_000), sa(B4, 5061), t(4), INVITE, Source::Wss);
@@ -1087,10 +1109,11 @@ mod tests {
         assert_eq!(tcp_payload(&out[0].1), INVITE, "no WebSocket framing");
         assert_eq!(out[0].2, Some(Source::Wss));
         assert_eq!(x.counts().sip_from_wss, 1);
+        Ok(())
     }
 
     #[test]
-    fn each_source_has_its_own_comment() {
+    fn each_source_has_its_own_comment() -> Result<(), TestError> {
         let c = [
             Source::Tls.comment(),
             Source::Wss.comment(),
@@ -1104,12 +1127,13 @@ mod tests {
             c.iter().all(|s| s.starts_with("sipnab: decrypted")),
             "{c:?}"
         );
+        Ok(())
     }
 
     // ── Order (D1) ───────────────────────────────────────────────────────
 
     #[test]
-    fn nothing_leaves_before_its_window_has_passed() {
+    fn nothing_leaves_before_its_window_has_passed() -> Result<(), TestError> {
         let mut x = export();
         x.captured(&pkt(0, udp_frame(A4, B4, 5060, 5060, INVITE)));
         x.captured(&pkt(4_000, udp_frame(A4, B4, 5060, 5060, INVITE)));
@@ -1118,10 +1142,11 @@ mod tests {
         let out = x.ready();
         assert_eq!(out.len(), 1, "only the frame the window has passed");
         assert_eq!(out[0].packet.timestamp, t(0));
+        Ok(())
     }
 
     #[test]
-    fn a_late_decryption_inside_the_window_lands_in_capture_order() {
+    fn a_late_decryption_inside_the_window_lands_in_capture_order() -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.captured(&pkt(3_000, udp_frame(A4, B4, 5060, 5060, RINGING)));
@@ -1133,10 +1158,12 @@ mod tests {
             vec![t(4), t(3_000)]
         );
         assert_eq!(x.counts().out_of_order, 0);
+        Ok(())
     }
 
     #[test]
-    fn a_late_decryption_beyond_the_window_is_written_out_of_order_and_counted() {
+    fn a_late_decryption_beyond_the_window_is_written_out_of_order_and_counted()
+    -> Result<(), TestError> {
         let mut x = export();
         tls_connection(&mut x);
         x.captured(&pkt(9_000, udp_frame(A4, B4, 5060, 5060, RINGING)));
@@ -1150,10 +1177,11 @@ mod tests {
         let rest = written(&mut x);
         assert_eq!(rest[0].0, t(4));
         assert_eq!(x.counts().out_of_order, 1);
+        Ok(())
     }
 
     #[test]
-    fn the_byte_cap_lets_the_oldest_frames_go_early() {
+    fn the_byte_cap_lets_the_oldest_frames_go_early() -> Result<(), TestError> {
         let mut x = DecryptedExport::new(reorder_window(), 200);
         for ms in 0..4 {
             x.captured(&pkt(ms, udp_frame(A4, B4, 5060, 5060, INVITE)));
@@ -1164,12 +1192,13 @@ mod tests {
             "over the cap, the oldest leave before the window"
         );
         assert_eq!(out[0].packet.timestamp, t(0));
+        Ok(())
     }
 
     // ── The end of a run (D4) ────────────────────────────────────────────
 
     #[test]
-    fn the_end_of_an_input_writes_everything_held_in_capture_order() {
+    fn the_end_of_an_input_writes_everything_held_in_capture_order() -> Result<(), TestError> {
         let mut x = export();
         for ms in [0, 1, 2] {
             x.captured(&pkt(ms, udp_frame(A4, B4, 5060, 5060, INVITE)));
@@ -1180,10 +1209,11 @@ mod tests {
             vec![t(0), t(1), t(2)]
         );
         assert!(x.finish().is_empty(), "nothing is written twice");
+        Ok(())
     }
 
     #[test]
-    fn a_stop_writes_nothing_held_and_counts_it() {
+    fn a_stop_writes_nothing_held_and_counts_it() -> Result<(), TestError> {
         let mut x = export();
         for ms in [0, 1, 2] {
             x.captured(&pkt(ms, udp_frame(A4, B4, 5060, 5060, INVITE)));
@@ -1194,12 +1224,13 @@ mod tests {
             x.finish().is_empty(),
             "discarded frames never reach the writer"
         );
+        Ok(())
     }
 
     // ── The closing line ─────────────────────────────────────────────────
 
     #[test]
-    fn the_summary_line_names_every_count() {
+    fn the_summary_line_names_every_count() -> Result<(), TestError> {
         let c = ExportCounts {
             sip_from_tls: 1,
             sip_from_wss: 2,
@@ -1225,5 +1256,6 @@ mod tests {
         ] {
             assert!(line.contains(part), "missing {part:?} in {line:?}");
         }
+        Ok(())
     }
 }

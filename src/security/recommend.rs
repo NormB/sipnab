@@ -424,16 +424,19 @@ mod tests {
     use chrono::DateTime;
     use std::collections::BTreeSet;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// An accusation with one rule and a chosen counter-evidence state.
-    fn accused(ip: &str, established: Option<bool>) -> AccusedSource {
-        AccusedSource {
-            src_ip: ip.parse().expect("test ip"),
+    fn accused(ip: &str, established: Option<bool>) -> Result<AccusedSource, TestError> {
+        Ok(AccusedSource {
+            src_ip: ip.parse().map_err(|e| format!("test ip: {e:?}"))?,
             findings: 12,
             rules: BTreeSet::from(["scanner".to_string()]),
-            first_seen: DateTime::from_timestamp(10, 0).expect("test timestamp"),
-            last_seen: DateTime::from_timestamp(20, 0).expect("test timestamp"),
+            first_seen: DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(10),
+            last_seen: DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(20),
             established,
-        }
+        })
     }
 
     /// The commands a block actually offers to run: every line that is not a
@@ -448,9 +451,9 @@ mod tests {
 
     /// A source with no relationship gets commands it can run.
     #[test]
-    fn an_unestablished_source_gets_runnable_commands() {
+    fn an_unestablished_source_gets_runnable_commands() -> Result<(), TestError> {
         let block = recommend(
-            &accused("198.51.100.7", Some(false)),
+            &accused("198.51.100.7", Some(false))?,
             BlockDialect::Nftables,
         );
         assert!(
@@ -461,6 +464,7 @@ mod tests {
             block.contains("198.51.100.7"),
             "the rule does not name its address:\n{block}"
         );
+        Ok(())
     }
 
     /// The counter-evidence withholds the address-specific commands.
@@ -470,9 +474,9 @@ mod tests {
     /// pasteable `nft add element` has stated the fact and not acted on it,
     /// and the paste is what bans the customer.
     #[test]
-    fn an_established_source_gets_no_runnable_command() {
+    fn an_established_source_gets_no_runnable_command() -> Result<(), TestError> {
         for dialect in [BlockDialect::Nftables, BlockDialect::Iptables] {
-            let block = recommend(&accused("198.51.100.7", Some(true)), dialect);
+            let block = recommend(&accused("198.51.100.7", Some(true))?, dialect);
             assert!(
                 block.contains("also completed a registration or a call"),
                 "{dialect:?} block carries no counter-evidence:\n{block}"
@@ -484,6 +488,7 @@ mod tests {
                 live_lines(&block)
             );
         }
+        Ok(())
     }
 
     /// fail2ban is NOT withheld, and carries the fact as `ignoreip`.
@@ -493,8 +498,11 @@ mod tests {
     /// this source's relationship is not a reason to stop protecting against
     /// the others.
     #[test]
-    fn the_fail2ban_dialect_carries_counter_evidence_as_ignoreip() {
-        let block = recommend(&accused("198.51.100.7", Some(true)), BlockDialect::Fail2ban);
+    fn the_fail2ban_dialect_carries_counter_evidence_as_ignoreip() -> Result<(), TestError> {
+        let block = recommend(
+            &accused("198.51.100.7", Some(true))?,
+            BlockDialect::Fail2ban,
+        );
         let live = live_lines(&block);
         assert!(
             live.iter().any(|l| l.starts_with("failregex =")),
@@ -505,28 +513,32 @@ mod tests {
             "the counter-evidence did not reach the mechanism fail2ban has \
              for it:\n{block}"
         );
+        Ok(())
     }
 
     /// Every state of the counter-evidence is said out loud, and "nobody
     /// asked" is not spelled the same as "asked and it had not".
     #[test]
-    fn the_three_counter_evidence_states_are_distinguishable() {
-        let yes = recommend(&accused("198.51.100.7", Some(true)), BlockDialect::Iptables);
-        let no = recommend(
-            &accused("198.51.100.7", Some(false)),
+    fn the_three_counter_evidence_states_are_distinguishable() -> Result<(), TestError> {
+        let yes = recommend(
+            &accused("198.51.100.7", Some(true))?,
             BlockDialect::Iptables,
         );
-        let unknown = recommend(&accused("198.51.100.7", None), BlockDialect::Iptables);
+        let no = recommend(
+            &accused("198.51.100.7", Some(false))?,
+            BlockDialect::Iptables,
+        );
+        let unknown = recommend(&accused("198.51.100.7", None)?, BlockDialect::Iptables);
 
-        let line = |b: &str| {
-            b.lines()
+        let line = |b: &str| -> Result<_, TestError> {
+            Ok(b.lines()
                 .find(|l| l.contains("COUNTER-EVIDENCE"))
-                .expect("every block carries a counter-evidence line")
-                .to_string()
+                .ok_or("every block carries a counter-evidence line")?
+                .to_string())
         };
-        assert_ne!(line(&yes), line(&no));
-        assert_ne!(line(&no), line(&unknown));
-        assert_ne!(line(&yes), line(&unknown));
+        assert_ne!(line(&yes)?, line(&no)?);
+        assert_ne!(line(&no)?, line(&unknown)?);
+        assert_ne!(line(&yes)?, line(&unknown)?);
         assert!(
             unknown.contains("UNKNOWN"),
             "an unasked question reads as an answer:\n{unknown}"
@@ -538,6 +550,7 @@ mod tests {
             !live_lines(&unknown).is_empty(),
             "an unasked question withheld the rule:\n{unknown}"
         );
+        Ok(())
     }
 
     /// The v6 dialects are the v6 dialects.
@@ -546,9 +559,9 @@ mod tests {
     /// a v6 address with an error the operator may miss among the lines that
     /// worked, and an `ip saddr` rule against a v6 set is rejected by nft.
     #[test]
-    fn an_ipv6_source_gets_ipv6_commands() {
+    fn an_ipv6_source_gets_ipv6_commands() -> Result<(), TestError> {
         let block = recommend(
-            &accused("2001:db8::dead:beef", Some(false)),
+            &accused("2001:db8::dead:beef", Some(false))?,
             BlockDialect::All,
         );
         let live = live_lines(&block).join("\n");
@@ -568,13 +581,14 @@ mod tests {
             live.contains("type ipv6_addr"),
             "the nft set holds v4 addresses:\n{live}"
         );
+        Ok(())
     }
 
     /// And the v4 ones stay v4, so the test above cannot pass by accident on a
     /// generator that emits v6 for everybody.
     #[test]
-    fn an_ipv4_source_gets_ipv4_commands() {
-        let block = recommend(&accused("198.51.100.7", Some(false)), BlockDialect::All);
+    fn an_ipv4_source_gets_ipv4_commands() -> Result<(), TestError> {
+        let block = recommend(&accused("198.51.100.7", Some(false))?, BlockDialect::All);
         let live = live_lines(&block).join("\n");
         assert!(
             live.contains("iptables -I INPUT") && !live.contains("ip6tables"),
@@ -584,6 +598,7 @@ mod tests {
             live.contains("ip saddr @blocked_v4") && !live.contains("ip6 saddr"),
             "the nft rule does not match on the v4 family:\n{live}"
         );
+        Ok(())
     }
 
     /// A rule name that is not a bare identifier never reaches a failregex.
@@ -594,8 +609,8 @@ mod tests {
     /// — the exact outcome the counter-evidence exists to prevent, arrived at
     /// from the other direction.
     #[test]
-    fn a_rule_name_that_is_a_regex_is_refused_not_escaped() {
-        let mut a = accused("198.51.100.7", Some(false));
+    fn a_rule_name_that_is_a_regex_is_refused_not_escaped() -> Result<(), TestError> {
+        let mut a = accused("198.51.100.7", Some(false))?;
         a.rules = BTreeSet::from([".*".to_string()]);
         let block = recommend(&a, BlockDialect::Fail2ban);
 
@@ -613,12 +628,13 @@ mod tests {
             "the refusal is silent, so the operator gets no fail2ban stanza \
              and no reason:\n{block}"
         );
+        Ok(())
     }
 
     /// A safe name beside a refused one still produces its filter.
     #[test]
-    fn a_refused_name_does_not_take_the_safe_ones_with_it() {
-        let mut a = accused("198.51.100.7", Some(false));
+    fn a_refused_name_does_not_take_the_safe_ones_with_it() -> Result<(), TestError> {
+        let mut a = accused("198.51.100.7", Some(false))?;
         a.rules = BTreeSet::from([".*".to_string(), "reg_flood".to_string()]);
         let block = recommend(&a, BlockDialect::Fail2ban);
 
@@ -630,12 +646,13 @@ mod tests {
             !block.contains("|.*)") && !block.contains("(?:.*"),
             "the refused name reached the alternation anyway:\n{block}"
         );
+        Ok(())
     }
 
     /// Several safe rules become one filter, not one jail each.
     #[test]
-    fn several_rules_share_one_filter() {
-        let mut a = accused("198.51.100.7", Some(false));
+    fn several_rules_share_one_filter() -> Result<(), TestError> {
+        let mut a = accused("198.51.100.7", Some(false))?;
         a.rules = BTreeSet::from(["reg_flood".to_string(), "scanner".to_string()]);
         let block = recommend(&a, BlockDialect::Fail2ban);
         assert_eq!(
@@ -647,6 +664,7 @@ mod tests {
             block.contains("(?:reg_flood|scanner) src=<HOST>"),
             "the alternation does not carry both rules:\n{block}"
         );
+        Ok(())
     }
 
     /// The generated failregex matches the line sipnab actually writes.
@@ -658,24 +676,27 @@ mod tests {
     /// [`super::super::alerting::alert_log_line`] so the two cannot drift
     /// without this failing.
     #[test]
-    fn the_failregex_matches_a_real_alert_line() {
+    fn the_failregex_matches_a_real_alert_line() -> Result<(), TestError> {
         let block = recommend(
-            &accused("198.51.100.7", Some(false)),
+            &accused("198.51.100.7", Some(false))?,
             BlockDialect::Fail2ban,
         );
         let failregex = block
             .lines()
             .find_map(|l| l.strip_prefix("failregex = "))
-            .expect("the fail2ban dialect emits a failregex");
+            .ok_or("the fail2ban dialect emits a failregex")?;
         // `<HOST>` is fail2ban's own template. Substituting a permissive
         // address pattern tests the LITERAL structure around it, which is the
         // half that drifts when the log line changes.
         let pattern = failregex.replace("<HOST>", "(?:[0-9a-fA-F:.]+)");
-        let re = regex::Regex::new(&pattern).expect("the generated failregex compiles");
+        let re = regex::Regex::new(&pattern)
+            .map_err(|e| format!("the generated failregex compiles: {e:?}"))?;
 
         let line = crate::security::alerting::alert_log_line(
             "scanner",
-            "198.51.100.7".parse().expect("test ip"),
+            "198.51.100.7"
+                .parse()
+                .map_err(|e| format!("test ip: {e:?}"))?,
             "ua=friendly-scanner method=OPTIONS",
         );
         assert!(
@@ -683,75 +704,83 @@ mod tests {
             "the generated failregex does not match the line sipnab writes.\n\
              regex: {pattern}\nline:  {line}"
         );
+        Ok(())
     }
 
     /// A different rule's alert line is NOT matched, so the filter is not a
     /// catch-all wearing a rule name.
     #[test]
-    fn the_failregex_does_not_match_another_rules_line() {
+    fn the_failregex_does_not_match_another_rules_line() -> Result<(), TestError> {
         let block = recommend(
-            &accused("198.51.100.7", Some(false)),
+            &accused("198.51.100.7", Some(false))?,
             BlockDialect::Fail2ban,
         );
         let failregex = block
             .lines()
             .find_map(|l| l.strip_prefix("failregex = "))
-            .expect("the fail2ban dialect emits a failregex");
+            .ok_or("the fail2ban dialect emits a failregex")?;
         let pattern = failregex.replace("<HOST>", "(?:[0-9a-fA-F:.]+)");
-        let re = regex::Regex::new(&pattern).expect("the generated failregex compiles");
+        let re = regex::Regex::new(&pattern)
+            .map_err(|e| format!("the generated failregex compiles: {e:?}"))?;
 
         let other = crate::security::alerting::alert_log_line(
             "reg_flood",
-            "198.51.100.7".parse().expect("test ip"),
+            "198.51.100.7"
+                .parse()
+                .map_err(|e| format!("test ip: {e:?}"))?,
             "count=91",
         );
         assert!(
             !re.is_match(&other),
             "the filter for `scanner` also matches a `reg_flood` line: {other}"
         );
+        Ok(())
     }
 
     /// The bound is in the text, not only in the documentation.
     #[test]
-    fn every_dialect_states_that_sipnab_applied_nothing() {
+    fn every_dialect_states_that_sipnab_applied_nothing() -> Result<(), TestError> {
         for dialect in [
             BlockDialect::Fail2ban,
             BlockDialect::Nftables,
             BlockDialect::Iptables,
             BlockDialect::All,
         ] {
-            let block = recommend(&accused("198.51.100.7", Some(false)), dialect);
+            let block = recommend(&accused("198.51.100.7", Some(false))?, dialect);
             assert!(
                 block.contains("has applied nothing"),
                 "{dialect:?} does not say sipnab applied nothing:\n{block}"
             );
         }
+        Ok(())
     }
 
     /// The conventional figures are labeled as conventional.
     #[test]
-    fn the_unmeasured_figures_say_they_were_not_measured() {
-        let block = recommend(&accused("198.51.100.7", Some(false)), BlockDialect::All);
+    fn the_unmeasured_figures_say_they_were_not_measured() -> Result<(), TestError> {
+        let block = recommend(&accused("198.51.100.7", Some(false))?, BlockDialect::All);
         assert!(
             block.contains("NOT MEASURED"),
             "the ports and bantime read as observations:\n{block}"
         );
+        Ok(())
     }
 
     /// A loopback address is called out before anyone pastes a rule banning
     /// the host from itself.
     #[test]
-    fn a_loopback_source_is_warned_about() {
-        let block = recommend(&accused("127.0.0.1", Some(false)), BlockDialect::Iptables);
+    fn a_loopback_source_is_warned_about() -> Result<(), TestError> {
+        let block = recommend(&accused("127.0.0.1", Some(false))?, BlockDialect::Iptables);
         assert!(
             block.contains("loopback"),
             "a rule banning this host from itself carries no warning:\n{block}"
         );
+        Ok(())
     }
 
     /// So is an address inside the operator's own network.
     #[test]
-    fn a_private_source_is_warned_about() {
+    fn a_private_source_is_warned_about() -> Result<(), TestError> {
         for ip in [
             "10.1.2.3",
             "192.168.4.5",
@@ -759,36 +788,39 @@ mod tests {
             "fd00::1",
             "fe80::1",
         ] {
-            let block = recommend(&accused(ip, Some(false)), BlockDialect::Iptables);
+            let block = recommend(&accused(ip, Some(false))?, BlockDialect::Iptables);
             assert!(
                 block.contains("private or link-local"),
                 "{ip} was not flagged as an address on the operator's own \
                  network:\n{block}"
             );
         }
+        Ok(())
     }
 
     /// And a public one is not, so the warning still means something.
     #[test]
-    fn a_public_source_carries_no_private_warning() {
+    fn a_public_source_carries_no_private_warning() -> Result<(), TestError> {
         for ip in ["198.51.100.7", "100.64.0.1", "2001:db8::1"] {
-            let block = recommend(&accused(ip, Some(false)), BlockDialect::Iptables);
+            let block = recommend(&accused(ip, Some(false))?, BlockDialect::Iptables);
             assert!(
                 !block.contains("private or link-local"),
                 "{ip} was called private; the warning fires on everything and \
                  says nothing:\n{block}"
             );
         }
+        Ok(())
     }
 
     /// The empty answer says which silence it is.
     #[test]
-    fn the_empty_recommendation_distinguishes_its_two_silences() {
+    fn the_empty_recommendation_distinguishes_its_two_silences() -> Result<(), TestError> {
         let text = nothing_to_recommend();
         assert!(text.contains("no source was accused"));
         assert!(
             text.contains("LOOKED FOR"),
             "an empty recommendation reads as an all-clear:\n{text}"
         );
+        Ok(())
     }
 }

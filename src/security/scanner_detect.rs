@@ -748,6 +748,9 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback address used as a benign source/destination.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -760,13 +763,13 @@ mod tests {
 
     /// A fixed capture timestamp for the parsed messages.
     fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a request of `method` carrying the given User-Agent from `src`.
-    fn make_request_with_ua(method: &str, ua: &str, src: IpAddr) -> SipMessage {
+    fn make_request_with_ua(method: &str, ua: &str, src: IpAddr) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("{method} sip:target@example.com SIP/2.0"),
             &[
@@ -779,7 +782,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts(),
             src,
@@ -788,32 +791,34 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// A friendly-scanner User-Agent is detected via signature match.
     #[test]
-    fn detect_friendly_scanner_ua() {
+    fn detect_friendly_scanner_ua() -> Result<(), TestError> {
         let mut detector = ScannerDetector::new(&[]);
-        let msg = make_request_with_ua("OPTIONS", "friendly-scanner", scanner_ip());
+        let msg = make_request_with_ua("OPTIONS", "friendly-scanner", scanner_ip())?;
 
         let alert = detector.check(&msg);
         assert!(alert.is_some(), "should detect friendly-scanner");
-        let alert = alert.unwrap();
+        let alert = alert.ok_or("alert is None")?;
         assert_eq!(alert.detection_method, "ua_pattern");
         assert_eq!(alert.ua.as_deref(), Some("friendly-scanner"));
+        Ok(())
     }
 
     /// A sipvicious User-Agent is detected via signature match.
     #[test]
-    fn detect_sipvicious_ua() {
+    fn detect_sipvicious_ua() -> Result<(), TestError> {
         let mut detector = ScannerDetector::new(&[]);
-        let msg = make_request_with_ua("REGISTER", "sipvicious/0.3.4", scanner_ip());
+        let msg = make_request_with_ua("REGISTER", "sipvicious/0.3.4", scanner_ip())?;
 
         let alert = detector.check(&msg);
         assert!(alert.is_some(), "should detect sipvicious");
-        let alert = alert.unwrap();
+        let alert = alert.ok_or("alert is None")?;
         assert_eq!(alert.detection_method, "ua_pattern");
+        Ok(())
     }
 
     /// `pplsip` is detected via signature match, on an INVITE.
@@ -824,26 +829,28 @@ mod tests {
     /// -- let it through. One signature, added because it was measured, not
     /// imported from anyone's list.
     #[test]
-    fn detect_pplsip_invite_ua() {
+    fn detect_pplsip_invite_ua() -> Result<(), TestError> {
         let mut detector = ScannerDetector::new(&[]);
-        let msg = make_request_with_ua("INVITE", "pplsip", scanner_ip());
+        let msg = make_request_with_ua("INVITE", "pplsip", scanner_ip())?;
 
         let alert = detector.check(&msg);
         assert!(alert.is_some(), "should detect pplsip");
-        let alert = alert.unwrap();
+        let alert = alert.ok_or("alert is None")?;
         assert_eq!(alert.detection_method, "ua_pattern");
         assert_eq!(alert.ua.as_deref(), Some("pplsip"));
         assert_eq!(alert.method.as_deref(), Some("INVITE"));
+        Ok(())
     }
 
     /// A benign User-Agent does not trigger a signature alert.
     #[test]
-    fn normal_ua_not_detected() {
+    fn normal_ua_not_detected() -> Result<(), TestError> {
         let mut detector = ScannerDetector::new(&[]);
-        let msg = make_request_with_ua("INVITE", "Oasis/4.0", localhost());
+        let msg = make_request_with_ua("INVITE", "Oasis/4.0", localhost())?;
 
         let alert = detector.check(&msg);
         assert!(alert.is_none(), "normal UA should not trigger alert");
+        Ok(())
     }
 
     /// The rate threshold still bounds the behavioral signal.
@@ -853,13 +860,13 @@ mod tests {
     /// it gets, and the only thing separating the two halves of this test is
     /// whether the source crossed [`BEHAVIORAL_THRESHOLD`].
     #[test]
-    fn behavioral_detection_high_rate() {
+    fn behavioral_detection_high_rate() -> Result<(), TestError> {
         let src = scanner_ip();
-        let refused_registers = |n: i64| {
+        let refused_registers = |n: i64| -> Result<_, TestError> {
             let mut msgs = Vec::new();
             for i in 0..n {
                 let branch = format!("z9hG4bK-rate-{i}");
-                msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100)));
+                msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100))?);
                 msgs.push(answer_at(
                     403,
                     "REGISTER",
@@ -867,23 +874,24 @@ mod tests {
                     src,
                     &branch,
                     ms(i * 100),
-                ));
+                )?);
             }
-            replay(&msgs)
+            Ok(replay(&msgs))
         };
 
-        let at_threshold = refused_registers(BEHAVIORAL_THRESHOLD as i64);
+        let at_threshold = refused_registers(BEHAVIORAL_THRESHOLD as i64)?;
         assert!(
             at_threshold.is_empty(),
             "the alert needs strictly more than {BEHAVIORAL_THRESHOLD} probes — got {at_threshold:?}"
         );
 
-        let over = refused_registers(BEHAVIORAL_THRESHOLD as i64 + 1);
+        let over = refused_registers(BEHAVIORAL_THRESHOLD as i64 + 1)?;
         assert_eq!(
             over.first().map(String::as_str),
             Some("behavioral"),
             "one probe past the threshold, all of them refused, must fire — got {over:?}"
         );
+        Ok(())
     }
 
     /// Build a request probing extension `target` with an arbitrary
@@ -891,7 +899,13 @@ mod tests {
     /// evasion: no known scanner UA, so `ua_pattern` can never fire.
     ///
     /// `n` names the transaction, so [`answer_at`] can settle it.
-    fn enum_request(method: &str, target: &str, ua: &str, src: IpAddr, n: usize) -> SipMessage {
+    fn enum_request(
+        method: &str,
+        target: &str,
+        ua: &str,
+        src: IpAddr,
+        n: usize,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
             &[
@@ -905,7 +919,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts(),
             src,
@@ -914,7 +928,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// The transaction branch [`enum_request`] number `n` opens.
@@ -925,7 +939,7 @@ mod tests {
     /// INVITE-based extension enumeration with a randomized UA is caught by the
     /// distinct-target signal.
     #[test]
-    fn detect_invite_extension_enumeration_with_randomized_ua() {
+    fn detect_invite_extension_enumeration_with_randomized_ua() -> Result<(), TestError> {
         // EVASION: attacker enumerates extensions over INVITE with a different,
         // innocuous UA each probe. ua_pattern never fires; the old behavioral
         // path only summed REGISTER+OPTIONS, so INVITE enumeration slipped
@@ -944,21 +958,22 @@ mod tests {
         let mut msgs = Vec::new();
         for (i, ua) in uas.iter().enumerate() {
             let target = format!("ext{i:04}");
-            msgs.push(enum_request("INVITE", &target, ua, src, i));
+            msgs.push(enum_request("INVITE", &target, ua, src, i)?);
             // None of those extensions exists — which is the whole point of
             // walking them, and the evidence that this is a walk.
-            msgs.push(answer_at(404, "INVITE", &target, src, &enum_txn(i), ts()));
+            msgs.push(answer_at(404, "INVITE", &target, src, &enum_txn(i), ts())?);
         }
         let fired = replay(&msgs);
         assert!(
             fired.contains(&"enumeration".to_string()),
             "extension enumeration over INVITE must be detected — got {fired:?}"
         );
+        Ok(())
     }
 
     /// Six distinct targets under the rate threshold still trigger enumeration.
     #[test]
-    fn detect_low_and_slow_enumeration_under_rate_threshold() {
+    fn detect_low_and_slow_enumeration_under_rate_threshold() -> Result<(), TestError> {
         // EVASION: stay UNDER the rate threshold (only 6 probes), but hit 6
         // DISTINCT extensions — a rate-only detector misses it; distinct-target
         // enumeration does not.
@@ -966,8 +981,8 @@ mod tests {
         let mut msgs = Vec::new();
         for i in 0..6 {
             let target = format!("user{i:04}");
-            msgs.push(enum_request("OPTIONS", &target, "Normalish/9.0", src, i));
-            msgs.push(answer_at(404, "OPTIONS", &target, src, &enum_txn(i), ts()));
+            msgs.push(enum_request("OPTIONS", &target, "Normalish/9.0", src, i)?);
+            msgs.push(answer_at(404, "OPTIONS", &target, src, &enum_txn(i), ts())?);
         }
         let fired = replay(&msgs);
         assert_eq!(
@@ -976,12 +991,13 @@ mod tests {
             "6 distinct extensions from one source, none of them found, is \
              enumeration — got {fired:?}"
         );
+        Ok(())
     }
 
     /// Repeated requests to only one or two targets are not flagged as
     /// enumeration.
     #[test]
-    fn normal_call_to_few_targets_not_flagged_as_enumeration() {
+    fn normal_call_to_few_targets_not_flagged_as_enumeration() -> Result<(), TestError> {
         // FALSE-POSITIVE guard: a normal client placing several requests to the
         // SAME one or two targets (retransmits / re-INVITE / a couple of calls)
         // must NOT be flagged as enumeration.
@@ -989,7 +1005,7 @@ mod tests {
         let src = localhost();
         for i in 0..12 {
             let target = if i % 2 == 0 { "alice" } else { "bob" };
-            let msg = enum_request("INVITE", target, "Linphone/5.1", src, i);
+            let msg = enum_request("INVITE", target, "Linphone/5.1", src, i)?;
             if let Some(a) = det.check(&msg) {
                 assert_ne!(
                     a.detection_method, "enumeration",
@@ -997,19 +1013,21 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A user-supplied `--kill-ua` pattern is matched like a built-in signature.
     #[test]
-    fn custom_kill_ua_detected() {
+    fn custom_kill_ua_detected() -> Result<(), TestError> {
         let custom = vec!["my-scanner".to_string()];
         let mut detector = ScannerDetector::new(&custom);
-        let msg = make_request_with_ua("OPTIONS", "my-scanner/1.0", scanner_ip());
+        let msg = make_request_with_ua("OPTIONS", "my-scanner/1.0", scanner_ip())?;
 
         let alert = detector.check(&msg);
         assert!(alert.is_some(), "should detect custom --kill-ua pattern");
-        let alert = alert.unwrap();
+        let alert = alert.ok_or("alert is None")?;
         assert_eq!(alert.detection_method, "ua_pattern");
+        Ok(())
     }
 
     // ── Packet time vs wall clock ────────────────────────────────────
@@ -1024,7 +1042,7 @@ mod tests {
         src: IpAddr,
         n: usize,
         at: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
             &[
@@ -1037,8 +1055,10 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse")
+        Ok(
+            parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse: {e:?}"))?,
+        )
     }
 
     /// The transaction branch [`request_at`] number `n` opens.
@@ -1061,12 +1081,12 @@ mod tests {
     /// one REGISTER every two seconds — three per five-second window against a
     /// threshold of ten — replayed in a tight loop.
     #[test]
-    fn behavioral_window_is_measured_in_packet_time() {
+    fn behavioral_window_is_measured_in_packet_time() -> Result<(), TestError> {
         let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
         let mut fired = 0usize;
         for i in 0..60 {
-            let msg = request_at("REGISTER", "sameuser", src, i, at(i as i64 * 2));
+            let msg = request_at("REGISTER", "sameuser", src, i, at(i as i64 * 2))?;
             if det.check(&msg).is_some() {
                 fired += 1;
             }
@@ -1077,6 +1097,7 @@ mod tests {
              the threshold of {BEHAVIORAL_THRESHOLD} — {fired} alerts means the window is \
              being paced by how fast the file was read, not by the capture"
         );
+        Ok(())
     }
 
     /// The enumeration window is packet time too.
@@ -1085,12 +1106,12 @@ mod tests {
     /// holds more than one distinct target. Paced by wall time, all sixty land
     /// in one window and the sixth trips `ENUMERATION_THRESHOLD`.
     #[test]
-    fn enumeration_window_is_measured_in_packet_time() {
+    fn enumeration_window_is_measured_in_packet_time() -> Result<(), TestError> {
         let mut det = ScannerDetector::new(&[]);
         let src = scanner_ip();
         let mut fired = 0usize;
         for i in 0..60 {
-            let msg = request_at("OPTIONS", &format!("ext{i:04}"), src, i, at(i as i64 * 10));
+            let msg = request_at("OPTIONS", &format!("ext{i:04}"), src, i, at(i as i64 * 10))?;
             if det.check(&msg).is_some() {
                 fired += 1;
             }
@@ -1101,18 +1122,19 @@ mod tests {
              enumeration threshold of {ENUMERATION_THRESHOLD} — {fired} alerts means distinct \
              targets are accumulating across the whole capture"
         );
+        Ok(())
     }
 
     /// A genuine burst inside one window still fires — the packet-time window
     /// must not become a way to never detect anything.
     #[test]
-    fn a_real_burst_inside_one_packet_time_window_still_fires() {
+    fn a_real_burst_inside_one_packet_time_window_still_fires() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..15 {
             // 100ms apart: all fifteen inside one BEHAVIORAL_WINDOW_SECS window.
             let at = ms(i as i64 * 100);
-            msgs.push(request_at("REGISTER", "sameuser", src, i, at));
+            msgs.push(request_at("REGISTER", "sameuser", src, i, at)?);
             msgs.push(answer_at(
                 403,
                 "REGISTER",
@@ -1120,7 +1142,7 @@ mod tests {
                 src,
                 &clock_txn(i),
                 at,
-            ));
+            )?);
         }
         let fired = replay(&msgs);
         assert_eq!(
@@ -1129,18 +1151,19 @@ mod tests {
             "15 refused REGISTERs in 1.5s of capture time is a flood and must \
              fire — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A genuine sweep inside one window still fires as enumeration.
     #[test]
-    fn a_real_sweep_inside_one_packet_time_window_still_fires() {
+    fn a_real_sweep_inside_one_packet_time_window_still_fires() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..8 {
             let target = format!("ext{i:04}");
             let at = ms(i as i64 * 100);
-            msgs.push(request_at("OPTIONS", &target, src, i, at));
-            msgs.push(answer_at(404, "OPTIONS", &target, src, &clock_txn(i), at));
+            msgs.push(request_at("OPTIONS", &target, src, i, at)?);
+            msgs.push(answer_at(404, "OPTIONS", &target, src, &clock_txn(i), at)?);
         }
         let fired = replay(&msgs);
         assert_eq!(
@@ -1149,6 +1172,7 @@ mod tests {
             "8 distinct targets in 0.8s of capture time, none of them found, is \
              enumeration — got {fired:?}"
         );
+        Ok(())
     }
 
     /// `sweep` ages entries out on capture time as well — in both directions.
@@ -1162,14 +1186,14 @@ mod tests {
     /// idle the moment it is read, so the sweep empties the map and the
     /// detector forgets a scanner mid-scan.
     #[test]
-    fn sweep_ages_entries_out_on_packet_time() {
+    fn sweep_ages_entries_out_on_packet_time() -> Result<(), TestError> {
         let mut det = ScannerDetector::new(&[]);
         let (quiet, active) = (scanner_ip(), localhost());
-        let _ = det.check(&request_at("REGISTER", "u", quiet, 0, at(0)));
+        let _ = det.check(&request_at("REGISTER", "u", quiet, 0, at(0))?);
         assert_eq!(det.behavioral.len(), 1, "the source must be tracked");
 
         // A packet 10 minutes later in capture time, then a 2-minute sweep.
-        let _ = det.check(&request_at("REGISTER", "u", active, 1, at(600)));
+        let _ = det.check(&request_at("REGISTER", "u", active, 1, at(600))?);
         det.sweep(std::time::Duration::from_secs(120));
         assert!(
             !det.behavioral.contains_key(&quiet),
@@ -1181,6 +1205,7 @@ mod tests {
              must survive — a sweep aged against `Utc::now()` drops it, because a capture \
              recorded before today is already older than any max_age"
         );
+        Ok(())
     }
 
     // ── Probing evidence, not volume ─────────────────────────────────
@@ -1196,7 +1221,7 @@ mod tests {
         src: IpAddr,
         branch: &str,
         at: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
             &[
@@ -1209,8 +1234,10 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse")
+        Ok(
+            parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse: {e:?}"))?,
+        )
     }
 
     /// The response `status` we send back to `dst` on transaction `branch`,
@@ -1222,7 +1249,7 @@ mod tests {
         dst: IpAddr,
         branch: &str,
         at: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} Whatever"),
             &[
@@ -1235,8 +1262,10 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, at, localhost(), dst, 5060, 5060, TransportProto::Udp)
-            .expect("should parse")
+        Ok(
+            parse_sip(&raw, at, localhost(), dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse: {e:?}"))?,
+        )
     }
 
     /// Capture time `ms` milliseconds after the fixed base timestamp.
@@ -1261,13 +1290,13 @@ mod tests {
 
     /// The registration that makes `src` a peer we serve: a REGISTER, its
     /// challenge, the authenticated retry, and the `200 OK`.
-    fn register_exchange(src: IpAddr, at: DateTime<Utc>) -> Vec<SipMessage> {
-        vec![
-            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-a", at),
-            answer_at(401, "REGISTER", "1001", src, "z9hG4bK-reg-a", at),
-            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-b", at),
-            answer_at(200, "REGISTER", "1001", src, "z9hG4bK-reg-b", at),
-        ]
+    fn register_exchange(src: IpAddr, at: DateTime<Utc>) -> Result<Vec<SipMessage>, TestError> {
+        Ok(vec![
+            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-a", at)?,
+            answer_at(401, "REGISTER", "1001", src, "z9hG4bK-reg-a", at)?,
+            probe_at("REGISTER", "1001", src, "z9hG4bK-reg-b", at)?,
+            answer_at(200, "REGISTER", "1001", src, "z9hG4bK-reg-b", at)?,
+        ])
     }
 
     /// A trunk's answered OPTIONS keepalives are not reconnaissance.
@@ -1281,15 +1310,15 @@ mod tests {
     /// What separates the keepalive from a probe is not how many there are: it
     /// is that each one is ANSWERED, by a peer we already registered.
     #[test]
-    fn answered_options_keepalives_are_not_a_scanner() {
+    fn answered_options_keepalives_are_not_a_scanner() -> Result<(), TestError> {
         let src = scanner_ip();
-        let mut msgs = register_exchange(src, ms(0));
+        let mut msgs = register_exchange(src, ms(0))?;
         for i in 0..60 {
             // Twelve keepalives a second — a rate no threshold survives.
             let branch = format!("z9hG4bK-ka-{i}");
             let at = ms(100 + i * 80);
-            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at));
-            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at));
+            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at)?);
+            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at)?);
         }
         let fired = replay(&msgs);
         assert!(
@@ -1297,6 +1326,7 @@ mod tests {
             "60 OPTIONS keepalives that were all answered, from a peer already \
              registered with us, are a working trunk — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A trunk delivering calls to many distinct extensions is not
@@ -1306,15 +1336,15 @@ mod tests {
     /// group or a scanner walks the dialplan. What differs is the outcome: the
     /// SBC's calls are answered, the scanner's are not.
     #[test]
-    fn calls_delivered_to_many_distinct_extensions_are_not_enumeration() {
+    fn calls_delivered_to_many_distinct_extensions_are_not_enumeration() -> Result<(), TestError> {
         let src = scanner_ip();
-        let mut msgs = register_exchange(src, ms(0));
+        let mut msgs = register_exchange(src, ms(0))?;
         for i in 0..12 {
             let branch = format!("z9hG4bK-call-{i}");
             let target = format!("ext{i:04}");
             let at = ms(100 + i * 100);
-            msgs.push(probe_at("INVITE", &target, src, &branch, at));
-            msgs.push(answer_at(200, "INVITE", &target, src, &branch, at));
+            msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
+            msgs.push(answer_at(200, "INVITE", &target, src, &branch, at)?);
         }
         let fired = replay(&msgs);
         assert!(
@@ -1322,6 +1352,7 @@ mod tests {
             "twelve calls to twelve extensions, every one answered, is an SBC \
              fronting a hunt group — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A flood that nothing answers still fires.
@@ -1330,36 +1361,37 @@ mod tests {
     /// source whose probes go into a hole is exactly what the rate test is
     /// for.
     #[test]
-    fn an_unanswered_flood_still_fires() {
+    fn an_unanswered_flood_still_fires() -> Result<(), TestError> {
         let src = scanner_ip();
         // A capture with no responses at all cannot tell "unanswered" from "we
         // captured one direction", so the other direction has to exist
         // somewhere in it: here, one working peer's answered keepalive.
         let mut msgs = vec![
-            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
-            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
         ];
         for i in 0..15 {
             let branch = format!("z9hG4bK-flood-{i}");
-            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100)));
+            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100))?);
         }
         let fired = replay(&msgs);
         assert!(
             fired.contains(&"behavioral".to_string()),
             "15 REGISTERs in 1.5s that nothing answered is a flood — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A registration sweep we keep rejecting still fires.
     #[test]
-    fn a_rejected_registration_sweep_still_fires() {
+    fn a_rejected_registration_sweep_still_fires() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..15 {
             let branch = format!("z9hG4bK-crack-{i}");
             let at = ms(i * 100);
-            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
-            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at)?);
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at)?);
         }
         let fired = replay(&msgs);
         assert!(
@@ -1367,25 +1399,27 @@ mod tests {
             "15 REGISTERs for one extension, every one forbidden, is a password \
              attack — got {fired:?}"
         );
+        Ok(())
     }
 
     /// Extension enumeration we answer `404` to still fires.
     #[test]
-    fn enumeration_of_extensions_we_reject_still_fires() {
+    fn enumeration_of_extensions_we_reject_still_fires() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..8 {
             let branch = format!("z9hG4bK-svwar-{i}");
             let target = format!("ext{i:04}");
             let at = ms(i * 100);
-            msgs.push(probe_at("INVITE", &target, src, &branch, at));
-            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+            msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at)?);
         }
         let fired = replay(&msgs);
         assert!(
             fired.contains(&"enumeration".to_string()),
             "eight extensions probed and eight not found is a dialplan sweep — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A source that completed a registration needs far more evidence.
@@ -1395,21 +1429,21 @@ mod tests {
     /// traffic looks most like probing, so the bar is
     /// [`ESTABLISHED_EVIDENCE_FACTOR`] times higher.
     #[test]
-    fn an_established_peer_needs_far_more_evidence() {
+    fn an_established_peer_needs_far_more_evidence() -> Result<(), TestError> {
         let src = scanner_ip();
-        let sweep = |n: i64| {
-            let mut msgs = register_exchange(src, ms(0));
+        let sweep = |n: i64| -> Result<_, TestError> {
+            let mut msgs = register_exchange(src, ms(0))?;
             for i in 0..n {
                 let branch = format!("z9hG4bK-comp-{i}");
                 let target = format!("ext{i:04}");
                 let at = ms(10 + i * 10);
-                msgs.push(probe_at("INVITE", &target, src, &branch, at));
-                msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+                msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
+                msgs.push(answer_at(404, "INVITE", &target, src, &branch, at)?);
             }
-            replay(&msgs)
+            Ok(replay(&msgs))
         };
 
-        let modest = sweep(REJECTED_PROBE_MIN as i64 * 2);
+        let modest = sweep(REJECTED_PROBE_MIN as i64 * 2)?;
         assert!(
             modest.is_empty(),
             "{} rejected probes would report an unknown source, but a registered \
@@ -1417,13 +1451,14 @@ mod tests {
             REJECTED_PROBE_MIN * 2
         );
 
-        let blatant = sweep(REJECTED_PROBE_MIN as i64 * ESTABLISHED_EVIDENCE_FACTOR as i64 * 2);
+        let blatant = sweep(REJECTED_PROBE_MIN as i64 * ESTABLISHED_EVIDENCE_FACTOR as i64 * 2)?;
         assert!(
             !blatant.is_empty(),
             "a registered peer walking the dialplan {} times over the bar is a \
              compromised phone and must still be reported",
             2
         );
+        Ok(())
     }
 
     /// Retransmissions of one request are one probe, not many.
@@ -1433,19 +1468,25 @@ mod tests {
     /// threshold on their own. They are one transaction each, which is what
     /// the top `Via` branch says.
     #[test]
-    fn retransmissions_of_one_request_are_one_probe() {
+    fn retransmissions_of_one_request_are_one_probe() -> Result<(), TestError> {
         let src = scanner_ip();
         // Another source's answered probe FIRST, so the unanswered test is
         // armed before the retransmissions start. Ordered the other way the
         // test passes for the wrong reason, whatever the dedup does.
         let mut msgs = vec![
-            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0)),
-            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0)),
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0))?,
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-o", ms(0))?,
         ];
         for i in 0..20 {
             // Twenty copies of one transaction, over two seconds — well past
             // the answer grace, so each copy would count if they were counted.
-            msgs.push(probe_at("INVITE", "1001", src, "z9hG4bK-retx", ms(i * 100)));
+            msgs.push(probe_at(
+                "INVITE",
+                "1001",
+                src,
+                "z9hG4bK-retx",
+                ms(i * 100),
+            )?);
         }
         let fired = replay(&msgs);
         assert!(
@@ -1453,6 +1494,7 @@ mod tests {
             "twenty retransmissions of one INVITE are one unanswered transaction, \
              not twenty probes — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A peer that pipelines faster than the round trip is not a sweep.
@@ -1465,18 +1507,18 @@ mod tests {
     /// probes into a hole. Whether it tripped would come down to link latency
     /// and pipelining depth rather than to anything the peer meant.
     #[test]
-    fn a_peer_that_pipelines_faster_than_the_round_trip_is_not_a_sweep() {
+    fn a_peer_that_pipelines_faster_than_the_round_trip_is_not_a_sweep() -> Result<(), TestError> {
         let src = scanner_ip();
         // Another peer's answered keepalive, so the unanswered test is armed.
         let mut msgs = vec![
-            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
-            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
         ];
         // Fifteen registrations in 150ms, each answered 100ms after it was
         // sent — so every one is still in flight when the next goes out.
         for i in 0..15 {
             let branch = format!("z9hG4bK-boot-{i}");
-            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 10)));
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 10))?);
         }
         for i in 0..15 {
             let branch = format!("z9hG4bK-boot-{i}");
@@ -1487,7 +1529,7 @@ mod tests {
                 src,
                 &branch,
                 ms(100 + i * 10),
-            ));
+            )?);
         }
         let fired = replay(&msgs);
         assert!(
@@ -1495,6 +1537,7 @@ mod tests {
             "fifteen registrations answered within {PROBE_ANSWER_GRACE_MS}ms each were \
              never unanswered, only in flight — got {fired:?}"
         );
+        Ok(())
     }
 
     /// Calls that are ringing are not unanswered probes.
@@ -1507,18 +1550,18 @@ mod tests {
     /// ringing. A `100 Trying` settles the only question the unanswered test
     /// asks — whether anything is there.
     #[test]
-    fn calls_that_are_ringing_are_not_unanswered_probes() {
+    fn calls_that_are_ringing_are_not_unanswered_probes() -> Result<(), TestError> {
         let src = scanner_ip();
-        let mut msgs = register_exchange(src, ms(0));
+        let mut msgs = register_exchange(src, ms(0))?;
         for i in 0..20 {
             let branch = format!("z9hG4bK-ring-{i}");
             let target = format!("ext{i:04}");
             let at = ms(100 + i * 100);
-            msgs.push(probe_at("INVITE", &target, src, &branch, at));
+            msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
             // Answered at once by the proxy, then ringing. The `200 OK` comes
             // thirty seconds later, when somebody picks up.
-            msgs.push(answer_at(100, "INVITE", &target, src, &branch, at));
-            msgs.push(answer_at(180, "INVITE", &target, src, &branch, at));
+            msgs.push(answer_at(100, "INVITE", &target, src, &branch, at)?);
+            msgs.push(answer_at(180, "INVITE", &target, src, &branch, at)?);
             msgs.push(answer_at(
                 200,
                 "INVITE",
@@ -1526,7 +1569,7 @@ mod tests {
                 src,
                 &branch,
                 at + chrono::TimeDelta::seconds(30),
-            ));
+            )?);
         }
         msgs.sort_by_key(|m| m.timestamp);
         let fired = replay(&msgs);
@@ -1535,6 +1578,7 @@ mod tests {
             "twenty calls that rang for thirty seconds each are calls, not probes \
              into a hole — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A capture holding no responses at all raises no unanswered alert.
@@ -1546,7 +1590,7 @@ mod tests {
     /// replaced, so the unanswered test stands down until the detector has
     /// seen a response exist.
     #[test]
-    fn a_capture_of_requests_alone_raises_no_unanswered_alert() {
+    fn a_capture_of_requests_alone_raises_no_unanswered_alert() -> Result<(), TestError> {
         let src = scanner_ip();
         let msgs: Vec<SipMessage> = (0..40)
             .map(|i| {
@@ -1558,12 +1602,13 @@ mod tests {
                     ms(i * 100),
                 )
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let fired = replay(&msgs);
         assert!(
             fired.is_empty(),
             "a capture with no responses in it cannot show anything unanswered — got {fired:?}"
         );
+        Ok(())
     }
 
     /// A rejection on an unrelated transaction is not evidence.
@@ -1573,24 +1618,25 @@ mod tests {
     /// says nothing about the OPTIONS keepalives running alongside. Only a
     /// rejection on a probe transaction the detector opened counts.
     #[test]
-    fn a_rejection_on_an_unrelated_transaction_is_not_evidence() {
+    fn a_rejection_on_an_unrelated_transaction_is_not_evidence() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..20 {
             let branch = format!("z9hG4bK-ka-{i}");
             let at = ms(i * 100);
-            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at));
-            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at));
+            msgs.push(probe_at("OPTIONS", "trunk", src, &branch, at)?);
+            msgs.push(answer_at(200, "OPTIONS", "trunk", src, &branch, at)?);
             // A subscription this peer no longer holds, refused every time.
             let stray = format!("z9hG4bK-notify-{i}");
-            msgs.push(probe_at("NOTIFY", "trunk", src, &stray, at));
-            msgs.push(answer_at(481, "NOTIFY", "trunk", src, &stray, at));
+            msgs.push(probe_at("NOTIFY", "trunk", src, &stray, at)?);
+            msgs.push(answer_at(481, "NOTIFY", "trunk", src, &stray, at)?);
         }
         let fired = replay(&msgs);
         assert!(
             fired.is_empty(),
             "481s to stray NOTIFYs are not rejected probes — got {fired:?}"
         );
+        Ok(())
     }
 
     // ── Trigger points an operator can move ──────────────────────────
@@ -1605,7 +1651,7 @@ mod tests {
     /// middle assertion is the point of the test — every count pinned to its
     /// floor of 1 with the shipped window still reports nothing.
     #[test]
-    fn a_low_and_slow_sweep_needs_a_wider_window_not_a_lower_count() {
+    fn a_low_and_slow_sweep_needs_a_wider_window_not_a_lower_count() -> Result<(), TestError> {
         let src = scanner_ip();
         // Eight distinct extensions, one probe every ten seconds, every one
         // answered "not found" — a dialplan walk in slow motion.
@@ -1614,7 +1660,7 @@ mod tests {
             let branch = format!("z9hG4bK-slow-{i}");
             let target = format!("ext{i:04}");
             let at = ms(i * 10_000);
-            msgs.push(probe_at("OPTIONS", &target, src, &branch, at));
+            msgs.push(probe_at("OPTIONS", &target, src, &branch, at)?);
             msgs.push(answer_at(
                 404,
                 "OPTIONS",
@@ -1622,7 +1668,7 @@ mod tests {
                 src,
                 &branch,
                 ms(i * 10_000 + 50),
-            ));
+            )?);
         }
 
         let shipped = replay(&msgs);
@@ -1665,6 +1711,7 @@ mod tests {
             "a 60s window holds all eight probes, so six distinct extensions and \
              five refusals are in it at once — got {widened:?}"
         );
+        Ok(())
     }
 
     /// The declared probe count decides when a rate is a scanner.
@@ -1672,14 +1719,14 @@ mod tests {
     /// The aggregation case: behind an SBC every source collapses to one
     /// address, so ordinary traffic clears the shipped ten in five seconds.
     #[test]
-    fn scanner_behavioral_probes_decides_when_a_rate_is_a_scanner() {
+    fn scanner_behavioral_probes_decides_when_a_rate_is_a_scanner() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..15i64 {
             let branch = format!("z9hG4bK-agg-{i}");
             let at = ms(i * 100);
-            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
-            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at)?);
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at)?);
         }
 
         let shipped = replay(&msgs);
@@ -1702,19 +1749,20 @@ mod tests {
             "a site that aggregates behind one address raises the count, and \
              fifteen is under a hundred — got {raised:?}"
         );
+        Ok(())
     }
 
     /// The declared target count decides how wide a sweep must be.
     #[test]
-    fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
+    fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..8i64 {
             let branch = format!("z9hG4bK-wide-{i}");
             let target = format!("ext{i:04}");
             let at = ms(i * 100);
-            msgs.push(probe_at("INVITE", &target, src, &branch, at));
-            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+            msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at)?);
         }
 
         let shipped = replay(&msgs);
@@ -1737,18 +1785,19 @@ mod tests {
             "an SBC fronting a large hunt group reaches dozens of extensions a \
              second, so it declares fifty — got {raised:?}"
         );
+        Ok(())
     }
 
     /// The declared refusal count decides how much saying no is evidence.
     #[test]
-    fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() {
+    fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = Vec::new();
         for i in 0..12i64 {
             let branch = format!("z9hG4bK-crack-{i}");
             let at = ms(i * 100);
-            msgs.push(probe_at("REGISTER", "1001", src, &branch, at));
-            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at));
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, at)?);
+            msgs.push(answer_at(403, "REGISTER", "1001", src, &branch, at)?);
         }
 
         let shipped = replay(&msgs);
@@ -1772,21 +1821,22 @@ mod tests {
              refusals all day, so it needs twenty before they mean anything — \
              got {raised:?}"
         );
+        Ok(())
     }
 
     /// The declared unanswered count decides how much silence is evidence.
     #[test]
-    fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
+    fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() -> Result<(), TestError> {
         let src = scanner_ip();
         // Another peer's answered keepalive first, so the unanswered test is
         // armed: a capture with no responses in it can show nothing unanswered.
         let mut msgs = vec![
-            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
-            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
         ];
         for i in 0..15i64 {
             let branch = format!("z9hG4bK-hole-{i}");
-            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100)));
+            msgs.push(probe_at("REGISTER", "victim", src, &branch, ms(i * 100))?);
         }
 
         let shipped = replay(&msgs);
@@ -1807,21 +1857,22 @@ mod tests {
             raised.is_empty(),
             "fifteen is under a declared forty — got {raised:?}"
         );
+        Ok(())
     }
 
     /// The declared factor decides how much more a registered peer is trusted.
     #[test]
-    fn scanner_established_factor_decides_what_a_registration_buys() {
+    fn scanner_established_factor_decides_what_a_registration_buys() -> Result<(), TestError> {
         let src = scanner_ip();
-        let mut msgs = register_exchange(src, ms(0));
+        let mut msgs = register_exchange(src, ms(0))?;
         // Twice the shipped refusal minimum: enough for an unknown source, not
         // enough for one that has registered.
         for i in 0..(REJECTED_PROBE_MIN as i64 * 2) {
             let branch = format!("z9hG4bK-comp-{i}");
             let target = format!("ext{i:04}");
             let at = ms(10 + i * 10);
-            msgs.push(probe_at("INVITE", &target, src, &branch, at));
-            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at));
+            msgs.push(probe_at("INVITE", &target, src, &branch, at)?);
+            msgs.push(answer_at(404, "INVITE", &target, src, &branch, at)?);
         }
 
         let shipped = replay(&msgs);
@@ -1844,6 +1895,7 @@ mod tests {
             "a site that grants a registration no extra credit judges this peer \
              like any other, and ten refusals is a dialplan walk — got {no_credit:?}"
         );
+        Ok(())
     }
 
     /// The declared answer grace decides how slow a link may be.
@@ -1853,17 +1905,17 @@ mod tests {
     /// an ordinary working peer reads as a sweep into a hole — the same defect
     /// the grace exists to prevent, one round-trip further out.
     #[test]
-    fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() {
+    fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() -> Result<(), TestError> {
         let src = scanner_ip();
         let mut msgs = vec![
-            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
-            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0)),
+            probe_at("OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
+            answer_at(200, "OPTIONS", "ping", localhost(), "z9hG4bK-ok", ms(0))?,
         ];
         // Fifteen registrations 100 ms apart, every one answered — but two
         // seconds later, because that is what this link costs.
         for i in 0..15i64 {
             let branch = format!("z9hG4bK-slowlink-{i}");
-            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100)));
+            msgs.push(probe_at("REGISTER", "1001", src, &branch, ms(i * 100))?);
             msgs.push(answer_at(
                 200,
                 "REGISTER",
@@ -1871,7 +1923,7 @@ mod tests {
                 src,
                 &branch,
                 ms(i * 100 + 2_000),
-            ));
+            )?);
         }
         msgs.sort_by_key(|m| m.timestamp);
 
@@ -1895,11 +1947,12 @@ mod tests {
             "a 3s grace covers this link's round trip, so nothing here was ever \
              unanswered — got {widened:?}"
         );
+        Ok(())
     }
 
     /// SIP responses are ignored (only requests are checked).
     #[test]
-    fn response_messages_ignored() {
+    fn response_messages_ignored() -> Result<(), TestError> {
         let mut detector = ScannerDetector::new(&[]);
         let raw = build_sip(
             "SIP/2.0 200 OK",
@@ -1922,10 +1975,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse");
+        .map_err(|e| format!("parse: {e:?}"))?;
         assert!(
             detector.check(&msg).is_none(),
             "responses should not trigger scanner alerts"
         );
+        Ok(())
     }
 }
