@@ -246,25 +246,31 @@ pub(crate) fn pem_private_key(
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A PEM block whose body is not base64 is refused, and the error names
     /// the block, so an operator knows which part of the file is corrupt.
     #[test]
-    fn a_pem_block_that_is_not_base64_is_refused_by_name() {
+    fn a_pem_block_that_is_not_base64_is_refused_by_name() -> Result<(), TestError> {
         let pem = b"-----BEGIN CERTIFICATE-----\nnot*base64!\n-----END CERTIFICATE-----\n";
-        let err = pem_blocks(pem).expect_err("an undecodable body must be refused");
+        let err = pem_blocks(pem)
+            .err()
+            .ok_or("an undecodable body must be refused")?;
         assert!(
             format!("{err:#}").contains("PEM block 'CERTIFICATE' is not valid base64"),
             "got: {err:#}"
         );
+        Ok(())
     }
 
     /// A `BEGIN` with no matching `END` is dropped, not refused: CA bundles
     /// carry comments and text dumps between blocks. The valid block after it
     /// still comes through.
     #[test]
-    fn a_stray_begin_is_dropped_and_the_next_block_still_parses() {
+    fn a_stray_begin_is_dropped_and_the_next_block_still_parses() -> Result<(), TestError> {
         let pem = b"-----BEGIN NOTE-----\ntext\n-----BEGIN CERTIFICATE-----\nAAEC\n-----END CERTIFICATE-----\n";
-        let blocks = pem_blocks(pem).expect("parses");
+        let blocks = pem_blocks(pem)?;
         assert_eq!(blocks, vec![("CERTIFICATE".to_string(), vec![0, 1, 2])]);
+        Ok(())
     }
 }

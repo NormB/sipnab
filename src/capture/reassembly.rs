@@ -1306,7 +1306,8 @@ mod tests {
     /// retransmission, or the same segment seen again on a second interface:
     /// delivering it again would report the message twice.
     #[test]
-    fn a_retransmission_on_a_stream_joined_part_way_is_not_delivered_again() {
+    fn a_retransmission_on_a_stream_joined_part_way_is_not_delivered_again() -> Result<(), TestError>
+    {
         let mut r = TcpReassembler::new();
         assert_eq!(
             r.insert(&make_tcp_segment(5060, 5061, 7_000, psh(), HUNDRED)),
@@ -1328,6 +1329,7 @@ mod tests {
                 .is_empty(),
             "nor is a late copy, after later data"
         );
+        Ok(())
     }
 
     /// Two connections can share one address and port pair: a proxy that
@@ -1337,25 +1339,26 @@ mod tests {
     /// than the reassembly TTL, in the capture's own time, is over: the next
     /// segment starts a stream afresh, wherever its sequence number lands.
     #[test]
-    fn a_direction_silent_past_the_ttl_starts_afresh() {
-        let at = |seq: u32, secs: i64, payload: &[u8]| {
+    fn a_direction_silent_past_the_ttl_starts_afresh() -> Result<(), TestError> {
+        let at = |seq: u32, secs: i64, payload: &[u8]| -> Result<_, TestError> {
             let mut p = make_tcp_segment(5060, 5061, seq, psh(), payload);
-            p.timestamp = chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("time");
-            p
+            p.timestamp =
+                chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("time")?;
+            Ok(p)
         };
         let mut r = TcpReassembler::with_limits(DEFAULT_MAX_ENTRIES, Duration::from_secs(30));
         assert_eq!(
-            r.insert(&at(3_000_000_000, 0, HUNDRED)),
+            r.insert(&at(3_000_000_000, 0, HUNDRED)?),
             vec![HUNDRED.to_vec()]
         );
         // Serial-below the stream so far, and within the TTL: a retransmission.
-        assert!(r.insert(&at(1_000, 29, BYE)).is_empty());
+        assert!(r.insert(&at(1_000, 29, BYE)?).is_empty());
         // The same bytes after a silence as long as the TTL: a new connection.
-        assert_eq!(r.insert(&at(1_000, 59, BYE)), vec![BYE.to_vec()]);
+        assert_eq!(r.insert(&at(1_000, 59, BYE)?), vec![BYE.to_vec()]);
         // A clock that runs backward is not a silence: this is a copy.
-        assert!(r.insert(&at(1_000, 0, BYE)).is_empty());
+        assert!(r.insert(&at(1_000, 0, BYE)?).is_empty());
         // Nor does the stray early time start the silence over.
-        assert!(r.insert(&at(1_000, 40, BYE)).is_empty());
+        assert!(r.insert(&at(1_000, 40, BYE)?).is_empty());
         assert!(
             r.take_resync(
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 5060),
@@ -1363,6 +1366,7 @@ mod tests {
             ),
             "the layer above must drop any half message the old connection left"
         );
+        Ok(())
     }
 
     /// Behind a hole, a segment that opens a SIP message is where the stream
@@ -1371,7 +1375,7 @@ mod tests {
     /// the stream says it resynchronized, so the framer above can drop the
     /// half message it holds.
     #[test]
-    fn a_hole_before_a_sip_start_line_is_skipped() {
+    fn a_hole_before_a_sip_start_line_is_skipped() -> Result<(), TestError> {
         let mut r = TcpReassembler::new().with_resync(crate::sip::parser::starts_sip_message);
         syn_at(&mut r, 99);
         let head = b"INVITE sip:b@x SIP/2.0\r\nCall-ID: lost@x\r\n"; // no end
@@ -1407,12 +1411,13 @@ mod tests {
         assert!(!r.take_resync(src, dst), "the mark clears once read");
         assert_eq!(r.gaps_skipped(), 1);
         assert_eq!(r.gap_bytes(), 100);
+        Ok(())
     }
 
     /// A segment that arrived early fills its own hole when its predecessor
     /// turns up next: one packet of reordering never loses data.
     #[test]
-    fn a_reordered_segment_still_fills_its_hole() {
+    fn a_reordered_segment_still_fills_its_hole() -> Result<(), TestError> {
         let mut r = TcpReassembler::new().with_resync(crate::sip::parser::starts_sip_message);
         syn_at(&mut r, 99);
         let first = BYE;
@@ -1425,12 +1430,13 @@ mod tests {
         let out = r.insert(&make_tcp_segment(5060, 5061, 100, psh(), first));
         assert_eq!(out, vec![[first, second].concat()]);
         assert_eq!(r.gaps_skipped(), 0);
+        Ok(())
     }
 
     /// Behind a hole, data that does not open a SIP message is the middle of
     /// one: there is nowhere to resume, so nothing is invented from it.
     #[test]
-    fn a_hole_before_mid_message_data_is_not_skipped() {
+    fn a_hole_before_mid_message_data_is_not_skipped() -> Result<(), TestError> {
         let mut r = TcpReassembler::new().with_resync(crate::sip::parser::starts_sip_message);
         syn_at(&mut r, 99);
         for (i, chunk) in [b"Via: SIP/2.0/TCP h\r\n" as &[u8], b"Max-Forwards: 70\r\n"]
@@ -1447,12 +1453,13 @@ mod tests {
             assert!(out.is_empty(), "continuation behind a hole stays held");
         }
         assert_eq!(r.gaps_skipped(), 0);
+        Ok(())
     }
 
     /// Without a resync rule -- a reassembler nobody told what a message
     /// start looks like -- holes behave exactly as before.
     #[test]
-    fn without_a_resync_rule_a_hole_still_blocks() {
+    fn without_a_resync_rule_a_hole_still_blocks() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         syn_at(&mut r, 99);
         assert!(
@@ -1465,12 +1472,13 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(r.gaps_skipped(), 0);
+        Ok(())
     }
 
     /// A PSH that stalls on a sequence gap must flush when a later
     /// out-of-order segment fills the gap, not stay buffered forever.
     #[test]
-    fn tcp_psh_on_final_segment_arriving_first_flushes_when_gap_fills() {
+    fn tcp_psh_on_final_segment_arriving_first_flushes_when_gap_fills() -> Result<(), TestError> {
         // Real-world out-of-order: the FINAL segment (carrying PSH) arrives
         // first; the earlier segment (no PSH) arrives last and fills the gap.
         // The push stalled on the gap, so when the gap fills the now-contiguous
@@ -1497,6 +1505,7 @@ mod tests {
             vec![b"helloworld".to_vec()],
             "filling the gap must complete the stalled push"
         );
+        Ok(())
     }
 
     /// At large caps, eviction is batched (cap/100 at a time): the old
@@ -1504,7 +1513,7 @@ mod tests {
     /// incoming fragment once at capacity — a CPU-DoS and log flood
     /// under a deliberate fragment flood.
     #[test]
-    fn fragment_eviction_batches_at_large_cap() {
+    fn fragment_eviction_batches_at_large_cap() -> Result<(), TestError> {
         let mut r = FragmentReassembler::with_limits(1000, DEFAULT_TTL);
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1519,12 +1528,13 @@ mod tests {
             991,
             "1001st insert evicts a batch of cap/100 = 10, then inserts"
         );
+        Ok(())
     }
 
     /// TCP stream eviction at capacity is batched (cap/100), mirroring the
     /// fragment reassembler's anti-flood behavior.
     #[test]
-    fn tcp_eviction_batches_at_large_cap() {
+    fn tcp_eviction_batches_at_large_cap() -> Result<(), TestError> {
         let mut r = TcpReassembler::with_limits(1000, DEFAULT_TTL);
         for i in 0..1001u16 {
             // Unique src_port per segment → unique stream key.
@@ -1537,6 +1547,7 @@ mod tests {
             991,
             "1001st insert evicts a batch of cap/100 = 10, then inserts"
         );
+        Ok(())
     }
 
     // ── Fragment reassembly tests ─────────────────────────────────────
@@ -1544,7 +1555,7 @@ mod tests {
     /// Two in-order fragments reassemble into the concatenated datagram and
     /// the entry is removed.
     #[test]
-    fn fragment_two_pieces_reassembled() {
+    fn fragment_two_pieces_reassembled() -> Result<(), TestError> {
         let mut r = FragmentReassembler::new();
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1555,17 +1566,18 @@ mod tests {
 
         // Second fragment: offset=2 (2*8=16 bytes), MF=0, 8 bytes
         let frag2 = make_fragment(src, dst, 42, 2, false, &[0xBB; 8]);
-        let result = r.insert(&frag2).expect("should reassemble");
+        let result = r.insert(&frag2).ok_or("should reassemble")?;
 
         assert_eq!(result.len(), 24);
         assert_eq!(&result[..16], &[0xAA; 16]);
         assert_eq!(&result[16..], &[0xBB; 8]);
         assert!(r.is_empty());
+        Ok(())
     }
 
     /// Fragments arriving last-first still reassemble in offset order.
     #[test]
-    fn fragment_out_of_order() {
+    fn fragment_out_of_order() -> Result<(), TestError> {
         let mut r = FragmentReassembler::new();
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1576,16 +1588,17 @@ mod tests {
 
         // Then the first fragment
         let frag1 = make_fragment(src, dst, 99, 0, true, &[0xAA; 16]);
-        let result = r.insert(&frag1).expect("should reassemble out-of-order");
+        let result = r.insert(&frag1).ok_or("should reassemble out-of-order")?;
 
         assert_eq!(result.len(), 24);
         assert_eq!(&result[..16], &[0xAA; 16]);
         assert_eq!(&result[16..], &[0xBB; 8]);
+        Ok(())
     }
 
     /// Overlapping fragments (an evasion indicator) drop the whole entry.
     #[test]
-    fn fragment_overlapping_dropped() {
+    fn fragment_overlapping_dropped() -> Result<(), TestError> {
         let mut r = FragmentReassembler::new();
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1600,6 +1613,7 @@ mod tests {
 
         // Entry should be gone
         assert!(r.is_empty());
+        Ok(())
     }
 
     /// A capture on `any` sees a forwarded datagram twice, and a network may
@@ -1607,7 +1621,7 @@ mod tests {
     /// nothing and takes nothing away: the datagram still reassembles, in
     /// either arrival order.
     #[test]
-    fn an_exact_duplicate_fragment_does_not_drop_the_datagram() {
+    fn an_exact_duplicate_fragment_does_not_drop_the_datagram() -> Result<(), TestError> {
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let first = make_fragment(src, dst, 56, 0, true, &[0xAA; 16]);
@@ -1626,13 +1640,15 @@ mod tests {
         assert!(r.insert(&last).is_none(), "a copy completes nothing");
         assert_eq!(r.insert(&first).as_deref(), Some(&want[..]));
         assert!(r.is_empty());
+        Ok(())
     }
 
     /// Only an exact copy is forgiven. The same range with different bytes,
     /// or the same bytes claiming a different end of datagram, is still the
     /// overlap an evasion attempt makes, and still drops the datagram.
     #[test]
-    fn a_fragment_that_differs_from_the_one_held_still_drops_the_datagram() {
+    fn a_fragment_that_differs_from_the_one_held_still_drops_the_datagram() -> Result<(), TestError>
+    {
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let first = make_fragment(src, dst, 57, 0, true, &[0xAA; 16]);
@@ -1656,11 +1672,12 @@ mod tests {
         assert!(r.insert(&first).is_none());
         assert!(r.insert(&shifted).is_none());
         assert!(r.is_empty(), "the same bytes at another offset drop it");
+        Ok(())
     }
 
     /// An incomplete entry older than the TTL is removed by `sweep`.
     #[test]
-    fn fragment_timeout_evicted() {
+    fn fragment_timeout_evicted() -> Result<(), TestError> {
         let mut r = FragmentReassembler::with_limits(100, Duration::from_millis(50));
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1674,11 +1691,12 @@ mod tests {
         r.sweep();
 
         assert!(r.is_empty(), "stale entry should have been swept");
+        Ok(())
     }
 
     /// A datagram whose declared total exceeds 64 KB is dropped entirely.
     #[test]
-    fn fragment_oversized_dropped() {
+    fn fragment_oversized_dropped() -> Result<(), TestError> {
         let mut r = FragmentReassembler::new();
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1694,13 +1712,14 @@ mod tests {
 
         // Entry should be dropped
         assert!(r.is_empty());
+        Ok(())
     }
 
     /// A fragment lying past the one that ends the datagram means the pieces
     /// do not describe one datagram of the declared length: it is never
     /// completed from them.
     #[test]
-    fn a_fragment_past_the_final_one_never_completes_the_datagram() {
+    fn a_fragment_past_the_final_one_never_completes_the_datagram() -> Result<(), TestError> {
         let mut r = FragmentReassembler::new();
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -1714,6 +1733,7 @@ mod tests {
             "the final fragment ends at byte 8, and another runs to 16"
         );
         assert_eq!(r.len(), 1, "held until the TTL, never reassembled");
+        Ok(())
     }
 
     /// A datagram of exactly the 64 KB ceiling is reassembled; only one past
@@ -1747,7 +1767,7 @@ mod tests {
     /// A SYN starts the stream afresh: data buffered before it is not
     /// delivered as if it followed the new start.
     #[test]
-    fn a_syn_discards_what_the_stream_buffered_before_it() {
+    fn a_syn_discards_what_the_stream_buffered_before_it() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         assert!(
             r.insert(&make_tcp_segment(
@@ -1762,12 +1782,13 @@ mod tests {
         syn_at(&mut r, 995);
         let out = r.insert(&make_tcp_segment(5060, 5061, 996, psh(), b"NEW!"));
         assert_eq!(out, vec![b"NEW!".to_vec()]);
+        Ok(())
     }
 
     /// A SYN without payload only sets the stream's start: a FIN beside it
     /// is not acted on, and the stream stays.
     #[test]
-    fn a_syn_without_payload_only_sets_the_start() {
+    fn a_syn_without_payload_only_sets_the_start() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         let flags = TcpFlags {
             syn: true,
@@ -1779,12 +1800,13 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(r.len(), 1, "the stream is kept");
+        Ok(())
     }
 
     /// Once a push is delivered, a later segment without PSH waits to be
     /// pushed instead of being flushed on the strength of the old push.
     #[test]
-    fn a_satisfied_push_does_not_flush_the_next_segment() {
+    fn a_satisfied_push_does_not_flush_the_next_segment() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         syn_at(&mut r, 99);
         assert_eq!(
@@ -1802,12 +1824,13 @@ mod tests {
             .is_empty(),
             "no PSH since the last delivery"
         );
+        Ok(())
     }
 
     /// A stream that was blocked by a hole and then unblocked is not released
     /// at the end of the input: what it still buffers was never behind a hole.
     #[test]
-    fn a_stream_no_longer_blocked_is_not_released_at_the_end() {
+    fn a_stream_no_longer_blocked_is_not_released_at_the_end() -> Result<(), TestError> {
         let mut r = TcpReassembler::new().with_resync(crate::sip::parser::starts_sip_message);
         syn_at(&mut r, 99);
         let at2 = 100 + BYE.len() as u32;
@@ -1823,12 +1846,13 @@ mod tests {
                 .is_empty()
         );
         assert!(r.finish().is_empty(), "nothing waits behind a hole");
+        Ok(())
     }
 
     /// A direction holding exactly the buffer ceiling is not flushed; one
     /// byte past it is.
     #[test]
-    fn the_buffer_ceiling_flushes_only_once_passed() {
+    fn the_buffer_ceiling_flushes_only_once_passed() -> Result<(), TestError> {
         let ceiling = max_tcp_buffer();
         let mut r = TcpReassembler::new();
         syn_at(&mut r, 99);
@@ -1854,13 +1878,14 @@ mod tests {
         ));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].len(), ceiling + 1);
+        Ok(())
     }
 
     /// A SYN restarts the byte count the buffer ceiling is measured against:
     /// what the stream buffered before it does not count toward the ceiling
     /// of the stream it starts.
     #[test]
-    fn a_syn_restarts_the_buffered_byte_count() {
+    fn a_syn_restarts_the_buffered_byte_count() -> Result<(), TestError> {
         let ceiling = max_tcp_buffer();
         let mut r = TcpReassembler::new();
         let full = vec![b'x'; ceiling];
@@ -1886,12 +1911,13 @@ mod tests {
             .is_empty(),
             "one byte buffered since the SYN is far below the ceiling"
         );
+        Ok(())
     }
 
     /// A segment that lies before the start a SYN set is never delivered: the
     /// start is known, so it is not moved back the way a guessed start is.
     #[test]
-    fn a_segment_before_the_syn_start_is_not_delivered() {
+    fn a_segment_before_the_syn_start_is_not_delivered() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         syn_at(&mut r, 99);
         assert!(
@@ -1903,13 +1929,14 @@ mod tests {
             r.insert(&make_tcp_segment(5060, 5061, 100, psh(), b"NEW!")),
             vec![b"NEW!".to_vec()]
         );
+        Ok(())
     }
 
     /// On a stream joined part way, a segment without payload that lies
     /// before the guessed start does not move the start back: it carries
     /// nothing to assemble from there.
     #[test]
-    fn an_empty_segment_does_not_move_a_guessed_start_back() {
+    fn an_empty_segment_does_not_move_a_guessed_start_back() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         assert!(
             r.insert(&make_tcp_segment(
@@ -1929,6 +1956,7 @@ mod tests {
             r.insert(&make_tcp_segment(5060, 5061, 1002, psh(), b"CD")),
             vec![b"ABCD".to_vec()]
         );
+        Ok(())
     }
 
     /// A direction silent past the TTL counts as one reassembly timeout when
@@ -1955,7 +1983,7 @@ mod tests {
     /// times a stream passes the ceiling.
     #[cfg(feature = "native")]
     #[test]
-    fn the_buffer_ceiling_warning_is_said_at_most_once() {
+    fn the_buffer_ceiling_warning_is_said_at_most_once() -> Result<(), TestError> {
         let ceiling = max_tcp_buffer();
         let full = vec![b'x'; ceiling + 1];
         let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
@@ -1978,13 +2006,14 @@ mod tests {
             logs.matches("exceeded the").count() <= 1,
             "warned more than once: {logs}"
         );
+        Ok(())
     }
 
     /// A segment without payload is not buffered: an ACK whose sequence
     /// number lies ahead leaves nothing behind that keeps a satisfied push
     /// pending, so the next segment without PSH still waits to be pushed.
     #[test]
-    fn an_empty_segment_ahead_is_not_buffered() {
+    fn an_empty_segment_ahead_is_not_buffered() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         syn_at(&mut r, 99);
         assert_eq!(
@@ -2010,12 +2039,13 @@ mod tests {
             .is_empty(),
             "no PSH since the last delivery"
         );
+        Ok(())
     }
 
     /// At the entry cap, inserting a new key evicts the oldest so the count
     /// never exceeds the cap.
     #[test]
-    fn fragment_max_entries_evicts_oldest() {
+    fn fragment_max_entries_evicts_oldest() -> Result<(), TestError> {
         let mut r = FragmentReassembler::with_limits(2, DEFAULT_TTL);
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -2031,13 +2061,14 @@ mod tests {
         let f3 = make_fragment(src, dst, 3, 0, true, &[0xCC; 8]);
         r.insert(&f3);
         assert_eq!(r.len(), 2, "should stay at capacity after eviction");
+        Ok(())
     }
 
     // ── TCP reassembly tests ─────────────────────────────────────────
 
     /// Two in-order segments flush as one concatenated chunk on PSH.
     #[test]
-    fn tcp_in_order_with_psh() {
+    fn tcp_in_order_with_psh() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
 
         // First segment: data
@@ -2052,12 +2083,13 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], b"INVITE sip:bob@ex");
+        Ok(())
     }
 
     /// A segment arriving before its predecessor is reordered before the
     /// PSH flush.
     #[test]
-    fn tcp_out_of_order_reordered() {
+    fn tcp_out_of_order_reordered() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
 
         // Send second segment first (out of order)
@@ -2072,11 +2104,12 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], b"helloworld");
+        Ok(())
     }
 
     /// FIN flushes all buffered data and removes the stream.
     #[test]
-    fn tcp_fin_flushes_remaining() {
+    fn tcp_fin_flushes_remaining() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
 
         let seg1 = make_tcp_segment(5060, 5061, 100, default_tcp_flags(), b"data");
@@ -2091,11 +2124,12 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], b"dataend");
         assert!(r.is_empty(), "stream should be removed after FIN");
+        Ok(())
     }
 
     /// RST discards the stream and returns nothing.
     #[test]
-    fn tcp_rst_discards_stream() {
+    fn tcp_rst_discards_stream() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
 
         let seg1 = make_tcp_segment(5060, 5061, 100, default_tcp_flags(), b"data");
@@ -2110,11 +2144,12 @@ mod tests {
 
         assert!(result.is_empty());
         assert!(r.is_empty(), "stream should be discarded on RST");
+        Ok(())
     }
 
     /// An idle stream older than the TTL is removed by `sweep`.
     #[test]
-    fn tcp_timeout_evicted() {
+    fn tcp_timeout_evicted() -> Result<(), TestError> {
         let mut r = TcpReassembler::with_limits(100, Duration::from_millis(50));
 
         let seg = make_tcp_segment(5060, 5061, 100, default_tcp_flags(), b"hello");
@@ -2124,12 +2159,13 @@ mod tests {
         std::thread::sleep(Duration::from_millis(60));
         r.sweep();
         assert!(r.is_empty(), "stale stream should be swept");
+        Ok(())
     }
 
     /// At the stream cap, a new stream evicts the oldest so the count never
     /// exceeds the cap.
     #[test]
-    fn tcp_max_entries_evicts_oldest() {
+    fn tcp_max_entries_evicts_oldest() -> Result<(), TestError> {
         let mut r = TcpReassembler::with_limits(2, DEFAULT_TTL);
 
         // Stream 1
@@ -2144,6 +2180,7 @@ mod tests {
         let s3 = make_tcp_segment(5000, 6000, 300, default_tcp_flags(), b"c");
         r.insert(&s3);
         assert_eq!(r.len(), 2);
+        Ok(())
     }
 
     // ── TCP sequence-wrap (serial arithmetic) tests ──────────────────
@@ -2151,7 +2188,7 @@ mod tests {
     /// Serial comparison sanity at the boundaries: total order at the wrap
     /// and within a 2^31 window; exactly 2^31 apart is mutually "less".
     #[test]
-    fn tcp_serial_seq_lt_boundaries() {
+    fn tcp_serial_seq_lt_boundaries() -> Result<(), TestError> {
         assert!(
             seq_lt(0xFFFF_FFFF, 0),
             "0xFFFFFFFF precedes 0 across the wrap"
@@ -2167,13 +2204,14 @@ mod tests {
         // Exactly 2^31 apart is unordered (both directions "less").
         assert!(seq_lt(0, 0x8000_0000));
         assert!(seq_lt(0x8000_0000, 0));
+        Ok(())
     }
 
     /// An in-order stream whose sequence numbers cross the 2^32 wrap must
     /// reassemble contiguously: the post-wrap segment is in-order data,
     /// not a retransmit.
     #[test]
-    fn tcp_in_order_stream_across_seq_wrap() {
+    fn tcp_in_order_stream_across_seq_wrap() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         let mut syn = default_tcp_flags();
         syn.syn = true;
@@ -2205,13 +2243,14 @@ mod tests {
             vec![expected],
             "post-wrap segment is in-order data, not a retransmit"
         );
+        Ok(())
     }
 
     /// Out-of-order delivery across the wrap: the post-wrap segment (the
     /// numerically SMALLEST buffer key) arrives first and must be held,
     /// then drained in serial order once the pre-wrap segment fills the gap.
     #[test]
-    fn tcp_out_of_order_across_seq_wrap_drains_serially() {
+    fn tcp_out_of_order_across_seq_wrap_drains_serially() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         let mut syn = default_tcp_flags();
         syn.syn = true;
@@ -2243,12 +2282,13 @@ mod tests {
             vec![expected],
             "buffer must drain in serial order across the wrap"
         );
+        Ok(())
     }
 
     /// A genuine retransmit just after the wrap (serial-below the advanced
     /// `expected_seq`) is still classified as a retransmit and discarded.
     #[test]
-    fn tcp_genuine_retransmit_after_wrap_discarded() {
+    fn tcp_genuine_retransmit_after_wrap_discarded() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         let mut syn = default_tcp_flags();
         syn.syn = true;
@@ -2279,12 +2319,13 @@ mod tests {
             r.insert(&make_tcp_segment(5060, 5061, 0x105, psh, b"xyz")),
             vec![b"xyz".to_vec()]
         );
+        Ok(())
     }
 
     /// Regression guard: a normal mid-range stream (no wrap) behaves exactly
     /// as before - in-order flush, retransmit discard, out-of-order reorder.
     #[test]
-    fn tcp_mid_range_stream_unchanged() {
+    fn tcp_mid_range_stream_unchanged() -> Result<(), TestError> {
         let mut r = TcpReassembler::new();
         let mut syn = default_tcp_flags();
         syn.syn = true;
@@ -2316,5 +2357,6 @@ mod tests {
             b" big ",
         ));
         assert_eq!(result, vec![b" big world".to_vec()]);
+        Ok(())
     }
 }

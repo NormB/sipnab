@@ -239,6 +239,8 @@ mod tests {
     use super::*;
     use crate::rtp::emodel_wb::AMR_WB_MODES_KBPS;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build an octet-aligned payload from [RFC 4867 section 4.4.2](https://www.rfc-editor.org/rfc/rfc4867#section-4.4.2)'s layout rather
     /// than from this module's arithmetic: a CMR octet, then one
     /// `F(1) FT(4) Q(1) P(2)` octet per frame.
@@ -301,7 +303,7 @@ mod tests {
     /// where `F` is always zero, the wrong mask and the right one give the
     /// same answer for every frame type.
     #[test]
-    fn a_multi_frame_packet_still_names_its_first_frame() {
+    fn a_multi_frame_packet_still_names_its_first_frame() -> Result<(), TestError> {
         for first in 0u8..=8 {
             let frames = [(first, true), (3, false), (5, true)];
             assert_eq!(
@@ -325,6 +327,7 @@ mod tests {
                 "the mode of a multi-frame packet's first frame"
             );
         }
+        Ok(())
     }
 
     /// Every AMR-WB speech mode, in the normative order, out of both packings.
@@ -334,9 +337,9 @@ mod tests {
     /// every stream against the wrong impairment while still returning a
     /// published figure.
     #[test]
-    fn every_wideband_speech_mode_decodes_in_order() {
+    fn every_wideband_speech_mode_decodes_in_order() -> Result<(), TestError> {
         for (ft, want) in AMR_WB_MODES_KBPS.iter().enumerate() {
-            let ft = u8::try_from(ft).expect("nine modes");
+            let ft = u8::try_from(ft)?;
             for p in [
                 (octet_aligned(15, ft, true), Packing::OctetAligned),
                 (
@@ -352,14 +355,15 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Every AMR narrowband speech mode, in the normative order, out of both
     /// packings.
     #[test]
-    fn every_narrowband_speech_mode_decodes_in_order() {
+    fn every_narrowband_speech_mode_decodes_in_order() -> Result<(), TestError> {
         for (ft, want) in AMR_NB_MODES_KBPS.iter().enumerate() {
-            let ft = u8::try_from(ft).expect("eight modes");
+            let ft = u8::try_from(ft)?;
             for p in [
                 (octet_aligned(15, ft, true), Packing::OctetAligned),
                 (
@@ -375,6 +379,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A comfort-noise descriptor is not the slowest speech mode.
@@ -384,7 +389,7 @@ mod tests {
     /// table is one shorter, so its SID at 8 would land on the wideband table's
     /// 23.85 if the two were ever confused.
     #[test]
-    fn silence_descriptors_carry_no_mode() {
+    fn silence_descriptors_carry_no_mode() -> Result<(), TestError> {
         for packing in [Packing::OctetAligned, Packing::BandwidthEfficient] {
             let wb_sid = match packing {
                 Packing::OctetAligned => octet_aligned(15, 9, true),
@@ -397,11 +402,12 @@ mod tests {
             };
             assert_eq!(amr_nb_kbps_from_payload(&nb_sid, packing), None);
         }
+        Ok(())
     }
 
     /// Reserved, lost and no-data frame types carry no mode either.
     #[test]
-    fn reserved_and_no_data_frame_types_carry_no_mode() {
+    fn reserved_and_no_data_frame_types_carry_no_mode() -> Result<(), TestError> {
         for ft in [10u8, 11, 12, 13, 14, 15] {
             for packing in [Packing::OctetAligned, Packing::BandwidthEfficient] {
                 let pkt = match packing {
@@ -420,6 +426,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The change request bits belong to the RECEIVER's wishes and must not
@@ -429,7 +436,7 @@ mod tests {
     /// both packings, and in the bandwidth-efficient one it is adjacent to it.
     /// A mask off by one bit reads 15 as a mode.
     #[test]
-    fn the_change_request_does_not_leak_into_the_frame_type() {
+    fn the_change_request_does_not_leak_into_the_frame_type() -> Result<(), TestError> {
         // Every frame type against every change request, not frame type 0
         // alone: a reader that always answered 0 would satisfy the zero case
         // for all sixteen requests and prove nothing about the mask.
@@ -450,11 +457,12 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The frame quality bit does not move the frame type either.
     #[test]
-    fn the_quality_bit_does_not_move_the_frame_type() {
+    fn the_quality_bit_does_not_move_the_frame_type() -> Result<(), TestError> {
         for q in [true, false] {
             assert_eq!(
                 amr_frame_type(&octet_aligned(15, 5, q), Packing::OctetAligned),
@@ -465,6 +473,7 @@ mod tests {
                 Some(5)
             );
         }
+        Ok(())
     }
 
     /// Reading one packing as the other yields a DIFFERENT frame type, which
@@ -473,7 +482,7 @@ mod tests {
     /// This is the argument for the explicit argument, made as a measurement
     /// rather than as a warning in a doc comment.
     #[test]
-    fn the_two_packings_disagree_when_confused() {
+    fn the_two_packings_disagree_when_confused() -> Result<(), TestError> {
         let pkt = bandwidth_efficient(15, 2, true);
         assert_eq!(
             amr_frame_type(&pkt, Packing::BandwidthEfficient),
@@ -486,12 +495,13 @@ mod tests {
             "a bandwidth-efficient packet read as octet-aligned must not \
              happen to give the right answer, or this test proves nothing"
         );
+        Ok(())
     }
 
     /// A payload too short to hold a table-of-contents entry has no frame
     /// type, and neither reader invents one.
     #[test]
-    fn a_truncated_payload_has_no_frame_type() {
+    fn a_truncated_payload_has_no_frame_type() -> Result<(), TestError> {
         for packing in [Packing::OctetAligned, Packing::BandwidthEfficient] {
             for short in [vec![], vec![0xF0]] {
                 assert_eq!(amr_frame_type(&short, packing), None);
@@ -499,11 +509,12 @@ mod tests {
                 assert_eq!(amr_nb_kbps_from_payload(&short, packing), None);
             }
         }
+        Ok(())
     }
 
     /// `octet-align=1` and nothing else selects octet-aligned packing.
     #[test]
-    fn octet_align_is_read_from_the_fmtp() {
+    fn octet_align_is_read_from_the_fmtp() -> Result<(), TestError> {
         assert!(amr_octet_aligned("octet-align=1"));
         assert!(amr_octet_aligned(
             "mode-set=2; octet-align=1; mode-change-period=2"
@@ -515,16 +526,18 @@ mod tests {
         assert!(!amr_octet_aligned(""));
         // A parameter that merely ENDS in the name is a different parameter.
         assert!(!amr_octet_aligned("no-octet-align=1"));
+        Ok(())
     }
 
     /// Interleaving is detected so the readers can be kept away from a payload
     /// whose offsets have moved.
     #[test]
-    fn interleaving_is_detected_from_the_fmtp() {
+    fn interleaving_is_detected_from_the_fmtp() -> Result<(), TestError> {
         assert!(amr_interleaved("interleaving=5"));
         assert!(amr_interleaved("octet-align=1; interleaving=2"));
         assert!(!amr_interleaved("interleaving="));
         assert!(!amr_interleaved("octet-align=1"));
         assert!(!amr_interleaved(""));
+        Ok(())
     }
 }
