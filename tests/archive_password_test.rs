@@ -19,6 +19,8 @@ use std::process::{Command, Stdio};
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A password nobody wrote down: this process, this instant, and a label.
 fn mint(label: &str) -> String {
     use std::hash::{Hash, Hasher};
@@ -34,16 +36,16 @@ fn mint(label: &str) -> String {
 }
 
 /// A capture holding one SIP call, `call_id`.
-fn capture(call_id: &str) -> Vec<u8> {
-    let dir = tempfile::tempdir().expect("tmp");
+fn capture(call_id: &str) -> Result<Vec<u8>, TestError> {
+    let dir = tempfile::tempdir()?;
     let p = dir.path().join("c.pcap");
     let frames: Vec<(Vec<u8>, u64)> = pcap_build::sip_call_frames(call_id, "b1", "alice", "bob")
         .into_iter()
         .enumerate()
         .map(|(i, f)| (f, 10_000_000 + i as u64 * 1_000))
         .collect();
-    pcap_build::write_pcap_at_or_panic(&p, &frames, 1);
-    std::fs::read(&p).expect("read back")
+    pcap_build::write_pcap_at(&p, &frames, 1)?;
+    Ok(std::fs::read(&p)?)
 }
 
 /// How a fixture member is locked.
@@ -55,7 +57,7 @@ enum Lock<'a> {
 }
 
 /// A ZIP of `(name, bytes, lock)` members.
-fn zip_of(entries: &[(&str, &[u8], Lock<'_>)]) -> Vec<u8> {
+fn zip_of(entries: &[(&str, &[u8], Lock<'_>)]) -> Result<Vec<u8>, TestError> {
     use zip::unstable::write::FileOptionsExt;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     for (name, data, lock) in entries {
@@ -63,25 +65,24 @@ fn zip_of(entries: &[(&str, &[u8], Lock<'_>)]) -> Vec<u8> {
             .compression_method(zip::CompressionMethod::Deflated);
         let opts = match lock {
             Lock::None => base,
-            Lock::ZipCrypto(pw) => base
-                .with_deprecated_encryption(pw.as_bytes())
-                .expect("zipcrypto"),
+            Lock::ZipCrypto(pw) => base.with_deprecated_encryption(pw.as_bytes())?,
             Lock::Aes(pw) => base.with_aes_encryption(zip::AesMode::Aes256, pw),
         };
-        w.start_file(*name, opts).expect("start");
-        w.write_all(data).expect("write");
+        w.start_file(*name, opts)?;
+        w.write_all(data)?;
     }
-    w.finish().expect("finish").into_inner()
+    Ok(w.finish()?.into_inner())
 }
 
 /// A file only its owner can read, as a password file must be.
-fn private_file(path: &Path, contents: &str) {
-    std::fs::write(path, contents).expect("write");
+fn private_file(path: &Path, contents: &str) -> Result<(), TestError> {
+    std::fs::write(path, contents)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
+    Ok(())
 }
 
 /// What a run produced.
@@ -92,7 +93,12 @@ struct Run {
 }
 
 /// Run the binary over `args` at trace level, with `env` set and `stdin` fed.
-fn run(args: &[&str], env: &[(&str, &str)], stdin: Option<&str>, tmpdir: &Path) -> Run {
+fn run(
+    args: &[&str],
+    env: &[(&str, &str)],
+    stdin: Option<&str>,
+    tmpdir: &Path,
+) -> Result<Run, TestError> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.args(args)
         .env("TMPDIR", tmpdir)
@@ -110,21 +116,20 @@ fn run(args: &[&str], env: &[(&str, &str)], stdin: Option<&str>, tmpdir: &Path) 
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn().expect("spawn sipnab");
+    let mut child = cmd.spawn()?;
     if let Some(input) = stdin {
         child
             .stdin
             .take()
-            .expect("stdin")
-            .write_all(input.as_bytes())
-            .expect("feed stdin");
+            .ok_or("stdin")?
+            .write_all(input.as_bytes())?;
     }
-    let out = child.wait_with_output().expect("wait");
-    Run {
+    let out = child.wait_with_output()?;
+    Ok(Run {
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         code: out.status.code(),
-    }
+    })
 }
 
 /// The arguments that print a run's dialogs as JSON.
@@ -157,29 +162,28 @@ fn assert_sealed(r: &Run, password: &str) {
 }
 
 /// An AES-256 ZIP of one call, locked with `password`, in `dir`.
-fn locked_zip(dir: &Path, name: &str, call_id: &str, password: &str) -> PathBuf {
+fn locked_zip(dir: &Path, name: &str, call_id: &str, password: &str) -> Result<PathBuf, TestError> {
     let path = dir.join(name);
     std::fs::write(
         &path,
-        zip_of(&[("calls/a.pcap", &capture(call_id), Lock::Aes(password))]),
-    )
-    .expect("write zip");
-    path
+        zip_of(&[("calls/a.pcap", &capture(call_id)?, Lock::Aes(password))])?,
+    )?;
+    Ok(path)
 }
 
 #[test]
-fn every_source_opens_a_locked_archive() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn every_source_opens_a_locked_archive() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("sources");
-    let zip = locked_zip(root.path(), "evidence.zip", "src-call@test", &password);
+    let zip = locked_zip(root.path(), "evidence.zip", "src-call@test", &password)?;
     let spec = zip.display().to_string();
 
     let file = root.path().join("pw.txt");
-    private_file(&file, &format!("{password}\n"));
+    private_file(&file, &format!("{password}\n"))?;
     let creds = root.path().join("creds");
-    std::fs::create_dir(&creds).expect("mkdir");
-    private_file(&creds.join("archive-password"), &format!("{password}\n"));
+    std::fs::create_dir(&creds)?;
+    private_file(&creds.join("archive-password"), &format!("{password}\n"))?;
     let file_s = file.display().to_string();
     let command = format!("cat {}", file.display());
     let creds_s = creds.display().to_string();
@@ -232,7 +236,7 @@ fn every_source_opens_a_locked_archive() {
         let mut args = read_args(&spec);
         args.extend(extra);
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-        let r = run(&argv, &env, stdin.as_deref(), tmp.path());
+        let r = run(&argv, &env, stdin.as_deref(), tmp.path())?;
         assert_eq!(r.code, Some(0), "{what}: exit status\n{}", r.stderr);
         assert!(
             r.stdout.contains("src-call@test"),
@@ -252,18 +256,19 @@ fn every_source_opens_a_locked_archive() {
             assert_sealed(&r, &password);
         }
     }
+    Ok(())
 }
 
 #[test]
-fn the_inline_flag_warns_and_still_never_echoes_the_password() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn the_inline_flag_warns_and_still_never_echoes_the_password() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("inline");
-    let zip = locked_zip(root.path(), "e.zip", "inline@test", &password);
+    let zip = locked_zip(root.path(), "e.zip", "inline@test", &password)?;
     let mut args = read_args(&zip.display().to_string());
     args.extend(["--archive-password".to_string(), password.clone()]);
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let r = run(&argv, &[], None, tmp.path());
+    let r = run(&argv, &[], None, tmp.path())?;
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert!(
         r.stderr.contains(
@@ -275,26 +280,27 @@ fn the_inline_flag_warns_and_still_never_echoes_the_password() {
     // The command line is the operator's own; what sipnab PRINTS must still
     // never repeat it.
     assert_sealed(&r, &password);
+    Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn an_own_password_file_others_can_read_is_refused() {
+fn an_own_password_file_others_can_read_is_refused() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt;
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("perm");
-    let zip = locked_zip(root.path(), "e.zip", "perm@test", &password);
+    let zip = locked_zip(root.path(), "e.zip", "perm@test", &password)?;
     let file = root.path().join("pw.txt");
-    std::fs::write(&file, format!("{password}\n")).expect("write");
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    std::fs::write(&file, format!("{password}\n"))?;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644))?;
     let mut args = read_args(&zip.display().to_string());
     args.extend([
         "--archive-password-file".to_string(),
         file.display().to_string(),
     ]);
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let r = run(&argv, &[], None, tmp.path());
+    let r = run(&argv, &[], None, tmp.path())?;
     assert_eq!(r.code, Some(2), "{}", r.stderr);
     assert!(
         r.stderr.contains("mode 0644") && r.stderr.contains("chmod 600"),
@@ -302,14 +308,15 @@ fn an_own_password_file_others_can_read_is_refused() {
         r.stderr
     );
     assert_sealed(&r, &password);
+    Ok(())
 }
 
 #[test]
-fn a_named_archive_with_nothing_readable_fails_and_names_why() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn a_named_archive_with_nothing_readable_fails_and_names_why() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("named");
-    let zip = locked_zip(root.path(), "e.zip", "named@test", &password);
+    let zip = locked_zip(root.path(), "e.zip", "named@test", &password)?;
     let spec = zip.display().to_string();
 
     let r = run(
@@ -320,7 +327,7 @@ fn a_named_archive_with_nothing_readable_fails_and_names_why() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(1), "no password: exit status\n{}", r.stderr);
     assert!(
         r.stderr.contains(&format!("{spec}/calls/a.pcap"))
@@ -337,7 +344,7 @@ fn a_named_archive_with_nothing_readable_fails_and_names_why() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(1), "wrong password: exit status\n{}", r.stderr);
     assert!(
         r.stderr.contains("encrypted_wrong_password"),
@@ -346,22 +353,26 @@ fn a_named_archive_with_nothing_readable_fails_and_names_why() {
     );
     assert_sealed(&r, &wrong);
     assert_sealed(&r, &password);
+    Ok(())
 }
 
 #[test]
-fn some_members_read_is_a_success_with_the_rest_tallied() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn some_members_read_is_a_success_with_the_rest_tallied() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("partial");
     let path = root.path().join("mixed.zip");
     std::fs::write(
         &path,
         zip_of(&[
-            ("open.pcap", &capture("open@test"), Lock::None),
-            ("locked.pcap", &capture("locked@test"), Lock::Aes(&password)),
-        ]),
-    )
-    .expect("write");
+            ("open.pcap", &capture("open@test")?, Lock::None),
+            (
+                "locked.pcap",
+                &capture("locked@test")?,
+                Lock::Aes(&password),
+            ),
+        ])?,
+    )?;
     let spec = path.display().to_string();
     let r = run(
         &read_args(&spec)
@@ -371,7 +382,7 @@ fn some_members_read_is_a_success_with_the_rest_tallied() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert!(r.stdout.contains("open@test"));
     assert!(!r.stdout.contains("locked@test"));
@@ -386,25 +397,25 @@ fn some_members_read_is_a_success_with_the_rest_tallied() {
         "{}",
         r.stderr
     );
+    Ok(())
 }
 
 #[test]
-fn the_zipcrypto_warning_prints_once_per_archive() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn the_zipcrypto_warning_prints_once_per_archive() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("zipcrypto");
     let path = root.path().join("legacy.zip");
     std::fs::write(
         &path,
         zip_of(&[
-            ("a.pcap", &capture("zc-a@test"), Lock::ZipCrypto(&password)),
-            ("b.pcap", &capture("zc-b@test"), Lock::ZipCrypto(&password)),
-        ]),
-    )
-    .expect("write");
+            ("a.pcap", &capture("zc-a@test")?, Lock::ZipCrypto(&password)),
+            ("b.pcap", &capture("zc-b@test")?, Lock::ZipCrypto(&password)),
+        ])?,
+    )?;
     let mut args = read_args(&path.display().to_string());
     let file = root.path().join("pw");
-    private_file(&file, &format!("{password}\n"));
+    private_file(&file, &format!("{password}\n"))?;
     args.extend([
         "--archive-password-file".to_string(),
         file.display().to_string(),
@@ -414,7 +425,7 @@ fn the_zipcrypto_warning_prints_once_per_archive() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert!(r.stdout.contains("zc-a@test") && r.stdout.contains("zc-b@test"));
     assert_eq!(
@@ -426,16 +437,17 @@ fn the_zipcrypto_warning_prints_once_per_archive() {
         r.stderr
     );
     assert_sealed(&r, &password);
+    Ok(())
 }
 
 #[test]
-fn allowing_a_core_dump_while_holding_a_password_warns() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn allowing_a_core_dump_while_holding_a_password_warns() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("core");
-    let zip = locked_zip(root.path(), "e.zip", "core@test", &password);
+    let zip = locked_zip(root.path(), "e.zip", "core@test", &password)?;
     let file = root.path().join("pw");
-    private_file(&file, &format!("{password}\n"));
+    private_file(&file, &format!("{password}\n"))?;
     let mut args = read_args(&zip.display().to_string());
     args.extend([
         "--archive-password-file".to_string(),
@@ -447,7 +459,7 @@ fn allowing_a_core_dump_while_holding_a_password_warns() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert!(
         r.stderr
@@ -456,19 +468,21 @@ fn allowing_a_core_dump_while_holding_a_password_warns() {
         r.stderr
     );
     assert_sealed(&r, &password);
+    Ok(())
 }
 
 #[test]
-fn an_unknown_password_encoding_is_refused() {
-    let tmp = tempfile::tempdir().expect("tmp");
+fn an_unknown_password_encoding_is_refused() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
     let r = run(
         &["-N", "-I", "x.zip", "--archive-password-encoding", "ebcdic"],
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(2), "{}", r.stderr);
     assert!(r.stderr.contains("cp437"), "{}", r.stderr);
+    Ok(())
 }
 
 /// This host's address on its default route, which is not loopback: what a
@@ -485,7 +499,11 @@ fn non_loopback_address() -> Option<std::net::IpAddr> {
 /// Start `sipnab --api` on every interface over `root`, and return the child
 /// and its port.
 #[cfg(feature = "api")]
-fn api_server(root: &Path, extra: &[&str], tmp: &Path) -> (std::process::Child, u16, String) {
+fn api_server(
+    root: &Path,
+    extra: &[&str],
+    tmp: &Path,
+) -> Result<(std::process::Child, u16, String), TestError> {
     use std::io::BufRead;
     // No spaces: `--api-key` is trimmed, as every token secret is.
     let key = mint("api-key").replace(' ', "");
@@ -509,8 +527,8 @@ fn api_server(root: &Path, extra: &[&str], tmp: &Path) -> (std::process::Child, 
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
-    let mut child = cmd.spawn().expect("spawn");
-    let stderr = child.stderr.take().expect("stderr");
+    let mut child = cmd.spawn()?;
+    let stderr = child.stderr.take().ok_or("stderr")?;
     // Drained for the child's whole life: a closed stderr would fail the
     // server's next log write.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -528,14 +546,26 @@ fn api_server(root: &Path, extra: &[&str], tmp: &Path) -> (std::process::Child, 
         .recv_timeout(std::time::Duration::from_secs(20))
         .ok()
         .and_then(|addr| addr.rsplit(':').next().and_then(|p| p.parse().ok()));
-    (child, port.expect("the API came up"), key)
+    match port {
+        Some(port) => Ok((child, port, key)),
+        None => {
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("the API came up".into())
+        }
+    }
 }
 
 /// One GET with the archive password header, returning the status code.
 #[cfg(feature = "api")]
-fn get_with_password(ip: std::net::IpAddr, port: u16, key: &str, password: &str) -> u16 {
+fn get_with_password(
+    ip: std::net::IpAddr,
+    port: u16,
+    key: &str,
+    password: &str,
+) -> Result<u16, TestError> {
     use std::io::Read;
-    let mut s = std::net::TcpStream::connect((ip, port)).expect("connect");
+    let mut s = std::net::TcpStream::connect((ip, port))?;
     // The address it connected to, as a real client sends it: the API's Host
     // allowlist serves any address literal on this wildcard bind.
     let host = std::net::SocketAddr::new(ip, port);
@@ -544,74 +574,73 @@ fn get_with_password(ip: std::net::IpAddr, port: u16, key: &str, password: &str)
         "GET /v1/captures/compare?a=locked.zip&b=plain.pcap HTTP/1.1\r\nHost: {host}\r\n\
          Authorization: Bearer {key}\r\nSipnab-Archive-Password: {password}\r\n\
          Connection: close\r\n\r\n"
-    )
-    .expect("send");
+    )?;
     let mut reply = String::new();
     let _ = s.read_to_string(&mut reply);
-    reply
+    Ok(reply
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or(0))
 }
 
 #[cfg(feature = "api")]
 #[test]
-fn a_remote_client_s_password_header_needs_api_accept_archive_passwords() {
+fn a_remote_client_s_password_header_needs_api_accept_archive_passwords() -> Result<(), TestError> {
     let Some(ip) = non_loopback_address() else {
         eprintln!("SKIPPED: this host has no non-loopback address to send from");
-        return;
+        return Ok(());
     };
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     // No spaces: HTTP trims a header value's leading and trailing
     // whitespace (RFC 9110), so such a password cannot travel in a header.
     let password = mint("remote").replace(' ', "");
-    std::fs::write(root.path().join("plain.pcap"), capture("plain@test")).expect("pcap");
+    std::fs::write(root.path().join("plain.pcap"), capture("plain@test")?)?;
     std::fs::write(
         root.path().join("locked.zip"),
-        zip_of(&[("a.pcap", &capture("remote@test"), Lock::Aes(&password))]),
-    )
-    .expect("zip");
+        zip_of(&[("a.pcap", &capture("remote@test")?, Lock::Aes(&password))])?,
+    )?;
     for (extra, want) in [
         (&[][..], 403),
         (&["--api-accept-archive-passwords"][..], 200),
     ] {
-        let (mut child, port, key) = api_server(root.path(), extra, tmp.path());
+        let (mut child, port, key) = api_server(root.path(), extra, tmp.path())?;
         let code = get_with_password(ip, port, &key, &password);
         let _ = child.kill();
         let _ = child.wait();
+        let code = code?;
         assert_eq!(code, want, "flags {extra:?}");
     }
+    Ok(())
 }
 
 /// A 7z, AES-256 with its member list encrypted too, `password`-locked.
-fn locked_7z(dir: &Path, call_id: &str, password: &str) -> PathBuf {
+fn locked_7z(dir: &Path, call_id: &str, password: &str) -> Result<PathBuf, TestError> {
     use sevenz_rust2::encoder_options::AesEncoderOptions;
     use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password};
-    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).expect("writer");
+    let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new()))?;
     w.set_content_methods(vec![
         AesEncoderOptions::new(Password::from(password)).into(),
         EncoderMethod::LZMA2.into(),
     ]);
     w.set_encrypt_header(true);
-    let pcap = capture(call_id);
-    w.push_archive_entry(ArchiveEntry::new_file("calls/a.pcap"), Some(&pcap[..]))
-        .expect("entry");
+    let pcap = capture(call_id)?;
+    w.push_archive_entry(ArchiveEntry::new_file("calls/a.pcap"), Some(&pcap[..]))?;
     let path = dir.join("evidence.7z");
-    std::fs::write(&path, w.finish().expect("finish").into_inner()).expect("write");
-    path
+    std::fs::write(&path, w.finish()?.into_inner())?;
+    Ok(path)
 }
 
 #[test]
-fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("7z");
-    let archive = locked_7z(root.path(), "sevenz@test", &password);
+    let archive = locked_7z(root.path(), "sevenz@test", &password)?;
     let spec = archive.display().to_string();
     let file = root.path().join("pw");
-    private_file(&file, &format!("{password}\n"));
+    private_file(&file, &format!("{password}\n"))?;
     let mut args = read_args(&spec);
     args.extend([
         "--archive-password-file".to_string(),
@@ -622,7 +651,7 @@ fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(0), "{}", r.stderr);
     assert!(r.stdout.contains("sevenz@test"), "{}", r.stderr);
     assert_sealed(&r, &password);
@@ -635,7 +664,8 @@ fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() {
         &[],
         None,
         tmp.path(),
-    );
+    )?;
     assert_eq!(r.code, Some(1), "{}", r.stderr);
     assert!(r.stderr.contains("encrypted_no_password"), "{}", r.stderr);
+    Ok(())
 }

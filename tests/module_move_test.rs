@@ -52,6 +52,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -248,13 +250,12 @@ fn child_modules(dir: &str) -> BTreeSet<String> {
 /// `crate::relay::note_media_creating_command` is a path into `src/relay/`
 /// that resolves to a function rather than a file, so the name set has to hold
 /// both or the resolver would report a live import as dead.
-fn root_items(dir: &str) -> BTreeSet<String> {
+fn root_items(dir: &str) -> Result<BTreeSet<String>, TestError> {
     let src = std::fs::read_to_string(repo().join(dir).join("mod.rs")).unwrap_or_default();
     let re = regex::Regex::new(
         r"(?m)^pub (?:fn|const|static|struct|enum|trait|type|mod|use) ([A-Za-z_][A-Za-z0-9_]*)",
-    )
-    .expect("item pattern");
-    re.captures_iter(&src).map(|c| c[1].to_string()).collect()
+    )?;
+    Ok(re.captures_iter(&src).map(|c| c[1].to_string()).collect())
 }
 
 /// One `use` statement naming a module of `src/relay/` or `src/rtpengine/`.
@@ -282,14 +283,11 @@ struct ModuleRef {
 /// unambiguously means the directory module; indented `super` inside a nested
 /// module means that module's parent instead, and guessing would be worse than
 /// declining.
-fn module_refs() -> (Vec<ModuleRef>, Vec<String>) {
+fn module_refs() -> Result<(Vec<ModuleRef>, Vec<String>), TestError> {
     let crate_re =
-        regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::([A-Za-z_][A-Za-z0-9_]*)")
-            .expect("crate use pattern");
-    let crate_any =
-        regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::").expect("crate use prefix");
-    let super_re =
-        regex::Regex::new(r"^use\s+super::([A-Za-z_][A-Za-z0-9_]*)").expect("super use pattern");
+        regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::([A-Za-z_][A-Za-z0-9_]*)")?;
+    let crate_any = regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::")?;
+    let super_re = regex::Regex::new(r"^use\s+super::([A-Za-z_][A-Za-z0-9_]*)")?;
 
     let mut refs = Vec::new();
     let mut unparsed = Vec::new();
@@ -332,7 +330,7 @@ fn module_refs() -> (Vec<ModuleRef>, Vec<String>) {
             }
         }
     }
-    (refs, unparsed)
+    Ok((refs, unparsed))
 }
 
 /// The module refs a moved directory's own `#[cfg(test)] mod` blocks make,
@@ -342,11 +340,10 @@ fn module_refs() -> (Vec<ModuleRef>, Vec<String>) {
 /// where a rustfmt-formatted top-level module ends. Brace counting is not used
 /// on purpose: these files carry format strings full of `{` and `}`, and a
 /// miscount would silently move the end of the block.
-fn test_module_refs() -> (Vec<ModuleRef>, usize, usize) {
-    let head = regex::Regex::new(r"^mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{").expect("mod pattern");
+fn test_module_refs() -> Result<(Vec<ModuleRef>, usize, usize), TestError> {
+    let head = regex::Regex::new(r"^mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*\{")?;
     let crate_re =
-        regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::([A-Za-z_][A-Za-z0-9_]*)")
-            .expect("crate use pattern");
+        regex::Regex::new(r"^\s*use\s+crate::(relay|rtpengine)::([A-Za-z_][A-Za-z0-9_]*)")?;
     let mut refs = Vec::new();
     let mut modules = 0usize;
     let mut use_lines = 0usize;
@@ -384,12 +381,12 @@ fn test_module_refs() -> (Vec<ModuleRef>, usize, usize) {
             i += 1;
         }
     }
-    (refs, modules, use_lines)
+    Ok((refs, modules, use_lines))
 }
 
 /// Does a first path segment under a moved directory name something real?
-fn segment_resolves(dir: &str, segment: &str) -> bool {
-    child_modules(dir).contains(segment) || root_items(dir).contains(segment)
+fn segment_resolves(dir: &str, segment: &str) -> Result<bool, TestError> {
+    Ok(child_modules(dir).contains(segment) || root_items(dir)?.contains(segment))
 }
 
 /// Every `.md` under `docs/`, recursively, sorted.
@@ -432,8 +429,8 @@ fn resolve_link(page: &Path, target: &str) -> PathBuf {
 
 /// Relative markdown links on one page that point into `src/`, as
 /// `(raw link, repo-relative target)`.
-fn src_links(page: &Path, text: &str) -> Vec<(String, PathBuf)> {
-    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)\s]+)\)").expect("link pattern");
+fn src_links(page: &Path, text: &str) -> Result<Vec<(String, PathBuf)>, TestError> {
+    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)\s]+)\)")?;
     let mut out = Vec::new();
     for c in re.captures_iter(text) {
         let target = &c[2];
@@ -446,7 +443,7 @@ fn src_links(page: &Path, text: &str) -> Vec<(String, PathBuf)> {
             out.push((c[0].to_string(), resolved));
         }
     }
-    out
+    Ok(out)
 }
 
 /// A doc comment still sits on the item it documents.
@@ -464,11 +461,11 @@ fn src_links(page: &Path, text: &str) -> Vec<(String, PathBuf)> {
 /// there, or when the attribute run between it and its item is broken by a
 /// blank line.
 #[test]
-fn every_doc_block_is_attached_to_the_item_it_documents() {
+fn every_doc_block_is_attached_to_the_item_it_documents() -> Result<(), TestError> {
     let mut detached = Vec::new();
     let mut blocks = 0usize;
     for (_, path) in moved_files() {
-        let src = std::fs::read_to_string(&path).expect("read moved file");
+        let src = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = src.lines().collect();
         for (start, end) in doc_blocks(&lines) {
             blocks += 1;
@@ -510,6 +507,7 @@ fn every_doc_block_is_attached_to_the_item_it_documents() {
          the block back onto its item, attributes included.",
         detached.join("\n")
     );
+    Ok(())
 }
 
 /// Every public item in the moved modules carries a doc comment.
@@ -531,12 +529,12 @@ fn every_doc_block_is_attached_to_the_item_it_documents() {
 /// header -- the repository convention `module_doc_form_test` enforces -- and
 /// the exemption is checked rather than assumed.
 #[test]
-fn every_public_item_in_the_moved_modules_is_documented() {
+fn every_public_item_in_the_moved_modules_is_documented() -> Result<(), TestError> {
     let mut undocumented = Vec::new();
     let mut public_items = 0usize;
-    let mod_decl = regex::Regex::new(r"^pub mod ([A-Za-z_][A-Za-z0-9_]*);").expect("mod pattern");
+    let mod_decl = regex::Regex::new(r"^pub mod ([A-Za-z_][A-Za-z0-9_]*);")?;
     for (dir, path) in moved_files() {
-        let src = std::fs::read_to_string(&path).expect("read moved file");
+        let src = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = src.lines().collect();
         let mut documented = false;
         let mut i = 0;
@@ -595,6 +593,7 @@ fn every_public_item_in_the_moved_modules_is_documented() {
          drifting off their items, because those two failures have one cause.",
         undocumented.join("\n")
     );
+    Ok(())
 }
 
 /// No string the seam can show an operator names a relay vendor.
@@ -608,11 +607,11 @@ fn every_public_item_in_the_moved_modules_is_documented() {
 /// false sentence in an operator's log. `ReadOnlyRelay::describe()` exists so
 /// the implementation names itself.
 #[test]
-fn no_operator_string_in_the_seam_names_a_relay_vendor() {
+fn no_operator_string_in_the_seam_names_a_relay_vendor() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut literals = 0usize;
     for path in rust_files("src/relay") {
-        let src = std::fs::read_to_string(&path).expect("read seam file");
+        let src = std::fs::read_to_string(&path)?;
         for (line, text) in string_literals(&src) {
             literals += 1;
             let lower = text.to_ascii_lowercase();
@@ -638,6 +637,7 @@ fn no_operator_string_in_the_seam_names_a_relay_vendor() {
          `ReadOnlyRelay::describe()` is there for this.",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// Every import naming a moved module names one that exists.
@@ -654,8 +654,8 @@ fn no_operator_string_in_the_seam_names_a_relay_vendor() {
 /// `use super::X` only at column zero inside the moved directories, where
 /// `super` can only mean the directory module.
 #[test]
-fn every_import_of_a_moved_module_resolves() {
-    let (refs, unparsed) = module_refs();
+fn every_import_of_a_moved_module_resolves() -> Result<(), TestError> {
+    let (refs, unparsed) = module_refs()?;
     assert!(
         unparsed.is_empty(),
         "these lines import from a moved directory in a form this scanner \
@@ -672,7 +672,7 @@ fn every_import_of_a_moved_module_resolves() {
 
     let mut dead = Vec::new();
     for r in &refs {
-        if !segment_resolves(&r.dir, &r.segment) {
+        if !segment_resolves(&r.dir, &r.segment)? {
             dead.push(format!(
                 "  {}:{}: {} -- {}/{}.rs does not exist",
                 r.file, r.line, r.text, r.dir, r.segment
@@ -688,6 +688,7 @@ fn every_import_of_a_moved_module_resolves() {
          that carried one after the reconciler moved.",
         dead.join("\n")
     );
+    Ok(())
 }
 
 /// Every relative documentation link into `src/` resolves.
@@ -706,15 +707,15 @@ fn every_import_of_a_moved_module_resolves() {
 /// whole tree means a page moving between `docs/` and `docs/internals/` cannot
 /// move out from under the check.
 #[test]
-fn every_documentation_link_into_src_resolves() {
+fn every_documentation_link_into_src_resolves() -> Result<(), TestError> {
     let mut missing = Vec::new();
     let mut links = 0usize;
     let mut outside_internals = 0usize;
     let pages = docs_pages();
     for page in &pages {
-        let text = std::fs::read_to_string(page).expect("read documentation page");
+        let text = std::fs::read_to_string(page)?;
         let internals = show(page).starts_with("docs/internals/");
-        for (raw, target) in src_links(page, &text) {
+        for (raw, target) in src_links(page, &text)? {
             links += 1;
             if !internals {
                 outside_internals += 1;
@@ -750,6 +751,7 @@ fn every_documentation_link_into_src_resolves() {
          path the file has now.",
         missing.join("\n")
     );
+    Ok(())
 }
 
 /// Test-only imports are held to the same rule as production ones.
@@ -771,8 +773,8 @@ fn every_documentation_link_into_src_resolves() {
 /// excluded test modules fails here rather than quietly halving what is
 /// checked.
 #[test]
-fn test_only_imports_are_covered_by_the_same_import_scan() {
-    let (test_refs, modules, use_lines) = test_module_refs();
+fn test_only_imports_are_covered_by_the_same_import_scan() -> Result<(), TestError> {
+    let (test_refs, modules, use_lines) = test_module_refs()?;
     assert!(
         modules >= 4,
         "only {modules} `#[cfg(test)] mod` block(s) found across {MOVED_DIRS:?}; \
@@ -788,7 +790,7 @@ fn test_only_imports_are_covered_by_the_same_import_scan() {
         "no test-only import names a moved module (measured: 2 on 2026-08-31), so this rule proves nothing about the code `cargo build` never compiles"
     );
 
-    let (all_refs, _) = module_refs();
+    let (all_refs, _) = module_refs()?;
     let indexed: BTreeMap<(String, usize), &ModuleRef> = all_refs
         .iter()
         .map(|r| ((r.file.clone(), r.line), r))
@@ -812,7 +814,7 @@ fn test_only_imports_are_covered_by_the_same_import_scan() {
     );
     for r in &test_refs {
         assert!(
-            segment_resolves(&r.dir, &r.segment),
+            segment_resolves(&r.dir, &r.segment)?,
             "test-only import {}:{} names `{}`, which does not exist under {}",
             r.file,
             r.line,
@@ -820,6 +822,7 @@ fn test_only_imports_are_covered_by_the_same_import_scan() {
             r.dir
         );
     }
+    Ok(())
 }
 
 /// Every walk in this file found a tree, not an empty directory.
@@ -830,12 +833,12 @@ fn test_only_imports_are_covered_by_the_same_import_scan() {
 /// ordinary growth does not move it, while an extractor that has stopped
 /// matching fails here instead of reporting a clean tree.
 #[test]
-fn every_walk_in_this_file_found_a_plausible_tree() {
+fn every_walk_in_this_file_found_a_plausible_tree() -> Result<(), TestError> {
     let files = moved_files();
     let mut blocks = 0usize;
     let mut public_items = 0usize;
     for (_, path) in &files {
-        let src = std::fs::read_to_string(path).expect("read moved file");
+        let src = std::fs::read_to_string(path)?;
         let lines: Vec<&str> = src.lines().collect();
         blocks += doc_blocks(&lines).len();
         public_items += lines
@@ -847,13 +850,15 @@ fn every_walk_in_this_file_found_a_plausible_tree() {
         .iter()
         .map(|p| string_literals(&std::fs::read_to_string(p).unwrap_or_default()).len())
         .sum();
-    let (refs, _) = module_refs();
-    let (test_refs, test_modules, test_uses) = test_module_refs();
+    let (refs, _) = module_refs()?;
+    let (test_refs, test_modules, test_uses) = test_module_refs()?;
     let pages = docs_pages();
     let doc_links: usize = pages
         .iter()
-        .map(|p| src_links(p, &std::fs::read_to_string(p).unwrap_or_default()).len())
-        .sum();
+        .map(|p| {
+            Ok::<_, TestError>(src_links(p, &std::fs::read_to_string(p).unwrap_or_default())?.len())
+        })
+        .sum::<Result<usize, _>>()?;
 
     let measured = [
         ("rust files in the moved directories", files.len(), 6, 7),
@@ -884,4 +889,5 @@ fn every_walk_in_this_file_found_a_plausible_tree() {
          floor.",
         thin.join("\n")
     );
+    Ok(())
 }

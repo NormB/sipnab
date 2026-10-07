@@ -17,6 +17,8 @@
 
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
@@ -58,10 +60,10 @@ fn frames() -> Vec<Vec<u8>> {
     ]
 }
 
-fn call_ids(cores: &str) -> Vec<String> {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn call_ids(cores: &str) -> Result<Vec<String>, TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("hole.pcap");
-    pcap_build::write_pcap_or_panic(&path, &frames());
+    pcap_build::write_pcap(&path, &frames())?;
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&path)
@@ -69,7 +71,7 @@ fn call_ids(cores: &str) -> Vec<String> {
         .args(["--json-dialogs", "--no-cli-print", "--cores", cores])
         .env("NO_COLOR", "1")
         .output()
-        .expect("spawn sipnab");
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
     let mut ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -77,16 +79,17 @@ fn call_ids(cores: &str) -> Vec<String> {
         .filter(|id| !id.is_empty())
         .collect();
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 /// Both messages after the hole, and the reply that ends its direction; never
 /// the half message before the hole.
 #[test]
-fn messages_after_a_hole_are_reported_by_both_readers() {
+fn messages_after_a_hole_are_reported_by_both_readers() -> Result<(), TestError> {
     let want = vec!["hole-after-1", "hole-after-2", "hole-reply"];
-    assert_eq!(call_ids("1"), want, "the single-threaded reader");
-    assert_eq!(call_ids("2"), want, "the --cores reader");
+    assert_eq!(call_ids("1")?, want, "the single-threaded reader");
+    assert_eq!(call_ids("2")?, want, "the --cores reader");
+    Ok(())
 }
 
 /// A skipped hole is data the capture never held, so the run says so where
@@ -94,28 +97,29 @@ fn messages_after_a_hole_are_reported_by_both_readers() {
 /// holes and how much sequence space they spanned (500 bytes one way, 700
 /// the other).
 #[test]
-fn skipped_holes_are_reported_as_capture_loss_by_both_readers() {
+fn skipped_holes_are_reported_as_capture_loss_by_both_readers() -> Result<(), TestError> {
     for cores in ["1", "2"] {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("hole.pcap");
-        pcap_build::write_pcap_or_panic(&path, &frames());
+        pcap_build::write_pcap(&path, &frames())?;
         let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(["-N", "-I"])
             .arg(&path)
             .args(["--no-cli-print", "--cores", cores])
             .env("NO_COLOR", "1")
             .output()
-            .expect("spawn sipnab");
+            .map_err(|e| format!("spawn sipnab: {e}"))?;
         let stderr = String::from_utf8_lossy(&out.stderr);
         let line = stderr
             .lines()
             .find(|l| l.contains("capture quality:"))
-            .unwrap_or_else(|| panic!("--cores {cores}: no capture-quality line:\n{stderr}"));
+            .ok_or_else(|| format!("--cores {cores}: no capture-quality line:\n{stderr}"))?;
         assert!(
             line.contains("2 hole(s)") && line.contains("1200 byte(s)"),
             "--cores {cores}: the line must count both holes and their span: {line}"
         );
     }
+    Ok(())
 }
 
 /// A connection the capture joined part way (no SYN): one message, sent,
@@ -135,17 +139,17 @@ fn retransmitted_frames() -> Vec<Vec<u8>> {
 
 /// Each message once, however often TCP carried it.
 #[test]
-fn a_retransmission_on_a_connection_joined_part_way_is_reported_once() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_retransmission_on_a_connection_joined_part_way_is_reported_once() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("retransmitted.pcap");
-    pcap_build::write_pcap_or_panic(&path, &retransmitted_frames());
+    pcap_build::write_pcap(&path, &retransmitted_frames())?;
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I"])
         .arg(&path)
         .args(["--json"])
         .env("NO_COLOR", "1")
         .output()
-        .expect("spawn sipnab");
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
     let mut ids: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -153,4 +157,5 @@ fn a_retransmission_on_a_connection_joined_part_way_is_reported_once() {
         .collect();
     ids.sort();
     assert_eq!(ids, vec!["sent-after", "sent-once"]);
+    Ok(())
 }

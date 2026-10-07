@@ -59,15 +59,17 @@ use std::process::Command;
 
 use regex::Regex;
 
+type TestError = Box<dyn std::error::Error>;
+
 // -- Harness ---------------------------------------------------------
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: impl AsRef<Path>) -> String {
+fn read(rel: impl AsRef<Path>) -> Result<String, TestError> {
     let p = repo().join(rel.as_ref());
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Run `scripts/check-line-drift.py` over `pages`, or the whole tree when
@@ -77,7 +79,7 @@ fn read(rel: impl AsRef<Path>) -> String {
 /// `dev_docs_drift_test` uses: `--apply` EDITS what it is given, so a test that
 /// handed it `docs/` would repair the tree as a side effect of running and
 /// leave the gate green because the test fixed it.
-fn drift(pages: &[&Path], apply: bool) -> (bool, String) {
+fn drift(pages: &[&Path], apply: bool) -> Result<(bool, String), TestError> {
     let mut cmd = Command::new("python3");
     cmd.arg("scripts/check-line-drift.py").current_dir(repo());
     if apply {
@@ -86,11 +88,13 @@ fn drift(pages: &[&Path], apply: bool) -> (bool, String) {
     for p in pages {
         cmd.arg(p);
     }
-    let out = cmd.output().expect("run scripts/check-line-drift.py");
-    (
+    let out = cmd
+        .output()
+        .map_err(|e| format!("run scripts/check-line-drift.py: {e}"))?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).to_string(),
-    )
+    ))
 }
 
 /// The `key=value` fields of the checker's `two-part references:` summary.
@@ -98,35 +102,36 @@ fn drift(pages: &[&Path], apply: bool) -> (bool, String) {
 /// Parsed rather than trusted: a scanner that stopped matching would report
 /// zero disagreements exactly like a clean tree, so every test below reads the
 /// counts out of the same line it reads the verdict from.
-fn summary(report: &str) -> BTreeMap<String, usize> {
+fn summary(report: &str) -> Result<BTreeMap<String, usize>, TestError> {
     let line = report
         .lines()
         .find(|l| l.starts_with("two-part references:"))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "the checker printed no `two-part references:` summary, so \
                  nothing proves the label/anchor scan ran at all:\n{report}"
             )
-        });
-    line.split_whitespace()
+        })?;
+    Ok(line
+        .split_whitespace()
         .filter_map(|tok| {
             let (k, v) = tok.split_once('=')?;
             Some((k.to_string(), v.parse().ok()?))
         })
-        .collect()
+        .collect())
 }
 
-fn field(report: &str, key: &str) -> usize {
-    *summary(report)
+fn field(report: &str, key: &str) -> Result<usize, TestError> {
+    Ok(*summary(report)?
         .get(key)
-        .unwrap_or_else(|| panic!("the summary has no `{key}` field:\n{report}"))
+        .ok_or_else(|| format!("the summary has no `{key}` field:\n{report}"))?)
 }
 
 /// Write a one-page fixture where `--apply` may rewrite it.
-fn fixture(dir: &Path, name: &str, body: &str) -> PathBuf {
+fn fixture(dir: &Path, name: &str, body: &str) -> Result<PathBuf, TestError> {
     let page = dir.join(name);
-    std::fs::write(&page, body).expect("write the fixture page");
-    page
+    std::fs::write(&page, body).map_err(|e| format!("write the fixture page: {e}"))?;
+    Ok(page)
 }
 
 // -- Defect 1: the label and the anchor must agree --------------------
@@ -140,8 +145,8 @@ fn fixture(dir: &Path, name: &str, body: &str) -> PathBuf {
 /// same number. A citation that fails both is sending readers to a wrong line
 /// it does not even admit to.
 #[test]
-fn label_and_anchor_agree_across_the_documentation_tree() {
-    let (ok, report) = drift(&[], false);
+fn label_and_anchor_agree_across_the_documentation_tree() -> Result<(), TestError> {
+    let (ok, report) = drift(&[], false)?;
 
     // Anti-vacuity, and the specific way this scanner can go blind: its regex
     // is the only thing that decides a citation exists. A regex that stopped
@@ -160,8 +165,8 @@ fn label_and_anchor_agree_across_the_documentation_tree() {
     // experiment, not arithmetic: putting the old backlog content back at its
     // tracked path returns 790, so all 126 citations the count lost lived in
     // that one file. The floors move to 600 on the same ~10% rule.
-    let examined = field(&report, "examined");
-    let both = field(&report, "both_halves");
+    let examined = field(&report, "examined")?;
+    let both = field(&report, "both_halves")?;
     assert!(
         examined >= 600,
         "the label/anchor scan examined only {examined} line citation(s); this \
@@ -183,6 +188,7 @@ fn label_and_anchor_agree_across_the_documentation_tree() {
          Run `python3 scripts/check-line-drift.py --apply` to move each anchor \
          onto its own label."
     );
+    Ok(())
 }
 
 /// The scan reaches the published pages, not just `docs/`.
@@ -198,30 +204,30 @@ fn label_and_anchor_agree_across_the_documentation_tree() {
 /// Asserted as agreement between the script's page count and an independent
 /// walk here, so a page set that silently shrinks back to `docs/` fails.
 #[test]
-fn the_scan_reaches_every_page_the_documentation_is_published_from() {
+fn the_scan_reaches_every_page_the_documentation_is_published_from() -> Result<(), TestError> {
     // TRACKED markdown under `rel`, as the checker reads it. A directory walk
     // counted the gitignored docs/design/backlog.local.md as a page on the one
     // machine that holds it -- 198 against the checker's 197 -- so this test
     // failed there and passed in CI over the same commit.
-    fn md_under(rel: &str) -> Vec<PathBuf> {
+    fn md_under(rel: &str) -> Result<Vec<PathBuf>, TestError> {
         let listed = std::process::Command::new("git")
             .args(["ls-files", "-z", "--", &format!(":(glob){rel}/**/*.md")])
             .current_dir(repo())
             .output()
-            .expect("git ls-files");
+            .map_err(|e| format!("git ls-files: {e}"))?;
         assert!(listed.status.success(), "git ls-files failed");
-        String::from_utf8_lossy(&listed.stdout)
+        Ok(String::from_utf8_lossy(&listed.stdout)
             .split('\0')
             .filter(|r| !r.is_empty())
             .map(|r| repo().join(r))
-            .collect()
+            .collect())
     }
 
-    let docs_only = md_under("docs").len();
-    let expected = docs_only + md_under("website/content").len() + 1; // + README.md
+    let docs_only = md_under("docs")?.len();
+    let expected = docs_only + md_under("website/content")?.len() + 1; // + README.md
 
-    let (_, report) = drift(&[], false);
-    let pages = field(&report, "pages");
+    let (_, report) = drift(&[], false)?;
+    let pages = field(&report, "pages")?;
 
     assert!(
         docs_only > 40,
@@ -239,6 +245,7 @@ fn the_scan_reaches_every_page_the_documentation_is_published_from() {
          README.md is {expected}. A page set that shrank back to docs/ leaves \
          every citation published only to the website unchecked:\n{report}"
     );
+    Ok(())
 }
 
 /// A stale anchor beside a fresh label is reported, and named.
@@ -248,22 +255,22 @@ fn the_scan_reaches_every_page_the_documentation_is_published_from() {
 /// failure is which of the two is right and the reader has to be able to see
 /// them side by side.
 #[test]
-fn a_stale_anchor_beside_a_fresh_label_is_reported() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_stale_anchor_beside_a_fresh_label_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let page = fixture(
         dir.path(),
         "desynchronized.md",
         "See [`src/mcp/server.rs:5278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5250).\n",
-    );
+    )?;
 
-    let (ok, report) = drift(&[&page], false);
+    let (ok, report) = drift(&[&page], false)?;
     assert!(
         !ok,
         "a label that says :5278 beside an anchor that lands on #L5250 must \
          fail; that is the defect this file exists for:\n{report}"
     );
     assert_eq!(
-        field(&report, "disagreeing"),
+        field(&report, "disagreeing")?,
         1,
         "one citation disagrees and the summary must say so:\n{report}"
     );
@@ -272,6 +279,7 @@ fn a_stale_anchor_beside_a_fresh_label_is_reported() {
         "the message must name BOTH numbers -- which half is stale is the whole \
          question:\n{report}"
     );
+    Ok(())
 }
 
 /// Agreement is checked at both ends of a range.
@@ -282,18 +290,18 @@ fn a_stale_anchor_beside_a_fresh_label_is_reported() {
 /// backtick immediately after the digits. A rule that only compared the START
 /// would certify `:35-40` -> `#L35-L99` as correct.
 #[test]
-fn a_range_citation_must_agree_at_both_ends() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_range_citation_must_agree_at_both_ends() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
 
     let good = fixture(
         dir.path(),
         "range-ok.md",
         "See [`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40).\n",
-    );
-    let (ok, report) = drift(&[&good], false);
+    )?;
+    let (ok, report) = drift(&[&good], false)?;
     assert!(ok, "a range that agrees must pass:\n{report}");
     assert_eq!(
-        field(&report, "examined"),
+        field(&report, "examined")?,
         1,
         "the range form must be EXAMINED, not skipped -- a form the scanner \
          ignores is a form the defect can hide in:\n{report}"
@@ -303,8 +311,8 @@ fn a_range_citation_must_agree_at_both_ends() {
         dir.path(),
         "range-end.md",
         "See [`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L99).\n",
-    );
-    let (ok, report) = drift(&[&bad], false);
+    )?;
+    let (ok, report) = drift(&[&bad], false)?;
     assert!(
         !ok,
         "the start agrees and the END does not; a rule that only compares the \
@@ -314,6 +322,7 @@ fn a_range_citation_must_agree_at_both_ends() {
         report.contains("38-40") && report.contains("L38-L99"),
         "the message must show the label's range and the anchor's:\n{report}"
     );
+    Ok(())
 }
 
 /// A range label whose anchor covers one line is reported as a mismatch.
@@ -324,14 +333,14 @@ fn a_range_citation_must_agree_at_both_ends() {
 /// `:35-40` over an anchor that lands on a single line is a half-applied edit,
 /// not a style choice.
 #[test]
-fn a_range_label_with_a_single_line_anchor_is_reported() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_range_label_with_a_single_line_anchor_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let page = fixture(
         dir.path(),
         "collapsed.md",
         "See [`src/capture/device.rs:35-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L35).\n",
-    );
-    let (ok, report) = drift(&[&page], false);
+    )?;
+    let (ok, report) = drift(&[&page], false)?;
     assert!(
         !ok,
         "the label promises six lines and the anchor lands on one:\n{report}"
@@ -341,6 +350,7 @@ fn a_range_label_with_a_single_line_anchor_is_reported() {
         "the message must name the fragment the label asks for, so the fix is \
          a copy rather than a puzzle:\n{report}"
     );
+    Ok(())
 }
 
 /// What the anchor fixer writes, the anchor gate accepts.
@@ -352,29 +362,30 @@ fn a_range_label_with_a_single_line_anchor_is_reported() {
 /// it, and confirm the LABEL survived. The label is the half a human wrote and
 /// the half the drift rule validates against the source; the anchor follows it.
 #[test]
-fn what_the_anchor_fixer_writes_the_gate_accepts() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn what_the_anchor_fixer_writes_the_gate_accepts() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let page = fixture(
         dir.path(),
         "repairable.md",
         "See [`src/mcp/server.rs:5278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5250) \
          and [`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L99).\n",
-    );
+    )?;
 
-    let (ok, _) = drift(&[&page], false);
+    let (ok, _) = drift(&[&page], false)?;
     assert!(
         !ok,
         "the fixture must start broken or the repair proves nothing"
     );
 
-    let (_, applied) = drift(&[&page], true);
+    let (_, applied) = drift(&[&page], true)?;
     assert!(
         applied.contains("re-anchored 2 citation(s)"),
         "the fixer must report what it moved:\n{applied}"
     );
 
-    let repaired = std::fs::read_to_string(&page).expect("read the repaired page");
-    let (ok, report) = drift(&[&page], false);
+    let repaired =
+        std::fs::read_to_string(&page).map_err(|e| format!("read the repaired page: {e}"))?;
+    let (ok, report) = drift(&[&page], false)?;
     assert!(
         ok,
         "the gate rejected what its own fixer wrote:\n{report}\n{repaired}"
@@ -389,6 +400,7 @@ fn what_the_anchor_fixer_writes_the_gate_accepts() {
         repaired.contains("#L5278") && repaired.contains("#L38-L40"),
         "both fragments must have moved onto their labels:\n{repaired}"
     );
+    Ok(())
 }
 
 /// The agreement rule sees the three forms the drift rule cannot match.
@@ -400,20 +412,20 @@ fn what_the_anchor_fixer_writes_the_gate_accepts() {
 /// used inside tables. None of those needs a symbol to be checkable for
 /// AGREEMENT, and all three are in the corpus that desynchronized.
 #[test]
-fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let page = fixture(
         dir.path(),
         "other-forms.md",
         "A range [`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40), \
          a page [`docs/architecture.md:149-150`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L149-L150), \
          and a bare [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928).\n",
-    );
+    )?;
 
-    let (ok, report) = drift(&[&page], false);
+    let (ok, report) = drift(&[&page], false)?;
     assert!(ok, "all three agree, so all three must pass:\n{report}");
     assert_eq!(
-        field(&report, "examined"),
+        field(&report, "examined")?,
         3,
         "all three forms must be examined:\n{report}"
     );
@@ -422,6 +434,7 @@ fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() {
         "and the drift rule must have matched NONE of them -- that is what \
          makes this coverage rather than duplication:\n{report}"
     );
+    Ok(())
 }
 
 /// A fenced example is skipped; the same citation in prose is not.
@@ -433,25 +446,25 @@ fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() {
 /// today -- which is exactly when it is safe to add and exactly when it needs
 /// the second half of this test to stay honest.
 #[test]
-fn a_fenced_example_is_skipped_and_the_same_citation_in_prose_is_not() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_fenced_example_is_skipped_and_the_same_citation_in_prose_is_not() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let cite = "[`src/mcp/server.rs:5278`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5250)";
 
     let fenced = fixture(
         dir.path(),
         "fenced.md",
         &format!("Never write this:\n\n```markdown\n{cite}\n```\n"),
-    );
-    let (ok, report) = drift(&[&fenced], false);
+    )?;
+    let (ok, report) = drift(&[&fenced], false)?;
     assert!(ok, "a fenced example must not fail the gate:\n{report}");
     assert_eq!(
-        field(&report, "fenced"),
+        field(&report, "fenced")?,
         1,
         "the skip must be COUNTED, or a mask that swallowed the whole tree \
          would look like a clean tree:\n{report}"
     );
     assert_eq!(
-        field(&report, "examined"),
+        field(&report, "examined")?,
         0,
         "nothing outside the fence to examine:\n{report}"
     );
@@ -460,13 +473,14 @@ fn a_fenced_example_is_skipped_and_the_same_citation_in_prose_is_not() {
         dir.path(),
         "prose.md",
         &format!("Written for real: {cite}\n"),
-    );
-    let (ok, report) = drift(&[&prose], false);
+    )?;
+    let (ok, report) = drift(&[&prose], false)?;
     assert!(
         !ok,
         "the identical citation in prose must still be caught, or the fence \
          mask is a way through the gate:\n{report}"
     );
+    Ok(())
 }
 
 // -- Defect 2: how broadly the account rule reaches -------------------
@@ -489,25 +503,25 @@ const ACCOUNT_GATE: &str = "tests/private_identity_test.rs";
 /// repeated here, for two reasons that both matter. A second copy would be a
 /// second rule about who is private, and this file would then have to CONTAIN
 /// the account name -- which is the disclosure it is written to prevent.
-fn private_accounts() -> Vec<String> {
-    let src = read(ACCOUNT_GATE);
+fn private_accounts() -> Result<Vec<String>, TestError> {
+    let src = read(ACCOUNT_GATE)?;
     let list = Regex::new(r"PRIVATE_ACCOUNTS:\s*&\[&str\]\s*=\s*&\[([^\]]*)\]")
-        .expect("account list regex")
+        .map_err(|e| format!("account list regex: {e}"))?
         .captures(&src)
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "{ACCOUNT_GATE} no longer declares `PRIVATE_ACCOUNTS: &[&str]`. \
                  That constant is where this file learns who is private; with \
                  it gone every scan below runs over an empty list and passes."
             )
-        })
+        })?
         .get(1)
-        .expect("group 1")
+        .ok_or("group 1")?
         .as_str()
         .to_string();
 
     let names: Vec<String> = Regex::new(r#""([^"]+)""#)
-        .expect("string literal regex")
+        .map_err(|e| format!("string literal regex: {e}"))?
         .captures_iter(&list)
         .map(|c| c[1].to_string())
         .collect();
@@ -522,7 +536,7 @@ fn private_accounts() -> Vec<String> {
         "an account name shorter than three characters would match inside \
          ordinary words: {names:?}"
     );
-    names
+    Ok(names)
 }
 
 /// A match on `needle` that does not fire inside a longer word.
@@ -542,12 +556,14 @@ fn word_at(line: &str, needle: &str) -> Option<usize> {
 }
 
 /// Every tracked text file, as (repo-relative path, contents).
-fn tracked_text() -> Vec<(String, String)> {
+fn tracked_text() -> Result<Vec<(String, String)>, TestError> {
     let out = Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
         .output()
-        .expect("git ls-files -- the scan is over what is tracked, not what is present");
+        .map_err(|e| {
+            format!("git ls-files -- the scan is over what is tracked, not what is present: {e}")
+        })?;
     assert!(out.status.success(), "git ls-files failed");
 
     let mut files = Vec::new();
@@ -567,7 +583,7 @@ fn tracked_text() -> Vec<(String, String)> {
             files.push((rel.to_string(), text));
         }
     }
-    files
+    Ok(files)
 }
 
 /// Files that may name a private account, and why. Nothing else may.
@@ -598,9 +614,10 @@ const ACCOUNT_NAME_EXEMPT: &[(&str, &str)] = &[(
 /// fourth path shape would have left a fifth. The account NAME cannot be
 /// slipped past by inventing a new prefix.
 #[test]
-fn no_tracked_file_names_a_private_account_outside_the_gate_that_bans_it() {
-    let accounts = private_accounts();
-    let files = tracked_text();
+fn no_tracked_file_names_a_private_account_outside_the_gate_that_bans_it() -> Result<(), TestError>
+{
+    let accounts = private_accounts()?;
+    let files = tracked_text()?;
 
     assert!(
         files.len() > 500,
@@ -658,6 +675,7 @@ fn no_tracked_file_names_a_private_account_outside_the_gate_that_bans_it() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
 }
 
 /// Every exemption is real, still needed, and carries its reason.
@@ -667,9 +685,9 @@ fn no_tracked_file_names_a_private_account_outside_the_gate_that_bans_it() {
 /// on something else. An entry with no reason is indistinguishable from an
 /// oversight. Both are checked here.
 #[test]
-fn every_account_name_exemption_is_still_used_and_still_explained() {
-    let accounts = private_accounts();
-    let files = tracked_text();
+fn every_account_name_exemption_is_still_used_and_still_explained() -> Result<(), TestError> {
+    let accounts = private_accounts()?;
+    let files = tracked_text()?;
 
     assert!(
         !ACCOUNT_NAME_EXEMPT.is_empty(),
@@ -681,7 +699,7 @@ fn every_account_name_exemption_is_still_used_and_still_explained() {
             .iter()
             .find(|(r, _)| r == rel)
             .map(|(_, t)| t)
-            .unwrap_or_else(|| panic!("{rel} is exempt but is not a tracked text file"));
+            .ok_or_else(|| format!("{rel} is exempt but is not a tracked text file"))?;
         let hits = text
             .lines()
             .filter(|l| accounts.iter().any(|a| word_at(l, a).is_some()))
@@ -699,6 +717,7 @@ fn every_account_name_exemption_is_still_used_and_still_explained() {
             reason.len()
         );
     }
+    Ok(())
 }
 
 /// The exempt gate carries the name only inside a control, never in prose.
@@ -712,9 +731,9 @@ fn every_account_name_exemption_is_still_used_and_still_explained() {
 /// A doc comment is the shape this is aimed at: `/// the corpus at
 /// /home/<account>/pcaps` reads as an explanation and is a disclosure.
 #[test]
-fn the_account_gate_carries_the_name_only_inside_a_control() {
-    let accounts = private_accounts();
-    let text = read(ACCOUNT_GATE);
+fn the_account_gate_carries_the_name_only_inside_a_control() -> Result<(), TestError> {
+    let accounts = private_accounts()?;
+    let text = read(ACCOUNT_GATE)?;
 
     let mut occurrences = 0usize;
     let mut loose = Vec::new();
@@ -754,6 +773,7 @@ fn the_account_gate_carries_the_name_only_inside_a_control() {
          Move the value into a control, or take the name out.",
         loose.join("\n")
     );
+    Ok(())
 }
 
 /// The word boundary catches every home root and spares the words that
@@ -764,8 +784,12 @@ fn the_account_gate_carries_the_name_only_inside_a_control() {
 /// this tree, and a rule that flagged them would be suppressed within a week
 /// and then catch nothing at all.
 #[test]
-fn the_account_name_rule_flags_every_home_root_and_spares_the_words_around_it() {
-    let acct = private_accounts()[0].clone();
+fn the_account_name_rule_flags_every_home_root_and_spares_the_words_around_it()
+-> Result<(), TestError> {
+    let acct = private_accounts()?
+        .first()
+        .ok_or("PRIVATE_ACCOUNTS is empty")?
+        .clone();
 
     for root in ["/home", "/Users", "/var/home", "/export/home"] {
         let line = format!("{root}/{acct}/Development/sipnab");
@@ -822,4 +846,5 @@ fn the_account_name_rule_flags_every_home_root_and_spares_the_words_around_it() 
             "this names a different account that merely starts the same way: {longer}"
         );
     }
+    Ok(())
 }

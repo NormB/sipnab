@@ -51,6 +51,9 @@ use release_logic::{
     is_dependency_bump, parse_version, unreleased_accumulation, unreleased_section,
 };
 
+/// Any error, boxed, so `?` works on every error type alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,35 +74,38 @@ fn ads() -> Vec<String> {
 ///
 /// The branch a mutation survived in, because this tree never has one.
 #[test]
-fn an_empty_changeset_is_not_an_advertisement() {
+fn an_empty_changeset_is_not_an_advertisement() -> Result<(), TestError> {
     assert!(
         !is_advertisement(&[], TAG, TAG),
         "returning true for an empty changeset would exempt the case where \
          git reported nothing at all — the same error as reading 'cannot \
          look' as 'nothing to see'"
     );
+    Ok(())
 }
 
 /// The site config alone, with the site naming the tag, is the release's
 /// second phase.
 #[test]
-fn the_site_config_alone_is_an_advertisement() {
+fn the_site_config_alone_is_an_advertisement() -> Result<(), TestError> {
     assert!(is_advertisement(
         &["website/config.toml".to_string()],
         TAG,
         TAG
     ));
+    Ok(())
 }
 
 /// The install page alone likewise.
 #[test]
-fn the_install_page_alone_is_an_advertisement() {
+fn the_install_page_alone_is_an_advertisement() -> Result<(), TestError> {
     assert!(is_advertisement(&["docs/install.md".to_string()], TAG, TAG));
+    Ok(())
 }
 
 /// Every advertisement path together is still an advertisement.
 #[test]
-fn all_advertisement_paths_together_are_an_advertisement() {
+fn all_advertisement_paths_together_are_an_advertisement() -> Result<(), TestError> {
     let changed: Vec<String> = vec![
         "website/config.toml".into(),
         "docs/install.md".into(),
@@ -108,30 +114,33 @@ fn all_advertisement_paths_together_are_an_advertisement() {
         "CHANGELOG.md".into(),
     ];
     assert!(is_advertisement(&changed, TAG, TAG));
+    Ok(())
 }
 
 /// One source file makes it ordinary work.
 #[test]
-fn a_source_file_in_the_changeset_is_never_an_advertisement() {
+fn a_source_file_in_the_changeset_is_never_an_advertisement() -> Result<(), TestError> {
     let mut changed = ads();
     changed.push("src/main.rs".into());
     assert!(
         !is_advertisement(&changed, TAG, TAG),
         "a changeset containing code is never merely an advertisement"
     );
+    Ok(())
 }
 
 /// So does one test file.
 #[test]
-fn a_test_file_in_the_changeset_is_never_an_advertisement() {
+fn a_test_file_in_the_changeset_is_never_an_advertisement() -> Result<(), TestError> {
     let mut changed = ads();
     changed.push("tests/release_delivery_test.rs".into());
     assert!(!is_advertisement(&changed, TAG, TAG));
+    Ok(())
 }
 
 /// And the manifest, which is how a version bump would sneak through.
 #[test]
-fn the_manifest_in_the_changeset_is_never_an_advertisement() {
+fn the_manifest_in_the_changeset_is_never_an_advertisement() -> Result<(), TestError> {
     let mut changed = ads();
     changed.push("Cargo.toml".into());
     assert!(
@@ -139,6 +148,7 @@ fn the_manifest_in_the_changeset_is_never_an_advertisement() {
         "Cargo.toml carries the crate version; exempting it would let a bump \
          ship undeclared"
     );
+    Ok(())
 }
 
 /// A site left behind the newest tag is not advertising it.
@@ -146,7 +156,7 @@ fn the_manifest_in_the_changeset_is_never_an_advertisement() {
 /// The other branch a mutation survived in: here `published` already equals
 /// the tag, so deleting the comparison changed nothing observable.
 #[test]
-fn a_site_a_release_behind_is_not_advertising_the_tag() {
+fn a_site_a_release_behind_is_not_advertising_the_tag() -> Result<(), TestError> {
     let behind = (TAG.0, TAG.1, TAG.2 - 1);
     assert!(
         !is_advertisement(&ads(), behind, TAG),
@@ -154,17 +164,19 @@ fn a_site_a_release_behind_is_not_advertising_the_tag() {
          {behind:?} against a newest tag of {TAG:?} is ordinary work in the \
          release flow's clothes"
     );
+    Ok(())
 }
 
 /// A site ahead of the newest tag is not advertising it either.
 #[test]
-fn a_site_ahead_of_the_newest_tag_is_not_advertising_it() {
+fn a_site_ahead_of_the_newest_tag_is_not_advertising_it() -> Result<(), TestError> {
     let ahead = (TAG.0, TAG.1, TAG.2 + 1);
     assert!(
         !is_advertisement(&ads(), ahead, TAG),
         "the site naming a version with no tag is a different fault, not an \
          advertisement"
     );
+    Ok(())
 }
 
 /// Names that merely BEGIN with an advertisement file are not advertisements.
@@ -173,7 +185,7 @@ fn a_site_ahead_of_the_newest_tag_is_not_advertising_it() {
 /// `starts_with` rule, and none of them can occur in the live tree — which is
 /// precisely why observing the tree could never have caught it.
 #[test]
-fn a_name_that_merely_begins_with_an_advertisement_file_is_rejected() {
+fn a_name_that_merely_begins_with_an_advertisement_file_is_rejected() -> Result<(), TestError> {
     for trap in [
         "docs/install.md.bak",
         "docs/install.md~",
@@ -191,6 +203,7 @@ fn a_name_that_merely_begins_with_an_advertisement_file_is_rejected() {
             "{trap} reached is_advertisement as an advertisement"
         );
     }
+    Ok(())
 }
 
 // ── A2. the load-verification record is part of phase two ───────────
@@ -208,13 +221,14 @@ fn a_name_that_merely_begins_with_an_advertisement_file_is_rejected() {
 /// one gate demanded a file another gate's classifier called ordinary work.
 /// The two now read the same constant.
 #[test]
-fn the_load_verification_record_is_an_advertisement_path() {
+fn the_load_verification_record_is_an_advertisement_path() -> Result<(), TestError> {
     assert!(
         advertisement_path(LOAD_VERIFICATION_RECORD),
         "{LOAD_VERIFICATION_RECORD} is required by the LIVE3 gate in phase \
          two and rejected by the phase-two classifier, so the correct commit \
          cannot be pushed without a bypass"
     );
+    Ok(())
 }
 
 /// A whole phase-two changeset, exactly as the release flow produces it.
@@ -222,7 +236,7 @@ fn the_load_verification_record_is_an_advertisement_path() {
 /// Named files rather than a loop over `ADVERTISEMENT_PATHS`: this is the
 /// shape the flow actually emits, and it is the shape that was refused.
 #[test]
-fn a_phase_two_changeset_carrying_the_load_record_is_an_advertisement() {
+fn a_phase_two_changeset_carrying_the_load_record_is_an_advertisement() -> Result<(), TestError> {
     let changed: Vec<String> = vec![
         "website/config.toml".into(),
         "docs/install.md".into(),
@@ -236,6 +250,7 @@ fn a_phase_two_changeset_carrying_the_load_record_is_an_advertisement() {
         "this is the six-file commit phase two produces once the load \
          verification has run; refusing it leaves a bypass as the only route"
     );
+    Ok(())
 }
 
 /// Exempting it did not create a new way past the delivery gates.
@@ -244,7 +259,7 @@ fn a_phase_two_changeset_carrying_the_load_record_is_an_advertisement() {
 /// Without this, adding the path would have handed any commit touching the
 /// uprobe record a free pass through every gate in the delivery set.
 #[test]
-fn the_load_record_alone_does_not_advertise_a_tag_the_site_omits() {
+fn the_load_record_alone_does_not_advertise_a_tag_the_site_omits() -> Result<(), TestError> {
     let behind = (TAG.0, TAG.1, TAG.2 - 1);
     assert!(
         !is_advertisement(&[LOAD_VERIFICATION_RECORD.to_string()], behind, TAG),
@@ -257,6 +272,7 @@ fn the_load_record_alone_does_not_advertise_a_tag_the_site_omits() {
         !is_advertisement(&with_code, TAG, TAG),
         "code beside the record is ordinary work whatever the site says"
     );
+    Ok(())
 }
 
 /// The gate that DEMANDS the record and the classifier that EXEMPTS it name
@@ -266,9 +282,9 @@ fn the_load_record_alone_does_not_advertise_a_tag_the_site_omits() {
 /// second copy of the name is how this broke — one gate learned a new
 /// obligation and the other never heard about it.
 #[test]
-fn the_gate_demanding_the_record_names_the_file_the_classifier_exempts() {
+fn the_gate_demanding_the_record_names_the_file_the_classifier_exempts() -> Result<(), TestError> {
     let gate = std::fs::read_to_string(repo().join("tests/bpf_load_verification_test.rs"))
-        .expect("the LIVE3 gate is in the tree");
+        .map_err(|e| format!("the LIVE3 gate is in the tree: {e}"))?;
     assert!(
         gate.contains("use release_logic::LOAD_VERIFICATION_RECORD;"),
         "tests/bpf_load_verification_test.rs no longer reads the shared \
@@ -287,13 +303,14 @@ fn the_gate_demanding_the_record_names_the_file_the_classifier_exempts() {
         "{LOAD_VERIFICATION_RECORD} does not exist, so both gates are naming \
          a file that cannot hold a row"
     );
+    Ok(())
 }
 
 // ── B. directory entries versus file entries ────────────────────────
 
 /// A directory entry matches its children.
 #[test]
-fn a_directory_entry_matches_its_children() {
+fn a_directory_entry_matches_its_children() -> Result<(), TestError> {
     for child in [
         "website/content/docs/install.md",
         "website/content/_index.md",
@@ -304,11 +321,12 @@ fn a_directory_entry_matches_its_children() {
             "{child} is inside a directory the exemption names and must match"
         );
     }
+    Ok(())
 }
 
 /// A sibling that shares a directory's prefix does not.
 #[test]
-fn a_sibling_sharing_a_directory_prefix_is_rejected() {
+fn a_sibling_sharing_a_directory_prefix_is_rejected() -> Result<(), TestError> {
     for sibling in ["website/contentious.md", "website/staticky.txt"] {
         assert!(
             !advertisement_path(sibling),
@@ -316,41 +334,46 @@ fn a_sibling_sharing_a_directory_prefix_is_rejected() {
              matching it would exempt an arbitrary file"
         );
     }
+    Ok(())
 }
 
 /// The directory itself, with no child, is not a file that changed.
 #[test]
-fn a_bare_directory_name_is_not_a_changed_file() {
+fn a_bare_directory_name_is_not_a_changed_file() -> Result<(), TestError> {
     assert!(
         !advertisement_path("website/content"),
         "a directory is not a file; git reports children, and accepting the \
          bare name would accept a file called exactly that"
     );
+    Ok(())
 }
 
 // ── C. `debounce_ceiling` across window ratios ──────────────────────
 
 /// A burst shorter than one window still allows the pending flush.
 #[test]
-fn a_burst_shorter_than_one_window_allows_the_pending_flush() {
+fn a_burst_shorter_than_one_window_allows_the_pending_flush() -> Result<(), TestError> {
     assert_eq!(debounce_ceiling(0.001, 1.0), 2);
+    Ok(())
 }
 
 /// Exactly one window is one notification plus the flush.
 #[test]
-fn exactly_one_window_allows_two() {
+fn exactly_one_window_allows_two() -> Result<(), TestError> {
     assert_eq!(debounce_ceiling(1.0, 1.0), 2);
+    Ok(())
 }
 
 /// Two windows, three notifications.
 #[test]
-fn two_windows_allow_three() {
+fn two_windows_allow_three() -> Result<(), TestError> {
     assert_eq!(debounce_ceiling(2.0, 1.0), 3);
+    Ok(())
 }
 
 /// The ceiling never decreases as the burst lengthens.
 #[test]
-fn the_ceiling_is_monotonic_in_the_burst_length() {
+fn the_ceiling_is_monotonic_in_the_burst_length() -> Result<(), TestError> {
     let mut prev = 0;
     for tenths in 0..60 {
         let c = debounce_ceiling(f64::from(tenths) / 10.0, 1.0);
@@ -361,12 +384,13 @@ fn the_ceiling_is_monotonic_in_the_burst_length() {
         );
         prev = c;
     }
+    Ok(())
 }
 
 /// The ceiling is never below two, so a correct server is never failed for
 /// sending the one notification the burst earned plus its flush.
 #[test]
-fn the_ceiling_never_drops_below_two_for_a_real_burst() {
+fn the_ceiling_never_drops_below_two_for_a_real_burst() -> Result<(), TestError> {
     // Any burst with duration earns at least one window plus the flush.
     for secs in [0.001, 0.5, 1.0, 3.0, 60.0] {
         assert!(
@@ -384,16 +408,18 @@ fn the_ceiling_never_drops_below_two_for_a_real_burst() {
         1,
         "a burst of no duration earns the flush and nothing more"
     );
+    Ok(())
 }
 
 /// A wider window permits fewer notifications for the same burst.
 #[test]
-fn a_wider_debounce_window_permits_fewer_notifications() {
+fn a_wider_debounce_window_permits_fewer_notifications() -> Result<(), TestError> {
     assert!(
         debounce_ceiling(10.0, 5.0) < debounce_ceiling(10.0, 1.0),
         "doubling the window must not leave the ceiling unchanged, or the \
          window is not what the arithmetic depends on"
     );
+    Ok(())
 }
 
 // ── D. purity: the property that made the logic testable ────────────
@@ -403,22 +429,23 @@ fn a_wider_debounce_window_permits_fewer_notifications() {
 /// The defect in one sentence: logic that reads the tree cannot be asked about
 /// any other state. This asserts the opposite property directly.
 #[test]
-fn the_decision_does_not_depend_on_the_working_tree() {
+fn the_decision_does_not_depend_on_the_working_tree() -> Result<(), TestError> {
     let before = is_advertisement(&ads(), TAG, TAG);
     // Touch something real. If the answer moved, the function is reading the
     // tree behind the caller's back.
     let probe = repo().join("Cargo.toml");
-    let _ = std::fs::metadata(&probe).expect("Cargo.toml exists");
+    let _ = std::fs::metadata(&probe).map_err(|e| format!("Cargo.toml exists: {e}"))?;
     let after = is_advertisement(&ads(), TAG, TAG);
     assert_eq!(
         before, after,
         "the answer moved without its arguments moving"
     );
+    Ok(())
 }
 
 /// Repeated calls agree, so there is no hidden state between them.
 #[test]
-fn repeated_calls_with_the_same_inputs_agree() {
+fn repeated_calls_with_the_same_inputs_agree() -> Result<(), TestError> {
     let a = is_advertisement(&ads(), TAG, TAG);
     let b = is_advertisement(&ads(), TAG, TAG);
     let c = is_advertisement(&ads(), TAG, TAG);
@@ -428,6 +455,7 @@ fn repeated_calls_with_the_same_inputs_agree() {
         debounce_ceiling(2.0, 1.0),
         "the ceiling is not deterministic"
     );
+    Ok(())
 }
 
 /// Argument order matters, and swapping it is detectable.
@@ -436,7 +464,7 @@ fn repeated_calls_with_the_same_inputs_agree() {
 /// a row, which is the shape that produced a swapped-argument defect elsewhere
 /// in this release. A test that only ever passes equal values cannot see it.
 #[test]
-fn the_two_version_arguments_are_not_interchangeable() {
+fn the_two_version_arguments_are_not_interchangeable() -> Result<(), TestError> {
     let behind = (TAG.0, TAG.1, TAG.2 - 1);
     assert!(!is_advertisement(&ads(), behind, TAG));
     assert!(!is_advertisement(&ads(), TAG, behind));
@@ -445,6 +473,7 @@ fn the_two_version_arguments_are_not_interchangeable() {
         "equal values in either order must agree; only the mismatch is a \
          refusal"
     );
+    Ok(())
 }
 
 // ── E. the list itself, and the coverage claim ──────────────────────
@@ -454,7 +483,7 @@ fn the_two_version_arguments_are_not_interchangeable() {
 /// Overlapping entries make the rule ambiguous: whether a path is exempt would
 /// depend on which entry the iterator reached first.
 #[test]
-fn no_advertisement_entry_is_a_prefix_of_another() {
+fn no_advertisement_entry_is_a_prefix_of_another() -> Result<(), TestError> {
     for a in ADVERTISEMENT_PATHS {
         for b in ADVERTISEMENT_PATHS {
             if a == b {
@@ -467,6 +496,7 @@ fn no_advertisement_entry_is_a_prefix_of_another() {
             );
         }
     }
+    Ok(())
 }
 
 /// Every entry names something that exists, in the form it claims.
@@ -474,7 +504,7 @@ fn no_advertisement_entry_is_a_prefix_of_another() {
 /// An entry describing a tree that is not this one silently exempts nothing,
 /// or exempts the wrong thing after a rename.
 #[test]
-fn every_advertisement_entry_names_something_real() {
+fn every_advertisement_entry_names_something_real() -> Result<(), TestError> {
     for p in ADVERTISEMENT_PATHS {
         let is_dir_entry = p.ends_with('/');
         let target = repo().join(p.trim_end_matches('/'));
@@ -491,6 +521,7 @@ fn every_advertisement_entry_names_something_real() {
             if target.is_dir() { "directory" } else { "file" }
         );
     }
+    Ok(())
 }
 
 /// The exemption stays small.
@@ -498,7 +529,7 @@ fn every_advertisement_entry_names_something_real() {
 /// Each entry is a place undeclared work can hide, so growth should be a
 /// decision rather than an accumulation.
 #[test]
-fn the_advertisement_list_stays_small() {
+fn the_advertisement_list_stays_small() -> Result<(), TestError> {
     assert!(
         ADVERTISEMENT_PATHS.len() <= 6,
         "the exemption has grown to {} entries",
@@ -509,11 +540,12 @@ fn the_advertisement_list_stays_small() {
         "an empty list exempts nothing, which would make the release flow's \
          second phase fail every gate again"
     );
+    Ok(())
 }
 
 /// Nothing under `src/` or `tests/` is reachable through the exemption.
 #[test]
-fn no_code_path_is_reachable_through_the_exemption() {
+fn no_code_path_is_reachable_through_the_exemption() -> Result<(), TestError> {
     for forbidden in [
         "src/main.rs",
         "src/mcp/server.rs",
@@ -529,12 +561,13 @@ fn no_code_path_is_reachable_through_the_exemption() {
              would skip the delivery gates"
         );
     }
+    Ok(())
 }
 
 /// The version parser accepts the forms this repository writes, and rejects
 /// the shapes that would silently become a wrong triple.
 #[test]
-fn the_version_parser_accepts_real_forms_and_rejects_junk() {
+fn the_version_parser_accepts_real_forms_and_rejects_junk() -> Result<(), TestError> {
     assert_eq!(parse_version("0.5.131"), Some((0, 5, 131)));
     assert_eq!(parse_version("v0.5.131"), Some((0, 5, 131)));
     assert_eq!(parse_version("  v0.5.131  "), Some((0, 5, 131)));
@@ -543,6 +576,7 @@ fn the_version_parser_accepts_real_forms_and_rejects_junk() {
     assert_eq!(parse_version("v0.5.x"), None);
     assert_eq!(parse_version(""), None);
     assert_eq!(parse_version("v"), None);
+    Ok(())
 }
 
 /// This suite drives states the live tree cannot produce.
@@ -551,7 +585,7 @@ fn the_version_parser_accepts_real_forms_and_rejects_junk() {
 /// every case here happened to match the checkout, the file would be back to
 /// testing one row of the truth table and the defect could return.
 #[test]
-fn this_suite_exercises_states_this_checkout_is_not_in() {
+fn this_suite_exercises_states_this_checkout_is_not_in() -> Result<(), TestError> {
     // An empty changeset: never true of a tree with commits since the tag.
     assert!(!is_advertisement(&[], TAG, TAG));
     // A mismatched pair: never true while the release flow is complete.
@@ -566,7 +600,7 @@ fn this_suite_exercises_states_this_checkout_is_not_in() {
     // a suite that only read the tree would satisfy every assertion above by
     // accident on some future checkout.
     let src = std::fs::read_to_string(repo().join("tests/gate_logic_test.rs"))
-        .expect("read this test file");
+        .map_err(|e| format!("read this test file: {e}"))?;
     for marker in ["config.toml.tmp", "install.md.bak", "TAG.2 - 1"] {
         assert!(
             src.contains(marker),
@@ -574,6 +608,7 @@ fn this_suite_exercises_states_this_checkout_is_not_in() {
              observing the tree, which is the defect it exists to prevent"
         );
     }
+    Ok(())
 }
 
 /// A dependency bump is a post-tag commit that legitimately declares nothing.
@@ -583,7 +618,7 @@ fn this_suite_exercises_states_this_checkout_is_not_in() {
 /// nothing a reader needs told about and is authored by a bot that cannot write
 /// an entry. Six Dependabot pull requests sat unmergeable on exactly this.
 #[test]
-fn a_lockfile_bump_is_recognized_as_declaring_nothing() {
+fn a_lockfile_bump_is_recognized_as_declaring_nothing() -> Result<(), TestError> {
     for paths in [
         vec!["Cargo.lock"],
         vec!["Cargo.toml", "Cargo.lock"],
@@ -599,6 +634,7 @@ fn a_lockfile_bump_is_recognized_as_declaring_nothing() {
             "{paths:?} is a dependency bump and must not demand a changelog entry"
         );
     }
+    Ok(())
 }
 
 /// Real work is not a dependency bump, however few files it touches.
@@ -607,7 +643,7 @@ fn a_lockfile_bump_is_recognized_as_declaring_nothing() {
 /// edits `Cargo.toml` beside `src/` is a feature, and a version bump touches
 /// the site config and the man page as well.
 #[test]
-fn real_work_is_not_mistaken_for_a_dependency_bump() {
+fn real_work_is_not_mistaken_for_a_dependency_bump() -> Result<(), TestError> {
     for paths in [
         vec!["Cargo.toml", "src/lib.rs"],
         vec!["src/mcp/server.rs"],
@@ -627,6 +663,7 @@ fn real_work_is_not_mistaken_for_a_dependency_bump() {
         "an empty changeset bumps nothing -- treating 'cannot look' as \
          'nothing to see' is the failure the sibling predicate documents"
     );
+    Ok(())
 }
 
 /// The prefix rule is exact, the same way the advertisement one is.
@@ -634,7 +671,7 @@ fn real_work_is_not_mistaken_for_a_dependency_bump() {
 /// `Cargo.lock.bak` and `Cargo.tomlx` are not dependency manifests, and a
 /// `starts_with` over the same list would exempt both.
 #[test]
-fn a_name_that_merely_begins_like_a_manifest_is_not_one() {
+fn a_name_that_merely_begins_like_a_manifest_is_not_one() -> Result<(), TestError> {
     for f in [
         "Cargo.lock.bak",
         "Cargo.tomlx",
@@ -650,6 +687,7 @@ fn a_name_that_merely_begins_like_a_manifest_is_not_one() {
     }
     assert!(dependency_path(".github/workflows/ci.yml"));
     assert!(dependency_path("Cargo.lock"));
+    Ok(())
 }
 
 /// Phase two landing after Dependabot merges declares nothing either.
@@ -661,7 +699,7 @@ fn a_name_that_merely_begins_like_a_manifest_is_not_one() {
 /// of a release as undeclared work. Every path in it was exempt; only their
 /// mixture was not.
 #[test]
-fn an_advertisement_beside_dependency_bumps_declares_nothing() {
+fn an_advertisement_beside_dependency_bumps_declares_nothing() -> Result<(), TestError> {
     let changed: Vec<String> = [
         ".github/workflows/ci.yml",
         "fuzz/Cargo.lock",
@@ -684,6 +722,7 @@ fn an_advertisement_beside_dependency_bumps_declares_nothing() {
         "the newest tag's advertisement beside dependency bumps is refused, \
          so phase two cannot be pushed once a Dependabot merge lands after the tag"
     );
+    Ok(())
 }
 
 /// The mixture exemption keeps both siblings' refusals.
@@ -692,7 +731,7 @@ fn an_advertisement_beside_dependency_bumps_declares_nothing() {
 /// half must be real, the rest must advertise THIS tag, and anything that is
 /// neither is work.
 #[test]
-fn the_mixture_exemption_keeps_both_siblings_refusals() {
+fn the_mixture_exemption_keeps_both_siblings_refusals() -> Result<(), TestError> {
     let v = |paths: &[&str]| -> Vec<String> { paths.iter().map(|s| (*s).to_string()).collect() };
     let behind = (TAG.0, TAG.1, TAG.2 - 1);
     // What the case is, its changeset, and the version the site advertises.
@@ -723,6 +762,7 @@ fn the_mixture_exemption_keeps_both_siblings_refusals() {
             "{what} was accepted as an advertisement beside dependency bumps"
         );
     }
+    Ok(())
 }
 
 /// Past the bound, cutting the release is the remedy the gate asks for, so a
@@ -730,19 +770,20 @@ fn the_mixture_exemption_keeps_both_siblings_refusals() {
 /// bumps the version, and the tag cannot be pushed before that commit's CI has
 /// run, so once past the bound nothing could release.
 #[test]
-fn a_release_being_cut_is_the_remedy_not_a_violation() {
+fn a_release_being_cut_is_the_remedy_not_a_violation() -> Result<(), TestError> {
     let past = MAX_UNRELEASED_COMMITS + 1;
     assert!(unreleased_accumulation(past, true, None).is_ok());
     assert!(
         unreleased_accumulation(past, false, None).is_err(),
         "no cut and no reason is still the stall the gate exists for"
     );
+    Ok(())
 }
 
 /// The gate's own message offers a second remedy: say in `[Unreleased]` why
 /// the work is held. A reason with nothing in it is not one.
 #[test]
-fn a_stated_hold_reason_is_accepted_and_an_empty_one_is_not() {
+fn a_stated_hold_reason_is_accepted_and_an_empty_one_is_not() -> Result<(), TestError> {
     let past = MAX_UNRELEASED_COMMITS + 1;
     assert!(
         unreleased_accumulation(
@@ -759,6 +800,7 @@ fn a_stated_hold_reason_is_accepted_and_an_empty_one_is_not() {
         );
     }
     assert!(unreleased_accumulation(MAX_UNRELEASED_COMMITS, false, None).is_ok());
+    Ok(())
 }
 
 // ── `unreleased_section`: what a gate on today's code may read ──────
@@ -772,17 +814,18 @@ const CHANGELOG: &str = "# Changelog\n\nintro\n\n## [Unreleased]\n\n### Added\n\
 /// true when each shipped, and holding them to today's code forces a rewrite
 /// of history, as it did to 0.5.156's "32 Prometheus metrics".
 #[test]
-fn the_unreleased_section_stops_at_the_first_released_entry() {
-    let body = unreleased_section(CHANGELOG).expect("the fixture has one");
+fn the_unreleased_section_stops_at_the_first_released_entry() -> Result<(), TestError> {
+    let body = unreleased_section(CHANGELOG).ok_or("the fixture has one")?;
     assert!(body.contains("- new work"), "{body:?}");
     assert!(!body.contains("shipped"), "{body:?}");
     assert!(!body.contains("32 Prometheus metrics"), "{body:?}");
+    Ok(())
 }
 
 /// No `[Unreleased]` heading is not an empty section: a gate must be able to
 /// tell the two apart.
 #[test]
-fn a_changelog_without_an_unreleased_heading_has_no_section() {
+fn a_changelog_without_an_unreleased_heading_has_no_section() -> Result<(), TestError> {
     assert_eq!(
         unreleased_section("# Changelog\n\n## [0.5.184] - x\n\n- a\n"),
         None
@@ -791,4 +834,5 @@ fn a_changelog_without_an_unreleased_heading_has_no_section() {
         unreleased_section("## [unreleased]\n\n## [0.5.184] - x\n").as_deref(),
         Some("")
     );
+    Ok(())
 }

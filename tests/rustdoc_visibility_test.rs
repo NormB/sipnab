@@ -14,6 +14,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -245,13 +249,13 @@ fn intra_doc_links(doc: &str) -> Vec<String> {
 /// is the common case, in the seconds before a commit rather than the minutes
 /// after one.
 #[test]
-fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
+fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() -> Result<(), TestError> {
     let mut offenses: Vec<String> = Vec::new();
     let mut scanned = 0usize;
     let mut links_seen = 0usize;
 
     for path in source_files() {
-        let text = std::fs::read_to_string(&path).expect("read source");
+        let text = std::fs::read_to_string(&path)?;
         let decls = declarations(&text);
         for item in documented_items(&text) {
             if !is_public(&item.decl) || item.hidden {
@@ -291,6 +295,7 @@ fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
          the target public if it genuinely belongs to the public API.",
         offenses.join("\n  ")
     );
+    Ok(())
 }
 
 /// The scanner reads a real tree, and can tell a public link from a private
@@ -299,7 +304,7 @@ fn public_docs_do_not_link_to_items_rustdoc_cannot_reach() {
 /// Without this the gate above could pass because every helper returned
 /// nothing. Each half is driven with material shaped like the defect.
 #[test]
-fn the_visibility_scanner_distinguishes_what_rustdoc_distinguishes() {
+fn the_visibility_scanner_distinguishes_what_rustdoc_distinguishes() -> Result<(), TestError> {
     let sample = "\
 /// Doc for a private struct.
 struct HepIngest;
@@ -372,6 +377,7 @@ pub fn compact_ntp_for_test() {}
          even with another attribute after it -- rustdoc renders no page for \
          this item and so resolves none of its links"
     );
+    Ok(())
 }
 
 /// The pre-push hook still runs rustdoc with warnings denied.
@@ -381,21 +387,18 @@ pub fn compact_ntp_for_test() {}
 /// If the hook's Docs step were dropped or softened to a warning, nothing else
 /// in the repo would notice -- pre-commit does not run `cargo doc` at all.
 #[test]
-fn the_pre_push_hook_still_denies_rustdoc_warnings() {
-    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))
-        .expect("the pre-push hook is readable");
+fn the_pre_push_hook_still_denies_rustdoc_warnings() -> Result<(), TestError> {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-push"))?;
 
     let invocation = hook
         .lines()
         .find(|l| {
             l.contains("cargo doc") && l.contains("RUSTDOCFLAGS") && l.trim().starts_with("if")
         })
-        .unwrap_or_else(|| {
-            panic!(
-                "the pre-push hook no longer runs `cargo doc` under RUSTDOCFLAGS as a \
-                 condition — without it, a private intra-doc link reaches CI"
-            )
-        });
+        .ok_or(
+            "the pre-push hook no longer runs `cargo doc` under RUSTDOCFLAGS as a \
+                 condition — without it, a private intra-doc link reaches CI",
+        )?;
 
     assert!(
         invocation.contains("-D warnings"),
@@ -407,4 +410,5 @@ fn the_pre_push_hook_still_denies_rustdoc_warnings() {
         "the hook must document all features, or a link inside a feature-gated \
          item is never resolved: {invocation}"
     );
+    Ok(())
 }

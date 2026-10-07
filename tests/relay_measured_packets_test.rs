@@ -20,8 +20,10 @@ use sipnab::capture::parse::{InputOrigin, ParsedPacket, TransportProto};
 use sipnab::rtp::parser::parse_rtp_header;
 use sipnab::rtp::stream_store::StreamStore;
 
-fn ts(secs: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+type TestError = Box<dyn std::error::Error>;
+
+fn ts(secs: i64) -> Result<DateTime<Utc>, TestError> {
+    Ok(DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("valid timestamp")?)
 }
 
 fn ip(octets: [u8; 4]) -> IpAddr {
@@ -36,7 +38,7 @@ fn rtp_packet(
     dst_port: u16,
     ssrc: u32,
     seq: u16,
-) -> ParsedPacket {
+) -> Result<ParsedPacket, TestError> {
     let mut payload = Vec::with_capacity(172);
     payload.push(0x80);
     payload.push(0x00); // PT 0, PCMU
@@ -45,10 +47,10 @@ fn rtp_packet(
     payload.extend_from_slice(&ssrc.to_be_bytes());
     payload.extend_from_slice(&[0x7F; 160]);
 
-    ParsedPacket {
+    Ok(ParsedPacket {
         frame_bytes: None,
         frame: None,
-        timestamp: ts(0),
+        timestamp: ts(0)?,
         src_addr: src,
         dst_addr: dst,
         src_port,
@@ -64,7 +66,7 @@ fn rtp_packet(
         dscp: None,
         input_origin: InputOrigin::Wire,
         hep: None,
-    }
+    })
 }
 
 /// Record `n` RTP packets on the given 4-tuple into `store`.
@@ -76,18 +78,19 @@ fn record_n(
     dst: IpAddr,
     dst_port: u16,
     ssrc: u32,
-) {
+) -> Result<(), TestError> {
     for i in 0..n {
-        let parsed = rtp_packet(src, src_port, dst, dst_port, ssrc, 100 + i);
-        let hdr = parse_rtp_header(&parsed.payload).expect("synthetic RTP header");
-        store.process_rtp(&parsed, &hdr, ts(i64::from(i)));
+        let parsed = rtp_packet(src, src_port, dst, dst_port, ssrc, 100 + i)?;
+        let hdr = parse_rtp_header(&parsed.payload)?;
+        store.process_rtp(&parsed, &hdr, ts(i64::from(i))?);
     }
+    Ok(())
 }
 
 /// A call's measured count sums every stream linked to its Call-ID: two legs of
 /// one call add up, and a stream on a different call does not leak in.
 #[test]
-fn measured_count_sums_the_calls_streams_only() {
+fn measured_count_sums_the_calls_streams_only() -> Result<(), TestError> {
     let mut ss = StreamStore::new(64);
 
     // Call A, leg one: 10 packets from 192.0.2.10:20000.
@@ -99,7 +102,7 @@ fn measured_count_sums_the_calls_streams_only() {
         ip([198, 51, 100, 1]),
         40000,
         0x1111,
-    );
+    )?;
     // Call A, leg two: 6 packets from 192.0.2.11:20002.
     record_n(
         &mut ss,
@@ -109,7 +112,7 @@ fn measured_count_sums_the_calls_streams_only() {
         ip([198, 51, 100, 1]),
         40002,
         0x2222,
-    );
+    )?;
     // Call B: 7 packets from 192.0.2.20:21000.
     record_n(
         &mut ss,
@@ -119,7 +122,7 @@ fn measured_count_sums_the_calls_streams_only() {
         ip([198, 51, 100, 2]),
         41000,
         0x3333,
-    );
+    )?;
 
     ss.link_endpoint(ip([192, 0, 2, 10]), 20000, "call-A", &[]);
     ss.link_endpoint(ip([192, 0, 2, 11]), 20002, "call-A", &[]);
@@ -135,20 +138,22 @@ fn measured_count_sums_the_calls_streams_only() {
         7,
         "call B is its own stream only"
     );
+    Ok(())
 }
 
 /// A call sipnab saw no packets for measures zero -- a real answer (sipnab saw
 /// none), not a crash and not a missing value.
 #[test]
-fn a_call_with_no_streams_measures_zero() {
+fn a_call_with_no_streams_measures_zero() -> Result<(), TestError> {
     let ss = StreamStore::new(64);
     assert_eq!(ss.measured_packet_count_for("nobody"), 0);
+    Ok(())
 }
 
 /// An unlinked stream is not counted for any call: a packet sipnab captured but
 /// could not correlate to a Call-ID is not attributed to one.
 #[test]
-fn an_unlinked_stream_is_not_attributed_to_a_call() {
+fn an_unlinked_stream_is_not_attributed_to_a_call() -> Result<(), TestError> {
     let mut ss = StreamStore::new(64);
     record_n(
         &mut ss,
@@ -158,11 +163,12 @@ fn an_unlinked_stream_is_not_attributed_to_a_call() {
         ip([198, 51, 100, 3]),
         42000,
         0x4444,
-    );
+    )?;
     // Never linked to any Call-ID.
     assert_eq!(
         ss.measured_packet_count_for("call-A"),
         0,
         "an orphan stream belongs to no call"
     );
+    Ok(())
 }

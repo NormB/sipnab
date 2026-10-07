@@ -13,6 +13,10 @@
 use std::io::Write;
 use std::path::PathBuf;
 
+/// The error a fallible test or helper here returns: any error, boxed, so `?`
+/// works on I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 #[path = "support/run.rs"]
@@ -47,9 +51,9 @@ fn sip_call_fixture() -> PathBuf {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run(args: &[&str]) -> (String, String, i32) {
-    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("warn"));
-    (stdout, stderr, code.unwrap_or(-1))
+fn run(args: &[&str]) -> Result<(String, String, i32), TestError> {
+    let (stdout, stderr, code) = run_support::run(args, Some("warn"))?;
+    Ok((stdout, stderr, code.unwrap_or(-1)))
 }
 
 /// Write a temporary config file and return its path (kept alive by the tempdir).
@@ -63,11 +67,11 @@ fn run(args: &[&str]) -> (String, String, i32) {
 ///
 /// # Side effects
 /// Creates `sipnab.toml` inside `dir`.
-fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
+fn write_config(dir: &tempfile::TempDir, content: &str) -> Result<PathBuf, TestError> {
     let path = dir.path().join("sipnab.toml");
-    let mut f = std::fs::File::create(&path).unwrap();
-    write!(f, "{}", content).unwrap();
-    path
+    let mut f = std::fs::File::create(&path)?;
+    write!(f, "{}", content)?;
+    Ok(path)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -77,24 +81,23 @@ fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
 /// The first JSON output line carries every required field (src/dst/ports/
 /// transport/is_request/call_id/schema_version) with the correct JSON types.
 #[test]
-fn json_output_schema_is_complete() {
+fn json_output_schema_is_complete() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
     let (stdout, _stderr, code) = run(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("non-UTF-8 path")?,
         "--json",
         "--no-config",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab should exit cleanly");
 
     // Parse the first JSON line
     let first_line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .expect("should have at least one JSON line");
-    let parsed: serde_json::Value =
-        serde_json::from_str(first_line).expect("first line should be valid JSON");
+        .ok_or("should have at least one JSON line")?;
+    let parsed: serde_json::Value = serde_json::from_str(first_line)?;
 
     // Verify all required fields are present
     let required_fields = [
@@ -138,6 +141,7 @@ fn json_output_schema_is_complete() {
         parsed["is_request"].is_boolean(),
         "is_request should be a boolean"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -147,7 +151,7 @@ fn json_output_schema_is_complete() {
 /// For all 13 `DialogState` variants, `Display` output equals `Debug` output —
 /// CSV export depends on this equivalence.
 #[test]
-fn dialog_state_display_matches_debug() {
+fn dialog_state_display_matches_debug() -> Result<(), TestError> {
     use sipnab::sip::dialog::DialogState;
 
     let all_states = [
@@ -175,6 +179,7 @@ fn dialog_state_display_matches_debug() {
              CSV export depends on these being identical."
         );
     }
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -184,15 +189,15 @@ fn dialog_state_display_matches_debug() {
 /// A `[filter] expression` from the config file is applied: a REGISTER-only
 /// filter drops all 7 INVITE-flow messages, while `--no-config` emits them.
 #[test]
-fn config_filter_expression_applied() {
-    let dir = tempfile::tempdir().unwrap();
+fn config_filter_expression_applied() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let config_path = write_config(
         &dir,
         r#"
 [filter]
 expression = "method == 'REGISTER'"
 "#,
-    );
+    )?;
     let fixture = sip_call_fixture();
 
     // Run with the config that filters to REGISTER only.
@@ -201,11 +206,11 @@ expression = "method == 'REGISTER'"
     let (stdout, _stderr, code) = run(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("non-UTF-8 path")?,
         "--json",
         "-f",
-        config_path.to_str().unwrap(),
-    ]);
+        config_path.to_str().ok_or("non-UTF-8 path")?,
+    ])?;
     assert_eq!(code, 0, "sipnab should exit cleanly");
 
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
@@ -221,10 +226,10 @@ expression = "method == 'REGISTER'"
     let (stdout_unfiltered, _stderr, code) = run(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("non-UTF-8 path")?,
         "--json",
         "--no-config",
-    ]);
+    ])?;
     assert_eq!(code, 0);
     let unfiltered_count = stdout_unfiltered
         .lines()
@@ -234,6 +239,7 @@ expression = "method == 'REGISTER'"
         unfiltered_count > 0,
         "Without filter, sip_call.pcap should produce JSON output"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -245,16 +251,16 @@ expression = "method == 'REGISTER'"
 /// The flag must not cause a crash or error.
 #[cfg(not(feature = "tls"))]
 #[test]
-fn stir_shaken_without_tls_is_gated() {
+fn stir_shaken_without_tls_is_gated() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
     let (stdout, stderr, code) = run(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("non-UTF-8 path")?,
         "--json",
         "--stir-shaken",
         "--no-config",
-    ]);
+    ])?;
 
     // Should exit cleanly — the flag is accepted but silently ignored
     assert_eq!(
@@ -268,6 +274,7 @@ fn stir_shaken_without_tls_is_gated() {
         json_lines > 0,
         "--stir-shaken should not suppress normal SIP output"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -277,14 +284,18 @@ fn stir_shaken_without_tls_is_gated() {
 /// A `[display] visible_columns` list in the config survives a load +
 /// `--dump-config` round trip: the key and every column name appear in the dump.
 #[test]
-fn config_visible_columns_round_trip() {
-    let dir = tempfile::tempdir().unwrap();
+fn config_visible_columns_round_trip() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let columns = ["#", "Method", "From", "To", "State"];
     let config_content = format!("[display]\nvisible_columns = {:?}\n", columns.as_slice());
-    let config_path = write_config(&dir, &config_content);
+    let config_path = write_config(&dir, &config_content)?;
 
     // Load and dump the config
-    let (stdout, _stderr, code) = run(&["-f", config_path.to_str().unwrap(), "--dump-config"]);
+    let (stdout, _stderr, code) = run(&[
+        "-f",
+        config_path.to_str().ok_or("non-UTF-8 path")?,
+        "--dump-config",
+    ])?;
     assert_eq!(code, 0, "dump-config should succeed");
 
     // Verify every column name appears in the dumped output
@@ -303,6 +314,7 @@ fn config_visible_columns_round_trip() {
         "Dumped config should contain 'visible_columns' key. Got:\n{}",
         stdout
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -314,7 +326,7 @@ fn config_visible_columns_round_trip() {
 /// readable state names (not Debug-wrapped quotes), this test ensures all
 /// variants produce clean, unquoted names suitable for CSV.
 #[test]
-fn wasm_export_csv_state_format() {
+fn wasm_export_csv_state_format() -> Result<(), TestError> {
     use sipnab::sip::dialog::DialogState;
 
     let expected: &[(DialogState, &str)] = &[
@@ -347,13 +359,14 @@ fn wasm_export_csv_state_format() {
             display
         );
     }
+    Ok(())
 }
 
 // ── Non-exhaustive enum compliance tests ────────────────────────────
 
 /// Verify DialogState has Display (not just Debug) for stable serialization
 #[test]
-fn dialog_state_all_variants_have_display() {
+fn dialog_state_all_variants_have_display() -> Result<(), TestError> {
     use sipnab::sip::dialog::DialogState;
     let states = [
         DialogState::Trying,
@@ -381,11 +394,12 @@ fn dialog_state_all_variants_have_display() {
             "Display should not contain :: (Debug format), got: {display}"
         );
     }
+    Ok(())
 }
 
 /// Verify SipMethod has Display for all standard variants
 #[test]
-fn sip_method_all_variants_have_display() {
+fn sip_method_all_variants_have_display() -> Result<(), TestError> {
     use sipnab::sip::SipMethod;
     let methods = [
         SipMethod::Invite,
@@ -415,12 +429,13 @@ fn sip_method_all_variants_have_display() {
     // Custom variant
     let custom = SipMethod::Custom("XMETHOD".into());
     assert_eq!(custom.to_string(), "XMETHOD");
+    Ok(())
 }
 
 /// Verify PcapExportMode parse round-trips all variants
 #[cfg(feature = "native")]
 #[test]
-fn pcap_export_mode_all_variants_round_trip() {
+fn pcap_export_mode_all_variants_round_trip() -> Result<(), TestError> {
     use sipnab::capture::PcapExportMode;
     let modes = ["decrypted", "raw", "encrypted+dsb"];
     for mode_str in &modes {
@@ -430,12 +445,13 @@ fn pcap_export_mode_all_variants_round_trip() {
             "parse_mode({mode_str}) should return Some"
         );
     }
+    Ok(())
 }
 
 /// Verify release profile has panic=abort and strip=true
 #[test]
-fn cargo_toml_release_profile_optimized() {
-    let cargo = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+fn cargo_toml_release_profile_optimized() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
     assert!(
         cargo.contains("panic = \"abort\""),
         "Release profile should have panic = abort"
@@ -452,18 +468,18 @@ fn cargo_toml_release_profile_optimized() {
         cargo.contains("codegen-units = 1"),
         "Release profile should use single codegen unit"
     );
+    Ok(())
 }
 
 /// contrib/sipnabrc.example is the shipped starter config: it must stay
 /// parseable by the real loader and its values must land, or the first
 /// thing a new user copies breaks.
 #[test]
-fn contrib_example_config_parses_with_real_loader() {
+fn contrib_example_config_parses_with_real_loader() -> Result<(), TestError> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/sipnabrc.example");
     // skip_default=false: with `true` the loader returns defaults without
     // reading even the explicit path.
-    let loaded = sipnab::config::Config::load(Some(path), false)
-        .expect("contrib/sipnabrc.example must parse with the real config loader");
+    let loaded = sipnab::config::Config::load(Some(path), false)?;
     // Spot-check a value from each section so a renamed key can't slip by
     // as silently-ignored TOML.
     assert_eq!(
@@ -481,6 +497,7 @@ fn contrib_example_config_parses_with_real_loader() {
         Some(4096),
         "limits.max_streams from the example must land"
     );
+    Ok(())
 }
 
 /// The example's commented TLS block is what a reader uncomments, so
@@ -489,13 +506,13 @@ fn contrib_example_config_parses_with_real_loader() {
 /// are invisible to the test above; without this one a renamed key would
 /// leave the example teaching a key sipnab warns about and ignores.
 #[test]
-fn contrib_example_tls_block_uncommented_is_a_real_config() {
+fn contrib_example_tls_block_uncommented_is_a_real_config() -> Result<(), TestError> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/sipnabrc.example");
-    let text = std::fs::read_to_string(path).expect("read the example");
+    let text = std::fs::read_to_string(path)?;
     let block = text
         .split("# -- TLS for the listeners")
         .nth(1)
-        .expect("the example carries its TLS block");
+        .ok_or("the example carries its TLS block")?;
     let uncommented: String = block
         .lines()
         .filter_map(|l| l.strip_prefix("# "))
@@ -503,15 +520,14 @@ fn contrib_example_tls_block_uncommented_is_a_real_config() {
         .map(|l| format!("{l}\n"))
         .collect();
     assert_eq!(
-        sipnab::config::Config::unknown_keys(&uncommented).expect("parses"),
+        sipnab::config::Config::unknown_keys(&uncommented)?,
         Vec::<String>::new(),
         "every uncommented key is known:\n{uncommented}"
     );
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let file = dir.path().join("sipnab.toml");
-    std::fs::write(&file, &uncommented).expect("write");
-    let loaded = sipnab::config::Config::load(Some(file.to_str().expect("utf-8")), false)
-        .expect("the real loader accepts the uncommented block");
+    std::fs::write(&file, &uncommented)?;
+    let loaded = sipnab::config::Config::load(Some(file.to_str().ok_or("utf-8")?), false)?;
     let c = loaded.config;
     assert_eq!(c.api.tls_cert.as_deref(), Some("/etc/sipnab/api.pem"));
     assert_eq!(c.api.tls_key.as_deref(), Some("/etc/sipnab/api.key"));
@@ -541,6 +557,7 @@ fn contrib_example_tls_block_uncommented_is_a_real_config() {
         c.hep.tls_key.as_deref(),
         Some(std::path::Path::new("/etc/sipnab/hep.key"))
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -567,7 +584,7 @@ fn contrib_example_tls_block_uncommented_is_a_real_config() {
 // `cli.capture_args.snaplen.or(config.capture.snaplen)`, `cli.matching_args.from.or(config.filter.from)`).
 
 /// Run sipnab with owned arguments, adapting to the `&[&str]` [`run`] takes.
-fn run_owned(args: &[String]) -> (String, String, i32) {
+fn run_owned(args: &[String]) -> Result<(String, String, i32), TestError> {
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     run(&refs)
 }
@@ -583,7 +600,7 @@ fn stream_row_count(stdout: &str) -> usize {
 }
 
 /// Write a pcap of `calls` complete SIP calls, each with its own Call-ID.
-fn write_multi_call_pcap(dir: &tempfile::TempDir, calls: usize) -> PathBuf {
+fn write_multi_call_pcap(dir: &tempfile::TempDir, calls: usize) -> Result<PathBuf, TestError> {
     let path = dir.path().join("calls.pcap");
     let mut frames = Vec::new();
     for i in 0..calls {
@@ -594,8 +611,8 @@ fn write_multi_call_pcap(dir: &tempfile::TempDir, calls: usize) -> PathBuf {
             "bob",
         ));
     }
-    pcap_build::write_pcap_or_panic(&path, &frames);
-    path
+    pcap_build::write_pcap(&path, &frames)?;
+    Ok(path)
 }
 
 /// A long dialog that then goes quiet, which is what idle compaction needs.
@@ -617,7 +634,7 @@ fn write_idle_dialog_pcap(
     dir: &tempfile::TempDir,
     exchanges: usize,
     quiet_secs: u64,
-) -> (PathBuf, usize) {
+) -> Result<(PathBuf, usize), TestError> {
     let path = dir.path().join("idle.pcap");
     let mut timed: Vec<(Vec<u8>, u64)> = Vec::new();
     let mut usec = 0u64;
@@ -635,8 +652,8 @@ fn write_idle_dialog_pcap(
     for f in pcap_build::sip_call_frames("late-call@10.1.0.1", "late", "carol", "dave") {
         timed.push((f, later));
     }
-    pcap_build::write_pcap_at_or_panic(&path, &timed, 1);
-    (path, messages)
+    pcap_build::write_pcap_at(&path, &timed, 1)?;
+    Ok((path, messages))
 }
 
 /// The four-stream RTP fixture the `max_streams` probes bound.
@@ -655,11 +672,11 @@ fn rtp_fixture() -> PathBuf {
 /// against `dialog_limit = 3`. Before the fix the capped run returned all
 /// eight.
 #[test]
-fn config_dialog_limit_bounds_retained_dialogs() {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n");
-    let pcap = pcap.to_str().unwrap().to_string();
+fn config_dialog_limit_bounds_retained_dialogs() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n")?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let (uncapped, _, code) = run_owned(&[
         "-N".into(),
@@ -667,7 +684,7 @@ fn config_dialog_limit_bounds_retained_dialogs() {
         pcap.clone(),
         "--json-dialogs".into(),
         "--no-config".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
     assert_eq!(
         dialog_count(&uncapped),
@@ -681,8 +698,8 @@ fn config_dialog_limit_bounds_retained_dialogs() {
         pcap,
         "--json-dialogs".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
-    ]);
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
+    ])?;
     assert_eq!(code, 0, "capped run should exit cleanly");
     assert_eq!(
         dialog_count(&capped),
@@ -691,31 +708,33 @@ fn config_dialog_limit_bounds_retained_dialogs() {
          — the key is parsed and validated but not enforced",
         dialog_count(&capped)
     );
+    Ok(())
 }
 
 /// An explicit `--limit` beats `[limits] dialog_limit`.
 #[test]
-fn cli_limit_overrides_config_dialog_limit() {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n");
+fn cli_limit_overrides_config_dialog_limit() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n")?;
 
     let (out, _, code) = run_owned(&[
         "-N".into(),
         "-I".into(),
-        pcap.to_str().unwrap().into(),
+        pcap.to_str().ok_or("non-UTF-8 path")?.into(),
         "--json-dialogs".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
         "--limit".into(),
         "6".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "run should exit cleanly");
     assert_eq!(
         dialog_count(&out),
         6,
         "an explicit --limit must win over [limits] dialog_limit"
     );
+    Ok(())
 }
 
 /// `--limit` typed at its default value still beats the config key.
@@ -724,21 +743,21 @@ fn cli_limit_overrides_config_dialog_limit() {
 /// from the default": `--limit 100000` is an explicit instruction to track
 /// 100,000 dialogs and must not be silently narrowed by a config file.
 #[test]
-fn cli_limit_at_its_default_value_still_overrides_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n");
+fn cli_limit_at_its_default_value_still_overrides_config() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\ndialog_limit = 3\n")?;
 
     let (out, _, code) = run_owned(&[
         "-N".into(),
         "-I".into(),
-        pcap.to_str().unwrap().into(),
+        pcap.to_str().ok_or("non-UTF-8 path")?.into(),
         "--json-dialogs".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
         "--limit".into(),
         "100000".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "run should exit cleanly");
     assert_eq!(
         dialog_count(&out),
@@ -746,16 +765,17 @@ fn cli_limit_at_its_default_value_still_overrides_config() {
         "--limit 100000 is explicit even though it equals the default, so \
          the config cap must not apply"
     );
+    Ok(())
 }
 
 // ── max_streams ───────────────────────────────────────────────────────────
 
 /// `[limits] max_streams` bounds the RTP stream table.
 #[test]
-fn config_max_streams_bounds_rtp_stream_table() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_streams = 1\n");
-    let pcap = rtp_fixture().to_str().unwrap().to_string();
+fn config_max_streams_bounds_rtp_stream_table() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmax_streams = 1\n")?;
+    let pcap = rtp_fixture().to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let (uncapped, _, code) = run_owned(&[
         "-N".into(),
@@ -763,7 +783,7 @@ fn config_max_streams_bounds_rtp_stream_table() {
         pcap.clone(),
         "--report".into(),
         "--no-config".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
     assert!(
         stream_row_count(&uncapped) > 1,
@@ -777,47 +797,49 @@ fn config_max_streams_bounds_rtp_stream_table() {
         pcap,
         "--report".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
-    ]);
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
+    ])?;
     assert_eq!(code, 0, "capped run should exit cleanly");
     assert_eq!(
         stream_row_count(&capped),
         1,
         "[limits] max_streams = 1 must bound the stream table to 1 row"
     );
+    Ok(())
 }
 
 /// An explicit `--max-streams` beats `[limits] max_streams`.
 #[test]
-fn cli_max_streams_overrides_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_streams = 1\n");
+fn cli_max_streams_overrides_config() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmax_streams = 1\n")?;
 
     let (out, _, code) = run_owned(&[
         "-N".into(),
         "-I".into(),
-        rtp_fixture().to_str().unwrap().into(),
+        rtp_fixture().to_str().ok_or("non-UTF-8 path")?.into(),
         "--report".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
         "--max-streams".into(),
         "3".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "run should exit cleanly");
     assert_eq!(
         stream_row_count(&out),
         3,
         "an explicit --max-streams must win over [limits] max_streams"
     );
+    Ok(())
 }
 
 // ── max_reassembly ────────────────────────────────────────────────────────
 
 /// Write a pcap holding `flows` partial SIP messages open over TCP.
-fn write_tcp_flow_pcap(dir: &tempfile::TempDir, flows: usize) -> PathBuf {
+fn write_tcp_flow_pcap(dir: &tempfile::TempDir, flows: usize) -> Result<PathBuf, TestError> {
     let path = dir.path().join("tcp-flows.pcap");
-    pcap_build::write_pcap_or_panic(&path, &pcap_build::partial_tcp_sip_flows(flows));
-    path
+    pcap_build::write_pcap(&path, &pcap_build::partial_tcp_sip_flows(flows))?;
+    Ok(path)
 }
 
 /// The warning a reassembler at capacity logs, with the cap it enforced.
@@ -829,11 +851,11 @@ const TCP_AT_CAPACITY: &str = "TCP reassembler at capacity (1)";
 /// `at capacity (1)` proves the configured `1` reached the reassembler
 /// rather than merely that some eviction happened.
 #[test]
-fn config_max_reassembly_bounds_tcp_sessions() {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_tcp_flow_pcap(&dir, 4);
-    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n");
-    let pcap = pcap.to_str().unwrap().to_string();
+fn config_max_reassembly_bounds_tcp_sessions() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_tcp_flow_pcap(&dir, 4)?;
+    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n")?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let (_, uncapped_err, code) = run_owned(&[
         "-N".into(),
@@ -841,7 +863,7 @@ fn config_max_reassembly_bounds_tcp_sessions() {
         pcap.clone(),
         "--json".into(),
         "--no-config".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
     assert!(
         !uncapped_err.contains("TCP reassembler at capacity"),
@@ -854,14 +876,15 @@ fn config_max_reassembly_bounds_tcp_sessions() {
         pcap,
         "--json".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
-    ]);
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
+    ])?;
     assert_eq!(code, 0, "capped run should exit cleanly");
     assert!(
         capped_err.contains(TCP_AT_CAPACITY),
         "[limits] max_reassembly = 1 must reach the TCP reassembler; \
          expected {TCP_AT_CAPACITY:?} on stderr, got:\n{capped_err}"
     );
+    Ok(())
 }
 
 /// An explicit `--max-reassembly` beats `[limits] max_reassembly`.
@@ -871,21 +894,21 @@ fn config_max_reassembly_bounds_tcp_sessions() {
 /// warning, so an absence assertion would pass against the very defect this
 /// file exists to catch.
 #[test]
-fn cli_max_reassembly_overrides_config() {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_tcp_flow_pcap(&dir, 4);
-    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n");
+fn cli_max_reassembly_overrides_config() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_tcp_flow_pcap(&dir, 4)?;
+    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n")?;
 
     let (_, stderr, code) = run_owned(&[
         "-N".into(),
         "-I".into(),
-        pcap.to_str().unwrap().into(),
+        pcap.to_str().ok_or("non-UTF-8 path")?.into(),
         "--json".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
         "--max-reassembly".into(),
         "2".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "run should exit cleanly");
     assert!(
         stderr.contains("TCP reassembler at capacity (2)"),
@@ -898,6 +921,7 @@ fn cli_max_reassembly_overrides_config() {
         "the config's max_reassembly = 1 must not reach the reassembler when \
          --max-reassembly was typed:\n{stderr}"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -979,7 +1003,7 @@ struct LimitProbe {
     /// runs every one.
     enabled: bool,
     /// Returns `(observed_without_the_key, observed_with_the_key)`.
-    observe: fn() -> (String, String),
+    observe: fn() -> Result<(String, String), TestError>,
     /// Whether the probe's cost is an idle wait: one of its runs proves an
     /// ABSENCE (nothing dropped, nothing refused), which it can only see by
     /// waiting out its whole observation window. Those run on their own
@@ -996,15 +1020,14 @@ struct LimitProbe {
 /// appears here the moment it is added, and the gate then demands a probe
 /// for it. Deriving the list from the struct rather than from a hand-written
 /// constant is the point — a hand-written list is the thing that drifts.
-fn limits_struct_keys() -> Vec<String> {
-    let value = serde_json::to_value(sipnab::config::LimitsConfig::default())
-        .expect("LimitsConfig serializes");
-    value
+fn limits_struct_keys() -> Result<Vec<String>, TestError> {
+    let value = serde_json::to_value(sipnab::config::LimitsConfig::default())?;
+    Ok(value
         .as_object()
-        .expect("LimitsConfig serializes as a map")
+        .ok_or("LimitsConfig serializes as a map")?
         .keys()
         .cloned()
-        .collect()
+        .collect())
 }
 
 /// The keys the `[limits]` table of `docs/config-reference.md` documents.
@@ -1221,38 +1244,38 @@ fn observe_stdout(
     pcap: &std::path::Path,
     toml: &str,
     extra: &[&str],
-    measure: fn(&str) -> String,
-) -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, toml);
-    let pcap = pcap.to_str().unwrap().to_string();
+    measure: fn(&str) -> Result<String, TestError>,
+) -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, toml)?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let mut base: Vec<String> = vec!["-N".into(), "-I".into(), pcap];
     base.extend(extra.iter().map(|s| (*s).to_string()));
 
     let mut without = base.clone();
     without.push("--no-config".into());
-    let (plain, _, code) = run_owned(&without);
+    let (plain, _, code) = run_owned(&without)?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
 
     let mut with = base;
     with.push("--config".into());
-    with.push(cfg.to_str().unwrap().into());
-    let (limited, _, code) = run_owned(&with);
+    with.push(cfg.to_str().ok_or("non-UTF-8 path")?.into());
+    let (limited, _, code) = run_owned(&with)?;
     assert_eq!(code, 0, "capped run should exit cleanly");
 
-    (measure(&plain), measure(&limited))
+    Ok((measure(&plain)?, measure(&limited)?))
 }
 
 /// `dialog_limit`: eight calls against a cap of three.
-fn probe_dialog_limit() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
+fn probe_dialog_limit() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
     observe_stdout(
         &pcap,
         "[limits]\ndialog_limit = 3\n",
         &["--json-dialogs"],
-        |out| format!("dialogs={}", dialog_count(out)),
+        |out| Ok(format!("dialogs={}", dialog_count(out))),
     )
 }
 
@@ -1263,25 +1286,31 @@ fn probe_dialog_limit() -> (String, String) {
 /// letting the second file's packets lose their frame pointers. The runtime
 /// refusal (a traced process or a HEP sender past the table) is pinned in
 /// `capture::packet`'s tests, against the table itself.
-fn probe_max_capture_sources() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let a = write_multi_call_pcap(&dir, 1);
+fn probe_max_capture_sources() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let a = write_multi_call_pcap(&dir, 1)?;
     let b = dir.path().join("second.pcap");
-    std::fs::copy(&a, &b).unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 1\n");
-    let observe = |cfg_args: &[&str]| {
-        let mut args = vec!["-N", "-I", a.to_str().unwrap(), "-I", b.to_str().unwrap()];
+    std::fs::copy(&a, &b)?;
+    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 1\n")?;
+    let observe = |cfg_args: &[&str]| -> Result<String, TestError> {
+        let mut args = vec![
+            "-N",
+            "-I",
+            a.to_str().ok_or("non-UTF-8 path")?,
+            "-I",
+            b.to_str().ok_or("non-UTF-8 path")?,
+        ];
         args.extend_from_slice(cfg_args);
-        let (_, stderr, code) = run(&args);
-        format!(
+        let (_, stderr, code) = run(&args)?;
+        Ok(format!(
             "exit={code} names_key={}",
             stderr.contains("max_capture_sources is 1")
-        )
+        ))
     };
-    (
-        observe(&["--no-config"]),
-        observe(&["--config", cfg.to_str().unwrap()]),
-    )
+    Ok((
+        observe(&["--no-config"])?,
+        observe(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// The limit the flag or the config names is the one the process-wide table
@@ -1290,32 +1319,31 @@ fn probe_max_capture_sources() -> (String, String) {
 /// run that never handed that value to the table would still pass it.
 #[cfg(feature = "mcp")]
 #[test]
-fn the_capture_source_limit_reaches_the_table_it_governs() {
-    fn limit_reported(args: &[&str]) -> u64 {
+fn the_capture_source_limit_reaches_the_table_it_governs() -> Result<(), TestError> {
+    fn limit_reported(args: &[&str]) -> Result<u64, TestError> {
         use std::io::{BufRead, BufReader, Write};
         let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn mcp server");
-        let mut stdin = child.stdin.take().expect("stdin");
-        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
-        let mut send = |v: serde_json::Value| {
-            writeln!(stdin, "{v}").expect("write");
-            stdin.flush().expect("flush");
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
+        let mut send = |v: serde_json::Value| -> std::io::Result<()> {
+            writeln!(stdin, "{v}")?;
+            stdin.flush()
         };
         send(serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
-                      "clientInfo":{"name":"probe","version":"0"}}}));
+                      "clientInfo":{"name":"probe","version":"0"}}}))?;
         let mut line = String::new();
-        out.read_line(&mut line).expect("initialize reply");
-        send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        out.read_line(&mut line)?;
+        send(serde_json::json!({"jsonrpc":"2.0","method":"notifications/initialized"}))?;
         send(serde_json::json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
-            "params":{"name":"capture_health","arguments":{"sample_seconds":1}}}));
+            "params":{"name":"capture_health","arguments":{"sample_seconds":1}}}))?;
         let mut limit = None;
         for _ in 0..40 {
             line.clear();
@@ -1328,32 +1356,34 @@ fn the_capture_source_limit_reaches_the_table_it_governs() {
             if v["id"] != serde_json::json!(2) {
                 continue;
             }
-            let text = v["result"]["content"][0]["text"].as_str().expect("text");
-            let health: serde_json::Value = serde_json::from_str(text).expect("json");
+            let text = v["result"]["content"][0]["text"].as_str().ok_or("text")?;
+            let health: serde_json::Value = serde_json::from_str(text)?;
             limit = health["capture_sources"]["limit"].as_u64();
             break;
         }
         let _ = child.kill();
         let _ = child.wait();
-        limit.expect("capture_health reported the table's limit")
+        limit.ok_or_else(|| TestError::from("capture_health reported the table's limit"))
     }
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 1);
-    let pcap = pcap.to_str().unwrap();
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?;
     let base = ["--mcp", "-N", "-I", pcap, "--quiet"];
     let flag: Vec<&str> = base
         .iter()
         .copied()
         .chain(["--no-config", "--max-capture-sources", "3"])
         .collect();
-    assert_eq!(limit_reported(&flag), 3, "the flag's limit");
-    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 5\n");
+    assert_eq!(limit_reported(&flag)?, 3, "the flag's limit");
+    let cfg = write_config(&dir, "[limits]\nmax_capture_sources = 5\n")?;
     let config: Vec<&str> = base
         .iter()
         .copied()
-        .chain(["--config", cfg.to_str().unwrap()])
+        .chain(["--config", cfg.to_str().ok_or("non-UTF-8 path")?])
         .collect();
-    assert_eq!(limit_reported(&config), 5, "the config's limit");
+    assert_eq!(limit_reported(&config)?, 5, "the config's limit");
+
+    Ok(())
 }
 
 /// `mcp_max_rows`: eight dialogs asked for at once, against a cap of two.
@@ -1363,20 +1393,23 @@ fn the_capture_source_limit_reaches_the_table_it_governs() {
 /// satisfies: a limit that only exists in a resolver is not wired, and this
 /// tree already carries six thresholds accepted as parameters that no
 /// production caller supplies.
-fn probe_mcp_max_rows() -> (String, String) {
-    fn rows_with(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> usize {
+fn probe_mcp_max_rows() -> Result<(String, String), TestError> {
+    fn rows_with(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+    ) -> Result<usize, TestError> {
         use std::io::{BufRead, BufReader, Write};
         let mut args: Vec<String> = vec![
             "--mcp".into(),
             "-N".into(),
             "-I".into(),
-            pcap.to_str().unwrap().into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
             "--quiet".into(),
         ];
         match cfg {
             Some(c) => {
                 args.push("--config".into());
-                args.push(c.to_str().unwrap().into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
             }
             None => args.push("--no-config".into()),
         }
@@ -1385,29 +1418,29 @@ fn probe_mcp_max_rows() -> (String, String) {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn mcp server");
-        let mut stdin = child.stdin.take().expect("stdin");
-        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
 
-        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
-            writeln!(w, "{v}").expect("write");
-            w.flush().expect("flush");
-        };
+        let send =
+            |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+                writeln!(w, "{v}")?;
+                w.flush()
+            };
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
                       "clientInfo":{"name":"probe","version":"0"}}}),
-        );
+        )?;
         let mut line = String::new();
-        out.read_line(&mut line).expect("initialize reply");
+        out.read_line(&mut line)?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
-        );
+        )?;
         // Poll `list_dialogs` until the row count settles, rather than reading
         // it once. A file source is still being ingested when the server begins
         // answering, so the first query can land before every call is in the
@@ -1423,7 +1456,7 @@ fn probe_mcp_max_rows() -> (String, String) {
                 serde_json::json!({
                 "jsonrpc":"2.0","id":id,"method":"tools/call",
                 "params":{"name":"list_dialogs","arguments":{"limit":500}}}),
-            );
+            )
         };
         let read_rows = |out: &mut BufReader<std::process::ChildStdout>,
                          line: &mut String,
@@ -1450,7 +1483,7 @@ fn probe_mcp_max_rows() -> (String, String) {
         let mut rows = 0usize;
         let mut stable = 0u32;
         for id in 2i64..102 {
-            query(&mut stdin, id);
+            query(&mut stdin, id)?;
             let Some(n) = read_rows(&mut out, &mut line, id) else {
                 break;
             };
@@ -1466,16 +1499,16 @@ fn probe_mcp_max_rows() -> (String, String) {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let _ = terminate(&mut child);
-        rows
+        Ok(rows)
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg = write_config(&dir, "[limits]\nmcp_max_rows = 2\n");
-    (
-        format!("rows={}", rows_with(None, &pcap)),
-        format!("rows={}", rows_with(Some(&cfg), &pcap)),
-    )
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_max_rows = 2\n")?;
+    Ok((
+        format!("rows={}", rows_with(None, &pcap)?),
+        format!("rows={}", rows_with(Some(&cfg), &pcap)?),
+    ))
 }
 
 /// `mcp_max_findings`: what one accepted write says is left after it.
@@ -1487,21 +1520,24 @@ fn probe_mcp_max_rows() -> (String, String) {
 /// slowly and would not distinguish a cap of 1000 from no cap at all inside a
 /// test's patience.
 #[cfg(feature = "mcp")]
-fn probe_mcp_max_findings() -> (String, String) {
-    fn remaining_after_one_write(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> i64 {
+fn probe_mcp_max_findings() -> Result<(String, String), TestError> {
+    fn remaining_after_one_write(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+    ) -> Result<i64, TestError> {
         use std::io::{BufRead, BufReader, Write};
         let mut args: Vec<String> = vec![
             "--mcp".into(),
             "--mcp-allow-save-findings".into(),
             "-N".into(),
             "-I".into(),
-            pcap.to_str().unwrap().into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
             "--quiet".into(),
         ];
         match cfg {
             Some(c) => {
                 args.push("--config".into());
-                args.push(c.to_str().unwrap().into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
             }
             None => args.push("--no-config".into()),
         }
@@ -1510,36 +1546,36 @@ fn probe_mcp_max_findings() -> (String, String) {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn mcp server");
-        let mut stdin = child.stdin.take().expect("stdin");
-        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
 
-        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
-            writeln!(w, "{v}").expect("write");
-            w.flush().expect("flush");
-        };
+        let send =
+            |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+                writeln!(w, "{v}")?;
+                w.flush()
+            };
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
                       "clientInfo":{"name":"probe","version":"0"}}}),
-        );
+        )?;
         let mut line = String::new();
-        out.read_line(&mut line).expect("initialize reply");
+        out.read_line(&mut line)?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
-        );
+        )?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"save_findings",
                       "arguments":{"summary":"probing the findings budget"}}}),
-        );
+        )?;
 
         let mut remaining = -1i64;
         for _ in 0..40 {
@@ -1559,22 +1595,25 @@ fn probe_mcp_max_findings() -> (String, String) {
             break;
         }
         let _ = terminate(&mut child);
-        remaining
+        Ok(remaining)
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 2);
-    let cfg = write_config(&dir, "[limits]\nmcp_max_findings = 3\n");
-    (
-        format!("remaining={}", remaining_after_one_write(None, &pcap)),
-        format!("remaining={}", remaining_after_one_write(Some(&cfg), &pcap)),
-    )
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 2)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_max_findings = 3\n")?;
+    Ok((
+        format!("remaining={}", remaining_after_one_write(None, &pcap)?),
+        format!(
+            "remaining={}",
+            remaining_after_one_write(Some(&cfg), &pcap)?
+        ),
+    ))
 }
 
 /// Placeholder for builds without MCP; the gate never calls it.
 #[cfg(not(feature = "mcp"))]
-fn probe_mcp_max_findings() -> (String, String) {
-    unreachable!("the mcp_max_findings probe only runs in an `mcp` build")
+fn probe_mcp_max_findings() -> Result<(String, String), TestError> {
+    Err("the mcp_max_findings probe only runs in an `mcp` build".into())
 }
 
 /// `lint_max_per_rule`: forty repeats of one rule against a cap of five.
@@ -1582,24 +1621,24 @@ fn probe_mcp_max_findings() -> (String, String) {
 /// One dialog, forty `INVITE`s, none with a `Max-Forwards` header, so exactly
 /// one rule fires forty times. The cap is per rule per DIALOG, which is why
 /// the repeats share a Call-ID and differ only by `CSeq`.
-fn probe_lint_max_per_rule() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_lint_max_per_rule() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let frames: Vec<Vec<u8>> = (0..40u32)
         .map(|i| pcap_build::invite_without_max_forwards("lint-probe", &format!("l{i}"), i + 1))
         .collect();
     let pcap = dir.path().join("lint.pcap");
-    pcap_build::write_pcap_or_panic(&pcap, &frames);
+    pcap_build::write_pcap(&pcap, &frames)?;
     observe_stdout(
         &pcap,
         "[limits]\nlint_max_per_rule = 5\n",
         &["--lint"],
         |out| {
-            format!(
+            Ok(format!(
                 "findings={}",
                 out.lines()
                     .filter(|l| l.contains("MAX-FORWARDS-MISSING"))
                     .count()
-            )
+            ))
         },
     )
 }
@@ -1615,12 +1654,12 @@ fn probe_lint_max_per_rule() -> (String, String) {
 /// Observed on stderr rather than stdout: the drop is a warning, because an
 /// event whose command never ran is the thing an operator has to be told
 /// about.
-fn probe_exec_queue_depth() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg_dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&cfg_dir, "[limits]\nexec_queue_depth = 1\n");
-    let pcap = pcap.to_str().unwrap().to_string();
+fn probe_exec_queue_depth() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg_dir = tempfile::tempdir()?;
+    let cfg = write_config(&cfg_dir, "[limits]\nexec_queue_depth = 1\n")?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let count = |err: &str| {
         format!(
@@ -1636,7 +1675,7 @@ fn probe_exec_queue_depth() -> (String, String) {
         "--on-dialog-exec",
         "sleep 5",
         "--no-config",
-    ]);
+    ])?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
 
     let (_, limited, code) = run(&[
@@ -1646,11 +1685,11 @@ fn probe_exec_queue_depth() -> (String, String) {
         "--on-dialog-exec",
         "sleep 5",
         "--config",
-        cfg.to_str().unwrap(),
-    ]);
+        cfg.to_str().ok_or("non-UTF-8 path")?,
+    ])?;
     assert_eq!(code, 0, "capped run should exit cleanly");
 
-    (count(&plain), count(&limited))
+    Ok((count(&plain), count(&limited)))
 }
 
 /// `max_lost_sequences`: 1200 losses retained against a cap of 100.
@@ -1661,31 +1700,31 @@ fn probe_exec_queue_depth() -> (String, String) {
 /// A capture losing three of every ten packets over 4000 sequence numbers
 /// holds 400 bursts; the shipped 1000-loss retention sees 333 of them and a
 /// 100-loss retention sees 33.
-fn probe_max_lost_sequences() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_max_lost_sequences() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("lossy-call.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &pcap_build::sdp_call_with_lossy_rtp("loss-probe", 4000, 3),
-    );
+    )?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_lost_sequences = 100\n",
         &["--json-dialogs"],
-        |out| format!("bursts={}", first_stream_burst_count(out)),
+        |out| Ok(format!("bursts={}", first_stream_burst_count(out)?)),
     )
 }
 
 /// Bursts the first dialog's first stream reported, off `--json-dialogs`.
-fn first_stream_burst_count(stdout: &str) -> i64 {
+fn first_stream_burst_count(stdout: &str) -> Result<i64, TestError> {
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .expect("the probe capture must produce one dialog");
-    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
+        .ok_or("the probe capture must produce one dialog")?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
     v["streams"][0]["burst_gap"]["burst_count"]
         .as_i64()
-        .expect("the linked stream must carry a burst/gap analysis")
+        .ok_or_else(|| "the linked stream must carry a burst/gap analysis".into())
 }
 
 /// `quality_interval_secs`: thirty seconds of media, snapshotted at the
@@ -1695,48 +1734,48 @@ fn first_stream_burst_count(stdout: &str) -> i64 {
 /// setting. A period honored nowhere still parses, still validates and still
 /// prints nothing different — which is the whole class of defect this gate
 /// exists for.
-fn probe_quality_interval_secs() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_quality_interval_secs() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("half-minute.pcap");
     // 1500 packets at 20 ms is thirty seconds of wall clock, so the shipped
     // five-second period closes several intervals and a one-second period
     // closes several times more. A shorter capture would leave both at one
     // and the two observations would agree for the wrong reason.
-    pcap_build::write_pcap_at_or_panic(
+    pcap_build::write_pcap_at(
         &pcap,
         &pcap_build::sdp_call_with_lossy_rtp_at("interval-probe", 1500, 1, 20),
         1,
-    );
+    )?;
     observe_stdout(
         &pcap,
         "[limits]\nquality_interval_secs = 1\n",
         &["--json-dialogs"],
-        |out| format!("snapshots={}", first_stream_interval_count(out)),
+        |out| Ok(format!("snapshots={}", first_stream_interval_count(out)?)),
     )
 }
 
 /// Quality snapshots the first dialog's first stream published.
-fn first_stream_interval_count(stdout: &str) -> usize {
+fn first_stream_interval_count(stdout: &str) -> Result<usize, TestError> {
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .expect("the probe capture must produce one dialog");
-    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
-    v["streams"][0]["quality_intervals"]
+        .ok_or("the probe capture must produce one dialog")?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    Ok(v["streams"][0]["quality_intervals"]
         .as_array()
-        .expect("the linked stream must carry a quality trend")
-        .len()
+        .ok_or("the linked stream must carry a quality trend")?
+        .len())
 }
 
 /// `max_groups`: eight Call-IDs grouped against a cap of two.
-fn probe_max_groups() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
+fn probe_max_groups() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_groups = 2\n",
         &["--group-by", "call-id"],
-        |out| format!("groups={}", out.matches("── call-id ").count()),
+        |out| Ok(format!("groups={}", out.matches("── call-id ").count())),
     )
 }
 
@@ -1745,18 +1784,18 @@ fn probe_max_groups() -> (String, String) {
 /// Distinct from `max_groups` above: the group cap bounds how many groups
 /// exist, this one how much rendered output they hold between them, so the
 /// observation is the MESSAGE count under an unrestricted number of groups.
-fn probe_max_grouped_messages() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
+fn probe_max_grouped_messages() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_grouped_messages = 3\n",
         &["--group-by", "call-id"],
         |out| {
-            format!(
+            Ok(format!(
                 "messages={}",
                 out.lines().filter(|l| l.contains(" -> ")).count()
-            )
+            ))
         },
     )
 }
@@ -1768,38 +1807,38 @@ fn probe_max_grouped_messages() -> (String, String) {
 /// it is where the ceiling bites. It also runs BEFORE the ordinary config
 /// load, which is why this probe is worth having: the key reaching it is not
 /// something the other paths prove.
-fn probe_max_metadata_file_bytes() -> (String, String) {
-    fn strip_with(extra: &[&str]) -> String {
-        let dir = tempfile::tempdir().unwrap();
+fn probe_max_metadata_file_bytes() -> Result<(String, String), TestError> {
+    fn strip_with(extra: &[&str]) -> Result<String, TestError> {
+        let dir = tempfile::tempdir()?;
         let src = dir.path().join("secrets.pcapng");
         let dst = dir.path().join("stripped.pcapng");
-        pcap_build::write_pcapng_with_dsb_or_panic(
+        pcap_build::write_pcapng_with_dsb(
             &src,
             "CLIENT_RANDOM abcd 0123\n",
             &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
-        );
+        )?;
         let mut args: Vec<String> = vec![
             "-N".into(),
             "-I".into(),
-            src.to_str().unwrap().into(),
+            src.to_str().ok_or("non-UTF-8 path")?.into(),
             "--strip-secrets".into(),
-            dst.to_str().unwrap().into(),
+            dst.to_str().ok_or("non-UTF-8 path")?.into(),
             "--no-cli-print".into(),
         ];
         args.extend(extra.iter().map(|s| (*s).to_string()));
-        let (_out, _err, code) = run_owned(&args);
+        let (_out, _err, code) = run_owned(&args)?;
         if code == 0 && dst.exists() {
-            "stripped".into()
+            Ok("stripped".into())
         } else {
-            "refused".into()
+            Ok("refused".into())
         }
     }
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_metadata_file_bytes = 10\n");
-    (
-        strip_with(&["--no-config"]),
-        strip_with(&["--config", cfg.to_str().unwrap()]),
-    )
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmax_metadata_file_bytes = 10\n")?;
+    Ok((
+        strip_with(&["--no-config"])?,
+        strip_with(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// `max_gunzip_bytes`: a gzip-compressed pcapng against a 100-byte inflation
@@ -1810,45 +1849,41 @@ fn probe_max_metadata_file_bytes() -> (String, String) {
 /// by libpcap itself and this ceiling never sees it; what sipnab inflates is
 /// the pcapng it reads for embedded names and TLS secrets, and the copy
 /// `--strip-secrets` rewrites.
-fn probe_max_gunzip_bytes() -> (String, String) {
-    fn strip_gzipped_with(extra: &[&str]) -> String {
-        let dir = tempfile::tempdir().unwrap();
+fn probe_max_gunzip_bytes() -> Result<(String, String), TestError> {
+    fn strip_gzipped_with(extra: &[&str]) -> Result<String, TestError> {
+        let dir = tempfile::tempdir()?;
         let plain = dir.path().join("secrets.pcapng");
         let gz = dir.path().join("secrets.pcapng.gz");
         let dst = dir.path().join("stripped.pcapng");
-        pcap_build::write_pcapng_with_dsb_or_panic(
+        pcap_build::write_pcapng_with_dsb(
             &plain,
             "CLIENT_RANDOM abcd 0123\n",
             &pcap_build::udp_frame([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5060, b"OPTIONS\r\n\r\n"),
-        );
-        std::fs::write(
-            &gz,
-            pcap_build::gzip_stored(&std::fs::read(&plain).expect("read the plain pcapng")),
-        )
-        .expect("write the gzip member");
+        )?;
+        std::fs::write(&gz, pcap_build::gzip_stored(&std::fs::read(&plain)?))?;
         let mut args: Vec<String> = vec![
             "-N".into(),
             "-I".into(),
-            gz.to_str().unwrap().into(),
+            gz.to_str().ok_or("non-UTF-8 path")?.into(),
             "--strip-secrets".into(),
-            dst.to_str().unwrap().into(),
+            dst.to_str().ok_or("non-UTF-8 path")?.into(),
             "--no-cli-print".into(),
         ];
         args.extend(extra.iter().map(|s| (*s).to_string()));
-        let (_out, _err, code) = run_owned(&args);
+        let (_out, _err, code) = run_owned(&args)?;
         if code == 0 && dst.exists() {
-            "stripped".into()
+            Ok("stripped".into())
         } else {
-            "refused".into()
+            Ok("refused".into())
         }
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_gunzip_bytes = 100\n");
-    (
-        strip_gzipped_with(&["--no-config"]),
-        strip_gzipped_with(&["--config", cfg.to_str().unwrap()]),
-    )
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmax_gunzip_bytes = 100\n")?;
+    Ok((
+        strip_gzipped_with(&["--no-config"])?,
+        strip_gzipped_with(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// `max_tcp_buffer`: a 100 KiB SIP/TCP INVITE against the shipped 64 KiB.
@@ -1862,28 +1897,30 @@ fn probe_max_gunzip_bytes() -> (String, String) {
 /// answer alone still opens a dialog, so counting dialogs would report `1` in
 /// both runs and this probe would pass while the INVITE was being destroyed —
 /// which is exactly the shape of failure this registry exists to catch.
-fn probe_max_tcp_buffer() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_max_tcp_buffer() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("big-tcp-invite.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("big-tcp-probe", 100_000, false),
-    );
+    )?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_tcp_buffer = 262144\n",
         &["--json-dialogs"],
-        |out| format!("messages={}", first_dialog_msg_count(out)),
+        |out| Ok(format!("messages={}", first_dialog_msg_count(out)?)),
     )
 }
 
 /// Messages the first reported dialog carried, off `--json-dialogs`.
-fn first_dialog_msg_count(stdout: &str) -> i64 {
+fn first_dialog_msg_count(stdout: &str) -> Result<i64, TestError> {
     let Some(line) = stdout.lines().find(|l| l.starts_with('{')) else {
-        return 0;
+        return Ok(0);
     };
-    let v: serde_json::Value = serde_json::from_str(line).expect("valid dialog JSON");
-    v["msg_count"].as_i64().expect("a dialog carries msg_count")
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    v["msg_count"]
+        .as_i64()
+        .ok_or_else(|| "a dialog carries msg_count".into())
 }
 
 /// `mcp_max_body_bytes`: one `search_messages` snippet against a 64-byte
@@ -1893,20 +1930,23 @@ fn first_dialog_msg_count(stdout: &str) -> i64 {
 /// there is no other surface this key is visible on, and a cap that only
 /// exists in a resolver is not wired.
 #[cfg(feature = "mcp")]
-fn probe_mcp_max_body_bytes() -> (String, String) {
-    fn snippet_len(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> usize {
+fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
+    fn snippet_len(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+    ) -> Result<usize, TestError> {
         use std::io::{BufRead, BufReader, Write};
         let mut args: Vec<String> = vec![
             "--mcp".into(),
             "-N".into(),
             "-I".into(),
-            pcap.to_str().unwrap().into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
             "--quiet".into(),
         ];
         match cfg {
             Some(c) => {
                 args.push("--config".into());
-                args.push(c.to_str().unwrap().into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
             }
             None => args.push("--no-config".into()),
         }
@@ -1915,35 +1955,35 @@ fn probe_mcp_max_body_bytes() -> (String, String) {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn mcp server");
-        let mut stdin = child.stdin.take().expect("stdin");
-        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
 
-        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
-            writeln!(w, "{v}").expect("write");
-            w.flush().expect("flush");
-        };
+        let send =
+            |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+                writeln!(w, "{v}")?;
+                w.flush()
+            };
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
                       "clientInfo":{"name":"probe","version":"0"}}}),
-        );
+        )?;
         let mut line = String::new();
-        out.read_line(&mut line).expect("initialize reply");
+        out.read_line(&mut line)?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
-        );
+        )?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"search_messages","arguments":{"query":"INVITE","limit":1}}}),
-        );
+        )?;
 
         let mut len = 0usize;
         for _ in 0..40 {
@@ -1967,23 +2007,23 @@ fn probe_mcp_max_body_bytes() -> (String, String) {
             break;
         }
         let _ = terminate(&mut child);
-        len
+        Ok(len)
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 1);
-    let cfg = write_config(&dir, "[limits]\nmcp_max_body_bytes = 64\n");
-    (
-        format!("snippet={}", snippet_len(None, &pcap)),
-        format!("snippet={}", snippet_len(Some(&cfg), &pcap)),
-    )
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_max_body_bytes = 64\n")?;
+    Ok((
+        format!("snippet={}", snippet_len(None, &pcap)?),
+        format!("snippet={}", snippet_len(Some(&cfg), &pcap)?),
+    ))
 }
 
 /// Placeholder for a build without the `mcp` feature; the registry marks the
 /// probe disabled, so it is never called.
 #[cfg(not(feature = "mcp"))]
-fn probe_mcp_max_body_bytes() -> (String, String) {
-    (String::new(), String::new())
+fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
 }
 
 /// `mcp_max_wait_seconds`: an hour asked for against a one-second ceiling.
@@ -1996,20 +2036,23 @@ fn probe_mcp_max_body_bytes() -> (String, String) {
 /// computes it as `min(requested, ceiling)` and answers with it. Asking for an
 /// hour makes the ceiling the only thing that can decide the answer.
 #[cfg(feature = "mcp")]
-fn probe_mcp_max_wait_seconds() -> (String, String) {
-    fn effective_timeout(cfg: Option<&std::path::Path>, pcap: &std::path::Path) -> u64 {
+fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
+    fn effective_timeout(
+        cfg: Option<&std::path::Path>,
+        pcap: &std::path::Path,
+    ) -> Result<u64, TestError> {
         use std::io::{BufRead, BufReader, Write};
         let mut args: Vec<String> = vec![
             "--mcp".into(),
             "-N".into(),
             "-I".into(),
-            pcap.to_str().unwrap().into(),
+            pcap.to_str().ok_or("non-UTF-8 path")?.into(),
             "--quiet".into(),
         ];
         match cfg {
             Some(c) => {
                 args.push("--config".into());
-                args.push(c.to_str().unwrap().into());
+                args.push(c.to_str().ok_or("non-UTF-8 path")?.into());
             }
             None => args.push("--no-config".into()),
         }
@@ -2018,29 +2061,29 @@ fn probe_mcp_max_wait_seconds() -> (String, String) {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn mcp server");
-        let mut stdin = child.stdin.take().expect("stdin");
-        let mut out = BufReader::new(child.stdout.take().expect("stdout"));
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or("stdin")?;
+        let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
 
-        let send = |w: &mut std::process::ChildStdin, v: serde_json::Value| {
-            writeln!(w, "{v}").expect("write");
-            w.flush().expect("flush");
-        };
+        let send =
+            |w: &mut std::process::ChildStdin, v: serde_json::Value| -> std::io::Result<()> {
+                writeln!(w, "{v}")?;
+                w.flush()
+            };
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05","capabilities":{},
                       "clientInfo":{"name":"probe","version":"0"}}}),
-        );
+        )?;
         let mut line = String::new();
-        out.read_line(&mut line).expect("initialize reply");
+        out.read_line(&mut line)?;
         send(
             &mut stdin,
             serde_json::json!({
             "jsonrpc":"2.0","method":"notifications/initialized"}),
-        );
+        )?;
         // A filter every capture with one INVITE satisfies, so the wait ends on
         // its first look and the probe measures the ceiling rather than the
         // clock.
@@ -2050,7 +2093,7 @@ fn probe_mcp_max_wait_seconds() -> (String, String) {
             "jsonrpc":"2.0","id":2,"method":"tools/call",
             "params":{"name":"await_condition","arguments":{
                 "filter":"method == 'INVITE'","timeout_seconds":3600}}}),
-        );
+        )?;
 
         let mut seconds = 0u64;
         for _ in 0..40 {
@@ -2070,32 +2113,32 @@ fn probe_mcp_max_wait_seconds() -> (String, String) {
             break;
         }
         let _ = terminate(&mut child);
-        seconds
+        Ok(seconds)
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 1);
-    let cfg = write_config(&dir, "[limits]\nmcp_max_wait_seconds = 1\n");
-    (
-        format!("timeout={}", effective_timeout(None, &pcap)),
-        format!("timeout={}", effective_timeout(Some(&cfg), &pcap)),
-    )
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 1)?;
+    let cfg = write_config(&dir, "[limits]\nmcp_max_wait_seconds = 1\n")?;
+    Ok((
+        format!("timeout={}", effective_timeout(None, &pcap)?),
+        format!("timeout={}", effective_timeout(Some(&cfg), &pcap)?),
+    ))
 }
 
 /// Placeholder for a build without the `mcp` feature; the registry marks the
 /// probe disabled, so it is never called.
 #[cfg(not(feature = "mcp"))]
-fn probe_mcp_max_wait_seconds() -> (String, String) {
-    (String::new(), String::new())
+fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
+    Ok((String::new(), String::new()))
 }
 
 /// `max_streams`: a four-stream capture against a cap of one.
-fn probe_max_streams() -> (String, String) {
+fn probe_max_streams() -> Result<(String, String), TestError> {
     observe_stdout(
         &rtp_fixture(),
         "[limits]\nmax_streams = 1\n",
         &["--report"],
-        |out| format!("streams={}", stream_row_count(out)),
+        |out| Ok(format!("streams={}", stream_row_count(out))),
     )
 }
 
@@ -2103,11 +2146,11 @@ fn probe_max_streams() -> (String, String) {
 ///
 /// The observation is the eviction warning, which names the cap it enforced,
 /// so the capped run proves the configured value reached the reassembler.
-fn probe_max_reassembly() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_tcp_flow_pcap(&dir, 4);
-    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n");
-    let pcap = pcap.to_str().unwrap().to_string();
+fn probe_max_reassembly() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = write_tcp_flow_pcap(&dir, 4)?;
+    let cfg = write_config(&dir, "[limits]\nmax_reassembly = 1\n")?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
     let (_, plain, code) = run_owned(&[
         "-N".into(),
@@ -2115,7 +2158,7 @@ fn probe_max_reassembly() -> (String, String) {
         pcap.clone(),
         "--json".into(),
         "--no-config".into(),
-    ]);
+    ])?;
     assert_eq!(code, 0, "uncapped run should exit cleanly");
     let (_, limited, code) = run_owned(&[
         "-N".into(),
@@ -2123,8 +2166,8 @@ fn probe_max_reassembly() -> (String, String) {
         pcap,
         "--json".into(),
         "--config".into(),
-        cfg.to_str().unwrap().into(),
-    ]);
+        cfg.to_str().ok_or("non-UTF-8 path")?.into(),
+    ])?;
     assert_eq!(code, 0, "capped run should exit cleanly");
 
     let seen = |err: &str| {
@@ -2134,43 +2177,53 @@ fn probe_max_reassembly() -> (String, String) {
             "no-eviction".to_string()
         }
     };
-    (seen(&plain), seen(&limited))
+    Ok((seen(&plain), seen(&limited)))
 }
 
 /// `max_header_line`: a `From` line padded past a 256-byte cap.
-fn probe_max_header_line() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_max_header_line() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("long-header.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &[pcap_build::invite_with_long_from("long-header-1", 300)],
-    );
+    )?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_header_line = 256\n",
         &["--json"],
-        |out| format!("from-present={}", out.contains("\"from\":\"<sip:alice")),
+        |out| {
+            Ok(format!(
+                "from-present={}",
+                out.contains("\"from\":\"<sip:alice")
+            ))
+        },
     )
 }
 
 /// `max_headers_per_message`: `From` pushed past a five-header cap.
-fn probe_max_headers_per_message() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
+fn probe_max_headers_per_message() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("many-headers.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &[pcap_build::invite_with_padded_headers("many-headers-1", 40)],
-    );
+    )?;
     observe_stdout(
         &pcap,
         "[limits]\nmax_headers_per_message = 5\n",
         &["--json"],
-        |out| format!("from-present={}", out.contains("\"from\":\"<sip:alice")),
+        |out| {
+            Ok(format!(
+                "from-present={}",
+                out.contains("\"from\":\"<sip:alice")
+            ))
+        },
     )
 }
 
 /// `max_messages_per_dialog`: a seven-message call against a cap of two.
-fn probe_max_messages_per_dialog() -> (String, String) {
+fn probe_max_messages_per_dialog() -> Result<(String, String), TestError> {
     observe_stdout(
         &sip_call_fixture(),
         "[limits]\nmax_messages_per_dialog = 2\n",
@@ -2179,9 +2232,9 @@ fn probe_max_messages_per_dialog() -> (String, String) {
             let line = out
                 .lines()
                 .find(|l| l.starts_with('{'))
-                .expect("a dialog object");
-            let dialog: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
-            format!("msg_count={}", dialog["msg_count"])
+                .ok_or("a dialog object")?;
+            let dialog: serde_json::Value = serde_json::from_str(line)?;
+            Ok(format!("msg_count={}", dialog["msg_count"]))
         },
     )
 }
@@ -2191,14 +2244,14 @@ fn probe_max_messages_per_dialog() -> (String, String) {
 /// Named rather than positional: the fixture holds a second, late call, and a
 /// probe that read `dialogs[0]` would be measuring whichever one the store
 /// happened to emit first.
-fn idle_dialog_msg_count(out: &str) -> String {
+fn idle_dialog_msg_count(out: &str) -> Result<String, TestError> {
     let dialog = out
         .lines()
         .filter(|l| l.starts_with('{'))
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .find(|d| d["call_id"] == "idle-dialog@10.1.0.1")
-        .expect("the long dialog must appear in --json-dialogs output");
-    format!("msg_count={}", dialog["msg_count"])
+        .ok_or("the long dialog must appear in --json-dialogs output")?;
+    Ok(format!("msg_count={}", dialog["msg_count"]))
 }
 
 /// `keep_messages_per_idle_dialog`: how much of a quiet ladder survives.
@@ -2207,9 +2260,9 @@ fn idle_dialog_msg_count(out: &str) -> String {
 /// 600s default window — so this measures the KEEP limit alone, not the
 /// difference between compacting and not. The window probe below is the one
 /// that measures whether compaction runs at all.
-fn probe_keep_messages_per_idle_dialog() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700);
+fn probe_keep_messages_per_idle_dialog() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700)?;
     observe_stdout(
         &pcap,
         "[limits]\nkeep_messages_per_idle_dialog = 2\n",
@@ -2225,9 +2278,9 @@ fn probe_keep_messages_per_idle_dialog() -> (String, String) {
 /// capture, same sweep, opposite outcome — which is the operator-facing point
 /// of the key: a call parked on hold outlives the default window while still
 /// being the thing under investigation.
-fn probe_idle_compact_after_secs() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700);
+fn probe_idle_compact_after_secs() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (pcap, _) = write_idle_dialog_pcap(&dir, 5, 700)?;
     observe_stdout(
         &pcap,
         "[limits]\nidle_compact_after_secs = 3600\n",
@@ -2244,16 +2297,16 @@ fn probe_idle_compact_after_secs() -> (String, String) {
 /// which calls exactly the [`sipnab::StreamStore::set_max_audio_frames`] used
 /// here — as the only consumer. The observation is still behavioral: bytes
 /// of exported WAV, from the real fixture, decoder and writer.
-fn probe_max_audio_frames() -> (String, String) {
-    (
-        exported_wav_bytes(1500).to_string(),
-        exported_wav_bytes(4).to_string(),
-    )
+fn probe_max_audio_frames() -> Result<(String, String), TestError> {
+    Ok((
+        exported_wav_bytes(1500)?.to_string(),
+        exported_wav_bytes(4)?.to_string(),
+    ))
 }
 
 /// Bytes of WAV exported from the G.711 fixture with `max_audio_frames` set
 /// to `cap`, through the same store API `app::tui_mode` calls.
-fn exported_wav_bytes(cap: usize) -> u64 {
+fn exported_wav_bytes(cap: usize) -> Result<u64, TestError> {
     use sipnab::capture::packet::Packet;
     use sipnab::capture::parse::parse_packet;
     use sipnab::capture::pcap_reader::PcapReader;
@@ -2266,8 +2319,8 @@ fn exported_wav_bytes(cap: usize) -> u64 {
         .join("tests")
         .join("pcap-samples")
         .join("sip-rtp-g711.pcap");
-    let data = std::fs::read(&path).expect("read the G.711 fixture");
-    let reader = PcapReader::new(&data).expect("parse the G.711 fixture");
+    let data = std::fs::read(&path)?;
+    let reader = PcapReader::new(&data)?;
     let link_type = reader.link_type as i32;
 
     let mut store = StreamStore::new(1000);
@@ -2297,10 +2350,10 @@ fn exported_wav_bytes(cap: usize) -> u64 {
         !streams.is_empty(),
         "the G.711 fixture must yield buffered audio"
     );
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir()?;
     let wav = dir.path().join("cap.wav");
-    export_dialog_to_wav(&streams, &wav).expect("WAV export");
-    std::fs::metadata(&wav).expect("WAV written").len()
+    export_dialog_to_wav(&streams, &wav)?;
+    Ok(std::fs::metadata(&wav)?.len())
 }
 
 /// `api_max_rows`: eight dialogs asked for at once, against a ceiling of two.
@@ -2309,31 +2362,32 @@ fn exported_wav_bytes(cap: usize) -> u64 {
 /// wiring that moved only the echo would still hand a batch consumer a
 /// thousand rows, which is the defect this key exists to fix.
 #[cfg(feature = "api")]
-fn probe_api_max_rows() -> (String, String) {
-    fn rows_with(pcap: &std::path::Path, extra: &[&str]) -> String {
-        let srv = server::ApiServer::spawn_with_pcap_or_panic(pcap.to_str().unwrap(), extra);
-        let resp = srv.get_or_panic("/v1/dialogs?limit=1000");
+fn probe_api_max_rows() -> Result<(String, String), TestError> {
+    fn rows_with(pcap: &std::path::Path, extra: &[&str]) -> Result<String, TestError> {
+        let srv =
+            server::ApiServer::spawn_with_pcap(pcap.to_str().ok_or("non-UTF-8 path")?, extra)?;
+        let resp = srv.get("/v1/dialogs?limit=1000")?;
         let rows = resp
-            .json_or_panic()
+            .json()?
             .get("dialogs")
             .and_then(|d| d.as_array())
             .map_or(0, Vec::len);
-        format!("rows={rows}")
+        Ok(format!("rows={rows}"))
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let pcap = write_multi_call_pcap(&dir, 8);
-    let cfg = write_config(&dir, "[limits]\napi_max_rows = 2\n");
-    (
-        rows_with(&pcap, &["--no-config"]),
-        rows_with(&pcap, &["--config", cfg.to_str().unwrap()]),
-    )
+    let dir = tempfile::tempdir()?;
+    let pcap = write_multi_call_pcap(&dir, 8)?;
+    let cfg = write_config(&dir, "[limits]\napi_max_rows = 2\n")?;
+    Ok((
+        rows_with(&pcap, &["--no-config"])?,
+        rows_with(&pcap, &["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// Placeholder for builds without the REST API; the gate never calls it.
 #[cfg(not(feature = "api"))]
-fn probe_api_max_rows() -> (String, String) {
-    unreachable!("the api_max_rows probe only runs in an `api` build")
+fn probe_api_max_rows() -> Result<(String, String), TestError> {
+    Err("the api_max_rows probe only runs in an `api` build".into())
 }
 
 /// `api_rate_limit_per_peer`: a burst of forty requests from one address
@@ -2342,35 +2396,39 @@ fn probe_api_max_rows() -> (String, String) {
 /// The observation is whether any request was refused, so it does not depend
 /// on exactly where the window boundary falls inside the burst.
 #[cfg(feature = "api")]
-fn probe_api_rate_limit_per_peer() -> (String, String) {
-    fn burst_verdict(extra: &[&str]) -> String {
-        let srv = server::ApiServer::spawn_or_panic(extra);
+fn probe_api_rate_limit_per_peer() -> Result<(String, String), TestError> {
+    fn burst_verdict(extra: &[&str]) -> Result<String, TestError> {
+        let srv = server::ApiServer::spawn(extra)?;
         let started = std::time::Instant::now();
-        let refused = (0..40)
+        let mut refused = 0usize;
+        for _ in 0..40 {
             // 503, not 429: the limiter runs BEFORE auth, so a refusal here
             // says nothing about the credential — see `guard_scoped`.
-            .filter(|_| srv.get_or_panic("/v1/stats").status == 503)
-            .count();
+            if srv.get("/v1/stats")?.status == 503 {
+                refused += 1;
+            }
+        }
+
         assert_premise_inside_window("api", started.elapsed(), refused);
         if refused > 0 {
-            "burst-refused".into()
+            Ok("burst-refused".into())
         } else {
-            "burst-served".into()
+            Ok("burst-served".into())
         }
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\napi_rate_limit_per_peer = 3\n");
-    (
-        burst_verdict(&["--no-config"]),
-        burst_verdict(&["--config", cfg.to_str().unwrap()]),
-    )
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\napi_rate_limit_per_peer = 3\n")?;
+    Ok((
+        burst_verdict(&["--no-config"])?,
+        burst_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// Placeholder for builds without the REST API; the gate never calls it.
 #[cfg(not(feature = "api"))]
-fn probe_api_rate_limit_per_peer() -> (String, String) {
-    unreachable!("the api_rate_limit_per_peer probe only runs in an `api` build")
+fn probe_api_rate_limit_per_peer() -> Result<(String, String), TestError> {
+    Err("the api_rate_limit_per_peer probe only runs in an `api` build".into())
 }
 
 /// `max_tracked_peers`: three HEP sources against a two-peer tracking map.
@@ -2379,19 +2437,19 @@ fn probe_api_rate_limit_per_peer() -> (String, String) {
 /// peer that is inside every rate limit, so the observation is the warning that
 /// says so — the only surface on which the condition is visible at all.
 #[cfg(all(target_os = "linux", feature = "hep"))]
-fn probe_max_tracked_peers() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmax_tracked_peers = 2\n");
-    (
-        hep_three_peer_verdict(&["--no-config"]),
-        hep_three_peer_verdict(&["--config", cfg.to_str().unwrap()]),
-    )
+fn probe_max_tracked_peers() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmax_tracked_peers = 2\n")?;
+    Ok((
+        hep_three_peer_verdict(&["--no-config"])?,
+        hep_three_peer_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// Placeholder for builds the probe cannot run on; the gate never calls it.
 #[cfg(not(all(target_os = "linux", feature = "hep")))]
-fn probe_max_tracked_peers() -> (String, String) {
-    unreachable!("the max_tracked_peers probe only runs on Linux `hep` builds")
+fn probe_max_tracked_peers() -> Result<(String, String), TestError> {
+    Err("the max_tracked_peers probe only runs on Linux `hep` builds".into())
 }
 
 /// `reassembly_ttl_secs`: four half-sent SIP/TCP flows left to go quiet.
@@ -2416,23 +2474,21 @@ fn probe_max_tracked_peers() -> (String, String) {
 /// itself is wired on every build; it is the RESOLVER half this probe walks
 /// that needs the feature.
 #[cfg(feature = "native")]
-fn probe_reassembly_ttl_secs() -> (String, String) {
+fn probe_reassembly_ttl_secs() -> Result<(String, String), TestError> {
     use sipnab::capture::packet::Packet;
     use sipnab::capture::reassembly::{reassembly_timeouts, set_reassembly_ttl_secs};
 
-    fn verdict(toml: Option<&str>) -> String {
+    fn verdict(toml: Option<&str>) -> Result<String, TestError> {
         use clap::Parser;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let config = match toml {
             Some(t) => {
-                let path = write_config(&dir, t);
-                sipnab::config::Config::load(path.to_str(), false)
-                    .expect("the sample config loads")
-                    .config
+                let path = write_config(&dir, t)?;
+                sipnab::config::Config::load(path.to_str(), false)?.config
             }
             None => sipnab::config::Config::default(),
         };
-        let cli = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+        let cli = sipnab::cli::Cli::try_parse_from(["sipnab"])?;
         set_reassembly_ttl_secs(cli.reassembly_ttl_secs(&config));
 
         let mut processor = sipnab::capture::PacketProcessor::with_max_sessions(100);
@@ -2451,19 +2507,19 @@ fn probe_reassembly_ttl_secs() -> (String, String) {
             "half-sent-flows-held"
         };
         set_reassembly_ttl_secs(sipnab::capture::reassembly::DEFAULT_TTL.as_secs().max(1));
-        verdict.to_string()
+        Ok(verdict.to_string())
     }
 
-    (
-        verdict(None),
-        verdict(Some("[limits]\nreassembly_ttl_secs = 1\n")),
-    )
+    Ok((
+        verdict(None)?,
+        verdict(Some("[limits]\nreassembly_ttl_secs = 1\n"))?,
+    ))
 }
 
 /// Placeholder for a build with no command line; the gate never calls it.
 #[cfg(not(feature = "native"))]
-fn probe_reassembly_ttl_secs() -> (String, String) {
-    unreachable!("the reassembly_ttl_secs probe only runs in a `native` build")
+fn probe_reassembly_ttl_secs() -> Result<(String, String), TestError> {
+    Err("the reassembly_ttl_secs probe only runs in a `native` build".into())
 }
 
 /// `metrics_max_conn`: one connection parked against a one-slot gate.
@@ -2479,7 +2535,7 @@ fn probe_reassembly_ttl_secs() -> (String, String) {
 /// `tests/metrics_headless_test.rs` records: a headless FILE run lives about
 /// 20 ms, so any connect races a process that has already exited.
 #[cfg(feature = "metrics")]
-fn probe_metrics_max_conn() -> (String, String) {
+fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
     use std::io::{BufRead, BufReader, Read, Write};
 
     /// What `handle_metrics_connection` gives a client to send its request
@@ -2487,15 +2543,14 @@ fn probe_metrics_max_conn() -> (String, String) {
     /// Mirrors the `set_read_timeout` in `src/output/prometheus_server.rs`.
     const METRICS_HANDLER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-    fn second_scrape_verdict(extra: &[&str]) -> String {
+    fn second_scrape_verdict(extra: &[&str]) -> Result<String, TestError> {
         // Both listeners on ports the kernel chose, never on a number picked
         // here and released first (see `support/headless_metrics.rs`).
         let run = headless_metrics::HeadlessMetrics::spawn(
             std::path::Path::new(env!("CARGO_BIN_EXE_sipnab")),
             extra,
             std::time::Duration::from_secs(30),
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
+        )?;
         let addr = run.addr.clone();
         let mut child = run.child;
 
@@ -2543,7 +2598,7 @@ fn probe_metrics_max_conn() -> (String, String) {
                  premise this probe rests on was never established. That is a \
                  statement about this machine, not about the key."
             );
-            let s = std::net::TcpStream::connect(&addr).expect("park a connection");
+            let s = std::net::TcpStream::connect(&addr)?;
             let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(250)));
             let mut buf = [0u8; 32];
             match (&s).read(&mut buf) {
@@ -2601,38 +2656,38 @@ fn probe_metrics_max_conn() -> (String, String) {
 
         drop(parked);
         let _ = terminate(&mut child);
-        status
+        Ok(status)
     }
 
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nmetrics_max_conn = 1\n");
-    (
-        second_scrape_verdict(&["--no-config"]),
-        second_scrape_verdict(&["--config", cfg.to_str().unwrap()]),
-    )
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nmetrics_max_conn = 1\n")?;
+    Ok((
+        second_scrape_verdict(&["--no-config"])?,
+        second_scrape_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// Placeholder for builds without the metrics server; the gate never calls it.
 #[cfg(not(feature = "metrics"))]
-fn probe_metrics_max_conn() -> (String, String) {
-    unreachable!("the metrics_max_conn probe only runs in a `metrics` build")
+fn probe_metrics_max_conn() -> Result<(String, String), TestError> {
+    Err("the metrics_max_conn probe only runs in a `metrics` build".into())
 }
 
 /// `hep_rate_limit`: a burst well above a one-packet-per-second ceiling.
 #[cfg(all(unix, feature = "hep"))]
-fn probe_hep_rate_limit() -> (String, String) {
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = write_config(&dir, "[limits]\nhep_rate_limit = 1\n");
-    (
-        hep_burst_verdict(&["--no-config"]),
-        hep_burst_verdict(&["--config", cfg.to_str().unwrap()]),
-    )
+fn probe_hep_rate_limit() -> Result<(String, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = write_config(&dir, "[limits]\nhep_rate_limit = 1\n")?;
+    Ok((
+        hep_burst_verdict(&["--no-config"])?,
+        hep_burst_verdict(&["--config", cfg.to_str().ok_or("non-UTF-8 path")?])?,
+    ))
 }
 
 /// Placeholder for builds without the HEP subsystem; the gate never calls it.
 #[cfg(not(all(unix, feature = "hep")))]
-fn probe_hep_rate_limit() -> (String, String) {
-    unreachable!("the hep_rate_limit probe only runs in a `hep` build")
+fn probe_hep_rate_limit() -> Result<(String, String), TestError> {
+    Err("the hep_rate_limit probe only runs in a `hep` build".into())
 }
 
 /// A spawned `--hep-listen` process, its bound port, and its stderr as a
@@ -2669,7 +2724,7 @@ impl Drop for HepProbeListener {
 impl HepProbeListener {
     /// Spawn `sipnab -N --hep-listen 127.0.0.1:0 --json --quiet` with
     /// `extra_args`, and block until it reports the port it bound.
-    fn spawn(extra_args: &[&str]) -> Self {
+    fn spawn(extra_args: &[&str]) -> Result<Self, TestError> {
         use std::io::{BufRead, BufReader};
         use std::process::{Command, Stdio};
         use std::sync::mpsc;
@@ -2684,8 +2739,8 @@ impl HepProbeListener {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().expect("spawn sipnab --hep-listen");
-        let stderr = child.stderr.take().expect("stderr pipe");
+        let mut child = cmd.spawn()?;
+        let stderr = child.stderr.take().ok_or("stderr pipe")?;
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -2713,7 +2768,10 @@ impl HepProbeListener {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Ok(Some(status)) = child.try_wait() {
                         let _ = child.wait();
-                        panic!("sipnab --hep-listen exited early: {status}\n{drained:#?}");
+                        return Err(format!(
+                            "sipnab --hep-listen exited early: {status}\n{drained:#?}"
+                        )
+                        .into());
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -2722,9 +2780,12 @@ impl HepProbeListener {
         let Some(port) = port else {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("the listener must report its bound port within 20s: {drained:#?}");
+            return Err(format!(
+                "the listener must report its bound port within 20s: {drained:#?}"
+            )
+            .into());
         };
-        Self { child, lines, port }
+        Ok(Self { child, lines, port })
     }
 
     /// Wait up to ten seconds for a stderr line containing `needle`.
@@ -2753,13 +2814,13 @@ impl HepProbeListener {
 /// UDP source is the peer the rate limiter keys on — which is the whole point
 /// of the peer probes.
 #[cfg(all(unix, feature = "hep"))]
-fn send_hep_invite(src: &str, port: u16, tag: &str) {
+fn send_hep_invite(src: &str, port: u16, tag: &str) -> Result<(), TestError> {
     use std::net::UdpSocket;
 
-    let socket = UdpSocket::bind((src, 0)).expect("bind a loopback sender");
+    let socket = UdpSocket::bind((src, 0))?;
     let endpoint = sipnab::capture::hep::HepEndpoint {
-        src_addr: src.parse().expect("a literal source address"),
-        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_addr: src.parse()?,
+        dst_addr: "127.0.0.1".parse()?,
         src_port: 5060,
         dst_port: 5062,
         transport: sipnab::net::TransportProto::Udp,
@@ -2781,29 +2842,28 @@ fn send_hep_invite(src: &str, port: u16, tag: &str) {
         None,
         invite.as_bytes(),
     );
-    socket
-        .send_to(&datagram, ("127.0.0.1", port))
-        .expect("send HEP");
+    socket.send_to(&datagram, ("127.0.0.1", port))?;
+    Ok(())
 }
 
 /// Fire 40 HEP3 INVITEs from one source at a freshly spawned listener and
 /// report whether it logged a rate-limit drop.
 #[cfg(all(unix, feature = "hep"))]
-fn hep_burst_verdict(extra_args: &[&str]) -> String {
+fn hep_burst_verdict(extra_args: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["--hep-allow", "127.0.0.1/32"];
     args.extend_from_slice(extra_args);
-    let listener = HepProbeListener::spawn(&args);
+    let listener = HepProbeListener::spawn(&args)?;
     let started = std::time::Instant::now();
     for _ in 0..40 {
-        send_hep_invite("127.0.0.1", listener.port, "hep1");
+        send_hep_invite("127.0.0.1", listener.port, "hep1")?;
     }
     let sent_in = started.elapsed();
     let dropped = listener.saw("rate limit exceeded");
     assert_premise_inside_window("hep", sent_in, usize::from(dropped));
     if dropped {
-        "burst-dropped".into()
+        Ok("burst-dropped".into())
     } else {
-        "burst-accepted".into()
+        Ok("burst-accepted".into())
     }
 }
 
@@ -2816,7 +2876,7 @@ fn hep_burst_verdict(extra_args: &[&str]) -> String {
 /// sources available without touching interface configuration — and is why the
 /// probe registry marks this one Linux-only.
 #[cfg(all(target_os = "linux", feature = "hep"))]
-fn hep_three_peer_verdict(extra_args: &[&str]) -> String {
+fn hep_three_peer_verdict(extra_args: &[&str]) -> Result<String, TestError> {
     let mut args = vec![
         "--hep-allow",
         "127.0.0.0/8",
@@ -2827,16 +2887,16 @@ fn hep_three_peer_verdict(extra_args: &[&str]) -> String {
         "1000",
     ];
     args.extend_from_slice(extra_args);
-    let listener = HepProbeListener::spawn(&args);
+    let listener = HepProbeListener::spawn(&args)?;
     // One packet from each of three sources, inside one window: the map is
     // what refuses the third, not any rate.
     for src in ["127.0.0.1", "127.0.0.2", "127.0.0.3"] {
-        send_hep_invite(src, listener.port, "peers");
+        send_hep_invite(src, listener.port, "peers")?;
     }
     if listener.saw("peer tracking is full") {
-        "tracking-full".into()
+        Ok("tracking-full".into())
     } else {
-        "tracking-has-room".into()
+        Ok("tracking-has-room".into())
     }
 }
 
@@ -2850,8 +2910,8 @@ fn hep_three_peer_verdict(extra_args: &[&str]) -> String {
 /// binary, which is precisely what `dialog_limit`, `max_streams`,
 /// `max_reassembly` and `hep_rate_limit` could not do.
 #[test]
-fn every_documented_limits_key_changes_observable_behavior() {
-    let mut expected = limits_struct_keys();
+fn every_documented_limits_key_changes_observable_behavior() -> Result<(), TestError> {
+    let mut expected = limits_struct_keys()?;
     expected.sort();
     assert!(
         !expected.is_empty(),
@@ -2864,7 +2924,7 @@ fn every_documented_limits_key_changes_observable_behavior() {
     for key in &expected {
         toml.push_str(&format!("{key} = 1\n"));
     }
-    let unknown = sipnab::config::Config::unknown_keys(&toml).expect("the sample parses");
+    let unknown = sipnab::config::Config::unknown_keys(&toml)?;
     assert!(
         unknown.is_empty(),
         "the loader does not know these [limits] keys: {unknown:?}"
@@ -2894,27 +2954,36 @@ fn every_documented_limits_key_changes_observable_behavior() {
     //    The probes that only wait out a window run on scoped threads while
     //    the rest run here in order; each still makes exactly the
     //    observations it made alone. A panic inside one is re-raised here,
-    //    with its own message, rather than lost with its thread.
+    //    with its own message, rather than lost with its thread. A probe's
+    //    error crosses its thread as text, because `TestError` is not `Send`.
     let enabled: Vec<&LimitProbe> = probes.iter().filter(|p| p.enabled).collect();
-    let observed: Vec<(&LimitProbe, (String, String))> = std::thread::scope(|scope| {
-        let waiting: Vec<_> = enabled
-            .iter()
-            .filter(|p| p.waits_out_a_window)
-            .map(|p| (*p, scope.spawn(p.observe)))
-            .collect();
-        let mut done: Vec<_> = enabled
-            .iter()
-            .filter(|p| !p.waits_out_a_window)
-            .map(|p| (*p, (p.observe)()))
-            .collect();
-        for (probe, handle) in waiting {
-            let result = handle
-                .join()
-                .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
-            done.push((probe, result));
-        }
-        done
-    });
+
+    let observed: Vec<(&LimitProbe, (String, String))> =
+        std::thread::scope(|scope| -> Result<_, TestError> {
+            let waiting: Vec<_> = enabled
+                .iter()
+                .filter(|p| p.waits_out_a_window)
+                .map(|p| {
+                    let observe = p.observe;
+                    (
+                        *p,
+                        scope.spawn(move || observe().map_err(|e| e.to_string())),
+                    )
+                })
+                .collect();
+            let mut done = Vec::new();
+            for p in enabled.iter().filter(|p| !p.waits_out_a_window) {
+                done.push((*p, (p.observe)()?));
+            }
+            for (probe, handle) in waiting {
+                let result = handle
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))?;
+                done.push((probe, result));
+            }
+            Ok(done)
+        })?;
+
     assert_eq!(
         observed.len(),
         enabled.len(),
@@ -2939,6 +3008,7 @@ fn every_documented_limits_key_changes_observable_behavior() {
             probe.key
         );
     }
+    Ok(())
 }
 
 // ── Keys outside [limits] that were silently ignored ────────────────────
@@ -2955,42 +3025,42 @@ fn every_documented_limits_key_changes_observable_behavior() {
 /// some — the difference IS the wiring.
 #[test]
 #[cfg(feature = "native")]
-fn display_color_reaches_the_output_and_the_flag_still_wins() {
-    fn escapes(args: &[&str]) -> usize {
+fn display_color_reaches_the_output_and_the_flag_still_wins() -> Result<(), TestError> {
+    fn escapes(args: &[&str]) -> Result<usize, TestError> {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(["-N", "-I", "tests/pcap-samples/sip-rtp-g711.pcap"])
             .args(args)
-            .output()
-            .expect("run sipnab");
-        String::from_utf8_lossy(&out.stdout)
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter(|l| l.contains('\u{1b}'))
-            .count()
+            .count())
     }
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let always = dir.path().join("always.toml");
-    std::fs::write(&always, "[display]\ncolor = \"always\"\n").expect("write");
-    let always = always.to_str().expect("utf8");
+    std::fs::write(&always, "[display]\ncolor = \"always\"\n")?;
+    let always = always.to_str().ok_or("utf8")?;
 
     assert_eq!(
-        escapes(&["--no-config"]),
+        escapes(&["--no-config"])?,
         0,
         "piped output with no color setting must carry no escapes"
     );
     assert!(
-        escapes(&["--no-config", "--color", "always"]) > 0,
+        escapes(&["--no-config", "--color", "always"])? > 0,
         "--color always must color piped output, or this test cannot detect color at all"
     );
     assert!(
-        escapes(&["--config", always]) > 0,
+        escapes(&["--config", always])? > 0,
         "[display] color must reach the output; it was parsed and ignored before"
     );
     assert_eq!(
-        escapes(&["--config", always, "--color", "never"]),
+        escapes(&["--config", always, "--color", "never"])?,
         0,
         "--color must beat the config key"
     );
+    Ok(())
 }
 
 /// `[security] kill_response` reaches the bytes put on the wire.
@@ -3000,7 +3070,7 @@ fn display_color_reaches_the_output_and_the_flag_still_wins() {
 /// prove the value was computed, not that it is what a scanner receives.
 #[test]
 #[cfg(feature = "native")]
-fn security_kill_response_reaches_the_wire_bytes() {
+fn security_kill_response_reaches_the_wire_bytes() -> Result<(), TestError> {
     use clap::Parser;
     let raw = b"OPTIONS sip:x@example.com SIP/2.0\r\n\
                 Via: SIP/2.0/UDP 10.0.0.9:5060;branch=z9hG4bKscan\r\n\
@@ -3017,16 +3087,15 @@ fn security_kill_response_reaches_the_wire_bytes() {
         5060,
         5060,
         sipnab::net::TransportProto::Udp,
-    )
-    .expect("parse OPTIONS");
+    )?;
 
     let mut cfg = sipnab::config::Config::default();
     cfg.security.kill_response = Some(486);
-    let cli = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+    let cli = sipnab::cli::Cli::try_parse_from(["sipnab"])?;
 
     let bytes =
         sipnab::security::scanner_kill::build_scanner_response(&msg, cli.kill_response_code(&cfg))
-            .expect("response built");
+            .ok_or("response built")?;
     let text = String::from_utf8_lossy(&bytes);
     assert!(
         text.starts_with("SIP/2.0 486"),
@@ -3035,15 +3104,15 @@ fn security_kill_response_reaches_the_wire_bytes() {
     );
 
     // And the flag still wins over the key.
-    let cli =
-        sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "603"]).expect("parse");
+    let cli = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "603"])?;
     let bytes =
         sipnab::security::scanner_kill::build_scanner_response(&msg, cli.kill_response_code(&cfg))
-            .expect("response built");
+            .ok_or("response built")?;
     assert!(
         String::from_utf8_lossy(&bytes).starts_with("SIP/2.0 603"),
         "--kill-response must beat the config key on the wire"
     );
+    Ok(())
 }
 
 /// A config `kill_response` outside 100-699 is refused, as the flag is.
@@ -3053,13 +3122,14 @@ fn security_kill_response_reaches_the_wire_bytes() {
 /// then written onto the network as a malformed status line.
 #[test]
 #[cfg(feature = "native")]
-fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
+fn an_out_of_range_kill_response_is_refused_from_the_config_file() -> Result<(), TestError> {
     let mut cfg = sipnab::config::SecurityConfig::default();
     for bad in [0u16, 99, 700, 9999] {
         cfg.kill_response = Some(bad);
         let err = cfg
             .validate()
-            .expect_err("out-of-range kill_response must be refused");
+            .err()
+            .ok_or("out-of-range kill_response must be refused")?;
         let msg = err.to_string();
         assert!(
             msg.contains("kill_response") && msg.contains(&bad.to_string()),
@@ -3070,6 +3140,7 @@ fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
         cfg.kill_response = Some(ok);
         assert!(cfg.validate().is_ok(), "{ok} is a valid SIP status");
     }
+    Ok(())
 }
 
 /// `max_tcp_buffer` also raises the ceiling on a HELD PARTIAL, so a peer that
@@ -3085,19 +3156,19 @@ fn an_out_of_range_kill_response_is_refused_from_the_config_file() {
 /// nothing.
 #[test]
 #[cfg(feature = "native")]
-fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
-    let dir = tempfile::tempdir().unwrap();
+fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("pushed-big-tcp-invite.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("pushed-probe", 100_000, true),
-    );
+    )?;
     let (shipped, raised) = observe_stdout(
         &pcap,
         "[limits]\nmax_tcp_buffer = 262144\n",
         &["--json-dialogs"],
-        |out| format!("messages={}", first_dialog_msg_count(out)),
-    );
+        |out| Ok(format!("messages={}", first_dialog_msg_count(out)?)),
+    )?;
     assert_ne!(
         shipped, raised,
         "a message pushed segment by segment must be bounded by the same key: \
@@ -3105,6 +3176,7 @@ fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
          256 KiB. Equal figures mean the held-partial ceiling is still a \
          separate 64 KiB constant, so the key fixes half the trunks it claims to"
     );
+    Ok(())
 }
 
 /// `[capture] ws_ports` reaches the WebSocket unwrap, `--ws-portrange` beats
@@ -3119,11 +3191,11 @@ fn the_tcp_buffer_ceiling_also_bounds_a_message_held_across_pushes() {
 /// tally is asserted here alongside the analysis it replaces.
 #[test]
 #[cfg(feature = "native")]
-fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
-    let dir = tempfile::tempdir().unwrap();
+fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("wss-8081.pcap");
-    pcap_build::write_pcap_or_panic(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081));
-    let pcap = pcap.to_str().unwrap().to_string();
+    pcap_build::write_pcap(&pcap, &pcap_build::ws_sip_call("wss-probe", 8081))?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
     // `--portrange` is widened in every run: the WebSocket set and the
     // signaling port range are different gates, and leaving the default
     // 5060-5061 in place would let the second one claim the traffic the first
@@ -3142,7 +3214,7 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
 
     let mut shipped = base.clone();
     shipped.push("--no-config".into());
-    let (out, err, code) = run_owned(&shipped);
+    let (out, err, code) = run_owned(&shipped)?;
     assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
     assert_eq!(
         dialog_count(&out),
@@ -3156,11 +3228,11 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
          told nothing whatsoever about their entire WebRTC signaling leg:\n{err}"
     );
 
-    let cfg = write_config(&dir, "[capture]\nws_ports = \"8081-8081\"\n");
+    let cfg = write_config(&dir, "[capture]\nws_ports = \"8081-8081\"\n")?;
     let mut declared = base.clone();
     declared.push("--config".into());
-    declared.push(cfg.to_str().unwrap().into());
-    let (out, err, code) = run_owned(&declared);
+    declared.push(cfg.to_str().ok_or("non-UTF-8 path")?.into());
+    let (out, err, code) = run_owned(&declared)?;
     assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
     assert_eq!(
         dialog_count(&out),
@@ -3178,8 +3250,8 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
     overridden.push("--ws-portrange".into());
     overridden.push("9443-9443".into());
     overridden.push("--config".into());
-    overridden.push(cfg.to_str().unwrap().into());
-    let (out, err, code) = run_owned(&overridden);
+    overridden.push(cfg.to_str().ok_or("non-UTF-8 path")?.into());
+    let (out, err, code) = run_owned(&overridden)?;
     assert_eq!(code, 0, "the run must exit cleanly:\n{err}");
     assert_eq!(
         dialog_count(&out),
@@ -3190,6 +3262,7 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
         err.contains("SIP-over-WebSocket") && err.contains("8081"),
         "and the traffic the narrower range excluded must be reported:\n{err}"
     );
+    Ok(())
 }
 
 // ── [names] dns_cache_entries ──────────────────────────────────────────
@@ -3207,20 +3280,20 @@ fn ws_ports_reaches_the_unwrap_and_the_skip_is_reported() {
 /// which is where the eviction is reachable.
 #[test]
 #[cfg(feature = "native")]
-fn names_dns_cache_entries_reaches_the_resolver() {
+fn names_dns_cache_entries_reaches_the_resolver() -> Result<(), TestError> {
     use clap::Parser;
 
-    fn built_with(args: &[&str], cfg: &sipnab::config::Config) -> usize {
-        let cli = sipnab::cli::Cli::try_parse_from(args).expect("parse");
+    fn built_with(args: &[&str], cfg: &sipnab::config::Config) -> Result<usize, TestError> {
+        let cli = sipnab::cli::Cli::try_parse_from(args)?;
         // Reverse DNS stays off in every case here, so no lookup leaves the
         // box: the cap is a property of the resolver, not of the worker.
         let (resolver, _mode) = sipnab::app::build_resolver(&cli, cfg);
-        resolver.dns_cache_capacity()
+        Ok(resolver.dns_cache_capacity())
     }
 
     let shipped = sipnab::names::MAX_DNS_CACHE_ENTRIES;
     assert_eq!(
-        built_with(&["sipnab"], &sipnab::config::Config::default()),
+        built_with(&["sipnab"], &sipnab::config::Config::default())?,
         shipped,
         "with nothing set the run must build the cache at its own constant"
     );
@@ -3229,15 +3302,16 @@ fn names_dns_cache_entries_reaches_the_resolver() {
     tuned.names.dns_cache_entries = Some(9);
     assert_ne!(9, shipped, "the case value must differ from the default");
     assert_eq!(
-        built_with(&["sipnab"], &tuned),
+        built_with(&["sipnab"], &tuned)?,
         9,
         "[names] dns_cache_entries must reach the resolver the run builds"
     );
     assert_eq!(
-        built_with(&["sipnab", "--dns-cache-entries", "77"], &tuned),
+        built_with(&["sipnab", "--dns-cache-entries", "77"], &tuned)?,
         77,
         "--dns-cache-entries must outrank the key it shadows"
     );
+    Ok(())
 }
 
 // ── [sip] active_idle_window_secs ──────────────────────────────────────
@@ -3251,12 +3325,12 @@ fn names_dns_cache_entries_reaches_the_resolver() {
 #[cfg(feature = "native")]
 fn answered_call_store(
     t0: chrono::DateTime<chrono::Utc>,
-) -> sipnab::sip::dialog_store::DialogStore {
+) -> Result<sipnab::sip::dialog_store::DialogStore, TestError> {
     use sipnab::net::TransportProto;
     use sipnab::sip::parse_sip;
     let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-    let msg = |raw: &str, ts| {
-        parse_sip(
+    let msg = |raw: &str, ts| -> Result<_, TestError> {
+        Ok(parse_sip(
             raw.as_bytes(),
             ts,
             loopback,
@@ -3264,8 +3338,7 @@ fn answered_call_store(
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("the fixture message parses")
+        )?)
     };
     let mut store = sipnab::sip::dialog_store::DialogStore::new(100, false);
     store.process_message(msg(
@@ -3277,7 +3350,7 @@ fn answered_call_store(
          CSeq: 1 INVITE\r\n\
          Content-Length: 0\r\n\r\n",
         t0,
-    ));
+    )?);
     store.process_message(msg(
         "SIP/2.0 200 OK\r\n\
          Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKidle\r\n\
@@ -3287,8 +3360,8 @@ fn answered_call_store(
          CSeq: 1 INVITE\r\n\
          Content-Length: 0\r\n\r\n",
         t0 + chrono::TimeDelta::seconds(1),
-    ));
-    store
+    )?);
+    Ok(store)
 }
 
 /// `[sip] active_idle_window_secs` moves the active-call gauge.
@@ -3304,15 +3377,14 @@ fn answered_call_store(
 /// out so a later addition cannot inherit a narrowed one.
 #[test]
 #[cfg(feature = "native")]
-fn sip_active_idle_window_reaches_the_active_call_gauge() {
+fn sip_active_idle_window_reaches_the_active_call_gauge() -> Result<(), TestError> {
     use sipnab::sip::dialog_store::{
         DEFAULT_ACTIVE_IDLE_WINDOW, active_idle_window, set_active_idle_window_secs,
     };
 
     let t0 = chrono::DateTime::parse_from_rfc3339("2026-08-14T12:00:00Z")
-        .map(|d| d.with_timezone(&chrono::Utc))
-        .expect("the fixture timestamp parses");
-    let store = answered_call_store(t0);
+        .map(|d| d.with_timezone(&chrono::Utc))?;
+    let store = answered_call_store(t0)?;
     // Ninety minutes of silence: outside the shipped hour, inside a wider one.
     let now = t0 + chrono::TimeDelta::minutes(90);
 
@@ -3344,16 +3416,17 @@ fn sip_active_idle_window_reaches_the_active_call_gauge() {
     );
 
     set_active_idle_window_secs(DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds());
+    Ok(())
 }
 
 /// `--active-idle-window` outranks the `[sip]` key, which outranks the default.
 #[test]
 #[cfg(feature = "native")]
-fn active_idle_window_precedence_is_flag_then_key_then_default() {
+fn active_idle_window_precedence_is_flag_then_key_then_default() -> Result<(), TestError> {
     use clap::Parser;
     use sipnab::sip::dialog_store::DEFAULT_ACTIVE_IDLE_WINDOW;
 
-    let bare = sipnab::cli::Cli::try_parse_from(["sipnab"]).expect("parse");
+    let bare = sipnab::cli::Cli::try_parse_from(["sipnab"])?;
     let shipped = DEFAULT_ACTIVE_IDLE_WINDOW.num_seconds() as u64;
     assert_eq!(
         bare.active_idle_window_secs(&sipnab::config::Config::default()),
@@ -3370,13 +3443,13 @@ fn active_idle_window_precedence_is_flag_then_key_then_default() {
         "[sip] active_idle_window_secs must reach the resolver"
     );
 
-    let flagged =
-        sipnab::cli::Cli::try_parse_from(["sipnab", "--active-idle-window", "300"]).expect("parse");
+    let flagged = sipnab::cli::Cli::try_parse_from(["sipnab", "--active-idle-window", "300"])?;
     assert_eq!(
         flagged.active_idle_window_secs(&tuned),
         300,
         "--active-idle-window must outrank the key it shadows"
     );
+    Ok(())
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3393,7 +3466,7 @@ fn active_idle_window_precedence_is_flag_then_key_then_default() {
 /// parsed and did nothing fails here.
 #[test]
 #[cfg(all(feature = "native", feature = "hep"))]
-fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
+fn hep_parse_and_bpf_filter_keys_reach_the_capture() -> Result<(), TestError> {
     use chrono::Utc;
     use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
@@ -3401,8 +3474,8 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
     const CARRIED: &str = "hep-carried";
     let mut frames = pcap_build::sip_call_frames(PLAIN, "plain1", "alice", "bob");
     let ep = HepEndpoint {
-        src_addr: "10.3.0.1".parse().unwrap(),
-        dst_addr: "10.4.0.1".parse().unwrap(),
+        src_addr: "10.3.0.1".parse()?,
+        dst_addr: "10.4.0.1".parse()?,
         src_port: 5060,
         dst_port: 5060,
         transport: sipnab::net::TransportProto::Udp,
@@ -3417,12 +3490,12 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
             &hep,
         ));
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("lo.pcap");
-    pcap_build::write_pcap_or_panic(&pcap, &frames);
-    let pcap = pcap.to_str().unwrap().to_string();
+    pcap_build::write_pcap(&pcap, &frames)?;
+    let pcap = pcap.to_str().ok_or("non-UTF-8 path")?.to_string();
 
-    let probe = |extra: &[&str]| -> (String, String) {
+    let probe = |extra: &[&str]| -> Result<(String, String), TestError> {
         let mut args: Vec<String> = [
             "-N",
             "-I",
@@ -3435,20 +3508,20 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
         .map(|s| (*s).to_string())
         .collect();
         args.extend(extra.iter().map(|s| (*s).to_string()));
-        let (out, err, code) = run_owned(&args);
+        let (out, err, code) = run_owned(&args)?;
         assert_eq!(code, 0, "the run must exit cleanly ({extra:?}):\n{err}");
-        (out, err)
+        Ok((out, err))
     };
 
-    let (out, _) = probe(&["--no-config"]);
+    let (out, _) = probe(&["--no-config"])?;
     assert!(
         out.contains(PLAIN) && !out.contains(CARRIED),
         "with neither key the HEP copy stays wrapped -- the state the key \
          exists to change:\n{out}"
     );
 
-    let hep_only = write_config(&dir, "[capture]\nhep_parse = true\n");
-    let (out, _) = probe(&["--config", hep_only.to_str().unwrap()]);
+    let hep_only = write_config(&dir, "[capture]\nhep_parse = true\n")?;
+    let (out, _) = probe(&["--config", hep_only.to_str().ok_or("non-UTF-8 path")?])?;
     assert!(
         out.contains(PLAIN) && out.contains(CARRIED),
         "[capture] hep_parse = true must unwrap the HEP copy, as -E does:\n{out}"
@@ -3457,9 +3530,9 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
     let both = write_config(
         &dir,
         "[capture]\nhep_parse = true\nbpf_filter = \"udp dst port 9063\"\n",
-    );
-    let cfg = both.to_str().unwrap();
-    let (out, err) = probe(&["--config", cfg]);
+    )?;
+    let cfg = both.to_str().ok_or("non-UTF-8 path")?;
+    let (out, err) = probe(&["--config", cfg])?;
     assert!(
         out.contains(CARRIED) && !out.contains(PLAIN),
         "[capture] bpf_filter must drop the plain SIP beside the HEP copy:\n{out}"
@@ -3472,7 +3545,7 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
 
     // The positional filter replaces the key: pointed at the plain SIP, the
     // HEP copy is the half that disappears.
-    let (out, err) = probe(&["--config", cfg, "udp", "port", "5060"]);
+    let (out, err) = probe(&["--config", cfg, "udp", "port", "5060"])?;
     assert!(
         out.contains(PLAIN) && !out.contains(CARRIED),
         "the positional capture filter must outrank [capture] bpf_filter:\n{out}"
@@ -3481,4 +3554,5 @@ fn hep_parse_and_bpf_filter_keys_reach_the_capture() {
         !err.contains("[capture] bpf_filter"),
         "the key was replaced, so it must not be reported as applied:\n{err}"
     );
+    Ok(())
 }

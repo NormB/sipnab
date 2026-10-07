@@ -31,6 +31,8 @@
 
 use std::sync::{Arc, Mutex};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Collects `tracing` events emitted on the current thread.
 #[derive(Clone, Default)]
 struct EventCapture {
@@ -40,13 +42,21 @@ struct EventCapture {
 
 impl EventCapture {
     /// Rendered messages recorded from `start` onwards.
-    fn since(&self, start: usize) -> Vec<(tracing::Level, String)> {
-        self.events.lock().expect("capture mutex")[start..].to_vec()
+    fn since(&self, start: usize) -> Result<Vec<(tracing::Level, String)>, TestError> {
+        let events = self
+            .events
+            .lock()
+            .map_err(|e| format!("capture mutex: {e}"))?;
+        Ok(events[start..].to_vec())
     }
 
     /// How many events have been recorded so far.
-    fn len(&self) -> usize {
-        self.events.lock().expect("capture mutex").len()
+    fn len(&self) -> Result<usize, TestError> {
+        Ok(self
+            .events
+            .lock()
+            .map_err(|e| format!("capture mutex: {e}"))?
+            .len())
     }
 }
 
@@ -94,10 +104,10 @@ fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
 }
 
 /// A minimal dialog to fire hooks with.
-fn make_dialog() -> sipnab::sip::dialog::SipDialog {
+fn make_dialog() -> Result<sipnab::sip::dialog::SipDialog, TestError> {
     use std::net::{IpAddr, Ipv4Addr};
     let localhost = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+    let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -118,8 +128,8 @@ fn make_dialog() -> sipnab::sip::dialog::SipDialog {
         5060,
         sipnab::capture::parse::TransportProto::Udp,
     )
-    .expect("parse");
-    sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog")
+    .map_err(|e| format!("parse: {e:?}"))?;
+    Ok(sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?)
 }
 
 /// Fire the hook repeatedly until `done` reports true, or give up.
@@ -132,13 +142,13 @@ fn make_dialog() -> sipnab::sip::dialog::SipDialog {
 fn fire_until(
     engine: &mut sipnab::output::event_exec::EventExecEngine,
     dialog: &sipnab::sip::dialog::SipDialog,
-    mut done: impl FnMut() -> bool,
-) -> bool {
+    mut done: impl FnMut() -> Result<bool, TestError>,
+) -> Result<bool, TestError> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while std::time::Instant::now() < deadline {
         engine.fire_dialog_event(dialog);
-        if done() {
-            return true;
+        if done()? {
+            return Ok(true);
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -161,19 +171,19 @@ fn fire_n(
 /// A hook that exits non-zero is reported with its exit status and its command;
 /// a hook that exits zero is not. Both totals are stated at teardown.
 #[test]
-fn failing_hook_is_distinguishable_from_a_succeeding_one() {
+fn failing_hook_is_distinguishable_from_a_succeeding_one() -> Result<(), TestError> {
     use sipnab::output::event_exec::EventExecEngine;
 
-    let dialog = make_dialog();
+    let dialog = make_dialog()?;
     let capture = EventCapture::default();
 
     // Everything the engines do — including their Drop — happens inside the
     // subscriber scope, because the teardown totals are part of what is asserted.
-    tracing::subscriber::with_default(capture.clone(), || {
+    tracing::subscriber::with_default(capture.clone(), || -> Result<(), TestError> {
         tracing::callsite::rebuild_interest_cache();
 
         // ── The failing hook ────────────────────────────────────────────
-        let failing_start = capture.len();
+        let failing_start = capture.len()?;
         let mut failing = EventExecEngine::new(
             Some("exit 7".to_string()),
             None,
@@ -182,12 +192,12 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
             sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
         );
         let saw_failure = fire_until(&mut failing, &dialog, || {
-            capture
-                .since(failing_start)
+            Ok(capture
+                .since(failing_start)?
                 .iter()
-                .any(|(level, msg)| *level == tracing::Level::WARN && msg.contains("exit 7"))
-        });
-        let failing_events = capture.since(failing_start);
+                .any(|(level, msg)| *level == tracing::Level::WARN && msg.contains("exit 7")))
+        })?;
+        let failing_events = capture.since(failing_start)?;
         assert!(
             saw_failure,
             "a hook that exits 7 must be reported at WARN, naming the command \
@@ -205,9 +215,9 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
             "the report must carry the exit status the command returned; \
              captured: {failing_events:?}"
         );
-        let failing_teardown_start = capture.len();
+        let failing_teardown_start = capture.len()?;
         drop(failing);
-        let failing_teardown = capture.since(failing_teardown_start);
+        let failing_teardown = capture.since(failing_teardown_start)?;
         assert!(
             failing_teardown
                 .iter()
@@ -219,7 +229,7 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
         // Without this, an implementation that warned about every reaped child
         // — or that reported a total of nothing — would pass the assertions
         // above while telling an operator exactly as little as before.
-        let ok_start = capture.len();
+        let ok_start = capture.len()?;
         let mut succeeding = EventExecEngine::new(
             Some("exit 0".to_string()),
             None,
@@ -236,7 +246,7 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         drop(succeeding);
-        let ok_events = capture.since(ok_start);
+        let ok_events = capture.since(ok_start)?;
         assert!(
             !ok_events
                 .iter()
@@ -246,11 +256,11 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
         let totals = ok_events
             .iter()
             .find(|(_, msg)| msg.contains("Event exec totals"))
-            .unwrap_or_else(|| {
-                panic!(
+            .ok_or_else(|| {
+                format!(
                     "teardown must state the totals for a clean run too; captured: {ok_events:?}"
                 )
-            });
+            })?;
         // Anchored on the surrounding punctuation: "10 succeeded" contains
         // "0 succeeded", and a bare substring check would call a ledger of
         // zeroes a pass.
@@ -259,5 +269,7 @@ fn failing_hook_is_distinguishable_from_a_succeeding_one() {
             "the clean run's totals must show real successes and no failures, \
              not a ledger of zeroes; got: {totals:?}"
         );
-    });
+        Ok(())
+    })?;
+    Ok(())
 }

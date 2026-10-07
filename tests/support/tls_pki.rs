@@ -209,26 +209,3 @@ pub fn plain_http_get(
     let _ = sock.read_to_end(&mut raw);
     Ok(String::from_utf8_lossy(&raw).into_owned())
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`test_pki`], panicking on error.
-pub fn test_pki_or_panic(stem: &str) -> TestPki {
-    test_pki(stem).expect("test_pki")
-}
-
-/// [`plain_http_get`], panicking on error.
-pub fn plain_http_get_or_panic(addr: &str, path: &str, timeout: std::time::Duration) -> String {
-    plain_http_get(addr, path, timeout).expect("plain_http_get")
-}
-
-impl TestPki {
-    /// [`TestPki::make_key_world_readable`], panicking on error.
-    #[cfg(unix)]
-    pub fn make_key_world_readable_or_panic(&self) {
-        self.make_key_world_readable()
-            .expect("TestPki::make_key_world_readable")
-    }
-}

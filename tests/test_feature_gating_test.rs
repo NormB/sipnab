@@ -36,6 +36,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -67,10 +69,9 @@ fn rs_files(dir: &str) -> Vec<PathBuf> {
 /// Read from `src/`, never restated: the pair `#[cfg(feature = "x")]` followed
 /// by `pub mod y;` is the declaration itself, so a module that stops being
 /// gated stops appearing here rather than disagreeing with a list.
-fn gated_modules() -> BTreeMap<String, String> {
+fn gated_modules() -> Result<BTreeMap<String, String>, TestError> {
     let re =
-        regex::Regex::new(r#"#\[cfg\(feature = "([a-z0-9_-]+)"\)\]\s*\n\s*pub mod ([a-z0-9_]+);"#)
-            .expect("pattern");
+        regex::Regex::new(r#"#\[cfg\(feature = "([a-z0-9_-]+)"\)\]\s*\n\s*pub mod ([a-z0-9_]+);"#)?;
     let mut out = BTreeMap::new();
     for path in rs_files("src") {
         let src = std::fs::read_to_string(&path).unwrap_or_default();
@@ -91,7 +92,7 @@ fn gated_modules() -> BTreeMap<String, String> {
             out.insert(module, c[1].to_string());
         }
     }
-    out
+    Ok(out)
 }
 
 /// `[features]` from `Cargo.toml`, as `feature -> the features it enables`.
@@ -99,9 +100,8 @@ fn gated_modules() -> BTreeMap<String, String> {
 /// The manifest is the authority, so this reads it rather than describing it.
 /// `dep:` entries and `package/feature` entries name crates rather than this
 /// crate's features and are skipped.
-fn feature_graph() -> BTreeMap<String, Vec<String>> {
-    let manifest =
-        std::fs::read_to_string(repo().join("Cargo.toml")).expect("Cargo.toml is in the tree");
+fn feature_graph() -> Result<BTreeMap<String, Vec<String>>, TestError> {
+    let manifest = std::fs::read_to_string(repo().join("Cargo.toml"))?;
     let mut out = BTreeMap::new();
     let mut in_features = false;
     for line in manifest.lines() {
@@ -126,7 +126,7 @@ fn feature_graph() -> BTreeMap<String, Vec<String>> {
             .collect();
         out.insert(name.trim().to_string(), deps);
     }
-    out
+    Ok(out)
 }
 
 /// Every feature `seeds` enables, transitively, including the seeds.
@@ -153,8 +153,8 @@ fn closure(
 /// every closure collapses to its seeds and this gate reports correct files as
 /// broken again — loudly the first time, and then by being deleted.
 #[test]
-fn the_feature_graph_knows_that_api_implies_native() {
-    let graph = feature_graph();
+fn the_feature_graph_knows_that_api_implies_native() -> Result<(), TestError> {
+    let graph = feature_graph()?;
     assert!(
         graph.len() >= 5,
         "only {} feature(s) parsed out of Cargo.toml; the [features] table is \
@@ -173,6 +173,7 @@ fn the_feature_graph_knows_that_api_implies_native() {
         "`native` now reaches `tls`, which is the implication whose ABSENCE \
          caused the break this file is about: {from_native:?}"
     );
+    Ok(())
 }
 
 /// The scan finds the module the defect was about.
@@ -182,8 +183,8 @@ fn the_feature_graph_knows_that_api_implies_native() {
 /// on one line would reduce it to finding nothing. A scan that matches nothing
 /// agrees with every tree.
 #[test]
-fn the_module_scan_finds_the_gate_that_caused_this() {
-    let modules = gated_modules();
+fn the_module_scan_finds_the_gate_that_caused_this() -> Result<(), TestError> {
+    let modules = gated_modules()?;
     assert_eq!(
         modules.get("capture::dtls").map(String::as_str),
         Some("tls"),
@@ -196,14 +197,15 @@ fn the_module_scan_finds_the_gate_that_caused_this() {
          matching: {modules:?}",
         modules.len()
     );
+    Ok(())
 }
 
 /// Every test file importing a gated module names that feature in a `cfg`.
 #[test]
-fn a_test_importing_a_gated_module_names_that_feature() {
-    let modules = gated_modules();
-    let graph = feature_graph();
-    let feat = regex::Regex::new(r#"feature = "([a-z0-9_-]+)""#).expect("pattern");
+fn a_test_importing_a_gated_module_names_that_feature() -> Result<(), TestError> {
+    let modules = gated_modules()?;
+    let graph = feature_graph()?;
+    let feat = regex::Regex::new(r#"feature = "([a-z0-9_-]+)""#)?;
     let mut problems = Vec::new();
     for path in rs_files("tests") {
         // `tests/support/` holds modules pulled in with `#[path = ...] mod`,
@@ -277,6 +279,7 @@ fn a_test_importing_a_gated_module_names_that_feature() {
         "these support modules are excluded from the scan above and included by \
          no test target, so nothing checks their imports at all: {orphans:?}"
     );
+    Ok(())
 }
 
 /// The RTCP half of the corpus measurement still runs without `tls`.
@@ -287,9 +290,9 @@ fn a_test_importing_a_gated_module_names_that_feature() {
 /// build that does not carry DTLS. The items are gated instead, and this pins
 /// the distinction so a later tidy-up cannot collapse it.
 #[test]
-fn gating_the_dtls_half_did_not_gate_the_rtcp_half() {
+fn gating_the_dtls_half_did_not_gate_the_rtcp_half() -> Result<(), TestError> {
     let path = repo().join("tests/corpus_rtcp_chain_test.rs");
-    let src = std::fs::read_to_string(&path).expect("the corpus measurement is in the tree");
+    let src = std::fs::read_to_string(&path)?;
     let file_gate = src
         .lines()
         .find(|l| l.trim_start().starts_with("#![cfg("))
@@ -305,10 +308,11 @@ fn gating_the_dtls_half_did_not_gate_the_rtcp_half() {
     );
     let rtcp = src
         .find("fn the_corpus_holds_rtcp_whose_lengths_cannot_chain")
-        .expect("the RTCP test is present");
+        .ok_or("the RTCP test is present")?;
     let head = &src[rtcp.saturating_sub(400)..rtcp];
     assert!(
         !head.contains("feature = \"tls\""),
         "the RTCP measurement itself is now gated on `tls`: {head}"
     );
+    Ok(())
 }

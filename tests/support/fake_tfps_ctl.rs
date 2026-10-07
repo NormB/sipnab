@@ -64,19 +64,3 @@ impl Fake {
         self.calls().lines().filter(|l| *l == subcommand).count()
     }
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-impl Fake {
-    /// [`Fake::new`], panicking on error.
-    pub fn new_or_panic() -> Self {
-        Self::new().expect("Fake::new")
-    }
-
-    /// [`Fake::fail_bans`], panicking on error.
-    pub fn fail_bans_or_panic(&self) {
-        self.fail_bans().expect("Fake::fail_bans")
-    }
-}

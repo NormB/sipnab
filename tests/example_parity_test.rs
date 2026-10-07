@@ -15,6 +15,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The declared client languages, as the page names them. TypeScript counts
 /// as JavaScript: the same runtime, and its programs sit beside the `.mjs`.
 const LANGUAGES: &[&str] = &["Rust", "Python", "Go", "JavaScript", "C", "C++"];
@@ -168,7 +172,7 @@ fn repo() -> &'static Path {
 }
 
 #[test]
-fn every_language_has_every_step_as_a_program_or_a_declared_gap() {
+fn every_language_has_every_step_as_a_program_or_a_declared_gap() -> Result<(), TestError> {
     let mut problems = Vec::new();
     for lang in LANGUAGES {
         for step in STEPS {
@@ -207,10 +211,11 @@ fn every_language_has_every_step_as_a_program_or_a_declared_gap() {
         GAP_COUNT,
         "the gap count moved; lower GAP_COUNT when a program closes a gap"
     );
+    Ok(())
 }
 
 #[test]
-fn each_program_exists_and_does_its_step() {
+fn each_program_exists_and_does_its_step() -> Result<(), TestError> {
     let mut problems = Vec::new();
     for (lang, step, path, evidence) in PROGRAMS {
         match std::fs::read_to_string(repo().join(path)) {
@@ -223,6 +228,7 @@ fn each_program_exists_and_does_its_step() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+    Ok(())
 }
 
 /// The cell the matrix says the page should show for (language, step).
@@ -240,13 +246,12 @@ fn expected_cell(lang: &str, step: &str) -> String {
 }
 
 #[test]
-fn the_examples_page_shows_the_matrix() {
-    let page = std::fs::read_to_string(repo().join("docs/client-examples.md"))
-        .expect("read docs/client-examples.md");
+fn the_examples_page_shows_the_matrix() -> Result<(), TestError> {
+    let page = std::fs::read_to_string(repo().join("docs/client-examples.md"))?;
     let header = format!("| Language | {} |", STEPS.join(" | "));
-    let start = page.find(&header).unwrap_or_else(|| {
-        panic!("docs/client-examples.md has no lifecycle table headed `{header}`")
-    });
+    let start = page.find(&header).ok_or_else(|| {
+        format!("docs/client-examples.md has no lifecycle table headed `{header}`")
+    })?;
     let rows: Vec<Vec<String>> = page[start..]
         .lines()
         .skip(2)
@@ -278,4 +283,5 @@ fn the_examples_page_shows_the_matrix() {
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+    Ok(())
 }

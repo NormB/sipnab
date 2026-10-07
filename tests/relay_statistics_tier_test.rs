@@ -18,14 +18,17 @@ use sipnab::relay::types::ControlReply;
 use sipnab::rtpengine::control::parse_statistics_reply;
 use sipnab::stats_vocab::{StatisticTier, StatisticValue, lookup, relay_reported};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/relay/rtpengine-statistics-12.5.1.bencode"
 );
 
 /// The fixture's pairs, as `parse_statistics_reply` produces them.
-fn fixture_pairs() -> Vec<(String, String)> {
-    let datagram = std::fs::read(FIXTURE).expect("the rtpengine statistics fixture is readable");
+fn fixture_pairs() -> Result<Vec<(String, String)>, TestError> {
+    let datagram = std::fs::read(FIXTURE)?;
     // The fixture is the raw datagram: `<cookie> <bencode>`. The transport
     // (`framed_reply_body`) strips and validates the cookie before the parser
     // sees it, so this mirrors that -- feeding the parser the bencode alone,
@@ -34,18 +37,18 @@ fn fixture_pairs() -> Vec<(String, String)> {
     let space = datagram
         .iter()
         .position(|b| *b == b' ')
-        .expect("the fixture datagram has a cookie separator");
+        .ok_or("the fixture datagram has a cookie separator")?;
     let bencode = &datagram[space + 1..];
-    match parse_statistics_reply(bencode).expect("the fixture is a valid statistics reply") {
+    Ok(match parse_statistics_reply(bencode)? {
         ControlReply::Statistics(pairs) => pairs,
-        other => panic!("the fixture did not parse as statistics: {other:?}"),
-    }
+        other => return Err(format!("the fixture did not parse as statistics: {other:?}").into()),
+    })
 }
 
 /// Every pair a relay reports about itself is relay_reported, and counted.
 #[test]
-fn a_relays_own_statistics_are_every_one_relay_reported_and_counted() {
-    let stats = relay_reported(&fixture_pairs());
+fn a_relays_own_statistics_are_every_one_relay_reported_and_counted() -> Result<(), TestError> {
+    let stats = relay_reported(&fixture_pairs()?);
     assert!(
         stats.len() >= 200,
         "the 12.5.1 fixture flattens to 251 leaf counters; got {} -- the \
@@ -67,6 +70,7 @@ fn a_relays_own_statistics_are_every_one_relay_reported_and_counted() {
             s.name
         );
     }
+    Ok(())
 }
 
 /// A known counter from this version resolves to a counted relay figure.
@@ -74,8 +78,8 @@ fn a_relays_own_statistics_are_every_one_relay_reported_and_counted() {
 /// The name is the relay's own, flattened with dots, exactly as 12.5.1 emits
 /// it. If rtpengine renames it, this fails rather than passing on a guess.
 #[test]
-fn a_known_counter_resolves_as_a_counted_relay_figure() {
-    let stats = relay_reported(&fixture_pairs());
+fn a_known_counter_resolves_as_a_counted_relay_figure() -> Result<(), TestError> {
+    let stats = relay_reported(&fixture_pairs()?);
     let name = "statistics.totalstatistics.relayedpackets";
     match lookup(&stats, name) {
         StatisticValue::Counted(v) => {
@@ -84,8 +88,11 @@ fn a_known_counter_resolves_as_a_counted_relay_figure() {
                 "{name} is a packet count; got {v:?}"
             );
         }
-        other => panic!("{name} should be a counted relay figure, got {other:?}"),
+        other => {
+            return Err(format!("{name} should be a counted relay figure, got {other:?}").into());
+        }
     }
+    Ok(())
 }
 
 /// A name the relay did not report is NotAsked, not an invented value.
@@ -93,8 +100,8 @@ fn a_known_counter_resolves_as_a_counted_relay_figure() {
 /// This is the three-state rule at the lookup: absent is absent, never a zero
 /// and never the first value that happened to be in the set.
 #[test]
-fn a_name_the_relay_did_not_report_is_not_asked() {
-    let stats = relay_reported(&fixture_pairs());
+fn a_name_the_relay_did_not_report_is_not_asked() -> Result<(), TestError> {
+    let stats = relay_reported(&fixture_pairs()?);
     assert_eq!(
         lookup(&stats, "statistics.totalstatistics.no_such_counter"),
         StatisticValue::NotAsked,
@@ -107,6 +114,7 @@ fn a_name_the_relay_did_not_report_is_not_asked() {
         lookup(&stats, "statistics.totalstatistics.no_such_counter"),
         "lookup ignored the name -- a real and a fake counter answered alike"
     );
+    Ok(())
 }
 
 /// A value that is a string-typed integer survives uncoerced.
@@ -115,15 +123,16 @@ fn a_name_the_relay_did_not_report_is_not_asked() {
 /// number. ST-S2 recorded this; the reading must carry the digits as text and
 /// not have been parsed into a number and back.
 #[test]
-fn a_string_typed_integer_survives_as_its_digits() {
-    let stats = relay_reported(&fixture_pairs());
+fn a_string_typed_integer_survives_as_its_digits() -> Result<(), TestError> {
+    let stats = relay_reported(&fixture_pairs()?);
     match lookup(&stats, "statistics.totalstatistics.uptime") {
         StatisticValue::Counted(v) => assert!(
             v.chars().all(|c| c.is_ascii_digit()) && !v.is_empty(),
             "uptime should be digits carried as text, got {v:?}"
         ),
-        other => panic!("uptime should be counted, got {other:?}"),
+        other => return Err(format!("uptime should be counted, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// The parser decodes the bencode ALONE; the cookie is the transport's job.
@@ -134,12 +143,12 @@ fn a_string_typed_integer_survives_as_its_digits() {
 /// because the cookie is not bencode; a parser that still stripped would parse
 /// it and hide the very defect this pins.
 #[test]
-fn the_parser_decodes_bencode_alone_not_a_framed_datagram() {
-    let datagram = std::fs::read(FIXTURE).expect("fixture readable");
+fn the_parser_decodes_bencode_alone_not_a_framed_datagram() -> Result<(), TestError> {
+    let datagram = std::fs::read(FIXTURE)?;
     let space = datagram
         .iter()
         .position(|b| *b == b' ')
-        .expect("a cookie separator");
+        .ok_or("a cookie separator")?;
     let bencode = &datagram[space + 1..];
 
     // What the transport yields: bencode alone. Parses.
@@ -153,27 +162,31 @@ fn the_parser_decodes_bencode_alone_not_a_framed_datagram() {
         "the parser must NOT strip a cookie itself; a framed datagram is the \
          transport's to unwrap, and accepting one would re-hide the double-strip"
     );
+    Ok(())
 }
 
 /// Round-trip framing to parse: build a framed reply, strip as the transport
 /// does, parse -- the whole shape the live path takes, without a socket.
 #[test]
-fn a_framed_reply_stripped_as_the_transport_does_then_parses_and_tiers() {
-    let datagram = std::fs::read(FIXTURE).expect("fixture readable");
+fn a_framed_reply_stripped_as_the_transport_does_then_parses_and_tiers() -> Result<(), TestError> {
+    let datagram = std::fs::read(FIXTURE)?;
     // Re-frame with a different cookie to prove the parser cares only about the
     // bencode, not which cookie framed it.
     let space = datagram
         .iter()
         .position(|b| *b == b' ')
-        .expect("a cookie separator");
+        .ok_or("a cookie separator")?;
     let bencode = datagram[space + 1..].to_vec();
     let reframed = [b"reframed99 ".as_slice(), &bencode].concat();
 
-    let strip_at = reframed.iter().position(|b| *b == b' ').expect("separator");
+    let strip_at = reframed
+        .iter()
+        .position(|b| *b == b' ')
+        .ok_or("separator")?;
     let body = &reframed[strip_at + 1..];
-    let pairs = match parse_statistics_reply(body).expect("parses") {
+    let pairs = match parse_statistics_reply(body)? {
         ControlReply::Statistics(p) => p,
-        other => panic!("not statistics: {other:?}"),
+        other => return Err(format!("not statistics: {other:?}").into()),
     };
     let tiered = relay_reported(&pairs);
     assert!(
@@ -186,6 +199,7 @@ fn a_framed_reply_stripped_as_the_transport_does_then_parses_and_tiers() {
             .all(|s| s.tier == StatisticTier::RelayReported),
         "all relay_reported"
     );
+    Ok(())
 }
 
 // ── ST7/C2: the per-call query reply is tiered the same way ────────────────
@@ -203,17 +217,18 @@ const QUERY_FIXTURE: &str = concat!(
 /// per-call reply: every counter `relay_reported`, and the `totals` the relay
 /// keeps per call present and distinct for RTP and RTCP.
 #[test]
-fn a_per_call_query_reply_tiers_as_relay_reported() {
-    let datagram = std::fs::read(QUERY_FIXTURE).expect("the query fixture is readable");
+fn a_per_call_query_reply_tiers_as_relay_reported() -> Result<(), TestError> {
+    let datagram = std::fs::read(QUERY_FIXTURE)?;
     let space = datagram
         .iter()
         .position(|b| *b == b' ')
-        .expect("the query fixture has a cookie separator");
-    let pairs =
-        match parse_statistics_reply(&datagram[space + 1..]).expect("the query reply parses") {
-            ControlReply::Statistics(pairs) => pairs,
-            other => panic!("the query reply did not flatten to statistics: {other:?}"),
-        };
+        .ok_or("the query fixture has a cookie separator")?;
+    let pairs = match parse_statistics_reply(&datagram[space + 1..])? {
+        ControlReply::Statistics(pairs) => pairs,
+        other => {
+            return Err(format!("the query reply did not flatten to statistics: {other:?}").into());
+        }
+    };
     let tiered = relay_reported(&pairs);
     assert!(
         tiered.len() >= 100,
@@ -229,7 +244,11 @@ fn a_per_call_query_reply_tiers_as_relay_reported() {
     // The per-call totals the relay keeps, present and kept apart by transport.
     match lookup(&tiered, "totals.RTP.packets") {
         StatisticValue::Counted(v) => assert!(v.chars().all(|c| c.is_ascii_digit())),
-        other => panic!("totals.RTP.packets should be a counted figure, got {other:?}"),
+        other => {
+            return Err(
+                format!("totals.RTP.packets should be a counted figure, got {other:?}").into(),
+            );
+        }
     }
     assert!(
         matches!(
@@ -243,4 +262,5 @@ fn a_per_call_query_reply_tiers_as_relay_reported() {
         lookup(&tiered, "totals.RTP.no_such_field"),
         "a real per-call key and a fake one must not resolve alike"
     );
+    Ok(())
 }

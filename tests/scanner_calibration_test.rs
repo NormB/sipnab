@@ -68,6 +68,10 @@ use absence_scan::{
     ratchet_pins, test_bodies,
 };
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -108,7 +112,7 @@ fn real_tree(name: &str) -> bool {
 /// not protecting the scanner from anything; it is a line someone added to
 /// make a red go away, still sitting there after the red became impossible.
 #[test]
-fn a_crate_import_is_not_a_cross_reference() {
+fn a_crate_import_is_not_a_cross_reference() -> Result<(), TestError> {
     assert_eq!(
         cross_reference("serial_test::serial", &real_tree),
         None,
@@ -143,6 +147,7 @@ fn a_crate_import_is_not_a_cross_reference() {
          not what keeps the scanner quiet and something else is. An exclusion \
          nothing reaches cannot be the reason a suite is green."
     );
+    Ok(())
 }
 
 /// The exclusion turns only on the file it names — not on the token's spelling.
@@ -157,7 +162,7 @@ fn a_crate_import_is_not_a_cross_reference() {
 /// function that does not, still comes back — that is the dangling reference
 /// the whole rule is for.
 #[test]
-fn the_existence_check_still_catches_a_name_that_moved() {
+fn the_existence_check_still_catches_a_name_that_moved() -> Result<(), TestError> {
     let everything_exists = |_: &str| true;
     assert_eq!(
         cross_reference("serial_test::serial", &everything_exists),
@@ -202,6 +207,7 @@ fn the_existence_check_still_catches_a_name_that_moved() {
         "a reference into a file that exists no longer survives the narrowing, \
          so the dangling-reference rule can never fire again"
     );
+    Ok(())
 }
 
 // ── 2. duplicates key on name AND body ──────────────────────────────
@@ -217,10 +223,14 @@ fn the_existence_check_still_catches_a_name_that_moved() {
 /// property instead of the count means the next pair added does not have to
 /// remember to come back here.
 #[test]
-fn two_surfaces_may_assert_the_same_property_under_one_name() {
+fn two_surfaces_may_assert_the_same_property_under_one_name() -> Result<(), TestError> {
     let mut by_name: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for (name, body) in test_bodies(&read(&path)) {
             by_name.entry(name).or_default().push((file.clone(), body));
         }
@@ -244,6 +254,7 @@ fn two_surfaces_may_assert_the_same_property_under_one_name() {
             uses.iter().map(|(f, _)| f).collect::<Vec<_>>()
         );
     }
+    Ok(())
 }
 
 /// A genuine copy is still caught after the relaxation.
@@ -253,7 +264,7 @@ fn two_surfaces_may_assert_the_same_property_under_one_name() {
 /// enough to catch what it was written for: one property asserted twice,
 /// reformatted.
 #[test]
-fn the_name_and_body_rule_still_fires_on_a_genuine_copy() {
+fn the_name_and_body_rule_still_fires_on_a_genuine_copy() -> Result<(), TestError> {
     let original = "#[test]\nfn the_gate_holds() {\n    let v = published_version();\n    assert_eq!(v, newest_tag());\n}\n";
     // Same assertion, reformatted and re-indented: what a copied gate looks
     // like after someone runs a formatter over it.
@@ -278,6 +289,7 @@ fn the_name_and_body_rule_still_fires_on_a_genuine_copy() {
         "two different assertions share a body key; the narrowing has gone \
          past 'ignore formatting' into 'ignore the test'"
     );
+    Ok(())
 }
 
 // ── 3. ratchets need an implausible value ───────────────────────────
@@ -288,7 +300,7 @@ fn the_name_and_body_rule_still_fires_on_a_genuine_copy() {
 /// both pin `= 1`, and that is two ratchets sharing a word rather than one
 /// written twice.
 #[test]
-fn two_fixtures_may_pin_a_small_ratchet_at_one_value() {
+fn two_fixtures_may_pin_a_small_ratchet_at_one_value() -> Result<(), TestError> {
     for coincidence in ["0", "1", "2", "20"] {
         assert!(
             !implausible_coincidence(coincidence),
@@ -300,7 +312,11 @@ fn two_fixtures_may_pin_a_small_ratchet_at_one_value() {
     // Exercised by the real tree, or the ceiling is protecting nothing.
     let mut pins: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for (name, value) in ratchet_pins(&read(&path)) {
             pins.entry(format!("{name} = {value}"))
                 .or_default()
@@ -312,6 +328,7 @@ fn two_fixtures_may_pin_a_small_ratchet_at_one_value() {
         "no EXPECTED_* pins found; the parser has stopped matching the form \
          this repository uses and both halves of this narrowing are moot"
     );
+    Ok(())
 }
 
 /// A shared large value is still caught.
@@ -319,7 +336,7 @@ fn two_fixtures_may_pin_a_small_ratchet_at_one_value() {
 /// The second half, and the reason the ceiling is a number rather than a
 /// blanket exemption. Two files independently arriving at `756` is a copy.
 #[test]
-fn the_coincidence_ceiling_still_catches_a_shared_large_value() {
+fn the_coincidence_ceiling_still_catches_a_shared_large_value() -> Result<(), TestError> {
     assert!(
         implausible_coincidence("756"),
         "a value of 756 pinned in two files is not coincidence, and the \
@@ -347,6 +364,7 @@ fn the_coincidence_ceiling_still_catches_a_shared_large_value() {
          failure is being read as 'small', which exempts every pin the parser \
          does not understand -- silence from a scanner that could not look."
     );
+    Ok(())
 }
 
 // ── 4. count definitions, not mentions ──────────────────────────────
@@ -359,7 +377,7 @@ fn the_coincidence_ceiling_still_catches_a_shared_large_value() {
 /// times. Documentation about a gate is evidence that it exists, not evidence
 /// of a second one.
 #[test]
-fn a_name_in_prose_is_not_a_definition() {
+fn a_name_in_prose_is_not_a_definition() -> Result<(), TestError> {
     let prose = r#"
 /// See `the_gate_holds` for the real check.
 ///
@@ -397,6 +415,7 @@ fn helper() {
         "the scanner's own file is being counted as defining the gate it only \
          writes about"
     );
+    Ok(())
 }
 
 /// A second definition is still found.
@@ -406,7 +425,7 @@ fn helper() {
 /// A duplicated gate is the entire thing `claims_of_absence_test` was written
 /// to prevent, so a rule that can no longer see one is worse than none.
 #[test]
-fn the_definition_counter_still_finds_a_second_definition() {
+fn the_definition_counter_still_finds_a_second_definition() -> Result<(), TestError> {
     let one = "#[test]\nfn the_gate_holds() {\n    assert!(true);\n}\n";
     assert_eq!(defines(one, "the_gate_holds"), 1, "a single definition");
 
@@ -438,4 +457,5 @@ fn the_definition_counter_still_finds_a_second_definition() {
         "a `#[cfg]`-gated test is not seen as a definition, so every rule \
          built on this counter is blind to the feature-gated half of the tree"
     );
+    Ok(())
 }

@@ -31,18 +31,21 @@ include!("support/teardown.rs");
 mod headless_metrics;
 use headless_metrics::{HeadlessMetrics, metrics_addr};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// How long a freshly spawned run may take to report its metrics address. A
 /// cold CI runner spawning a freshly linked binary is slower than a warm
 /// laptop, and the wait ends the moment the line arrives.
 const SPAWN_BUDGET: Duration = Duration::from_secs(30);
 
-fn sipnab_bin() -> std::path::PathBuf {
-    let mut p = std::env::current_exe().expect("test binary path");
+fn sipnab_bin() -> Result<std::path::PathBuf, TestError> {
+    let mut p = std::env::current_exe()?;
     p.pop();
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join("sipnab")
+    Ok(p.join("sipnab"))
 }
 
 /// The whole point: headless, and the endpoint actually answers.
@@ -54,9 +57,9 @@ fn sipnab_bin() -> std::path::PathBuf {
 /// listener is the honest headless shape: long-lived, unprivileged, and exactly
 /// how a collector deployment runs.
 #[test]
-fn metrics_binds_and_answers_in_headless_mode() {
+fn metrics_binds_and_answers_in_headless_mode() -> Result<(), TestError> {
     let run =
-        HeadlessMetrics::spawn(&sipnab_bin(), &[], SPAWN_BUDGET).unwrap_or_else(|e| panic!("{e}"));
+        HeadlessMetrics::spawn(&sipnab_bin()?, &[], SPAWN_BUDGET).map_err(|e| e.to_string())?;
     let addr = run.addr.clone();
     let mut child = run.child;
 
@@ -113,6 +116,7 @@ fn metrics_binds_and_answers_in_headless_mode() {
         body.contains("sipnab_capture_queue_depth_packets"),
         "the capture-queue gauge is missing from the scrape: {body}"
     );
+    Ok(())
 }
 
 /// The safety refusal still applies headless — it is not TUI-only either.
@@ -127,8 +131,8 @@ fn metrics_binds_and_answers_in_headless_mode() {
 /// that never closes and the test hangs rather than fails. A file run exits on
 /// its own, which is what makes the refusal observable in a collected stderr.
 #[test]
-fn a_non_loopback_bind_without_auth_is_still_refused_headless() {
-    let out = Command::new(sipnab_bin())
+fn a_non_loopback_bind_without_auth_is_still_refused_headless() -> Result<(), TestError> {
+    let out = Command::new(sipnab_bin()?)
         .args([
             "-N",
             "-I",
@@ -136,8 +140,7 @@ fn a_non_loopback_bind_without_auth_is_still_refused_headless() {
             "--metrics",
             "0.0.0.0:19998",
         ])
-        .output()
-        .expect("run sipnab");
+        .output()?;
 
     let err = String::from_utf8_lossy(&out.stderr);
 
@@ -159,13 +162,14 @@ fn a_non_loopback_bind_without_auth_is_still_refused_headless() {
         "the bind was refused without naming the refusal, so the operator sees \
          only a missing endpoint: {err}"
     );
+    Ok(())
 }
 
 /// Scrape `/metrics` from a headless run started with `extra`.
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary against a HEP listener and kills it.
-fn scrape_with(extra: &[&str]) -> String {
+fn scrape_with(extra: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["--no-config"];
     args.extend_from_slice(extra);
 
@@ -177,8 +181,8 @@ fn scrape_with(extra: &[&str]) -> String {
     // and the log said nothing more than the port number. The port is now
     // the kernel's choice and sipnab's from the start, so that last cause is
     // gone rather than merely reported.
-    let mut run = HeadlessMetrics::spawn(&sipnab_bin(), &args, SPAWN_BUDGET)
-        .unwrap_or_else(|e| panic!("{e}"));
+    let mut run =
+        HeadlessMetrics::spawn(&sipnab_bin()?, &args, SPAWN_BUDGET).map_err(|e| e.to_string())?;
     let addr = run.addr.clone();
 
     // Thirty seconds, not six. A cold CI runner spawning a freshly linked
@@ -218,19 +222,19 @@ fn scrape_with(extra: &[&str]) -> String {
     let _ = terminate(child);
     let stderr = run.stderr();
     assert!(!body.is_empty(), "{}", scrape_failure(&addr, died, &stderr));
-    body
+    Ok(body)
 }
 
 /// The harness reads the metrics address from the run's own startup line, and
 /// from nothing else.
 #[test]
-fn the_metrics_address_is_read_from_its_startup_line() {
+fn the_metrics_address_is_read_from_its_startup_line() -> Result<(), TestError> {
     assert_eq!(
         metrics_addr(
             "2026-10-01T09:05:36.820883Z  INFO sipnab::output::prometheus_server: \
              Prometheus metrics server listening on 127.0.0.1:34711"
         ),
-        Some("127.0.0.1:34711".parse().expect("literal"))
+        Some("127.0.0.1:34711".parse()?)
     );
     assert_eq!(
         metrics_addr("ERROR Failed to bind metrics server on 127.0.0.1:34711: in use"),
@@ -240,6 +244,7 @@ fn the_metrics_address_is_read_from_its_startup_line() {
         metrics_addr("Prometheus metrics server listening on 127.0.0.1:x"),
         None
     );
+    Ok(())
 }
 
 /// Why a scrape came back empty, in words rather than a port number.
@@ -275,20 +280,19 @@ fn scrape_failure(addr: &str, died: Option<ExitStatus>, stderr: &str) -> String 
 /// merely slower than the budget. Those need opposite responses, and the log
 /// is the only place anyone can tell them apart.
 #[test]
-fn a_failed_scrape_says_whether_the_process_died() {
+fn a_failed_scrape_says_whether_the_process_died() -> Result<(), TestError> {
     let alive = scrape_failure("127.0.0.1:9", None, "");
     assert!(
         alive.contains("still running"),
         "a slow start must not read as a crash: {alive}"
     );
 
-    let bin = sipnab_bin();
+    let bin = sipnab_bin()?;
     let status = Command::new(bin)
         .arg("--this-flag-does-not-exist")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .expect("a real exit status");
+        .status()?;
     let dead = scrape_failure("127.0.0.1:9", Some(status), "error: unexpected argument");
     assert!(
         dead.contains("EXITED"),
@@ -299,6 +303,7 @@ fn a_failed_scrape_says_whether_the_process_died() {
         "the child's own words are the evidence; without them the log says \
          only that something did not answer: {dead}"
     );
+    Ok(())
 }
 
 /// The published histogram buckets are DERIVED from the thresholds this run
@@ -312,8 +317,8 @@ fn a_failed_scrape_says_whether_the_process_died() {
 /// carrying no information at all. The jitter buckets carried the 50 ms bad
 /// boundary and not the 30 ms warn boundary beneath it.
 #[test]
-fn the_published_buckets_are_derived_from_this_runs_thresholds() {
-    let shipped = scrape_with(&[]);
+fn the_published_buckets_are_derived_from_this_runs_thresholds() -> Result<(), TestError> {
+    let shipped = scrape_with(&[])?;
     assert!(
         shipped.contains(r#"sipnab_pdd_seconds_bucket{le="11"}"#),
         "the shipped post-dial-delay threshold of 11 s must be a bucket \
@@ -333,7 +338,7 @@ fn the_published_buckets_are_derived_from_this_runs_thresholds() {
         "3",
         "--mos-warn",
         "4.2",
-    ]);
+    ])?;
     assert!(
         tuned.contains(r#"sipnab_pdd_seconds_bucket{le="4"}"#),
         "--pdd-threshold 4 must move the boundary the endpoint \
@@ -351,4 +356,5 @@ fn the_published_buckets_are_derived_from_this_runs_thresholds() {
         tuned.contains(r#"sipnab_mos_bucket{le="4.2"}"#),
         "--mos-warn 4.2 must move the MOS boundary:\n{tuned}"
     );
+    Ok(())
 }

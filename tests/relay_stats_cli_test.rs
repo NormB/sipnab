@@ -14,9 +14,11 @@ use sipnab::app::bootstrap::{
     RelayPollPlan, RelayStatsAction, relay_poll_plan, relay_stats_action,
 };
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The flag off is a skip, whatever else is true -- nothing transmits unbidden.
 #[test]
-fn without_the_flag_nothing_is_asked() {
+fn without_the_flag_nothing_is_asked() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(false, Some("127.0.0.1:22222"), true),
         RelayStatsAction::Skip
@@ -25,16 +27,18 @@ fn without_the_flag_nothing_is_asked() {
         relay_stats_action(false, None, false),
         RelayStatsAction::Skip
     );
+    Ok(())
 }
 
 /// Asked with no relay named is not_configured -- the operator names one.
 #[test]
-fn asked_with_no_relay_is_not_configured() {
+fn asked_with_no_relay_is_not_configured() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(true, None, true),
         RelayStatsAction::NotConfigured,
         "no relay to ask; the fix is to name one"
     );
+    Ok(())
 }
 
 /// Asked with a relay but no permit is not_permitted -- a file-backed run.
@@ -43,42 +47,45 @@ fn asked_with_no_relay_is_not_configured() {
 /// has a different fix than one whose run cannot transmit, so the two are never
 /// collapsed.
 #[test]
-fn asked_with_a_relay_but_no_permit_is_not_permitted() {
+fn asked_with_a_relay_but_no_permit_is_not_permitted() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(true, Some("127.0.0.1:22222"), false),
         RelayStatsAction::NotPermitted,
         "asking transmits; a file-backed run may not"
     );
+    Ok(())
 }
 
 /// Asked, a relay named, and a permit in hand: fetch, carrying the address.
 #[test]
-fn asked_with_a_relay_and_a_permit_is_a_fetch() {
+fn asked_with_a_relay_and_a_permit_is_a_fetch() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(true, Some("10.0.0.2:22222"), true),
         RelayStatsAction::Fetch("10.0.0.2:22222".to_owned()),
         "the address the operator named is carried to the fetch verbatim"
     );
+    Ok(())
 }
 
 /// The `--relay-stats` flag parses and sets its field; without it the field is
 /// off. This is also where the flag token is referenced, so the coverage gate
 /// sees the flag has a test.
 #[test]
-fn the_relay_stats_flag_parses() {
+fn the_relay_stats_flag_parses() -> Result<(), TestError> {
     use clap::Parser;
     let on = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--relay-stats"])
-        .expect("--relay-stats parses");
+        .map_err(|e| format!("--relay-stats parses: {e}"))?;
     assert!(on.rtp_args.relay_stats, "--relay-stats sets the flag");
 
-    let off =
-        sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare parse");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare parse: {e}"))?;
     assert!(!off.rtp_args.relay_stats, "the flag is off unless given");
+    Ok(())
 }
 
 /// `--relay-stats-call <CALL-ID>` parses and carries the id; off by default.
 #[test]
-fn the_relay_stats_call_flag_parses_and_carries_the_id() {
+fn the_relay_stats_call_flag_parses_and_carries_the_id() -> Result<(), TestError> {
     use clap::Parser;
     let on = sipnab::cli::Cli::try_parse_from([
         "sipnab",
@@ -88,20 +95,22 @@ fn the_relay_stats_call_flag_parses_and_carries_the_id() {
         "--relay-stats-call",
         "1-7@10.0.0.1",
     ])
-    .expect("--relay-stats-call parses");
+    .map_err(|e| format!("--relay-stats-call parses: {e}"))?;
     assert_eq!(
         on.rtp_args.relay_stats_call.as_deref(),
         Some("1-7@10.0.0.1"),
         "the Call-ID is carried verbatim"
     );
-    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare: {e}"))?;
     assert!(off.rtp_args.relay_stats_call.is_none(), "off unless given");
+    Ok(())
 }
 
 /// A per-call ask with a relay and a permit is a fetch, same as the global one:
 /// naming a call does not change whether the run may transmit.
 #[test]
-fn a_per_call_ask_is_gated_like_the_global_one() {
+fn a_per_call_ask_is_gated_like_the_global_one() -> Result<(), TestError> {
     // The precondition is the same function; what changes is only WHICH fetch
     // the report path then runs. Asked with a relay and a permit -> fetch.
     assert_eq!(
@@ -113,28 +122,31 @@ fn a_per_call_ask_is_gated_like_the_global_one() {
         relay_stats_action(true, Some("127.0.0.1:22222"), false),
         RelayStatsAction::NotPermitted
     );
+    Ok(())
 }
 
 /// `--relay-stats-list` parses and sets its flag; off by default (ST7/C3).
 #[test]
-fn the_relay_stats_list_flag_parses() {
+fn the_relay_stats_list_flag_parses() -> Result<(), TestError> {
     use clap::Parser;
     let on =
         sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--relay-stats-list"])
-            .expect("--relay-stats-list parses");
+            .map_err(|e| format!("--relay-stats-list parses: {e}"))?;
     assert!(
         on.rtp_args.relay_stats_list,
         "--relay-stats-list sets the flag"
     );
 
-    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare: {e}"))?;
     assert!(!off.rtp_args.relay_stats_list, "off unless given");
+    Ok(())
 }
 
 /// A list ask is gated exactly like the global one: listing asks the relay, and
 /// asking transmits, so it needs a relay named and a permit in hand.
 #[test]
-fn a_list_ask_is_gated_like_the_global_one() {
+fn a_list_ask_is_gated_like_the_global_one() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(true, Some("10.0.0.2:22222"), true),
         RelayStatsAction::Fetch("10.0.0.2:22222".to_owned()),
@@ -150,11 +162,12 @@ fn a_list_ask_is_gated_like_the_global_one() {
         RelayStatsAction::NotPermitted,
         "listing on a file-backed run may not transmit"
     );
+    Ok(())
 }
 
 /// `--relay-compare <CALL-ID>` parses and carries the id; off by default (C4).
 #[test]
-fn the_relay_compare_flag_parses_and_carries_the_id() {
+fn the_relay_compare_flag_parses_and_carries_the_id() -> Result<(), TestError> {
     use clap::Parser;
     let on = sipnab::cli::Cli::try_parse_from([
         "sipnab",
@@ -164,20 +177,22 @@ fn the_relay_compare_flag_parses_and_carries_the_id() {
         "--relay-compare",
         "1-9@10.0.0.1",
     ])
-    .expect("--relay-compare parses");
+    .map_err(|e| format!("--relay-compare parses: {e}"))?;
     assert_eq!(
         on.rtp_args.relay_compare.as_deref(),
         Some("1-9@10.0.0.1"),
         "the Call-ID is carried verbatim"
     );
-    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare: {e}"))?;
     assert!(off.rtp_args.relay_compare.is_none(), "off unless given");
+    Ok(())
 }
 
 /// A compare ask is gated exactly like the global one: comparing asks the relay
 /// for its side, and asking transmits, so a file-backed run may not.
 #[test]
-fn a_compare_ask_is_gated_like_the_global_one() {
+fn a_compare_ask_is_gated_like_the_global_one() -> Result<(), TestError> {
     assert_eq!(
         relay_stats_action(true, Some("10.0.0.2:22222"), true),
         RelayStatsAction::Fetch("10.0.0.2:22222".to_owned()),
@@ -193,12 +208,13 @@ fn a_compare_ask_is_gated_like_the_global_one() {
         RelayStatsAction::NotPermitted,
         "comparing on a file-backed run may not transmit"
     );
+    Ok(())
 }
 
 /// `--relay-stats-interval <SECONDS>` parses and carries the interval; off by
 /// default (ST4/C5).
 #[test]
-fn the_relay_stats_interval_flag_parses_and_carries_the_seconds() {
+fn the_relay_stats_interval_flag_parses_and_carries_the_seconds() -> Result<(), TestError> {
     use clap::Parser;
     let on = sipnab::cli::Cli::try_parse_from([
         "sipnab",
@@ -208,19 +224,21 @@ fn the_relay_stats_interval_flag_parses_and_carries_the_seconds() {
         "--relay-stats-interval",
         "30",
     ])
-    .expect("--relay-stats-interval parses");
+    .map_err(|e| format!("--relay-stats-interval parses: {e}"))?;
     assert_eq!(on.rtp_args.relay_stats_interval, Some(30));
-    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare: {e}"))?;
     assert!(
         off.rtp_args.relay_stats_interval.is_none(),
         "off unless given"
     );
+    Ok(())
 }
 
 /// The interval is bounded: zero is rejected (a zero-second poll is a busy
 /// loop), and so is a value past the ceiling. clap enforces both at parse time.
 #[test]
-fn the_relay_stats_interval_rejects_zero_and_the_absurd() {
+fn the_relay_stats_interval_rejects_zero_and_the_absurd() -> Result<(), TestError> {
     use clap::Parser;
     assert!(
         sipnab::cli::Cli::try_parse_from([
@@ -246,13 +264,14 @@ fn the_relay_stats_interval_rejects_zero_and_the_absurd() {
         .is_err(),
         "an interval past the ceiling must be refused"
     );
+    Ok(())
 }
 
 /// Nothing polls by default (ST4): with no interval, the plan is `Idle` whatever
 /// else is true. This is the rule that a timer transmits only when an operator
 /// names an interval -- absent one, no packet leaves.
 #[test]
-fn no_interval_means_nothing_polls() {
+fn no_interval_means_nothing_polls() -> Result<(), TestError> {
     assert_eq!(
         relay_poll_plan(None, Some("127.0.0.1:22222"), true),
         RelayPollPlan::Idle,
@@ -263,37 +282,40 @@ fn no_interval_means_nothing_polls() {
         RelayPollPlan::Idle,
         "no interval, no poll -- nothing configured either way"
     );
+    Ok(())
 }
 
 /// Asked to poll with no relay named is refused as `not_configured` (ST4): the
 /// run was never given a relay to poll, so the request is refused, not silently
 /// dropped. The operator's fix is to name one.
 #[test]
-fn polling_with_no_relay_is_refused_as_not_configured() {
+fn polling_with_no_relay_is_refused_as_not_configured() -> Result<(), TestError> {
     assert_eq!(
         relay_poll_plan(Some(30), None, true),
         RelayPollPlan::NotConfigured,
         "a poll with no relay to poll is refused, not a silent no-op"
     );
+    Ok(())
 }
 
 /// Asked to poll a relay on a run that may not transmit is `not_permitted` -- a
 /// file-backed run. Ordered after the no-relay case, exactly like the one-shot
 /// gate: naming no relay has a different fix than a run that cannot transmit.
 #[test]
-fn polling_without_a_permit_is_not_permitted() {
+fn polling_without_a_permit_is_not_permitted() -> Result<(), TestError> {
     assert_eq!(
         relay_poll_plan(Some(30), Some("127.0.0.1:22222"), false),
         RelayPollPlan::NotPermitted,
         "polling transmits; a file-backed run may not"
     );
+    Ok(())
 }
 
 /// A poll with an interval, a relay, and a permit carries BOTH the interval and
 /// the address the operator named, verbatim -- the interval so each reading can
 /// say it was polled every N seconds, the address so the poll reaches it.
 #[test]
-fn polling_with_interval_relay_and_permit_carries_both() {
+fn polling_with_interval_relay_and_permit_carries_both() -> Result<(), TestError> {
     assert_eq!(
         relay_poll_plan(Some(30), Some("10.0.0.2:22222"), true),
         RelayPollPlan::Poll {
@@ -302,13 +324,14 @@ fn polling_with_interval_relay_and_permit_carries_both() {
         },
         "the interval and the address are both carried to the poll"
     );
+    Ok(())
 }
 
 /// The poll gate is the SAME rule as the one-shot ask: for any relay/permit
 /// pair, a poll (asked = an interval is present) and `relay_stats_action` with
 /// `asked = true` reach the same verdict. One rule, so the two cannot drift.
 #[test]
-fn the_poll_gate_matches_the_one_shot_gate() {
+fn the_poll_gate_matches_the_one_shot_gate() -> Result<(), TestError> {
     for relay in [None, Some("10.0.0.2:22222")] {
         for permit in [false, true] {
             let poll = relay_poll_plan(Some(15), relay, permit);
@@ -328,13 +351,14 @@ fn the_poll_gate_matches_the_one_shot_gate() {
             );
         }
     }
+    Ok(())
 }
 
 /// `--api-allow-relay-query` parses and sets its flag; off by default (ST5).
 /// This is also where the flag token is referenced so the coverage gate sees
 /// it has a test. The REST routes it gates are exercised in `relay_rest_test`.
 #[test]
-fn the_api_allow_relay_query_flag_parses() {
+fn the_api_allow_relay_query_flag_parses() -> Result<(), TestError> {
     use clap::Parser;
     let on = sipnab::cli::Cli::try_parse_from([
         "sipnab",
@@ -343,11 +367,13 @@ fn the_api_allow_relay_query_flag_parses() {
         "x.pcap",
         "--api-allow-relay-query",
     ])
-    .expect("--api-allow-relay-query parses");
+    .map_err(|e| format!("--api-allow-relay-query parses: {e}"))?;
     assert!(
         on.listener_args.api_allow_relay_query,
         "--api-allow-relay-query sets the flag"
     );
-    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"]).expect("bare");
+    let off = sipnab::cli::Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])
+        .map_err(|e| format!("bare: {e}"))?;
     assert!(!off.listener_args.api_allow_relay_query, "off unless given");
+    Ok(())
 }

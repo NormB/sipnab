@@ -12,29 +12,39 @@
 use chrono::{DateTime, TimeZone, Utc};
 
 use sipnab::output::relay_statistics::{FetchOrigin, format_relay_statistics};
+
+type TestError = Box<dyn std::error::Error>;
 use sipnab::stats_vocab::{
     StatisticTier, StatisticValue, TieredStatistic, WireStatistics, relay_reported,
     resolve_for_wire,
 };
 
-fn at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 13, 4, 5, 6).unwrap()
+fn at() -> Result<DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2026, 9, 13, 4, 5, 6)
+        .single()
+        .ok_or("the timestamp is not a single valid instant")?)
 }
 
 /// Render as a one-shot ask -- the shape every C1/C2 test uses.
-fn asked(wire: &WireStatistics, label: &str) -> String {
-    format_relay_statistics(wire, label, at(), FetchOrigin::Asked)
+fn asked(wire: &WireStatistics, label: &str) -> Result<String, TestError> {
+    Ok(format_relay_statistics(
+        wire,
+        label,
+        at()?,
+        FetchOrigin::Asked,
+    ))
 }
 
 /// A counted figure renders with its name and value; the header names the
 /// relay, the moment it was asked, and the tier once.
 #[test]
-fn a_counted_figure_renders_with_the_relays_own_name_and_value() {
+fn a_counted_figure_renders_with_the_relays_own_name_and_value() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[
         ("npkts_relayed".to_string(), "9000".to_string()),
         ("uptime".to_string(), "134".to_string()),
     ]));
-    let text = asked(&wire, "rtpengine at 127.0.0.1:22222");
+    let text = asked(&wire, "rtpengine at 127.0.0.1:22222")?;
 
     assert!(
         text.contains("rtpengine at 127.0.0.1:22222"),
@@ -56,27 +66,29 @@ fn a_counted_figure_renders_with_the_relays_own_name_and_value() {
         text.contains("uptime") && text.contains("134"),
         "uptime survives as its digits:\n{text}"
     );
+    Ok(())
 }
 
 /// A uniform-tier table states the tier once, not on every row.
 #[test]
-fn a_uniform_tier_table_states_the_tier_once() {
+fn a_uniform_tier_table_states_the_tier_once() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[
         ("a".to_string(), "1".to_string()),
         ("b".to_string(), "2".to_string()),
         ("c".to_string(), "3".to_string()),
     ]));
-    let text = asked(&wire, "rtpproxy at 127.0.0.1:22223");
+    let text = asked(&wire, "rtpproxy at 127.0.0.1:22223")?;
     assert_eq!(
         text.matches("relay_reported").count(),
         1,
         "a table that is all one tier states it once, not per row:\n{text}"
     );
+    Ok(())
 }
 
 /// A mixed-tier table annotates each row, so no reading is unlabeled.
 #[test]
-fn a_mixed_tier_table_annotates_every_row() {
+fn a_mixed_tier_table_annotates_every_row() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         TieredStatistic {
             name: "relay_loss".to_string(),
@@ -89,7 +101,7 @@ fn a_mixed_tier_table_annotates_every_row() {
             tier: StatisticTier::SipnabMeasured,
         },
     ]);
-    let text = asked(&wire, "relay");
+    let text = asked(&wire, "relay")?;
     assert!(
         text.contains("relay_reported"),
         "the relay tier is on its row:\n{text}"
@@ -98,11 +110,12 @@ fn a_mixed_tier_table_annotates_every_row() {
         text.contains("sipnab_measured"),
         "the measured tier is on its row:\n{text}"
     );
+    Ok(())
 }
 
 /// A refusal appears in a refusals section with its code, never as a value.
 #[test]
-fn a_refusal_is_shown_with_its_code_in_its_own_section() {
+fn a_refusal_is_shown_with_its_code_in_its_own_section() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         TieredStatistic {
             name: "npkts_rcvd".to_string(),
@@ -115,7 +128,7 @@ fn a_refusal_is_shown_with_its_code_in_its_own_section() {
             tier: StatisticTier::RelayReported,
         },
     ]);
-    let text = asked(&wire, "relay");
+    let text = asked(&wire, "relay")?;
     assert!(
         text.contains("Refused"),
         "there is a refusals section:\n{text}"
@@ -130,11 +143,12 @@ fn a_refusal_is_shown_with_its_code_in_its_own_section() {
         value_lines, 1,
         "the refused statistic appears once, in refusals only:\n{text}"
     );
+    Ok(())
 }
 
 /// A not-asked statistic appears nowhere -- omitted, never a zero.
 #[test]
-fn a_not_asked_statistic_is_absent_from_the_output() {
+fn a_not_asked_statistic_is_absent_from_the_output() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         TieredStatistic {
             name: "present_one".to_string(),
@@ -147,7 +161,7 @@ fn a_not_asked_statistic_is_absent_from_the_output() {
             tier: StatisticTier::RelayReported,
         },
     ]);
-    let text = asked(&wire, "relay");
+    let text = asked(&wire, "relay")?;
     assert!(
         !text.contains("never_asked"),
         "a not-asked statistic must not be rendered:\n{text}"
@@ -156,28 +170,34 @@ fn a_not_asked_statistic_is_absent_from_the_output() {
         !text.contains(" 0"),
         "and it must not appear as a zero:\n{text}"
     );
+    Ok(())
 }
 
 /// An empty result says so rather than rendering an empty table.
 #[test]
-fn an_empty_result_says_the_relay_reported_nothing() {
-    let text = asked(&WireStatistics::default(), "relay");
+fn an_empty_result_says_the_relay_reported_nothing() -> Result<(), TestError> {
+    let text = asked(&WireStatistics::default(), "relay")?;
     assert!(
         text.to_lowercase().contains("nothing"),
         "an empty result must say the relay reported nothing:\n{text}"
     );
+    Ok(())
 }
 
 /// A polled reading says it was polled, and names the interval (ST4/C5): a
 /// number from a timer must not read as a one-shot answer to a question.
 #[test]
-fn a_polled_reading_is_marked_as_a_poll_with_its_interval() {
+fn a_polled_reading_is_marked_as_a_poll_with_its_interval() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[(
         "npkts_relayed".to_string(),
         "9000".to_string(),
     )]));
-    let text =
-        format_relay_statistics(&wire, "relay", at(), FetchOrigin::Polled { every_secs: 30 });
+    let text = format_relay_statistics(
+        &wire,
+        "relay",
+        at()?,
+        FetchOrigin::Polled { every_secs: 30 },
+    );
     assert!(
         text.to_lowercase().contains("polled"),
         "a polled reading must say it was polled:\n{text}"
@@ -191,13 +211,14 @@ fn a_polled_reading_is_marked_as_a_poll_with_its_interval() {
         !text.contains("asked"),
         "a polled reading is not a one-shot ask:\n{text}"
     );
+    Ok(())
 }
 
 /// A one-shot ask still says "asked", not "polled" -- the two never collapse.
 #[test]
-fn a_one_shot_ask_says_asked_not_polled() {
+fn a_one_shot_ask_says_asked_not_polled() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[("uptime".to_string(), "5".to_string())]));
-    let text = asked(&wire, "relay");
+    let text = asked(&wire, "relay")?;
     assert!(
         text.contains("asked"),
         "a one-shot fetch says asked:\n{text}"
@@ -206,4 +227,5 @@ fn a_one_shot_ask_says_asked_not_polled() {
         !text.to_lowercase().contains("polled"),
         "a one-shot fetch is not a poll:\n{text}"
     );
+    Ok(())
 }

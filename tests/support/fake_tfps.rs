@@ -120,19 +120,3 @@ impl TfpsActions for FakeTfps {
 pub fn enabled(flag: &str) -> Result<ActionPolicy, TestError> {
     Ok(ActionPolicy::from_settings(&[flag.to_string()], &[])?)
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`enabled`], panicking on error.
-pub fn enabled_or_panic(flag: &str) -> ActionPolicy {
-    enabled(flag).expect("enabled")
-}
-
-impl FakeTfps {
-    /// [`FakeTfps::calls`], panicking on error.
-    pub fn calls_or_panic(&self) -> Vec<String> {
-        self.calls().expect("FakeTfps::calls")
-    }
-}

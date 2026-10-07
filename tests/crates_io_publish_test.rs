@@ -26,34 +26,35 @@
 
 use std::path::Path;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
-fn workflows() -> Vec<(String, String)> {
+fn workflows() -> Result<Vec<(String, String)>, TestError> {
     let dir = repo().join(".github/workflows");
-    let mut out: Vec<(String, String)> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .map(|e| e.expect("dir entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
-        .map(|p| {
-            let name = p
-                .file_name()
-                .expect("file name")
-                .to_string_lossy()
-                .into_owned();
-            let body =
-                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            (name, body)
-        })
-        .collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let p = entry?.path();
+        if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .ok_or("file name")?
+            .to_string_lossy()
+            .into_owned();
+        let body = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+        out.push((name, body));
+    }
     out.sort();
     assert!(out.len() >= 10, "found only {} workflows", out.len());
-    out
+    Ok(out)
 }
 
 /// A workflow's jobs as `(id, lines)`, comments dropped: the `jobs:` mapping
@@ -118,9 +119,9 @@ fn job_permissions(lines: &[String]) -> Vec<(String, String)> {
 }
 
 /// Every job that uploads to crates.io, as `(workflow file, job id, lines)`.
-fn publishing_jobs() -> Vec<(String, String, Vec<String>)> {
+fn publishing_jobs() -> Result<Vec<(String, String, Vec<String>)>, TestError> {
     let mut found = Vec::new();
-    for (file, body) in workflows() {
+    for (file, body) in workflows()? {
         for (id, lines) in jobs(&body) {
             if lines.iter().any(|l| {
                 l.contains("crates-io-auth-action")
@@ -131,11 +132,11 @@ fn publishing_jobs() -> Vec<(String, String, Vec<String>)> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
-fn the_publishing_job() -> (String, String, Vec<String>) {
-    let mut found = publishing_jobs();
+fn the_publishing_job() -> Result<(String, String, Vec<String>), TestError> {
+    let mut found = publishing_jobs()?;
     assert_eq!(
         found
             .iter()
@@ -146,12 +147,12 @@ fn the_publishing_job() -> (String, String, Vec<String>) {
          release.yml: crates.io accepts a token only from the workflow file \
          named in its trusted-publisher config"
     );
-    found.remove(0)
+    Ok(found.remove(0))
 }
 
 #[test]
-fn crates_io_gets_a_release_only_after_its_github_release_exists() {
-    let (_, _, lines) = the_publishing_job();
+fn crates_io_gets_a_release_only_after_its_github_release_exists() -> Result<(), TestError> {
+    let (_, _, lines) = the_publishing_job()?;
     let needs = job_key(&lines, "needs").unwrap_or_default();
     assert!(
         needs
@@ -182,11 +183,12 @@ fn crates_io_gets_a_release_only_after_its_github_release_exists() {
          names that environment, and crates.io refuses a token whose \
          environment differs from its trusted-publisher config"
     );
+    Ok(())
 }
 
 #[test]
-fn the_crates_io_token_lives_for_one_job() {
-    let (_, _, lines) = the_publishing_job();
+fn the_crates_io_token_lives_for_one_job() -> Result<(), TestError> {
+    let (_, _, lines) = the_publishing_job()?;
     let mut perms = job_permissions(&lines);
     perms.sort();
     assert_eq!(
@@ -212,7 +214,7 @@ fn the_crates_io_token_lives_for_one_job() {
          tag against Cargo.toml and asks crates.io about every crate before \
          uploading any"
     );
-    for (file, body) in workflows() {
+    for (file, body) in workflows()? {
         for line in body.lines().filter(|l| !l.trim_start().starts_with('#')) {
             assert!(
                 !(line.contains("secrets.") && line.contains("CARGO_REGISTRY_TOKEN")),
@@ -221,13 +223,14 @@ fn the_crates_io_token_lives_for_one_job() {
             );
         }
     }
+    Ok(())
 }
 
 #[test]
-fn the_documented_trusted_publisher_matches_the_workflow() {
-    let (file, _, lines) = the_publishing_job();
+fn the_documented_trusted_publisher_matches_the_workflow() -> Result<(), TestError> {
+    let (file, _, lines) = the_publishing_job()?;
     let environment = job_key(&lines, "environment").unwrap_or_default();
-    let doc = read("docs/internals/build-ci-release.md");
+    let doc = read("docs/internals/build-ci-release.md")?;
     for row in [
         "| Repository owner | `NormB` |".to_string(),
         "| Repository name | `sipnab` |".to_string(),
@@ -242,11 +245,12 @@ fn the_documented_trusted_publisher_matches_the_workflow() {
              does not match it."
         );
     }
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the parsers read a job the way the checks above assume.
 #[test]
-fn the_job_reader_finds_keys_permissions_and_jobs() {
+fn the_job_reader_finds_keys_permissions_and_jobs() -> Result<(), TestError> {
     let body = "on:\n  push:\njobs:\n  a:\n    needs: [build, release]\n    # if: nope\n    \
                 if: github.event_name == 'push'\n    environment: crates-io\n    \
                 permissions:\n      contents: read\n      id-token: write\n    steps:\n      \
@@ -270,6 +274,7 @@ fn the_job_reader_finds_keys_permissions_and_jobs() {
             ("id-token".to_string(), "write".to_string()),
         ]
     );
+    Ok(())
 }
 
 /// `release.yml` also runs by `workflow_dispatch` to build without releasing.
@@ -279,8 +284,8 @@ fn the_job_reader_finds_keys_permissions_and_jobs() {
 /// Homebrew tap from a hand-started run. Every job gated on a release tag
 /// also requires the push event.
 #[test]
-fn a_manual_run_releases_nothing() {
-    let body = read(".github/workflows/release.yml");
+fn a_manual_run_releases_nothing() -> Result<(), TestError> {
+    let body = read(".github/workflows/release.yml")?;
     let mut tag_gated = Vec::new();
     for (id, lines) in jobs(&body) {
         let condition = job_key(&lines, "if").unwrap_or_default();
@@ -303,4 +308,5 @@ fn a_manual_run_releases_nothing() {
          upload and the Homebrew tap bump; a change here must be reviewed \
          against this guard"
     );
+    Ok(())
 }

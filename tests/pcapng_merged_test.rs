@@ -33,20 +33,22 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Read `path` headlessly and return combined output.
-fn read_capture(path: &Path) -> (String, String, Option<i32>) {
-    run_support::run_or_panic(
+fn read_capture(path: &Path) -> Result<(String, String, Option<i32>), TestError> {
+    Ok(run_support::run(
         &[
             "-N",
             "-I",
-            path.to_str().unwrap(),
+            path.to_str().ok_or("path.to_str() was None")?,
             "--portrange",
             "1-65535",
             "--no-cli-print",
             "--report",
         ],
         Some("info"),
-    )
+    )?)
 }
 
 /// Both interfaces' packets must be read, not just the first interface's.
@@ -55,8 +57,8 @@ fn read_capture(path: &Path) -> (String, String, Option<i32>) {
 /// 2048. Each carries one SIP message, and a run that reads only one of them
 /// has silently discarded half the capture.
 #[test]
-fn a_merged_pcapng_yields_packets_from_every_interface() {
-    let dir = tempfile::tempdir().unwrap();
+fn a_merged_pcapng_yields_packets_from_every_interface() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("merged.pcapng");
 
     let eth = pcap_build::udp_frame(
@@ -76,9 +78,9 @@ fn a_merged_pcapng_yields_packets_from_every_interface() {
           CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     ));
 
-    pcap_build::write_pcapng_multi_iface_or_panic(&path, &[(0, eth), (1, raw)]);
+    pcap_build::write_pcapng_multi_iface(&path, &[(0, eth), (1, raw)])?;
 
-    let (stdout, stderr, code) = read_capture(&path);
+    let (stdout, stderr, code) = read_capture(&path)?;
     let all = format!("{stdout}{stderr}");
 
     assert_eq!(
@@ -95,6 +97,7 @@ fn a_merged_pcapng_yields_packets_from_every_interface() {
         "the raw-IP interface's SIP must be read too — reading only the first \
          interface silently discards the rest of the capture:\n{all}"
     );
+    Ok(())
 }
 
 /// A single-interface pcapng must keep working exactly as before.
@@ -103,8 +106,8 @@ fn a_merged_pcapng_yields_packets_from_every_interface() {
 /// must not alter the ordinary one, which is the overwhelming majority of
 /// captures.
 #[test]
-fn an_ordinary_single_interface_capture_still_reads() {
-    let dir = tempfile::tempdir().unwrap();
+fn an_ordinary_single_interface_capture_still_reads() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("plain.pcap");
 
     let frame = pcap_build::udp_frame(
@@ -115,15 +118,16 @@ fn an_ordinary_single_interface_capture_still_reads() {
         b"OPTIONS sip:plain@example.net SIP/2.0\r\nCall-ID: plain-one\r\n\
           CSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     );
-    pcap_build::write_pcap_or_panic(&path, &[frame]);
+    pcap_build::write_pcap(&path, &[frame])?;
 
-    let (stdout, stderr, code) = read_capture(&path);
+    let (stdout, stderr, code) = read_capture(&path)?;
     let all = format!("{stdout}{stderr}");
     assert_eq!(code, Some(0), "an ordinary capture must still read:\n{all}");
     assert!(
         all.contains("plain-one"),
         "the ordinary path must be untouched:\n{all}"
     );
+    Ok(())
 }
 
 /// A frame the capture cut short is counted as snapped on the merged-pcapng
@@ -134,8 +138,8 @@ fn an_ordinary_single_interface_capture_still_reads() {
 /// called, so a merged capture never reported a truncated frame. Run with a
 /// private `HOME` so no user configuration is read.
 #[test]
-fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() {
-    let dir = tempfile::tempdir().unwrap();
+fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("merged-snapped.pcapng");
     let eth = |call_id: &str| {
         pcap_build::udp_frame(
@@ -154,22 +158,21 @@ fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() {
     let cut = eth("merged-cut");
     let kept = cut.len() - 20;
     let raw = pcap_build::strip_ethernet(&eth("merged-raw"));
-    pcap_build::write_pcapng_multi_iface_cut_or_panic(
+    pcap_build::write_pcapng_multi_iface_cut(
         &path,
         &[(0, whole, usize::MAX), (0, cut, kept), (1, raw, usize::MAX)],
-    );
+    )?;
 
-    let home = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir()?;
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["-N", "-I", path.to_str().unwrap()])
+        .args(["-N", "-I", path.to_str().ok_or("path.to_str() was None")?])
         .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path())
         .env_remove("SIPNAB_CONFIG")
         .env("SIPNAB_LOG", "info")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert_eq!(out.status.code(), Some(0), "{stderr}");
@@ -181,4 +184,5 @@ fn a_snapped_frame_in_a_merged_pcapng_is_reported_as_snapped() {
         stderr.contains("1 frame(s) arrived truncated by the capture's snaplen"),
         "the snapped frame must be counted:\n{stderr}"
     );
+    Ok(())
 }

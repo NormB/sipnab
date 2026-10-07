@@ -22,6 +22,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/markdown.rs"]
 mod markdown;
 
@@ -29,24 +33,23 @@ fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn tracked() -> BTreeSet<String> {
+fn tracked() -> Result<BTreeSet<String>, TestError> {
     let out = Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files");
+        .output()?;
     assert!(out.status.success(), "git ls-files failed");
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
-fn markdown_files() -> Vec<PathBuf> {
+fn markdown_files() -> Result<Vec<PathBuf>, TestError> {
     let mut files = Vec::new();
     let mut stack = vec![repo().join("docs")];
     while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -68,7 +71,7 @@ fn markdown_files() -> Vec<PathBuf> {
     // gate then failed there over bare paths in a private list CI never sees --
     // the same commit green in CI and red locally. A link gate polices what is
     // published, which is what is committed.
-    let tracked = tracked();
+    let tracked = tracked()?;
     files.retain(|p| {
         p.strip_prefix(repo())
             .ok()
@@ -76,7 +79,7 @@ fn markdown_files() -> Vec<PathBuf> {
             .is_some_and(|r| tracked.contains(r))
     });
     files.sort();
-    files
+    Ok(files)
 }
 
 /// Count the cell separators in a table row.
@@ -135,16 +138,15 @@ fn prose_lines(text: &str) -> Vec<(usize, &str)> {
 
 /// Every tracked repo path mentioned in prose is a link, not a bare code span.
 #[test]
-fn repo_paths_in_docs_are_clickable() {
-    let tracked = tracked();
+fn repo_paths_in_docs_are_clickable() -> Result<(), TestError> {
+    let tracked = tracked()?;
     // A code span that is NOT already a link label: `x` not preceded by [.
-    let span =
-        regex::Regex::new(r"(?:^|[^\[])`([A-Za-z0-9_.][A-Za-z0-9/._-]*)(?::[0-9-]+)?`").unwrap();
+    let span = regex::Regex::new(r"(?:^|[^\[])`([A-Za-z0-9_.][A-Za-z0-9/._-]*)(?::[0-9-]+)?`")?;
 
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
-    for f in markdown_files() {
-        let text = std::fs::read_to_string(&f).expect("read");
+    for f in markdown_files()? {
+        let text = std::fs::read_to_string(&f)?;
         for (lineno, line) in prose_lines(&text) {
             for c in span.captures_iter(line) {
                 let p = &c[1];
@@ -169,7 +171,7 @@ fn repo_paths_in_docs_are_clickable() {
                 if tracked.contains(p) {
                     offenders.push(format!(
                         "{}:{lineno}: `{p}` is a tracked file, shown as text a reader must retype",
-                        f.strip_prefix(repo()).unwrap().display()
+                        f.strip_prefix(repo())?.display()
                     ));
                 }
             }
@@ -198,6 +200,7 @@ fn repo_paths_in_docs_are_clickable() {
         offenders.len(),
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// What `scripts/rfc-links.py` rewrites, as `(repo path, text)`: every tracked
@@ -209,21 +212,20 @@ fn repo_paths_in_docs_are_clickable() {
 /// which runs `--apply` on this tree during the pre-commit hook, rewrote the
 /// file AFTER it was staged, leaving the commit and the tree different
 /// (2026-09-18). A gate narrower than its fixer is how that happens.
-fn rfc_link_scope() -> Vec<(String, String)> {
-    let listed = |pattern: &str| -> Vec<String> {
+fn rfc_link_scope() -> Result<Vec<(String, String)>, TestError> {
+    let listed = |pattern: &str| -> Result<Vec<String>, TestError> {
         let out = Command::new("git")
             .args(["ls-files", "-z", "--", pattern])
             .current_dir(repo())
-            .output()
-            .expect("git ls-files");
-        String::from_utf8_lossy(&out.stdout)
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stdout)
             .split('\0')
             .filter(|s| !s.is_empty())
             .map(str::to_string)
-            .collect()
+            .collect())
     };
     let mut out = Vec::new();
-    for path in listed("*.md") {
+    for path in listed("*.md")? {
         let text = std::fs::read_to_string(repo().join(&path)).unwrap_or_default();
         // The fixer's own test for a generated page: its generator is fixed at
         // the source, and the page follows.
@@ -233,7 +235,7 @@ fn rfc_link_scope() -> Vec<(String, String)> {
         }
         out.push((path, text));
     }
-    for path in listed(":(glob)src/**/*.rs") {
+    for path in listed(":(glob)src/**/*.rs")? {
         let text = std::fs::read_to_string(repo().join(&path)).unwrap_or_default();
         let doc: Vec<String> = text
             .lines()
@@ -246,7 +248,7 @@ fn rfc_link_scope() -> Vec<(String, String)> {
             .collect();
         out.push((path, doc.join("\n")));
     }
-    out
+    Ok(out)
 }
 
 /// How many leading lines are TOML (`+++`) or YAML (`---`) front matter.
@@ -267,11 +269,12 @@ fn front_matter_lines(text: &str) -> usize {
 
 /// Front matter is counted through its closing fence and no further.
 #[test]
-fn front_matter_lines_counts_through_the_closing_fence() {
+fn front_matter_lines_counts_through_the_closing_fence() -> Result<(), TestError> {
     assert_eq!(front_matter_lines("+++\na = 1\n+++\nbody"), 3);
     assert_eq!(front_matter_lines("---\ntitle: x\n---\n"), 3);
     assert_eq!(front_matter_lines("# Title\n+++\n"), 0);
     assert_eq!(front_matter_lines("+++\nnever closed\n"), 0);
+    Ok(())
 }
 
 /// A citation naming a section must link to that section.
@@ -281,14 +284,13 @@ fn front_matter_lines_counts_through_the_closing_fence() {
 /// one `scripts/rfc-links.py` rewrites, so the gate and its fixer cannot
 /// disagree about what a citation is.
 #[test]
-fn rfc_section_citations_are_linked() {
-    let cite =
-        regex::Regex::new(r"(?:^|[^\[])\bRFC ?(\d{3,5}) ?(?:§ ?|section )(\d+(?:\.\d+)*)").unwrap();
+fn rfc_section_citations_are_linked() -> Result<(), TestError> {
+    let cite = regex::Regex::new(r"(?:^|[^\[])\bRFC ?(\d{3,5}) ?(?:§ ?|section )(\d+(?:\.\d+)*)")?;
 
     let mut offenders = Vec::new();
     let mut total = 0usize;
     let mut scanned = 0usize;
-    for (path, text) in rfc_link_scope() {
+    for (path, text) in rfc_link_scope()? {
         scanned += 1;
         // Front matter is metadata, printed as plain text, so the fixer
         // leaves it alone and so does this gate: the two share one scope.
@@ -324,6 +326,7 @@ fn rfc_section_citations_are_linked() {
          3261 248 times.",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// The linkers must never write into a fenced block.
@@ -332,11 +335,11 @@ fn rfc_section_citations_are_linked() {
 /// shell example. A reader copying that gets a syntax error, and the gate above
 /// would still be green because it only reads prose.
 #[test]
-fn no_generated_link_sits_inside_a_fenced_block() {
+fn no_generated_link_sits_inside_a_fenced_block() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut fenced_lines = 0usize;
-    for f in markdown_files() {
-        let text = std::fs::read_to_string(&f).expect("read");
+    for f in markdown_files()? {
+        let text = std::fs::read_to_string(&f)?;
         let prose: BTreeSet<usize> = prose_lines(&text).into_iter().map(|(n, _)| n).collect();
         for (i, line) in text.lines().enumerate() {
             let n = i + 1;
@@ -349,7 +352,7 @@ fn no_generated_link_sits_inside_a_fenced_block() {
             {
                 offenders.push(format!(
                     "{}:{n}: {}",
-                    f.strip_prefix(repo()).unwrap().display(),
+                    f.strip_prefix(repo())?.display(),
                     line.trim()
                 ));
             }
@@ -366,6 +369,7 @@ fn no_generated_link_sits_inside_a_fenced_block() {
         offenders.len(),
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// A cited line number must go to that line.
@@ -376,14 +380,14 @@ fn no_generated_link_sits_inside_a_fenced_block() {
 /// sentence had just given an exact position in. A citation that does not land
 /// is worse than a bare number, because it looks like it worked.
 #[test]
-fn cited_line_numbers_link_to_the_line() {
+fn cited_line_numbers_link_to_the_line() -> Result<(), TestError> {
     // A link label ending in :N or :N-M -- the author promised a position.
-    let cite = regex::Regex::new(r"\[`([^`]*?):(\d+(?:-\d+)?)`\]\(([^)]+)\)").unwrap();
+    let cite = regex::Regex::new(r"\[`([^`]*?):(\d+(?:-\d+)?)`\]\(([^)]+)\)")?;
 
     let mut no_fragment = Vec::new();
     let mut relative = Vec::new();
     let mut total = 0usize;
-    for f in markdown_files() {
+    for f in markdown_files()? {
         // docs/internals/** is exempt, and the exemption is a limitation
         // rather than a preference. Those links MUST be relative
         // (build-wiki.py rewrites them; an absolute blob URL pins a branch),
@@ -394,14 +398,14 @@ fn cited_line_numbers_link_to_the_line() {
         if f.to_string_lossy().contains("/internals/") {
             continue;
         }
-        let text = std::fs::read_to_string(&f).expect("read");
+        let text = std::fs::read_to_string(&f)?;
         for (lineno, line) in prose_lines(&text) {
             for c in cite.captures_iter(line) {
                 total += 1;
                 let href = &c[3];
                 let where_ = format!(
                     "{}:{lineno}: `{}:{}`",
-                    f.strip_prefix(repo()).unwrap().display(),
+                    f.strip_prefix(repo())?.display(),
                     &c[1],
                     &c[2]
                 );
@@ -436,6 +440,7 @@ fn cited_line_numbers_link_to_the_line() {
         relative.len(),
         relative.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every row of a table has the same number of cells as its header.
@@ -449,11 +454,11 @@ fn cited_line_numbers_link_to_the_line() {
 /// Compared per table, not against a fixed number: this file alone holds a
 /// 3-column table and a 4-column one.
 #[test]
-fn table_rows_match_their_header_width() {
+fn table_rows_match_their_header_width() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut tables = 0usize;
-    for f in markdown_files() {
-        let text = std::fs::read_to_string(&f).expect("read");
+    for f in markdown_files()? {
+        let text = std::fs::read_to_string(&f)?;
         let mut header: Option<(usize, usize)> = None; // (pipe count, line)
         for (lineno, line) in prose_lines(&text) {
             let t = line.trim_start();
@@ -470,7 +475,7 @@ fn table_rows_match_their_header_width() {
                 Some((want, _)) if pipes != want => offenders.push(format!(
                     "{}:{lineno}: row has {pipes} pipes, its table header has {want} \
                      - the table stops rendering here",
-                    f.strip_prefix(repo()).unwrap().display()
+                    f.strip_prefix(repo())?.display()
                 )),
                 _ => {}
             }
@@ -486,6 +491,7 @@ fn table_rows_match_their_header_width() {
         offenders.len(),
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// A bracketed reference in a table must actually be a link.
@@ -498,15 +504,15 @@ fn table_rows_match_their_header_width() {
 /// name with no meaning to a reader of the table, and is dropped rather than
 /// linked.
 #[test]
-fn bracketed_refs_in_tables_are_real_links() {
+fn bracketed_refs_in_tables_are_real_links() -> Result<(), TestError> {
     // [text] not followed by ( or : -- i.e. neither inline link nor definition.
     // No lookahead: the `regex` crate does not support it, and the version
     // that did compile silently would have been worse than this failing loudly.
-    let dangling = regex::Regex::new(r"\[([^\]\[]{2,60})\]([^(\[:]|$)").unwrap();
+    let dangling = regex::Regex::new(r"\[([^\]\[]{2,60})\]([^(\[:]|$)")?;
     let mut offenders = Vec::new();
-    let definition = regex::Regex::new(r"(?m)^\[([^\]]+)\]:").unwrap();
-    for f in markdown_files() {
-        let text = std::fs::read_to_string(&f).expect("read");
+    let definition = regex::Regex::new(r"(?m)^\[([^\]]+)\]:")?;
+    for f in markdown_files()? {
+        let text = std::fs::read_to_string(&f)?;
         let defined: BTreeSet<String> = definition
             .captures_iter(&text)
             .map(|c| c[1].to_string())
@@ -536,7 +542,7 @@ fn bracketed_refs_in_tables_are_real_links() {
                 }
                 offenders.push(format!(
                     "{}:{lineno}: [{label}] looks like a link and is not one",
-                    f.strip_prefix(repo()).unwrap().display()
+                    f.strip_prefix(repo())?.display()
                 ));
             }
         }
@@ -547,6 +553,7 @@ fn bracketed_refs_in_tables_are_real_links() {
         offenders.len(),
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -562,13 +569,13 @@ fn bracketed_refs_in_tables_are_real_links() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Every inline markdown link, as `(file, line, text, url)`.
-fn markdown_links() -> Vec<(String, usize, String, String)> {
-    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)]*)\)").expect("link regex");
+fn markdown_links() -> Result<Vec<(String, usize, String, String)>, TestError> {
+    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)]*)\)")?;
     let mut out = Vec::new();
     // `markdown_files()` walks docs/ only. Two of the nine URLs this gate is
     // owed for were in README.md, which that walk cannot see -- a gate blind to
     // the most-read file in the repository. Found by mutation, not by review.
-    let mut corpus = markdown_files();
+    let mut corpus = markdown_files()?;
     for extra in ["README.md", "CHANGELOG.md", "CONTRIBUTING.md"] {
         let p = repo().join(extra);
         if p.is_file() {
@@ -590,14 +597,14 @@ fn markdown_links() -> Vec<(String, usize, String, String)> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// A URL cannot contain a space. The single check that would have caught all
 /// nine at once, before the push rather than after it.
 #[test]
-fn no_link_url_contains_whitespace() {
-    let bad: Vec<String> = markdown_links()
+fn no_link_url_contains_whitespace() -> Result<(), TestError> {
+    let bad: Vec<String> = markdown_links()?
         .into_iter()
         .filter(|(_, _, _, url)| url.split_whitespace().count() > 1 || url.trim() != url)
         .map(|(f, l, _, url)| format!("{f}:{l}  {url:?}"))
@@ -609,6 +616,7 @@ fn no_link_url_contains_whitespace() {
         bad.len(),
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 /// Neither half of a link may be emptied.
@@ -618,8 +626,8 @@ fn no_link_url_contains_whitespace() {
 /// prose check notices. The same pass left an empty `()` in a sentence
 /// elsewhere, so this is that defect seen from the other side.
 #[test]
-fn no_link_has_an_empty_text_or_an_empty_target() {
-    let bad: Vec<String> = markdown_links()
+fn no_link_has_an_empty_text_or_an_empty_target() -> Result<(), TestError> {
+    let bad: Vec<String> = markdown_links()?
         .into_iter()
         .filter(|(_, _, text, url)| text.trim().is_empty() || url.trim().is_empty())
         .map(|(f, l, text, url)| format!("{f}:{l}  [{text}]({url})"))
@@ -630,14 +638,15 @@ fn no_link_has_an_empty_text_or_an_empty_target() {
         bad.len(),
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 /// A URL is not prose. An encoded article or a replaced phrase inside a path is
 /// a sentence that ended up where an address belongs.
 #[test]
-fn no_link_url_reads_like_a_sentence() {
+fn no_link_url_reads_like_a_sentence() -> Result<(), TestError> {
     const PROSE: &[&str] = &["/the%20", "%20the%20", "/the-terminal-viewer/"];
-    let bad: Vec<String> = markdown_links()
+    let bad: Vec<String> = markdown_links()?
         .into_iter()
         .filter(|(_, _, _, url)| PROSE.iter().any(|p| url.contains(p)))
         .map(|(f, l, _, url)| format!("{f}:{l}  {url:?}"))
@@ -647,13 +656,14 @@ fn no_link_url_reads_like_a_sentence() {
         "link target(s) contain prose:\n  {}",
         bad.join("\n  ")
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL. Three assertions over an empty list would pass while the
 /// extractor read nothing -- which is how this file missed the nine.
 #[test]
-fn the_link_extractor_actually_finds_links() {
-    let links = markdown_links();
+fn the_link_extractor_actually_finds_links() -> Result<(), TestError> {
+    let links = markdown_links()?;
     assert!(
         links.len() > 100,
         "only {} markdown links found; the extractor is not reading what it \
@@ -664,4 +674,5 @@ fn the_link_extractor_actually_finds_links() {
         links.iter().any(|(_, _, _, u)| u.starts_with("http")),
         "no absolute URL found at all"
     );
+    Ok(())
 }

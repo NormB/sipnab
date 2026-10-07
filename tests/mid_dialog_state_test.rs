@@ -39,6 +39,10 @@ use sipnab::sip::dialog::DialogState;
 use sipnab::sip::message::SipMessage;
 use sipnab::sip::parser::parse_sip_bytes;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 const CALLER: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 10));
 const CALLEE: IpAddr = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 20));
 
@@ -55,17 +59,17 @@ const IDENTITY: &str = "From: <sip:1001@198.51.100.10>;tag=caller-tag\r\n\
 ///
 /// `from_caller` picks the direction, so the store sees a two-sided
 /// conversation rather than one address talking to itself.
-fn msg(offset_ms: i64, from_caller: bool, raw: String) -> SipMessage {
+fn msg(offset_ms: i64, from_caller: bool, raw: String) -> Result<SipMessage, TestError> {
     let base: DateTime<Utc> = Utc
         .with_ymd_and_hms(2026, 3, 4, 9, 0, 0)
         .single()
-        .expect("valid base timestamp");
+        .ok_or("valid base timestamp")?;
     let (src, dst) = if from_caller {
         (CALLER, CALLEE)
     } else {
         (CALLEE, CALLER)
     };
-    parse_sip_bytes(
+    Ok(parse_sip_bytes(
         &bytes::Bytes::from(raw),
         base + chrono::Duration::milliseconds(offset_ms),
         src,
@@ -73,12 +77,11 @@ fn msg(offset_ms: i64, from_caller: bool, raw: String) -> SipMessage {
         5060,
         5060,
         TransportProto::Udp,
-    )
-    .expect("hand-written fixture must parse")
+    )?)
 }
 
 /// A request of `method` at `offset_ms`, sent by the caller.
-fn request(offset_ms: i64, method: &str, cseq: u32) -> SipMessage {
+fn request(offset_ms: i64, method: &str, cseq: u32) -> Result<SipMessage, TestError> {
     msg(
         offset_ms,
         true,
@@ -93,7 +96,13 @@ fn request(offset_ms: i64, method: &str, cseq: u32) -> SipMessage {
 /// A response at `offset_ms` whose CSeq names `cseq_method`, sent by the
 /// callee. The CSeq method is the transaction the response belongs to, and it
 /// is the coordinate the whole file turns on.
-fn response(offset_ms: i64, code: u16, reason: &str, cseq: u32, cseq_method: &str) -> SipMessage {
+fn response(
+    offset_ms: i64,
+    code: u16,
+    reason: &str,
+    cseq: u32,
+    cseq_method: &str,
+) -> Result<SipMessage, TestError> {
     msg(
         offset_ms,
         false,
@@ -107,21 +116,21 @@ fn response(offset_ms: i64, code: u16, reason: &str, cseq: u32, cseq_method: &st
 
 /// Feed `msgs` to a fresh store in the order given and report the dialog's
 /// state together with the two counts published from it.
-fn replay(msgs: Vec<SipMessage>) -> (DialogState, usize, usize) {
+fn replay(msgs: Vec<SipMessage>) -> Result<(DialogState, usize, usize), TestError> {
     let mut store = DialogStore::new(64, false);
-    let last = msgs.last().expect("at least one message").timestamp;
+    let last = msgs.last().ok_or("at least one message")?.timestamp;
     for m in msgs {
         store.process_message(m);
     }
     let dialog = store
         .get(CALL_ID)
-        .expect("a mid-dialog capture still yields a dialog");
+        .ok_or("a mid-dialog capture still yields a dialog")?;
     let state = dialog.state().clone();
-    (
+    Ok((
         state,
         store.active_dialog_count_at(last),
         store.active_call_count_at(last),
-    )
+    ))
 }
 
 /// The capture opens on the `BYE`: the call ended normally and the store must
@@ -131,11 +140,11 @@ fn replay(msgs: Vec<SipMessage>) -> (DialogState, usize, usize) {
 /// dialog a `BYE` can belong to is an INVITE one, and its arrival is proof the
 /// call is over.
 #[test]
-fn a_capture_opening_on_a_bye_reports_the_call_completed() {
+fn a_capture_opening_on_a_bye_reports_the_call_completed() -> Result<(), TestError> {
     // The BYE alone, before its answer: the request is itself the evidence,
     // and asserting only the two-message case would pass on a machine that
     // ignored the BYE and read the 200 that followed it.
-    let (on_the_bye, _, _) = replay(vec![request(0, "BYE", 2)]);
+    let (on_the_bye, _, _) = replay(vec![request(0, "BYE", 2)?])?;
     assert_eq!(
         on_the_bye,
         DialogState::Completed,
@@ -143,9 +152,9 @@ fn a_capture_opening_on_a_bye_reports_the_call_completed() {
     );
 
     let (state, active_dialogs, active_calls) = replay(vec![
-        request(0, "BYE", 2),
-        response(20, 200, "OK", 2, "BYE"),
-    ]);
+        request(0, "BYE", 2)?,
+        response(20, 200, "OK", 2, "BYE")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::Completed,
@@ -160,6 +169,7 @@ fn a_capture_opening_on_a_bye_reports_the_call_completed() {
         active_calls, 0,
         "a completed call is not a call in progress"
     );
+    Ok(())
 }
 
 /// The capture opens on the `CANCEL`: the caller gave up, and the 487 that
@@ -167,11 +177,11 @@ fn a_capture_opening_on_a_bye_reports_the_call_completed() {
 ///
 /// RFC 3261 §9.1 — `CANCEL` has no meaning outside a pending INVITE.
 #[test]
-fn a_capture_opening_on_a_cancel_reports_the_call_canceled() {
+fn a_capture_opening_on_a_cancel_reports_the_call_canceled() -> Result<(), TestError> {
     let (state, active_dialogs, active_calls) = replay(vec![
-        request(0, "CANCEL", 1),
-        response(50, 487, "Request Terminated", 1, "INVITE"),
-    ]);
+        request(0, "CANCEL", 1)?,
+        response(50, 487, "Request Terminated", 1, "INVITE")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::Canceled,
@@ -182,6 +192,7 @@ fn a_capture_opening_on_a_cancel_reports_the_call_canceled() {
         active_calls, 0,
         "a canceled call was never a call in progress"
     );
+    Ok(())
 }
 
 /// The `200 OK` acknowledging a `CANCEL` must not be read as the callee
@@ -194,12 +205,12 @@ fn a_capture_opening_on_a_cancel_reports_the_call_canceled() {
 /// because `InCall` is counted as a live channel. The response's CSeq method,
 /// not its family, says which transaction it answers (RFC 3261 §8.1.1.5).
 #[test]
-fn a_200_to_the_cancel_does_not_answer_the_call() {
+fn a_200_to_the_cancel_does_not_answer_the_call() -> Result<(), TestError> {
     let (state, _, active_calls) = replay(vec![
-        request(0, "CANCEL", 1),
-        response(10, 200, "OK", 1, "CANCEL"),
-        response(50, 487, "Request Terminated", 1, "INVITE"),
-    ]);
+        request(0, "CANCEL", 1)?,
+        response(10, 200, "OK", 1, "CANCEL")?,
+        response(50, 487, "Request Terminated", 1, "INVITE")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::Canceled,
@@ -211,6 +222,7 @@ fn a_200_to_the_cancel_does_not_answer_the_call() {
         "reporting a canceled call as a live channel is worse than reporting \
          it as still ringing"
     );
+    Ok(())
 }
 
 /// The capture opens on the `200 OK` to a `BYE`, with the `BYE` itself before
@@ -221,8 +233,8 @@ fn a_200_to_the_cancel_does_not_answer_the_call() {
 /// particular must not report `InCall`, which is where a family-only dispatch
 /// sends it.
 #[test]
-fn a_capture_opening_on_the_200_to_a_bye_reports_the_call_completed() {
-    let (state, active_dialogs, active_calls) = replay(vec![response(0, 200, "OK", 2, "BYE")]);
+fn a_capture_opening_on_the_200_to_a_bye_reports_the_call_completed() -> Result<(), TestError> {
+    let (state, active_dialogs, active_calls) = replay(vec![response(0, 200, "OK", 2, "BYE")?])?;
     assert_eq!(
         state,
         DialogState::Completed,
@@ -233,6 +245,7 @@ fn a_capture_opening_on_the_200_to_a_bye_reports_the_call_completed() {
         active_calls, 0,
         "a 200 to a BYE must never count as a channel in use"
     );
+    Ok(())
 }
 
 /// A call whose `BYE` was lost still ends, because the `200` answering that
@@ -245,13 +258,13 @@ fn a_capture_opening_on_the_200_to_a_bye_reports_the_call_completed() {
 /// in `InCall` and is counted as a channel in use for as long as the store
 /// keeps it, which is the failure mode `active_call_count` exists to avoid.
 #[test]
-fn a_call_whose_bye_was_missed_still_ends_on_the_200_that_answered_it() {
+fn a_call_whose_bye_was_missed_still_ends_on_the_200_that_answered_it() -> Result<(), TestError> {
     let (state, _, active_calls) = replay(vec![
-        response(0, 200, "OK", 1, "INVITE"),
-        request(10, "ACK", 1),
+        response(0, 200, "OK", 1, "INVITE")?,
+        request(10, "ACK", 1)?,
         // The BYE itself is absent — only the answer to it was captured.
-        response(60_000, 200, "OK", 2, "BYE"),
-    ]);
+        response(60_000, 200, "OK", 2, "BYE")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::Completed,
@@ -261,6 +274,7 @@ fn a_call_whose_bye_was_missed_still_ends_on_the_200_that_answered_it() {
         active_calls, 0,
         "a call that ended must leave the concurrent-call figure"
     );
+    Ok(())
 }
 
 /// A late `487` cannot un-answer a call the capture saw answered, and a `2xx`
@@ -271,18 +285,19 @@ fn a_call_whose_bye_was_missed_still_ends_on_the_200_that_answered_it() {
 /// likely to break it: both messages now reach the same machine from a
 /// `CANCEL`-seeded dialog.
 #[test]
-fn a_2xx_beats_the_cancel_and_a_later_487_does_not_undo_it() {
+fn a_2xx_beats_the_cancel_and_a_later_487_does_not_undo_it() -> Result<(), TestError> {
     let (state, _, active_calls) = replay(vec![
-        request(0, "CANCEL", 1),
-        response(30, 200, "OK", 1, "INVITE"),
-        response(60, 487, "Request Terminated", 1, "INVITE"),
-    ]);
+        request(0, "CANCEL", 1)?,
+        response(30, 200, "OK", 1, "INVITE")?,
+        response(60, 487, "Request Terminated", 1, "INVITE")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::InCall,
         "the callee answered before the CANCEL landed; the call is up"
     );
     assert_eq!(active_calls, 1, "an answered call is a channel in use");
+    Ok(())
 }
 
 /// An `ACK`-seeded dialog stays in setup rather than claiming an outcome it
@@ -294,14 +309,15 @@ fn a_2xx_beats_the_cancel_and_a_later_487_does_not_undo_it() {
 /// transaction: before this change a `200` whose CSeq said `ACK` reported the
 /// call `Completed`, which is a statement about a call nobody watched end.
 #[test]
-fn an_ack_seeded_dialog_claims_no_outcome_from_a_response_to_the_ack() {
+fn an_ack_seeded_dialog_claims_no_outcome_from_a_response_to_the_ack() -> Result<(), TestError> {
     let (state, _, _) = replay(vec![
-        request(0, "ACK", 1),
-        response(10, 200, "OK", 1, "ACK"),
-    ]);
+        request(0, "ACK", 1)?,
+        response(10, 200, "OK", 1, "ACK")?,
+    ])?;
     assert_eq!(
         state,
         DialogState::Trying,
         "nothing observed says how this call ended, so nothing may claim it did"
     );
+    Ok(())
 }

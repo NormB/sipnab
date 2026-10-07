@@ -42,6 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use serde_json::Value;
+use server::TestError;
 
 #[path = "support/server.rs"]
 mod server;
@@ -119,16 +120,16 @@ fn map_refs(node: &mut Value, f: &dyn Fn(&str) -> Option<String>) {
 ///
 /// The component name to schema pairs to insert, the head of the list being
 /// the schema itself.
-fn shared_schema(component: &str, file: &str) -> Vec<(String, Value)> {
+fn shared_schema(component: &str, file: &str) -> Result<Vec<(String, Value)>, TestError> {
     let path = repo().join("tests/schemas").join(file);
     let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let mut schema: Value =
-        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{file} is not JSON: {e}"));
+        serde_json::from_str(&text).map_err(|e| format!("{file} is not JSON: {e}"))?;
 
     let obj = schema
         .as_object_mut()
-        .unwrap_or_else(|| panic!("{file} must be a JSON object"));
+        .ok_or_else(|| format!("{file} must be a JSON object"))?;
     // Document-level keywords. Inside `components/schemas` they would declare
     // a second schema document nested in the first.
     obj.remove("$schema");
@@ -150,7 +151,7 @@ fn shared_schema(component: &str, file: &str) -> Vec<(String, Value)> {
             out.push((format!("{component}_{name}"), def));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The published document: what this crate generates, plus the shared schemas.
@@ -160,53 +161,52 @@ fn shared_schema(component: &str, file: &str) -> Vec<(String, Value)> {
 /// On any malformed input, which is the point — a generator that shrugged and
 /// emitted a smaller document would publish a contract missing the very parts
 /// that failed to load.
-fn generate() -> String {
-    let mut doc: Value = serde_json::from_str(&sipnab::output::api::openapi_json())
-        .expect("openapi_json() emits JSON");
+fn generate() -> Result<String, TestError> {
+    let mut doc: Value = serde_json::from_str(&sipnab::output::api::openapi_json())?;
 
     let schemas = doc
         .pointer_mut("/components/schemas")
         .and_then(Value::as_object_mut)
-        .expect("the document declares components.schemas");
+        .ok_or("the document declares components.schemas")?;
     for (component, file) in SPLICED {
         assert!(
             schemas.contains_key(component),
             "the annotations no longer reserve a `{component}` component, so \
              splicing {file} in would add a schema nothing references"
         );
-        for (name, schema) in shared_schema(component, file) {
+        for (name, schema) in shared_schema(component, file)? {
             schemas.insert(name, schema);
         }
     }
 
-    let mut out = serde_json::to_string_pretty(&doc).expect("document serializes");
+    let mut out = serde_json::to_string_pretty(&doc)?;
     out.push('\n');
-    out
+    Ok(out)
 }
 
 /// The document as generated right now.
-fn document() -> Value {
-    serde_json::from_str(&generate()).expect("generated document parses")
+fn document() -> Result<Value, TestError> {
+    Ok(serde_json::from_str(&generate()?)?)
 }
 
 /// The HTTP methods an OpenAPI path item may carry.
 const METHODS: [&str; 7] = ["get", "put", "post", "delete", "options", "head", "patch"];
 
 /// Every `(method, path)` the document declares.
-fn documented_operations(doc: &Value) -> BTreeSet<(String, String)> {
+fn documented_operations(doc: &Value) -> Result<BTreeSet<(String, String)>, TestError> {
     let paths = doc["paths"]
         .as_object()
-        .expect("the document declares paths");
+        .ok_or("the document declares paths")?;
     let mut out = BTreeSet::new();
     for (path, item) in paths {
-        let item = item.as_object().expect("a path item is an object");
+        let item = item.as_object().ok_or("a path item is an object")?;
         for method in METHODS {
             if item.contains_key(method) {
                 out.insert((method.to_string(), path.clone()));
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ── Deriving the route list from the source ─────────────────────────
@@ -217,8 +217,8 @@ fn documented_operations(doc: &Value) -> BTreeSet<(String, String)> {
 /// exposes no way to enumerate a router's routes — and because a source scan
 /// sees a `.route(...)` that a `cfg` would have removed, which is what makes
 /// it able to notice a route added to a build this test is not running.
-fn router_operations() -> BTreeSet<(String, String)> {
-    let src = std::fs::read_to_string(repo().join("src/output/api.rs")).expect("read api.rs");
+fn router_operations() -> Result<BTreeSet<(String, String)>, TestError> {
+    let src = std::fs::read_to_string(repo().join("src/output/api.rs"))?;
     let mut out = BTreeSet::new();
     let mut rest = src.as_str();
 
@@ -271,7 +271,7 @@ fn router_operations() -> BTreeSet<(String, String)> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every `(method, path)` `docs/rest-api.md` gives a heading to.
@@ -280,8 +280,8 @@ fn router_operations() -> BTreeSet<(String, String)> {
 /// and the document use axum 0.8's (`{call_id}`). Normalized here rather than
 /// rewritten in the page: the page's spelling is what its own anchors and
 /// every inbound link use.
-fn written_operations() -> BTreeSet<(String, String)> {
-    let text = std::fs::read_to_string(repo().join(WRITTEN)).expect("read the written reference");
+fn written_operations() -> Result<BTreeSet<(String, String)>, TestError> {
+    let text = std::fs::read_to_string(repo().join(WRITTEN))?;
     let mut out = BTreeSet::new();
     for line in text.lines() {
         let Some(heading) = line.strip_prefix("### ") else {
@@ -308,7 +308,7 @@ fn written_operations() -> BTreeSet<(String, String)> {
             .join("/");
         out.insert((method, normalized));
     }
-    out
+    Ok(out)
 }
 
 /// Operations every derivation must find, whatever else it finds.
@@ -354,12 +354,12 @@ fn assert_derivation_found_something(what: &str, found: &BTreeSet<(String, Strin
 
 /// Every route the server serves is in the document, and nothing else is.
 #[test]
-fn the_document_describes_exactly_the_routes_the_router_serves() {
-    let router = router_operations();
+fn the_document_describes_exactly_the_routes_the_router_serves() -> Result<(), TestError> {
+    let router = router_operations()?;
     assert_derivation_found_something("router", &router);
 
-    let doc = document();
-    let documented = documented_operations(&doc);
+    let doc = document()?;
+    let documented = documented_operations(&doc)?;
     assert_derivation_found_something("document", &documented);
 
     let undocumented: Vec<_> = router.difference(&documented).collect();
@@ -375,16 +375,17 @@ fn the_document_describes_exactly_the_routes_the_router_serves() {
         "the OpenAPI document advertises these and build_router serves none of \
          them — a client following the document would get a 404: {invented:?}"
     );
+    Ok(())
 }
 
 /// The document and the written reference describe the same routes.
 #[test]
-fn the_document_and_the_written_reference_agree() {
-    let written = written_operations();
+fn the_document_and_the_written_reference_agree() -> Result<(), TestError> {
+    let written = written_operations()?;
     assert_derivation_found_something("written reference", &written);
 
-    let doc = document();
-    let documented = documented_operations(&doc);
+    let doc = document()?;
+    let documented = documented_operations(&doc)?;
 
     let unwritten: Vec<_> = documented.difference(&written).collect();
     assert!(
@@ -401,6 +402,7 @@ fn the_document_and_the_written_reference_agree() {
          the route was removed and the page still advertises it, or the \
          handler lost its annotation: {stale:?}"
     );
+    Ok(())
 }
 
 /// The document is a valid OpenAPI 3.1 document.
@@ -413,26 +415,26 @@ fn the_document_and_the_written_reference_agree() {
 /// with `jsonschema`, which is how `tests/json_schema_test.rs` proves a schema
 /// well-formed.
 #[test]
-fn the_document_is_valid_openapi_31() {
+fn the_document_is_valid_openapi_31() -> Result<(), TestError> {
     // BOTH the document this crate generates and the file the website serves.
     // Checking only the generated one leaves the published artifact validated
     // by nothing but the drift gate beside it, and the two answer different
     // questions: drift says "these are equal", validity says "this is an
     // OpenAPI document". Corrupting the artifact's version field proved the
     // gap -- the drift gate fired and this one did not.
-    assert_valid_openapi_31("the generated document", &document());
+    assert_valid_openapi_31("the generated document", &document()?)?;
 
     let artifact: Value = serde_json::from_str(
-        &std::fs::read_to_string(repo().join(ARTIFACT)).unwrap_or_else(|e| {
-            panic!("{ARTIFACT} must exist and be readable to be validated: {e}")
-        }),
+        &std::fs::read_to_string(repo().join(ARTIFACT))
+            .map_err(|e| format!("{ARTIFACT} must exist and be readable to be validated: {e}"))?,
     )
-    .unwrap_or_else(|e| panic!("{ARTIFACT} is not JSON: {e}"));
-    assert_valid_openapi_31(ARTIFACT, &artifact);
+    .map_err(|e| format!("{ARTIFACT} is not JSON: {e}"))?;
+    assert_valid_openapi_31(ARTIFACT, &artifact)?;
+    Ok(())
 }
 
 /// Everything a consumer of an OpenAPI 3.1 document would break on.
-fn assert_valid_openapi_31(what: &str, doc: &Value) {
+fn assert_valid_openapi_31(what: &str, doc: &Value) -> Result<(), TestError> {
     let doc = doc.clone();
 
     assert_eq!(
@@ -462,7 +464,7 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) {
         "info.version has been bound to the crate version; see above"
     );
 
-    let paths = doc["paths"].as_object().expect("paths is an object");
+    let paths = doc["paths"].as_object().ok_or("paths is an object")?;
     assert!(
         !paths.is_empty(),
         "a document with no paths describes nothing"
@@ -478,7 +480,7 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) {
             let Some(op) = item.get(method) else { continue };
             let responses = op["responses"]
                 .as_object()
-                .unwrap_or_else(|| panic!("{method} {path} declares no responses"));
+                .ok_or_else(|| format!("{method} {path} declares no responses"))?;
             assert!(
                 responses.keys().any(|c| c.starts_with('2')),
                 "{method} {path} declares no 2xx response, so the document \
@@ -496,7 +498,7 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) {
     let schemas = doc
         .pointer("/components/schemas")
         .and_then(Value::as_object)
-        .expect("components.schemas");
+        .ok_or("components.schemas")?;
     let mut refs: BTreeSet<String> = BTreeSet::new();
     collect_refs(&doc, &mut refs);
     assert!(
@@ -505,9 +507,9 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) {
         refs.len()
     );
     for r in &refs {
-        let name = r.strip_prefix("#/components/schemas/").unwrap_or_else(|| {
-            panic!("$ref {r:?} points outside components/schemas, which nothing resolves")
-        });
+        let name = r.strip_prefix("#/components/schemas/").ok_or_else(|| {
+            format!("$ref {r:?} points outside components/schemas, which nothing resolves")
+        })?;
         assert!(
             schemas.contains_key(name),
             "$ref {r:?} names a component the document does not declare"
@@ -555,8 +557,9 @@ fn assert_valid_openapi_31(what: &str, doc: &Value) {
             "$ref": format!("#/components/schemas/{name}"),
         });
         jsonschema::validator_for(&rooted)
-            .unwrap_or_else(|e| panic!("component {name} is not a valid JSON Schema: {e}"));
+            .map_err(|e| format!("component {name} is not a valid JSON Schema: {e}"))?;
     }
+    Ok(())
 }
 
 /// Collect every `$ref` string in a document.
@@ -626,50 +629,51 @@ fn first_difference(disk: &Value, generated: &Value, at: &str) -> Option<String>
 ///
 /// The drift gate. Set `SIPNAB_BLESS_OPENAPI=1` to rewrite it.
 #[test]
-fn the_published_document_is_not_stale() {
-    let generated = generate();
+fn the_published_document_is_not_stale() -> Result<(), TestError> {
+    let generated = generate()?;
     let path = repo().join(ARTIFACT);
 
     if std::env::var_os("SIPNAB_BLESS_OPENAPI").is_some() {
-        std::fs::write(&path, &generated).expect("write the artifact");
+        std::fs::write(&path, &generated)?;
         eprintln!("blessed {ARTIFACT}");
-        return;
+        return Ok(());
     }
 
-    let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
+    let on_disk = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
             "{ARTIFACT} is missing ({e}). Generate it with \
              `SIPNAB_BLESS_OPENAPI=1 cargo test --features full --test \
              openapi_contract_test`"
         )
-    });
+    })?;
 
     // Compared as parsed JSON first, so the failure message names the
     // difference rather than a byte offset.
-    let a: Value = serde_json::from_str(&on_disk).expect("the artifact is JSON");
-    let b: Value = serde_json::from_str(&generated).expect("generation is JSON");
+    let a: Value = serde_json::from_str(&on_disk)?;
+    let b: Value = serde_json::from_str(&generated)?;
     if a != b {
-        let old = documented_operations(&a);
-        let new = documented_operations(&b);
+        let old = documented_operations(&a)?;
+        let new = documented_operations(&b)?;
         // Route sets first, because that is the difference an author usually
         // caused. But most differences are NOT routes -- a schema property, a
         // description, the version -- and reporting two empty route sets for
         // one of those tells the reader nothing, which is what this message did
         // when the version field was mutated to prove the gate fires.
-        panic!(
+        return Err(format!(
             "{ARTIFACT} is stale.\n  only on disk: {:?}\n  only generated: {:?}\n               first differing field: {}\n\
              Regenerate with `SIPNAB_BLESS_OPENAPI=1 cargo test --features full \
              --test openapi_contract_test`",
             old.difference(&new).collect::<Vec<_>>(),
             new.difference(&old).collect::<Vec<_>>(),
             first_difference(&a, &b, "").unwrap_or_else(|| "(none found)".to_string())
-        );
+        ).into());
     }
     assert_eq!(
         on_disk, generated,
         "{ARTIFACT} parses the same but is not formatted the way the generator \
          writes it, so every regeneration would produce a diff"
     );
+    Ok(())
 }
 
 /// The two declarations of a dialog summary agree.
@@ -679,15 +683,14 @@ fn the_published_document_is_not_stale() {
 /// schema file is what `jsonschema` consumers use and the component is what
 /// the OpenAPI document `$ref`s — so the only defense is to compare them.
 #[test]
-fn the_dialog_summary_component_agrees_with_the_shared_schema() {
-    let doc = document();
+fn the_dialog_summary_component_agrees_with_the_shared_schema() -> Result<(), TestError> {
+    let doc = document()?;
     let component = doc
         .pointer("/components/schemas/DialogSummary")
-        .expect("the document declares a DialogSummary component");
+        .ok_or("the document declares a DialogSummary component")?;
 
-    let file = std::fs::read_to_string(repo().join("tests/schemas/dialog.schema.json"))
-        .expect("read dialog.schema.json");
-    let shared: Value = serde_json::from_str(&file).expect("dialog.schema.json is JSON");
+    let file = std::fs::read_to_string(repo().join("tests/schemas/dialog.schema.json"))?;
+    let shared: Value = serde_json::from_str(&file)?;
 
     let names = |v: &Value| -> BTreeSet<String> {
         v["properties"]
@@ -727,6 +730,7 @@ fn the_dialog_summary_component_agrees_with_the_shared_schema() {
          tests/schemas/dialog.schema.json disagree about which properties are \
          always present"
     );
+    Ok(())
 }
 
 /// Every documented response validates against a body the server really sends.
@@ -740,26 +744,26 @@ fn the_dialog_summary_component_agrees_with_the_shared_schema() {
 /// identifiers that exist, and validates each body against the component the
 /// document says it will be.
 #[test]
-fn every_documented_response_matches_what_the_server_sends() {
-    let doc = document();
+fn every_documented_response_matches_what_the_server_sends() -> Result<(), TestError> {
+    let doc = document()?;
     let schemas = doc
         .pointer("/components/schemas")
         .and_then(Value::as_object)
-        .expect("components.schemas");
+        .ok_or("components.schemas")?;
 
-    let srv = server::ApiServer::spawn_with_pcap_or_panic(G711, &[]);
+    let srv = server::ApiServer::spawn_with_pcap(G711, &[])?;
 
     // Identifiers that exist in THIS capture, taken from the collections the
     // same way a client would.
-    let dialogs = srv.get_or_panic("/v1/dialogs").json_or_panic();
+    let dialogs = srv.get("/v1/dialogs")?.json()?;
     let call_id = dialogs["dialogs"][0]["call_id"]
         .as_str()
-        .expect("the fixture must produce a dialog, or this test proves nothing")
+        .ok_or("the fixture must produce a dialog, or this test proves nothing")?
         .to_string();
-    let streams = srv.get_or_panic("/v1/streams").json_or_panic();
+    let streams = srv.get("/v1/streams")?.json()?;
     let ssrc = streams["streams"][0]["ssrc"]
         .as_str()
-        .expect("the fixture must produce a stream, or this test proves nothing")
+        .ok_or("the fixture must produce a stream, or this test proves nothing")?
         .to_string();
 
     let encode = |s: &str| -> String {
@@ -778,7 +782,7 @@ fn every_documented_response_matches_what_the_server_sends() {
     // alone; `POST /v1/persistence` is not exercised here because it MUTATES a
     // gate, and a contract test must not be the thing that closes it.
     let mut checked: BTreeMap<String, String> = BTreeMap::new();
-    for (method, path) in documented_operations(&doc) {
+    for (method, path) in documented_operations(&doc)? {
         if method != "get" {
             continue;
         }
@@ -838,17 +842,17 @@ fn every_documented_response_matches_what_the_server_sends() {
     );
 
     for (url, component) in &checked {
-        let resp = srv.get_or_panic(url);
+        let resp = srv.get(url)?;
         assert_eq!(resp.status, 200, "GET {url} answered {}", resp.status);
         let body: Value = serde_json::from_str(&resp.body)
-            .unwrap_or_else(|e| panic!("GET {url} did not answer JSON: {e}"));
+            .map_err(|e| format!("GET {url} did not answer JSON: {e}"))?;
 
         let rooted = serde_json::json!({
             "components": { "schemas": schemas },
             "$ref": format!("#/components/schemas/{component}"),
         });
         let validator = jsonschema::validator_for(&rooted)
-            .unwrap_or_else(|e| panic!("component {component} does not compile: {e}"));
+            .map_err(|e| format!("component {component} does not compile: {e}"))?;
         let errors: Vec<String> = validator
             .iter_errors(&body)
             .map(|e| format!("{} at {}", e, e.instance_path()))
@@ -863,11 +867,12 @@ fn every_documented_response_matches_what_the_server_sends() {
 
     for (path, status) in [("/health", 200u16), ("/metrics", 200)] {
         assert_eq!(
-            srv.get_or_panic(path).status,
+            srv.get(path)?.status,
             status,
             "{path} is documented as {status}"
         );
     }
+    Ok(())
 }
 
 /// The published `DialogSummary` component declares exactly the keys the
@@ -884,7 +889,8 @@ fn every_documented_response_matches_what_the_server_sends() {
 /// Driven from a value with every `Option` populated, so a field that is merely
 /// absent on the fixture of the day cannot read as an undeclared one.
 #[test]
-fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
+fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() -> Result<(), TestError>
+{
     let every_field_present = sipnab::output::model::DialogSummary {
         call_id: "c@203.0.113.1".to_string(),
         state: "Failed".to_string(),
@@ -905,19 +911,18 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
         frame: Some("capture.pcap#41@6f3a1c02b8d4e795".to_string()),
         input_origin: Some("wire".to_string()),
     };
-    let emitted: BTreeSet<String> = serde_json::to_value(&every_field_present)
-        .expect("the projection serializes")
+    let emitted: BTreeSet<String> = serde_json::to_value(&every_field_present)?
         .as_object()
-        .expect("into an object")
+        .ok_or("into an object")?
         .keys()
         .cloned()
         .collect();
 
-    let doc = document();
+    let doc = document()?;
     let declared: BTreeSet<String> = doc
         .pointer("/components/schemas/DialogSummary/properties")
         .and_then(Value::as_object)
-        .unwrap_or_else(|| panic!("the document must carry a DialogSummary component"))
+        .ok_or("the document must carry a DialogSummary component")?
         .keys()
         .cloned()
         .collect();
@@ -930,6 +935,7 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
          declared but never emitted: {phantom:?}\n  \
          emitted but not declared:   {undeclared:?}"
     );
+    Ok(())
 }
 
 /// The published `Runtime` schema names every field the route actually sends.
@@ -944,12 +950,12 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() {
 /// Driven from a serialized value rather than from the source text, so a field
 /// renamed by `#[serde(rename)]` is compared as it appears on the wire.
 #[test]
-fn the_runtime_schema_names_every_field_the_route_sends() {
-    let doc = document();
+fn the_runtime_schema_names_every_field_the_route_sends() -> Result<(), TestError> {
+    let doc = document()?;
     let declared: BTreeSet<String> = doc
         .pointer("/components/schemas/Runtime/properties")
         .and_then(Value::as_object)
-        .expect("the document declares a Runtime schema with properties")
+        .ok_or("the document declares a Runtime schema with properties")?
         .keys()
         .cloned()
         .collect();
@@ -968,10 +974,9 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
     stats.capture_queue_depth_packets = Some(0);
     stats.capture_backpressure_blocks_total = Some(0);
     stats.hep_export = Some(sipnab::output::runtime::HepExportStats::default());
-    let sent: BTreeSet<String> = serde_json::to_value(&stats)
-        .expect("RuntimeStats serializes")
+    let sent: BTreeSet<String> = serde_json::to_value(&stats)?
         .as_object()
-        .expect("into an object")
+        .ok_or("into an object")?
         .keys()
         .cloned()
         .collect();
@@ -1007,7 +1012,7 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
     // `process` and `host` value is optional by design) would read as a
     // phantom, while an UNDOCUMENTED field reaching a client is the exposure
     // that matters.
-    let value = serde_json::to_value(&stats).expect("serializes");
+    let value = serde_json::to_value(&stats)?;
     let mut checked_nested = 0usize;
     for (component, pointer) in [
         ("RuntimeProcess", "/process"),
@@ -1023,7 +1028,7 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
         let declared: BTreeSet<String> = doc
             .pointer(&format!("/components/schemas/{component}/properties"))
             .and_then(Value::as_object)
-            .unwrap_or_else(|| panic!("the document declares a {component} schema"))
+            .ok_or_else(|| format!("the document declares a {component} schema"))?
             .keys()
             .cloned()
             .collect();
@@ -1044,6 +1049,7 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
          serialized value; the envelope was reshaped and this gate is now \
          checking almost nothing"
     );
+    Ok(())
 }
 
 /// The published document declares every field the shared call-report schema
@@ -1061,26 +1067,24 @@ fn the_runtime_schema_names_every_field_the_route_sends() {
 /// `siprec` is why this is worth having: it was in the Rust projection and in
 /// neither of the other two for several releases.
 #[test]
-fn the_published_call_report_component_declares_what_the_shared_schema_does() {
+fn the_published_call_report_component_declares_what_the_shared_schema_does()
+-> Result<(), TestError> {
     let artifact: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT)).expect("read"))
-            .expect("the artifact is JSON");
-    let shared: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(repo().join("tests/schemas/call_report.schema.json"))
-            .expect("read"),
-    )
-    .expect("the schema is JSON");
+        serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT))?)?;
+    let shared: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+        repo().join("tests/schemas/call_report.schema.json"),
+    )?)?;
 
     let published: std::collections::BTreeSet<String> =
         artifact["components"]["schemas"]["CallReport"]["properties"]
             .as_object()
-            .expect("the artifact declares a CallReport")
+            .ok_or("the artifact declares a CallReport")?
             .keys()
             .cloned()
             .collect();
     let declared: std::collections::BTreeSet<String> = shared["properties"]
         .as_object()
-        .expect("the shared schema declares properties")
+        .ok_or("the shared schema declares properties")?
         .keys()
         .cloned()
         .collect();
@@ -1100,6 +1104,7 @@ fn the_published_call_report_component_declares_what_the_shared_schema_does() {
          document: {extra:?}\nA consumer reads one of the two and is wrong \
          about the other."
     );
+    Ok(())
 }
 
 /// **Second of two.** The staleness gate compares by default; it blesses only
@@ -1111,20 +1116,21 @@ fn the_published_call_report_component_declares_what_the_shared_schema_does() {
 /// artifact itself — with the switch unset, generation must equal what is on
 /// disk, which is the comparison the gate claims to make.
 #[test]
-fn the_staleness_gate_compares_rather_than_blesses_by_default() {
+fn the_staleness_gate_compares_rather_than_blesses_by_default() -> Result<(), TestError> {
     assert!(
         std::env::var_os("SIPNAB_BLESS_OPENAPI").is_none(),
         "SIPNAB_BLESS_OPENAPI is set in this run, so the drift gate rewrote \
          the artifact instead of checking it. It is a regeneration switch, not \
          something to leave on in CI or a shell"
     );
-    let on_disk = std::fs::read_to_string(repo().join(ARTIFACT)).expect("read the artifact");
+    let on_disk = std::fs::read_to_string(repo().join(ARTIFACT))?;
     assert_eq!(
-        generate(),
+        generate()?,
         on_disk,
         "generation and the checked-in artifact differ with the bless switch \
          unset, which is the state the drift gate exists to refuse"
     );
+    Ok(())
 }
 
 /// The published `CaptureReport` IS the shared capture-analysis schema, down
@@ -1138,15 +1144,11 @@ fn the_staleness_gate_compares_rather_than_blesses_by_default() {
 /// this holds the published artifact to that file one level down as well,
 /// where the hoisted `$defs` live.
 #[test]
-fn the_published_capture_report_is_the_shared_capture_analysis_schema() {
-    let artifact: Value =
-        serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT)).expect("read"))
-            .expect("the artifact is JSON");
-    let shared: Value = serde_json::from_str(
-        &std::fs::read_to_string(repo().join("tests/schemas/capture_analysis.schema.json"))
-            .expect("read the shared capture-analysis schema"),
-    )
-    .expect("the schema is JSON");
+fn the_published_capture_report_is_the_shared_capture_analysis_schema() -> Result<(), TestError> {
+    let artifact: Value = serde_json::from_str(&std::fs::read_to_string(repo().join(ARTIFACT))?)?;
+    let shared: Value = serde_json::from_str(&std::fs::read_to_string(
+        repo().join("tests/schemas/capture_analysis.schema.json"),
+    )?)?;
     let names = |v: &Value| -> BTreeSet<String> {
         v["properties"]
             .as_object()
@@ -1178,6 +1180,7 @@ fn the_published_capture_report_is_the_shared_capture_analysis_schema() {
         "#/components/schemas/CaptureReport_finding",
         "the published findings items are not the finding schema"
     );
+    Ok(())
 }
 
 /// No response schema carries a password-like field, and the archive password
@@ -1187,8 +1190,8 @@ fn the_published_capture_report_is_the_shared_capture_analysis_schema() {
 /// answers repeats it. A field named like one in any response schema would be
 /// the first step to a response that echoes it.
 #[test]
-fn no_response_schema_has_a_password_field_and_the_header_is_a_password() {
-    let doc = document();
+fn no_response_schema_has_a_password_field_and_the_header_is_a_password() -> Result<(), TestError> {
+    let doc = document()?;
     fn walk(node: &Value, at: &str, bad: &mut Vec<String>) {
         match node {
             Value::Object(map) => {
@@ -1232,16 +1235,16 @@ fn no_response_schema_has_a_password_field_and_the_header_is_a_password() {
 
     let params = doc["paths"]["/v1/captures/compare"]["get"]["parameters"]
         .as_array()
-        .expect("compare has parameters");
+        .ok_or("compare has parameters")?;
     let header = params
         .iter()
         .find(|p| p["name"] == "Sipnab-Archive-Password")
-        .expect("the compare route documents Sipnab-Archive-Password");
+        .ok_or("the compare route documents Sipnab-Archive-Password")?;
     assert_eq!(header["in"], "header");
     assert_eq!(header["schema"]["format"], "password", "{header}");
     let documented_elsewhere = doc["paths"]
         .as_object()
-        .expect("paths")
+        .ok_or("paths")?
         .iter()
         .filter(|(path, _)| path.as_str() != "/v1/captures/compare")
         .any(|(_, item)| {
@@ -1252,4 +1255,5 @@ fn no_response_schema_has_a_password_field_and_the_header_is_a_password() {
         !documented_elsewhere,
         "only the file-opening route takes it"
     );
+    Ok(())
 }

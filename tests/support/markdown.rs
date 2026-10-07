@@ -442,12 +442,3 @@ pub fn is_code_tree_path(target: &str) -> bool {
         .iter()
         .any(|t| stripped == *t || stripped.starts_with(&format!("{t}/")))
 }
-
-// Panicking forms of the functions above, for callers not yet converted to
-// return a `Result`. Each is removed when its last caller is converted;
-// `unwrap_ratchet_test` counts the `expect` in each.
-
-/// [`tracked_top_level_dirs`], panicking on error.
-pub fn tracked_top_level_dirs_or_panic() -> BTreeSet<String> {
-    tracked_top_level_dirs().expect("tracked_top_level_dirs")
-}

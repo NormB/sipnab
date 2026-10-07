@@ -20,6 +20,9 @@ use std::path::Path;
 
 use clap::CommandFactory;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Every long flag clap knows about.
 fn clap_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
@@ -48,10 +51,10 @@ fn matrix_flags(text: &str) -> BTreeSet<String> {
 }
 
 #[test]
-fn the_matrix_lists_every_flag_the_program_has() {
+fn the_matrix_lists_every_flag_the_program_has() -> Result<(), TestError> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/design/testing-matrix.md");
     let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
 
     let have = clap_long_flags();
     let listed = matrix_flags(&text);
@@ -80,6 +83,7 @@ fn the_matrix_lists_every_flag_the_program_has() {
         stale.len(),
         stale.join(", "),
     );
+    Ok(())
 }
 
 /// Every HTTP route axum registers has a row, and none of them reads
@@ -98,11 +102,10 @@ fn the_matrix_lists_every_flag_the_program_has() {
 /// overstates it: both stop being read. If a route genuinely has no test, the
 /// answer is to write the test, not to relax this.
 #[test]
-fn every_http_route_has_a_row_and_none_of_them_is_only_defined() {
+fn every_http_route_has_a_row_and_none_of_them_is_only_defined() -> Result<(), TestError> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let matrix = std::fs::read_to_string(root.join("docs/design/testing-matrix.md"))
-        .expect("read testing-matrix.md");
-    let api = std::fs::read_to_string(root.join("src/output/api.rs")).expect("read api.rs");
+    let matrix = std::fs::read_to_string(root.join("docs/design/testing-matrix.md"))?;
+    let api = std::fs::read_to_string(root.join("src/output/api.rs"))?;
 
     // Every `.route("...")` axum is handed, read from the source rather than
     // restated here -- a list written twice is a list that disagrees.
@@ -158,4 +161,5 @@ fn every_http_route_has_a_row_and_none_of_them_is_only_defined() {
          test, and the fix is the test.",
         only_defined.join(", ")
     );
+    Ok(())
 }

@@ -14,6 +14,8 @@
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
 
+type TestError = Box<dyn std::error::Error>;
+
 use sipnab::output::relay_statistics::{
     FetchOrigin, format_relay_comparison_json, format_relay_stat_names_json,
     format_relay_statistics_json,
@@ -23,12 +25,15 @@ use sipnab::stats_vocab::{
     compare_relay_and_sipnab, relay_reported, resolve_for_wire,
 };
 
-fn at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 13, 4, 5, 6).unwrap()
+fn at() -> Result<DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2026, 9, 13, 4, 5, 6)
+        .single()
+        .ok_or("the timestamp is not a single valid instant")?)
 }
 
-fn parse(s: &str) -> Value {
-    serde_json::from_str(s).unwrap_or_else(|e| panic!("emitted JSON must parse: {e}\n{s}"))
+fn parse(s: &str) -> Result<Value, TestError> {
+    Ok(serde_json::from_str(s).map_err(|e| format!("emitted JSON must parse: {e}\n{s}"))?)
 }
 
 // ── C1/C2: statistics ───────────────────────────────────────────────────────
@@ -36,7 +41,7 @@ fn parse(s: &str) -> Value {
 /// The JSON names the relay, the moment, the tier, and every counted value --
 /// the same figures the table shows.
 #[test]
-fn statistics_json_carries_the_same_values_as_the_table() {
+fn statistics_json_carries_the_same_values_as_the_table() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[
         ("npkts_relayed".to_string(), "9000".to_string()),
         ("uptime".to_string(), "134".to_string()),
@@ -44,18 +49,18 @@ fn statistics_json_carries_the_same_values_as_the_table() {
     let v = parse(&format_relay_statistics_json(
         &wire,
         "rtpengine at 127.0.0.1:22222",
-        at(),
+        at()?,
         FetchOrigin::Asked,
-    ));
+    ))?;
     assert_eq!(v["relay"], "rtpengine at 127.0.0.1:22222");
     assert_eq!(v["obtained_at"], "2026-09-13T04:05:06Z");
     assert_eq!(v["origin"], "asked");
-    let stats = v["statistics"].as_array().expect("statistics is an array");
+    let stats = v["statistics"].as_array().ok_or("statistics is an array")?;
     // Each counted figure appears with its name, value (uncoerced string) and tier.
     let relayed = stats
         .iter()
         .find(|s| s["name"] == "npkts_relayed")
-        .expect("npkts_relayed present");
+        .ok_or("npkts_relayed present")?;
     assert_eq!(
         relayed["value"], "9000",
         "value uncoerced, as the relay gave it"
@@ -66,27 +71,29 @@ fn statistics_json_carries_the_same_values_as_the_table() {
             .iter()
             .any(|s| s["name"] == "uptime" && s["value"] == "134")
     );
+    Ok(())
 }
 
 /// A polled reading says so in the JSON and names the interval, mirroring the
 /// table's `polled ... every Ns`.
 #[test]
-fn statistics_json_marks_a_poll_and_its_interval() {
+fn statistics_json_marks_a_poll_and_its_interval() -> Result<(), TestError> {
     let wire = resolve_for_wire(&relay_reported(&[("a".to_string(), "1".to_string())]));
     let v = parse(&format_relay_statistics_json(
         &wire,
         "relay",
-        at(),
+        at()?,
         FetchOrigin::Polled { every_secs: 30 },
-    ));
+    ))?;
     assert_eq!(v["origin"], "polled");
     assert_eq!(v["interval_secs"], 30);
+    Ok(())
 }
 
 /// A refusal is listed separately with its code, never as a counted value
 /// (ST-S1): `E68` and `E50` must not collapse into a number.
 #[test]
-fn statistics_json_lists_refusals_separately_with_their_code() {
+fn statistics_json_lists_refusals_separately_with_their_code() -> Result<(), TestError> {
     let wire = resolve_for_wire(&[
         TieredStatistic {
             name: "npkts_rcvd".to_string(),
@@ -102,19 +109,22 @@ fn statistics_json_lists_refusals_separately_with_their_code() {
     let v = parse(&format_relay_statistics_json(
         &wire,
         "relay",
-        at(),
+        at()?,
         FetchOrigin::Asked,
-    ));
-    let refusals = v["refusals"].as_array().expect("refusals array");
+    ))?;
+    let refusals = v["refusals"].as_array().ok_or("refusals array")?;
     assert_eq!(refusals.len(), 1);
     assert_eq!(refusals[0]["name"], "rtpa_nlost");
     assert_eq!(refusals[0]["code"], "E68");
     // And the refused name is NOT among the counted statistics.
-    let stats = v["statistics"].as_array().unwrap();
+    let stats = v["statistics"]
+        .as_array()
+        .ok_or("v[\"statistics\"].as_array() was None")?;
     assert!(
         !stats.iter().any(|s| s["name"] == "rtpa_nlost"),
         "a refusal must not appear as a counted value"
     );
+    Ok(())
 }
 
 // ── C3: names ────────────────────────────────────────────────────────────────
@@ -122,33 +132,35 @@ fn statistics_json_lists_refusals_separately_with_their_code() {
 /// The names JSON lists exactly the names, with the determination (listed vs
 /// probed) and no values -- the machine form of C3's "what can I ask for".
 #[test]
-fn names_json_lists_names_with_the_source_and_no_values() {
+fn names_json_lists_names_with_the_source_and_no_values() -> Result<(), TestError> {
     let names = vec!["npkts_relayed".to_string(), "uptime".to_string()];
     let v = parse(&format_relay_stat_names_json(
         &names,
         NameSource::Listed,
         "rtpengine at r:1",
-        at(),
-    ));
+        at()?,
+    ))?;
     assert_eq!(v["relay"], "rtpengine at r:1");
     assert_eq!(v["source"], "listed");
-    let arr = v["names"].as_array().expect("names array");
+    let arr = v["names"].as_array().ok_or("names array")?;
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0], "npkts_relayed");
     // No values leaked: 9000 was a value in a stats table; here it must be absent.
-    assert!(!format_relay_stat_names_json(&names, NameSource::Listed, "r", at()).contains("9000"));
+    assert!(!format_relay_stat_names_json(&names, NameSource::Listed, "r", at()?).contains("9000"));
+    Ok(())
 }
 
 /// A probed set says so, so it is not mistaken for a definitive enumeration.
 #[test]
-fn names_json_marks_a_probed_set() {
+fn names_json_marks_a_probed_set() -> Result<(), TestError> {
     let v = parse(&format_relay_stat_names_json(
         &["nrelayed".to_string()],
         NameSource::Probed,
         "rtpproxy at r:2",
-        at(),
-    ));
+        at()?,
+    ))?;
     assert_eq!(v["source"], "probed");
+    Ok(())
 }
 
 // ── C4: comparison ───────────────────────────────────────────────────────────
@@ -156,7 +168,7 @@ fn names_json_marks_a_probed_set() {
 /// The comparison JSON shows both tiers, both raw values, a word verdict and
 /// the note -- and never a summed or differenced figure (ST-S1).
 #[test]
-fn comparison_json_shows_both_tiers_and_a_word_verdict() {
+fn comparison_json_shows_both_tiers_and_a_word_verdict() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(
         ComparedFigure {
             value: 9000,
@@ -173,8 +185,8 @@ fn comparison_json_shows_both_tiers_and_a_word_verdict() {
         &c,
         "1-7@10.0.0.1",
         "rtpengine at r",
-        at(),
-    ));
+        at()?,
+    ))?;
     assert_eq!(v["call_id"], "1-7@10.0.0.1");
     let p = &v["packets"];
     assert_eq!(p["relay_reported"]["value"], 9000);
@@ -187,11 +199,12 @@ fn comparison_json_shows_both_tiers_and_a_word_verdict() {
     );
     // No blended field: there is no single "difference"/"missed" number.
     assert!(p.get("difference").is_none() && p.get("missed").is_none());
+    Ok(())
 }
 
 /// A match renders the verdict word "match", agreeing with the table.
 #[test]
-fn comparison_json_match_agrees_with_the_table() {
+fn comparison_json_match_agrees_with_the_table() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(
         ComparedFigure {
             value: 500,
@@ -204,6 +217,7 @@ fn comparison_json_match_agrees_with_the_table() {
             tier: StatisticTier::SipnabMeasured,
         },
     );
-    let v = parse(&format_relay_comparison_json(&c, "call-x", "relay", at()));
+    let v = parse(&format_relay_comparison_json(&c, "call-x", "relay", at()?))?;
     assert_eq!(v["packets"]["verdict"], "match");
+    Ok(())
 }

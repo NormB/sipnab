@@ -15,42 +15,43 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 fn script() -> PathBuf {
     repo().join("scripts/code-scanning-clean.py")
 }
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("{rel}: {e}"))?)
 }
 
 /// Runs the script in fixture mode: alerts and analyses come from JSON files,
 /// never the network, so every branch can be driven.
-fn run(alerts: &str, analyses: &str, sha: &str) -> (i32, String) {
+fn run(alerts: &str, analyses: &str, sha: &str) -> Result<(i32, String), TestError> {
     static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("sipnab-cs-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::create_dir_all(&dir)?;
     let a = dir.join("alerts.json");
     let b = dir.join("analyses.json");
-    std::fs::write(&a, alerts).expect("w");
-    std::fs::write(&b, analyses).expect("w");
+    std::fs::write(&a, alerts)?;
+    std::fs::write(&b, analyses)?;
     let out = Command::new("python3")
         .arg(script())
         .args(["--sha", sha, "--alerts-json"])
         .arg(&a)
         .arg("--analyses-json")
         .arg(&b)
-        .output()
-        .expect("python3");
+        .output()?;
     let _ = std::fs::remove_dir_all(&dir);
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    (out.status.code().unwrap_or(-1), text)
+    Ok((out.status.code().unwrap_or(-1), text))
 }
 
 const SHA: &str = "35c31afe0000000000000000000000000000abcd";
@@ -72,14 +73,15 @@ fn alert_on(rule: &str, path: &str, state: &str, sha: &str) -> String {
 }
 
 #[test]
-fn no_open_alerts_and_an_analysis_of_this_commit_is_clean() {
-    let (rc, out) = run("[]", &analysis_for(SHA), SHA);
+fn no_open_alerts_and_an_analysis_of_this_commit_is_clean() -> Result<(), TestError> {
+    let (rc, out) = run("[]", &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 0, "{out}");
     assert!(out.contains("clean"), "{out}");
+    Ok(())
 }
 
 #[test]
-fn one_open_alert_fails_and_names_rule_and_path() {
+fn one_open_alert_fails_and_names_rule_and_path() -> Result<(), TestError> {
     let alerts = format!(
         "[{}]",
         alert(
@@ -88,65 +90,72 @@ fn one_open_alert_fails_and_names_rule_and_path() {
             "open"
         )
     );
-    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 1, "{out}");
     assert!(
         out.contains("rust/hard-coded-cryptographic-value") && out.contains("digest_leak.rs:475"),
         "{out}"
     );
+    Ok(())
 }
 
 #[test]
-fn dismissed_and_fixed_alerts_do_not_count() {
+fn dismissed_and_fixed_alerts_do_not_count() -> Result<(), TestError> {
     let alerts = format!(
         "[{}, {}]",
         alert("x/y", "a.rs", "dismissed"),
         alert("x/z", "b.rs", "fixed")
     );
-    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 0, "{out}");
+    Ok(())
 }
 
 /// No analysis of THIS commit yet is not "clean": the scanner has not spoken.
 #[test]
-fn no_analysis_of_this_commit_is_not_a_pass() {
+fn no_analysis_of_this_commit_is_not_a_pass() -> Result<(), TestError> {
     let (rc, out) = run(
         "[]",
         &analysis_for("0000000000000000000000000000000000000000"),
         SHA,
-    );
+    )?;
     assert_eq!(rc, 2, "{out}");
     assert!(out.to_lowercase().contains("no codeql analysis"), "{out}");
+    Ok(())
 }
 
 /// An unreadable API answer is exit 2, never a silent 0 -- a gate that cannot
 /// see must say so rather than pass.
 #[test]
-fn an_unreadable_answer_is_reported_not_passed() {
-    let (rc, out) = run("<html>502 Bad Gateway</html>", &analysis_for(SHA), SHA);
+fn an_unreadable_answer_is_reported_not_passed() -> Result<(), TestError> {
+    let (rc, out) = run("<html>502 Bad Gateway</html>", &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 2, "{out}");
+    Ok(())
 }
 
 /// CodeQL runs one analysis per language; the fast ones finish in seconds.
 /// The alerts come from the Rust one, so only ITS analysis of the commit
 /// counts -- an `actions` analysis of this SHA says nothing about Rust alerts.
 #[test]
-fn an_analysis_in_another_category_does_not_count_as_this_commits_verdict() {
-    let (rc, out) = run("[]", &analysis_in("/language:actions", SHA), SHA);
+fn an_analysis_in_another_category_does_not_count_as_this_commits_verdict() -> Result<(), TestError>
+{
+    let (rc, out) = run("[]", &analysis_in("/language:actions", SHA), SHA)?;
     assert_eq!(rc, 2, "{out}");
     assert!(out.to_lowercase().contains("no codeql analysis"), "{out}");
+    Ok(())
 }
 
 /// Both present: the Rust one is what unlocks the verdict.
 #[test]
-fn the_rust_analysis_among_others_unlocks_the_verdict() {
+fn the_rust_analysis_among_others_unlocks_the_verdict() -> Result<(), TestError> {
     let both = format!(
         "[{},{}]",
         analysis_in("/language:actions", SHA).trim_matches(|c| c == '[' || c == ']'),
         analysis_in("/language:rust", SHA).trim_matches(|c| c == '[' || c == ']')
     );
-    let (rc, out) = run("[]", &both, SHA);
+    let (rc, out) = run("[]", &both, SHA)?;
     assert_eq!(rc, 0, "{out}");
+    Ok(())
 }
 
 /// An open alert whose most recent instance is on an OLDER commit has not
@@ -154,7 +163,7 @@ fn the_rust_analysis_among_others_unlocks_the_verdict() {
 /// version of that code. The first run of this gate failed nine such alerts
 /// as if they were this commit's; they were the previous commit's.
 #[test]
-fn an_alert_not_yet_re_evaluated_on_this_commit_is_not_a_failure() {
+fn an_alert_not_yet_re_evaluated_on_this_commit_is_not_a_failure() -> Result<(), TestError> {
     let older = "15c4626200000000000000000000000000000000";
     let alerts = format!(
         "[{}]",
@@ -165,14 +174,15 @@ fn an_alert_not_yet_re_evaluated_on_this_commit_is_not_a_failure() {
             older
         )
     );
-    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 2, "{out}");
     assert!(out.contains("not yet re-evaluated"), "{out}");
+    Ok(())
 }
 
 /// The same alert, once the scanner has found it on THIS commit, fails.
 #[test]
-fn an_alert_found_on_this_commit_fails() {
+fn an_alert_found_on_this_commit_fails() -> Result<(), TestError> {
     let alerts = format!(
         "[{}]",
         alert_on(
@@ -182,14 +192,15 @@ fn an_alert_found_on_this_commit_fails() {
             SHA
         )
     );
-    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA);
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA)?;
     assert_eq!(rc, 1, "{out}");
+    Ok(())
 }
 
 /// CI requires the gate: a job runs the script and the aggregate needs it.
 #[test]
-fn ci_success_requires_the_code_scanning_gate() {
-    let ci = read(".github/workflows/ci.yml");
+fn ci_success_requires_the_code_scanning_gate() -> Result<(), TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("scripts/code-scanning-clean.py"),
         "ci.yml never runs the script"
@@ -202,39 +213,42 @@ fn ci_success_requires_the_code_scanning_gate() {
         ci.contains("--category /language:rust"),
         "CI must name the category whose alerts it judges"
     );
-    let i = ci.find("name: CI success").expect("aggregate job");
+    let i = ci.find("name: CI success").ok_or("aggregate job")?;
     let needs = &ci[i..ci[i..].find("runs-on:").map(|j| i + j).unwrap_or(ci.len())];
     assert!(
         needs.contains("code-scanning-clean"),
         "the aggregate does not need the gate:\n{needs}"
     );
+    Ok(())
 }
 
 /// The tag hook calls the SAME script -- one rule, one place.
 #[test]
-fn the_tag_hook_refuses_a_commit_with_open_alerts_via_the_same_script() {
-    let hook = read(".githooks/pre-push");
-    let i = hook.find("checking CI").expect("tag loop");
+fn the_tag_hook_refuses_a_commit_with_open_alerts_via_the_same_script() -> Result<(), TestError> {
+    let hook = read(".githooks/pre-push")?;
+    let i = hook.find("checking CI").ok_or("tag loop")?;
     let tail = &hook[i..];
     assert!(
         tail.contains("scripts/code-scanning-clean.py"),
         "the tag check never consults code scanning"
     );
+    Ok(())
 }
 
 /// The exit-code contract is written where a caller reads it.
 #[test]
-fn the_scripts_exit_codes_are_documented_in_its_header() {
-    let s = read("scripts/code-scanning-clean.py");
+fn the_scripts_exit_codes_are_documented_in_its_header() -> Result<(), TestError> {
+    let s = read("scripts/code-scanning-clean.py")?;
     for needle in ["exit 0", "exit 1", "exit 2"] {
         assert!(s.contains(needle), "header does not state `{needle}`");
     }
+    Ok(())
 }
 
 /// Fixing alerts by silencing the rule is the one fix this must never accept.
 #[test]
-fn the_codeql_config_does_not_exclude_the_crypto_material_rule() {
-    let cfg = read(".github/codeql/codeql-config.yml");
+fn the_codeql_config_does_not_exclude_the_crypto_material_rule() -> Result<(), TestError> {
+    let cfg = read(".github/codeql/codeql-config.yml")?;
     let excluded = cfg
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -243,14 +257,15 @@ fn the_codeql_config_does_not_exclude_the_crypto_material_rule() {
         !excluded,
         "the rule is excluded in codeql-config.yml -- fix the code, not the scanner"
     );
+    Ok(())
 }
 
 /// `tags contain: test` filters a QUERY's metadata tags, which no security
 /// query carries; it cannot scope a rule to test code, and two filters in
 /// that form suppressed nothing for months while claiming to.
 #[test]
-fn no_query_filter_pretends_to_scope_by_test_code() {
-    let cfg = read(".github/codeql/codeql-config.yml");
+fn no_query_filter_pretends_to_scope_by_test_code() -> Result<(), TestError> {
+    let cfg = read(".github/codeql/codeql-config.yml")?;
     let live: Vec<&str> = cfg
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
@@ -260,4 +275,5 @@ fn no_query_filter_pretends_to_scope_by_test_code() {
         .filter(|l| l.contains("tags contain") && l.contains("test"))
         .collect();
     assert!(bad.is_empty(), "ineffective test-scoped filter(s): {bad:?}");
+    Ok(())
 }

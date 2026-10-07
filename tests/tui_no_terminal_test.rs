@@ -19,8 +19,10 @@
 
 use std::process::{Command, Stdio};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[test]
-fn a_tui_that_cannot_start_exits_non_zero_and_says_why() {
+fn a_tui_that_cannot_start_exits_non_zero_and_says_why() -> Result<(), TestError> {
     let out = Command::new("setsid")
         .arg("--wait")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
@@ -30,7 +32,7 @@ fn a_tui_that_cannot_start_exits_non_zero_and_says_why() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("run sipnab under setsid");
+        .map_err(|e| format!("run sipnab under setsid: {e}"))?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_ne!(
         out.status.code(),
@@ -41,4 +43,5 @@ fn a_tui_that_cannot_start_exits_non_zero_and_says_why() {
         stderr.contains("terminal"),
         "the refusal must say a terminal is missing, even with logging off; stderr:\n{stderr}"
     );
+    Ok(())
 }

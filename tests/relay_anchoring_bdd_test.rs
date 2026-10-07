@@ -23,6 +23,8 @@ use sipnab::relay::rtpproxy::{Reply, RtpproxyControl, decode_reply};
 use sipnab::relay::{ControlDelivery, RelayImplementation};
 use sipnab::rtp::stream_store::EndpointAssertion;
 
+type TestError = Box<dyn std::error::Error>;
+
 // ── What the relay reported, in its own words ────────────────────────────────
 
 /// GIVEN the info reply from a relay that anchored one call
@@ -31,15 +33,15 @@ use sipnab::rtp::stream_store::EndpointAssertion;
 ///
 /// The exact bytes rtpproxy returned after a SIPp call through OpenSIPS.
 #[test]
-fn an_anchored_call_leaves_the_relay_reporting_media_both_ways() {
+fn an_anchored_call_leaves_the_relay_reporting_media_both_ways() -> Result<(), TestError> {
     let observed = "w1 sessions created: 1\nactive sessions: 0\nactive streams: 0\npackets received: 9000\npackets transmitted: 9000\n";
     let RtpproxyControl::Reply { reply, .. } =
-        decode_reply(observed.as_bytes()).expect("the info reply decodes")
+        decode_reply(observed.as_bytes()).ok_or("the info reply decodes")?
     else {
-        panic!("expected a reply");
+        return Err("expected a reply".into());
     };
     let Reply::Text(body) = reply else {
-        panic!("the info reply is free text");
+        return Err("the info reply is free text".into());
     };
     assert!(body.contains("sessions created: 1"));
     assert!(
@@ -47,6 +49,7 @@ fn an_anchored_call_leaves_the_relay_reporting_media_both_ways() {
         "media relayed in both directions is what separates an anchored call \
          from a control-plane handshake: {body}"
     );
+    Ok(())
 }
 
 /// GIVEN a relay OpenSIPS could not reach
@@ -56,20 +59,22 @@ fn an_anchored_call_leaves_the_relay_reporting_media_both_ways() {
 /// Observed: three SIPp runs reported `Successful call` while the relay's
 /// counter stayed at zero. The signaling is not evidence about the media path.
 #[test]
-fn a_call_that_bypassed_the_relay_leaves_it_reporting_nothing() {
+fn a_call_that_bypassed_the_relay_leaves_it_reporting_nothing() -> Result<(), TestError> {
     let observed = "q2 sessions created: 0\nactive sessions: 0\nactive streams: 0\n";
-    let RtpproxyControl::Reply { reply, .. } = decode_reply(observed.as_bytes()).expect("decodes")
+    let RtpproxyControl::Reply { reply, .. } =
+        decode_reply(observed.as_bytes()).ok_or("decodes")?
     else {
-        panic!("expected a reply");
+        return Err("expected a reply".into());
     };
     let Reply::Text(body) = reply else {
-        panic!("free text");
+        return Err("free text".into());
     };
     assert!(
         body.contains("sessions created: 0"),
         "a bypassed relay is silent about the call, not absent from the \
          capture: {body}"
     );
+    Ok(())
 }
 
 /// GIVEN the two info replies
@@ -79,17 +84,20 @@ fn a_call_that_bypassed_the_relay_leaves_it_reporting_nothing() {
 /// The property that makes the finding reportable at all. If both read the
 /// same, a capture could not tell an operator which happened.
 #[test]
-fn anchored_and_bypassed_calls_are_told_apart() {
+fn anchored_and_bypassed_calls_are_told_apart() -> Result<(), TestError> {
     let anchored = "a sessions created: 1\npackets received: 9000\n";
     let bypassed = "b sessions created: 0\npackets received: 0\n";
-    let text = |s: &str| match decode_reply(s.as_bytes()) {
-        Some(RtpproxyControl::Reply {
-            reply: Reply::Text(t),
-            ..
-        }) => t,
-        other => panic!("expected free text, got {other:?}"),
+    let text = |s: &str| -> Result<String, TestError> {
+        match decode_reply(s.as_bytes()) {
+            Some(RtpproxyControl::Reply {
+                reply: Reply::Text(t),
+                ..
+            }) => Ok(t),
+            other => Err(format!("expected free text, got {other:?}").into()),
+        }
     };
-    assert_ne!(text(anchored), text(bypassed));
+    assert_ne!(text(anchored)?, text(bypassed)?);
+    Ok(())
 }
 
 // ── What sipnab should say about the anchor it observed ──────────────────────
@@ -98,7 +106,7 @@ fn anchored_and_bypassed_calls_are_told_apart() {
 /// WHEN the endpoint is attributed
 /// THEN it names rtpproxy and admits nothing authenticated the claim.
 #[test]
-fn a_sniffed_rtpproxy_anchor_is_named_and_unauthenticated() {
+fn a_sniffed_rtpproxy_anchor_is_named_and_unauthenticated() -> Result<(), TestError> {
     let a = EndpointAssertion::media_relay(
         RelayImplementation::Rtpproxy,
         ControlDelivery::BareDatagram,
@@ -108,13 +116,14 @@ fn a_sniffed_rtpproxy_anchor_is_named_and_unauthenticated() {
         !a.is_authenticated(),
         "the control datagram was read off the wire; nothing vouched for it"
     );
+    Ok(())
 }
 
 /// GIVEN the same call anchored by the other relay
 /// WHEN the endpoint is attributed
 /// THEN the two attributions differ, because the estate runs both.
 #[test]
-fn the_two_anchors_produce_different_attributions() {
+fn the_two_anchors_produce_different_attributions() -> Result<(), TestError> {
     let proxy = EndpointAssertion::media_relay(
         RelayImplementation::Rtpproxy,
         ControlDelivery::BareDatagram,
@@ -128,6 +137,7 @@ fn the_two_anchors_produce_different_attributions() {
         "a harness that can swap anchors must not produce one attribution for \
          both, or the swap is untestable from the capture"
     );
+    Ok(())
 }
 
 // ── The ports a real call landed on ──────────────────────────────────────────
@@ -140,7 +150,7 @@ fn the_two_anchors_produce_different_attributions() {
 /// rtpengine holding 30000-30050. Verified by observation rather than by
 /// reading the configuration back to itself.
 #[test]
-fn a_real_call_landed_inside_the_relays_own_range() {
+fn a_real_call_landed_inside_the_relays_own_range() -> Result<(), TestError> {
     const OBSERVED: [u16; 2] = [31026, 31012];
     const PROXY: std::ops::RangeInclusive<u16> = 31000..=31050;
     const ENGINE: std::ops::RangeInclusive<u16> = 30000..=30050;
@@ -155,15 +165,17 @@ fn a_real_call_landed_inside_the_relays_own_range() {
              the split exists to prevent"
         );
     }
+    Ok(())
 }
 
 /// GIVEN the two allocated ports
 /// WHEN they are compared
 /// THEN they differ, because a relay bridges two legs.
 #[test]
-fn the_relay_allocated_one_port_per_leg() {
+fn the_relay_allocated_one_port_per_leg() -> Result<(), TestError> {
     assert_ne!(
         31026, 31012,
         "one port for both legs would mean the relay is not bridging anything"
     );
+    Ok(())
 }

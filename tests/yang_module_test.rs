@@ -29,6 +29,8 @@ use std::path::PathBuf;
 use sipnab::analysis::yang;
 use sipnab::analysis::{CountLabel, FindingKind};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The regeneration switch.
 const BLESS: &str = "SIPNAB_BLESS_YANG";
 
@@ -62,22 +64,22 @@ fn first_difference(a: &str, b: &str) -> String {
 /// case a consumer validating against the published module would otherwise
 /// meet first.
 #[test]
-fn the_committed_module_is_what_the_tables_generate() {
+fn the_committed_module_is_what_the_tables_generate() -> Result<(), TestError> {
     let generated = yang::module_text();
     let path = committed();
     if std::env::var_os(BLESS).is_some() {
-        std::fs::create_dir_all(path.parent().expect("yang/")).expect("create yang/");
-        std::fs::write(&path, &generated).expect("write the module");
+        std::fs::create_dir_all(path.parent().ok_or("yang/")?)?;
+        std::fs::write(&path, &generated)?;
         eprintln!("blessed {}", path.display());
-        return;
+        return Ok(());
     }
-    let on_disk = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-        panic!(
+    let on_disk = std::fs::read_to_string(&path).map_err(|e| {
+        format!(
             "{} is missing ({e}). Generate it with `{BLESS}=1 cargo test \
              --features full --test yang_module_test`",
             path.display()
         )
-    });
+    })?;
     assert!(
         on_disk == generated,
         "{} is stale: {}\nIf this revision is already published, do not bless over \
@@ -87,16 +89,18 @@ fn the_committed_module_is_what_the_tables_generate() {
         path.display(),
         first_difference(&on_disk, &generated)
     );
+    Ok(())
 }
 
 /// The drift gate compares by default and blesses only when told to.
 #[test]
-fn the_drift_gate_compares_rather_than_blesses_by_default() {
+fn the_drift_gate_compares_rather_than_blesses_by_default() -> Result<(), TestError> {
     assert!(
         std::env::var_os(BLESS).is_none(),
         "{BLESS} is set in this run, so the drift gate rewrote the module instead \
          of checking it. It is a regeneration switch, not something to leave on"
     );
+    Ok(())
 }
 
 /// `identity NAME { base BASE; ... }` pairs, read out of module text.
@@ -128,8 +132,8 @@ fn identities(text: &str) -> Vec<(String, Option<String>)> {
 /// stale file even when the drift gate above has been blessed past, and it
 /// fails for the reason a consumer would: the identity is not in the module.
 #[test]
-fn every_kind_and_count_label_is_an_identity_in_the_committed_module() {
-    let text = std::fs::read_to_string(committed()).expect("read the committed module");
+fn every_kind_and_count_label_is_an_identity_in_the_committed_module() -> Result<(), TestError> {
+    let text = std::fs::read_to_string(committed())?;
     let found = identities(&text);
     let under = |base: &str| -> BTreeSet<String> {
         found
@@ -170,6 +174,7 @@ fn every_kind_and_count_label_is_an_identity_in_the_committed_module() {
         BTreeSet::from(["count-label".to_string(), "finding-kind".to_string()]),
         "the module defines a base identity nothing derives from, or loses one"
     );
+    Ok(())
 }
 
 /// Every revision is recorded, newest first, and every one of them is a file.
@@ -179,7 +184,7 @@ fn every_kind_and_count_label_is_an_identity_in_the_committed_module() {
 /// published revision `pyang --check-update-from` can no longer hold the next
 /// one to.
 #[test]
-fn the_revision_history_and_the_committed_files_agree() {
+fn the_revision_history_and_the_committed_files_agree() -> Result<(), TestError> {
     let dates: Vec<&str> = yang::REVISIONS.iter().map(|r| r.date).collect();
     assert_eq!(
         dates.first().copied(),
@@ -191,8 +196,7 @@ fn the_revision_history_and_the_committed_files_agree() {
     sorted.dedup();
     assert_eq!(sorted, dates, "REVISIONS must be unique and newest first");
 
-    let on_disk: BTreeSet<String> = std::fs::read_dir(repo().join("yang"))
-        .expect("read yang/")
+    let on_disk: BTreeSet<String> = std::fs::read_dir(repo().join("yang"))?
         .filter_map(|e| e.ok())
         .filter_map(|e| e.file_name().into_string().ok())
         .filter(|n| n.ends_with(".yang"))
@@ -205,26 +209,27 @@ fn the_revision_history_and_the_committed_files_agree() {
         on_disk, recorded,
         "yang/ and REVISIONS disagree about which revisions exist"
     );
+    Ok(())
 }
 
 /// `sipnab --print-yang-module` prints the committed file, byte for byte.
 #[test]
-fn print_yang_module_prints_the_committed_file() {
+fn print_yang_module_prints_the_committed_file() -> Result<(), TestError> {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .arg("--print-yang-module")
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "exit {:?}: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    let committed = std::fs::read(committed()).expect("read the committed module");
+    let committed = std::fs::read(committed())?;
     assert!(
         out.stdout == committed,
         "--print-yang-module printed {} bytes that are not the {} committed",
         out.stdout.len(),
         committed.len()
     );
+    Ok(())
 }

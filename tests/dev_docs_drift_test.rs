@@ -26,6 +26,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/markdown.rs"]
 mod markdown;
 
@@ -33,9 +35,9 @@ fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: impl AsRef<Path>) -> String {
+fn read(rel: impl AsRef<Path>) -> Result<String, TestError> {
     let p = repo().join(rel.as_ref());
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `.md` under `docs/internals/`, recursively, as repo-relative paths.
@@ -49,20 +51,20 @@ fn read(rel: impl AsRef<Path>) -> String {
 /// `every_internals_page_is_registered_for_the_wiki` reported that every page
 /// was registered. Demonstrated: such a page with three separate hard
 /// failures passed 59 tests.
-fn internals_pages() -> Vec<PathBuf> {
+fn internals_pages() -> Result<Vec<PathBuf>, TestError> {
     let dir = repo().join("docs/internals");
     let mut out = Vec::new();
     let mut stack = vec![dir.clone()];
     while let Some(d) = stack.pop() {
         for entry in std::fs::read_dir(&d)
-            .unwrap_or_else(|e| panic!("read_dir {}: {e}", d.display()))
+            .map_err(|e| format!("read_dir {}: {e}", d.display()))?
             .flatten()
         {
             let p = entry.path();
             if p.is_dir() {
                 stack.push(p);
             } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
-                out.push(p.strip_prefix(repo()).expect("under repo").to_path_buf());
+                out.push(p.strip_prefix(repo())?.to_path_buf());
             }
         }
     }
@@ -72,15 +74,16 @@ fn internals_pages() -> Vec<PathBuf> {
          and every gate built on it passes vacuously"
     );
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Every markdown link on a page as `(link_text, target)`.
-fn links(text: &str) -> Vec<(String, String)> {
-    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)\s]+)\)").expect("link regex");
-    re.captures_iter(text)
+fn links(text: &str) -> Result<Vec<(String, String)>, TestError> {
+    let re = regex::Regex::new(r"\[([^\]]*)\]\(([^)\s]+)\)")?;
+    Ok(re
+        .captures_iter(text)
         .map(|c| (c[1].to_string(), c[2].to_string()))
-        .collect()
+        .collect())
 }
 
 /// Links that point into the code rather than at another document. Anchored
@@ -94,8 +97,8 @@ fn links(text: &str) -> Vec<(String, String)> {
 /// citation to `../../bench/scaling-DELETED.sh` passed every suite and shipped
 /// to the live site. `generators_agree_on_the_code_tree_set` keeps the three
 /// generators' copies of the same list from drifting away from it again.
-fn code_links(text: &str) -> Vec<(String, String)> {
-    links(text)
+fn code_links(text: &str) -> Result<Vec<(String, String)>, TestError> {
+    Ok(links(text)?
         .into_iter()
         .filter(|(_, target)| {
             if target.ends_with(".md") || target.starts_with('#') {
@@ -109,7 +112,7 @@ fn code_links(text: &str) -> Vec<(String, String)> {
             }
             markdown::is_code_tree_path(target)
         })
-        .collect()
+        .collect())
 }
 
 /// The shared code-tree list still describes this repository.
@@ -123,9 +126,9 @@ fn code_links(text: &str) -> Vec<(String, String)> {
 ///
 /// `docs/` is excluded on both sides: a link into it is a document link.
 #[test]
-fn code_tree_list_matches_the_repository() {
+fn code_tree_list_matches_the_repository() -> Result<(), TestError> {
     let listed = markdown::code_trees();
-    let tracked = markdown::tracked_top_level_dirs_or_panic();
+    let tracked = markdown::tracked_top_level_dirs()?;
     let missing: Vec<&String> = tracked.iter().filter(|d| !listed.contains(*d)).collect();
     let stale: Vec<&String> = listed.iter().filter(|d| !tracked.contains(*d)).collect();
     assert!(
@@ -136,6 +139,7 @@ fn code_tree_list_matches_the_repository() {
          tree whose links nothing rewrites and nothing checks.",
         markdown::CODE_TREES_FILE
     );
+    Ok(())
 }
 
 /// Every consumer of the code-tree list behaves as the list says.
@@ -158,7 +162,7 @@ fn code_tree_list_matches_the_repository() {
 /// in both the `tree/path` and bare-`tree` forms the generators must rewrite,
 /// and against a name that is not a tree at all.
 #[test]
-fn generators_agree_on_the_code_tree_set() {
+fn generators_agree_on_the_code_tree_set() -> Result<(), TestError> {
     let probe = registries(
         "{'trees': sorted(lm.code_trees()), \
           'fixer': sorted(l.WIKI_TREES), \
@@ -172,13 +176,13 @@ fn generators_agree_on_the_code_tree_set() {
             for n, g in (('build-wiki.py', w), \
                          ('build-site-internals.py', i), \
                          ('build-site-pages.py', p))}}",
-    );
+    )?;
 
-    let strings = |v: &serde_json::Value| -> Vec<String> {
+    let strings = |v: &serde_json::Value| -> Result<Vec<String>, TestError> {
         v.as_array()
-            .expect("json array")
+            .ok_or("json array")?
             .iter()
-            .map(|s| s.as_str().expect("json string").to_string())
+            .map(|s| Ok(s.as_str().ok_or("json string")?.to_string()))
             .collect()
     };
     let expected: Vec<String> = markdown::code_trees().iter().cloned().collect();
@@ -188,7 +192,7 @@ fn generators_agree_on_the_code_tree_set() {
     // anything below, or a comment-stripping difference makes every other
     // assertion here compare a set with itself.
     assert_eq!(
-        strings(&probe["trees"]),
+        strings(&probe["trees"])?,
         expected,
         "{} parses differently in Python and in Rust",
         markdown::CODE_TREES_FILE
@@ -197,10 +201,10 @@ fn generators_agree_on_the_code_tree_set() {
     let mut wrong = Vec::new();
     for (name, g) in probe["generators"]
         .as_object()
-        .expect("generator probe map")
+        .ok_or("generator probe map")?
         .iter()
     {
-        let accepts = strings(&g["accepts"]);
+        let accepts = strings(&g["accepts"])?;
         if accepts != expected {
             let missing: Vec<&String> = expected.iter().filter(|t| !accepts.contains(t)).collect();
             wrong.push(format!(
@@ -227,13 +231,13 @@ fn generators_agree_on_the_code_tree_set() {
     // rewrite (too wide) or refuses one the gate demands (too narrow). ROOTS is
     // what a code span may be anchored on, which includes `docs` precisely
     // because `docs/install.md` IS a tracked file the gate wants linked.
-    if strings(&probe["fixer"]) != expected {
+    if strings(&probe["fixer"])? != expected {
         wrong.push(format!(
             "scripts/link-repo-paths.py: WIKI_TREES is {:?}, the list is {expected:?}",
-            strings(&probe["fixer"])
+            strings(&probe["fixer"])?
         ));
     }
-    let roots = strings(&probe["fixer_roots"]);
+    let roots = strings(&probe["fixer_roots"])?;
     for t in expected.iter().chain(std::iter::once(&"docs".to_string())) {
         if !roots.contains(t) {
             wrong.push(format!(
@@ -250,6 +254,7 @@ fn generators_agree_on_the_code_tree_set() {
         markdown::CODE_TREES_FILE,
         wrong.join("\n  ")
     );
+    Ok(())
 }
 
 /// Nobody has pasted the tree list back into a script.
@@ -260,7 +265,7 @@ fn generators_agree_on_the_code_tree_set() {
 /// literal. Adjacent tree names joined by `|` appear nowhere else in this
 /// repository, so the pattern is specific to the mistake.
 #[test]
-fn no_script_respells_the_code_tree_alternation() {
+fn no_script_respells_the_code_tree_alternation() -> Result<(), TestError> {
     // Both spellings a Python regex literal uses: bare, and with the leading
     // dot escaped (`\.githooks`).
     // A set, not a Vec: for a tree with no dot the two spellings are the same
@@ -273,7 +278,7 @@ fn no_script_respells_the_code_tree_alternation() {
     let mut scanned = 0usize;
     let mut stack = vec![repo().join("scripts"), repo().join("tests")];
     while let Some(dir) = stack.pop() {
-        for e in std::fs::read_dir(&dir).expect("read_dir").flatten() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.is_dir() {
                 stack.push(p);
@@ -284,7 +289,7 @@ fn no_script_respells_the_code_tree_alternation() {
                 continue;
             }
             scanned += 1;
-            let src = std::fs::read_to_string(&p).expect("read source");
+            let src = std::fs::read_to_string(&p)?;
             // Anchored on each `|` rather than testing every ordered pair of
             // names against the whole file: the pair sweep is 676 substring
             // searches per source and took 37 seconds across the tree.
@@ -296,7 +301,7 @@ fn no_script_respells_the_code_tree_alternation() {
                 if let (Some(a), Some(b)) = (a, b) {
                     offenders.insert(format!(
                         "{}: spells `{a}|{b}` — build the pattern from {} instead",
-                        p.strip_prefix(repo()).expect("under repo").display(),
+                        p.strip_prefix(repo())?.display(),
                         markdown::CODE_TREES_FILE
                     ));
                 }
@@ -314,6 +319,7 @@ fn no_script_respells_the_code_tree_alternation() {
         offenders.len(),
         offenders.iter().cloned().collect::<Vec<_>>().join("\n  ")
     );
+    Ok(())
 }
 
 /// No generator rewrites a link that a reader sees as code.
@@ -331,14 +337,14 @@ fn no_script_respells_the_code_tree_alternation() {
 /// including a `~~~` fence containing a ``` ``` ``` line, which is what every
 /// single-`bool` fence scanner in this repository got wrong.
 #[test]
-fn generators_do_not_rewrite_links_inside_code() {
+fn generators_do_not_rewrite_links_inside_code() -> Result<(), TestError> {
     let mut bypassing = Vec::new();
     for script in [
         "scripts/build-wiki.py",
         "scripts/build-site-pages.py",
         "scripts/build-site-internals.py",
     ] {
-        let src = read(script);
+        let src = read(script)?;
         if src.contains("CODE_LINK_RE.sub(") {
             bypassing.push(script);
         }
@@ -380,11 +386,10 @@ fn generators_do_not_rewrite_links_inside_code() {
                 use std::io::Write;
                 c.stdin
                     .as_mut()
-                    .expect("stdin")
+                    .ok_or_else(|| std::io::Error::other("stdin"))?
                     .write_all(doc.as_bytes())
                     .and_then(|()| c.wait_with_output())
-            })
-            .expect("run sub_outside_code");
+            })?;
         assert!(out.status.success(), "probe failed: {doc:?}");
         let got = String::from_utf8_lossy(&out.stdout);
         assert_eq!(
@@ -395,19 +400,19 @@ fn generators_do_not_rewrite_links_inside_code() {
             if must_change { "rewrite" } else { "leave" }
         );
     }
+    Ok(())
 }
 
 /// The `()`-suffixed symbol inside a link's text, if any: `` `foo()` ``,
 /// `` `Type::method()` ``. The final identifier is what must resolve.
-fn symbol_in(link_text: &str) -> Option<String> {
-    let re = regex::Regex::new(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*([A-Za-z_][A-Za-z0-9_]*)\(\)")
-        .expect("symbol regex");
-    re.captures(link_text).map(|c| c[1].to_string())
+fn symbol_in(link_text: &str) -> Result<Option<String>, TestError> {
+    let re = regex::Regex::new(r"(?:[A-Za-z_][A-Za-z0-9_]*::)*([A-Za-z_][A-Za-z0-9_]*)\(\)")?;
+    Ok(re.captures(link_text).map(|c| c[1].to_string()))
 }
 
 /// Resolve a page-relative link target to a repo-relative path.
-fn resolve(page: &Path, target: &str) -> PathBuf {
-    let dir = page.parent().expect("page has a parent");
+fn resolve(page: &Path, target: &str) -> Result<PathBuf, TestError> {
+    let dir = page.parent().ok_or("page has a parent")?;
     let mut out = dir.to_path_buf();
     for part in target.split('/') {
         match part {
@@ -418,20 +423,20 @@ fn resolve(page: &Path, target: &str) -> PathBuf {
             p => out.push(p),
         }
     }
-    out
+    Ok(out)
 }
 
 #[test]
-fn linked_code_targets_exist() {
+fn linked_code_targets_exist() -> Result<(), TestError> {
     let mut missing = Vec::new();
     let mut seen = 0;
-    for page in internals_pages() {
-        for (text, target) in code_links(&read(&page)) {
+    for page in internals_pages()? {
+        for (text, target) in code_links(&read(&page)?)? {
             if target.starts_with("http") {
                 continue; // reported by linked_code_uses_relative_paths
             }
             seen += 1;
-            if !repo().join(resolve(&page, &target)).exists() {
+            if !repo().join(resolve(&page, &target)?).exists() {
                 missing.push(format!(
                     "{}: [{text}]({target}) points at nothing",
                     page.display()
@@ -823,6 +828,7 @@ fn linked_code_targets_exist() {
         "developer docs link to code that has moved or been deleted:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every `.rs` file at or under a resolved link target.
@@ -857,7 +863,7 @@ fn rust_files_under(path: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn linked_symbols_resolve_to_a_definition() {
+fn linked_symbols_resolve_to_a_definition() -> Result<(), TestError> {
     /// Symbol claims the developer docs are expected to cite.
     // 66 -> 68: both from `docs/internals/threading.md`, which now cites
     // `relay_reconciler::spawn()` and `orphan_channel()` -- the spawn site and
@@ -886,14 +892,12 @@ fn linked_symbols_resolve_to_a_definition() {
     // starts the same way — and `src/parallel.rs` really does carry the
     // `run_offline_parallel` / `run_offline_parallel_file` pair, so renaming the
     // shorter one would have left the docs green.
-    let def = |sym: &str| {
-        regex::Regex::new(&format!(r"\bfn\s+{}\s*[(<]", regex::escape(sym))).expect("def regex")
-    };
+    let def = |sym: &str| regex::Regex::new(&format!(r"\bfn\s+{}\s*[(<]", regex::escape(sym)));
     let mut missing = Vec::new();
     let mut seen = 0;
-    for page in internals_pages() {
-        for (text, target) in code_links(&read(&page)) {
-            let Some(sym) = symbol_in(&text) else {
+    for page in internals_pages()? {
+        for (text, target) in code_links(&read(&page)?)? {
+            let Some(sym) = symbol_in(&text)? else {
                 continue; // a plain file/subsystem link carries no symbol claim
             };
             seen += 1;
@@ -904,7 +908,7 @@ fn linked_symbols_resolve_to_a_definition() {
             // send a reader to a file that does not mention the symbol it
             // promised, and only a symbol absent from every file in the
             // workspace was reported.
-            let resolved = repo().join(resolve(&page, &target));
+            let resolved = repo().join(resolve(&page, &target)?);
             let files = rust_files_under(&resolved);
             if files.is_empty() {
                 missing.push(format!(
@@ -914,7 +918,7 @@ fn linked_symbols_resolve_to_a_definition() {
                 ));
                 continue;
             }
-            let re = def(&sym);
+            let re = def(&sym)?;
             let found = files
                 .iter()
                 .any(|f| re.is_match(&std::fs::read_to_string(f).unwrap_or_default()));
@@ -951,15 +955,16 @@ fn linked_symbols_resolve_to_a_definition() {
         "developer docs name functions that no longer exist:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 #[test]
-fn linked_code_uses_relative_paths() {
+fn linked_code_uses_relative_paths() -> Result<(), TestError> {
     // An absolute blob URL pins a branch and goes stale silently; the relative
     // form is what build-wiki.py rewrites into a blob URL for the wiki.
     let mut offenders = Vec::new();
-    for page in internals_pages() {
-        for (text, target) in code_links(&read(&page)) {
+    for page in internals_pages()? {
+        for (text, target) in code_links(&read(&page)?)? {
             if target.starts_with("http") {
                 offenders.push(format!(
                     "{}: [{text}]({target}) — use a relative path",
@@ -973,6 +978,7 @@ fn linked_code_uses_relative_paths() {
         "code links must be repo-relative:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// Run a snippet of Python against the generators and parse its JSON.
@@ -987,7 +993,7 @@ fn linked_code_uses_relative_paths() {
 /// disappears, satisfies the count while registering nothing. Importing also
 /// means a probe sees the pattern the script actually compiled, not the
 /// characters its source happens to contain.
-fn registries(expr: &str) -> serde_json::Value {
+fn registries(expr: &str) -> Result<serde_json::Value, TestError> {
     let script = format!(
         "import importlib.util as u, json\n\
          def load(p, n):\n\
@@ -1004,18 +1010,17 @@ fn registries(expr: &str) -> serde_json::Value {
         .arg("-c")
         .arg(&script)
         .current_dir(repo())
-        .output()
-        .expect("run python3 against the generator registries");
+        .output()?;
     assert!(
         out.status.success(),
         "could not import the generator registries: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    serde_json::from_slice(&out.stdout).expect("generator registries as JSON")
+    Ok(serde_json::from_slice(&out.stdout)?)
 }
 
 #[test]
-fn every_internals_page_is_registered_for_the_wiki() {
+fn every_internals_page_is_registered_for_the_wiki() -> Result<(), TestError> {
     // PAGES maps a docs-relative key to a wiki page name; GROUPS places that
     // key in the sidebar. A page in PAGES but not GROUPS publishes and is
     // reachable from nowhere — the exact failure this test's message names,
@@ -1023,13 +1028,13 @@ fn every_internals_page_is_registered_for_the_wiki() {
     // GROUPS entry out left the string in the file.
     let reg = registries(
         "{'pages': list(w.PAGES), 'groups': [s for _t, srcs in w.GROUPS for s in srcs]}",
-    );
-    let listed = |key: &str, which: &str| -> bool {
-        reg[which]
+    )?;
+    let listed = |key: &str, which: &str| -> Result<bool, TestError> {
+        Ok(reg[which]
             .as_array()
-            .expect("registry list")
+            .ok_or("registry list")?
             .iter()
-            .any(|v| v.as_str() == Some(key))
+            .any(|v| v.as_str() == Some(key)))
     };
     assert!(
         reg["pages"].as_array().map_or(0, Vec::len) >= 10,
@@ -1039,24 +1044,20 @@ fn every_internals_page_is_registered_for_the_wiki() {
     );
 
     let mut unregistered = Vec::new();
-    for page in internals_pages() {
+    for page in internals_pages()? {
         // Keyed on the path under docs/, not the basename. A basename key
         // makes docs/internals/rtp/threading.md match the top-level
         // threading.md's registration, so a nested page reports as registered
         // while publishing nowhere — demonstrated.
-        let key = page
-            .strip_prefix("docs/")
-            .expect("under docs/")
-            .to_string_lossy()
-            .into_owned();
+        let key = page.strip_prefix("docs/")?.to_string_lossy().into_owned();
         // Checked independently, because the two failures differ: absent from
         // PAGES means it never publishes; absent from GROUPS means it
         // publishes and nothing links to it.
-        if !listed(&key, "pages") {
+        if !listed(&key, "pages")? {
             unregistered.push(format!(
                 "{key} — not in build-wiki.py PAGES (never publishes)"
             ));
-        } else if !listed(&key, "groups") {
+        } else if !listed(&key, "groups")? {
             unregistered.push(format!(
                 "{key} — in PAGES but not in any GROUPS entry (publishes, and \
                  the sidebar links to it from nowhere)"
@@ -1068,6 +1069,7 @@ fn every_internals_page_is_registered_for_the_wiki() {
         "docs/internals pages are not registered for the wiki:\n  {}",
         unregistered.join("\n  ")
     );
+    Ok(())
 }
 
 /// Fenced mermaid blocks as `(line_index_of_opening_fence, body)`.
@@ -1089,10 +1091,10 @@ fn mermaid_fences(text: &str) -> Vec<(usize, String)> {
 }
 
 #[test]
-fn every_mermaid_block_is_a_sequence_diagram() {
+fn every_mermaid_block_is_a_sequence_diagram() -> Result<(), TestError> {
     let mut offenders = Vec::new();
-    for page in internals_pages() {
-        for (line, body) in mermaid_fences(&read(&page)) {
+    for page in internals_pages()? {
+        for (line, body) in mermaid_fences(&read(&page)?) {
             let first = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
             if first.trim() != "sequenceDiagram" && !first.trim().starts_with("sequenceDiagram") {
                 offenders.push(format!(
@@ -1108,17 +1110,18 @@ fn every_mermaid_block_is_a_sequence_diagram() {
         "developer docs use sequenceDiagram only:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 #[test]
-fn no_markdown_links_inside_mermaid_blocks() {
+fn no_markdown_links_inside_mermaid_blocks() -> Result<(), TestError> {
     // scripts/build-wiki.py applies LINK_RE.sub() to the whole page body with
     // no fence awareness, so a link inside a diagram label gets rewritten into
     // a wiki link and corrupts the diagram source.
-    let link = regex::Regex::new(r"\]\([^)\s]+\.md").expect("link regex");
+    let link = regex::Regex::new(r"\]\([^)\s]+\.md")?;
     let mut offenders = Vec::new();
-    for page in internals_pages() {
-        for (line, body) in mermaid_fences(&read(&page)) {
+    for page in internals_pages()? {
+        for (line, body) in mermaid_fences(&read(&page)?) {
             if link.is_match(&body) {
                 offenders.push(format!(
                     "{}:{}: markdown link inside a mermaid block",
@@ -1133,15 +1136,16 @@ fn no_markdown_links_inside_mermaid_blocks() {
         "build-wiki.py rewrites links without fence awareness:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 #[test]
-fn every_mermaid_block_is_introduced_by_prose() {
+fn every_mermaid_block_is_introduced_by_prose() -> Result<(), TestError> {
     // A diagram must never carry meaning the prose does not, so the page still
     // reads in a plain-text viewer, a diff, or a renderer without mermaid.
     let mut offenders = Vec::new();
-    for page in internals_pages() {
-        let text = read(&page);
+    for page in internals_pages()? {
+        let text = read(&page)?;
         let lines: Vec<&str> = text.lines().collect();
         for (line, _) in mermaid_fences(&text) {
             let prev = lines[..line]
@@ -1165,6 +1169,7 @@ fn every_mermaid_block_is_introduced_by_prose() {
         "every diagram needs a one-sentence prose summary above it:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// build-wiki.py must rewrite code links to blob URLs. A relative code link
@@ -1176,7 +1181,7 @@ fn every_mermaid_block_is_introduced_by_prose() {
 /// the regex's list of top-level trees. Inspecting a generator's source is not
 /// a test of its output.
 #[test]
-fn build_wiki_leaves_no_relative_links_in_the_output() {
+fn build_wiki_leaves_no_relative_links_in_the_output() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::env::temp_dir().join(format!("sipnab-wiki-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
@@ -1185,24 +1190,27 @@ fn build_wiki_leaves_no_relative_links_in_the_output() {
         .arg(repo.join("scripts/build-wiki.py"))
         .arg(&out)
         .current_dir(repo)
-        .output()
-        .expect("run scripts/build-wiki.py — python3 must be on PATH");
+        .output()?;
     assert!(
         run.status.success(),
         "build-wiki.py failed:\n{}",
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let link = regex::Regex::new(r"\]\(([^)]+)\)").unwrap();
+    let link = regex::Regex::new(r"\]\(([^)]+)\)")?;
     let mut leaked: Vec<String> = Vec::new();
 
-    for entry in std::fs::read_dir(&out).expect("wiki output dir") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&out)? {
+        let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let page = path.file_name().unwrap().to_string_lossy().to_string();
-        let raw = std::fs::read_to_string(&path).expect("wiki page");
+        let page = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
+        let raw = std::fs::read_to_string(&path)?;
         // Scan prose, not bytes. A page that documents link syntax carries the
         // literal `](../bench/)` inside a code span — quoted, never rendered as
         // a link, and correctly left alone by the generator. Reading raw bytes
@@ -1232,23 +1240,25 @@ fn build_wiki_leaves_no_relative_links_in_the_output() {
          link as an absolute URL:\n  {}",
         leaked.join("\n  ")
     );
+    Ok(())
 }
 
 /// The developer docs carry a designed diagram set; losing them silently
 /// would strip the pages of half their meaning.
 #[test]
-fn developer_docs_carry_their_diagram_set() {
+fn developer_docs_carry_their_diagram_set() -> Result<(), TestError> {
     /// Fewest sequence diagrams docs/internals may carry.
     const MIN_SEQUENCE_DIAGRAMS: usize = 17;
-    let total: usize = internals_pages()
+    let total: usize = internals_pages()?
         .iter()
-        .map(|p| mermaid_fences(&read(p)).len())
-        .sum();
+        .map(|p| -> Result<usize, TestError> { Ok(mermaid_fences(&read(p)?).len()) })
+        .sum::<Result<usize, TestError>>()?;
     assert!(
         total >= MIN_SEQUENCE_DIAGRAMS,
         "expected at least {MIN_SEQUENCE_DIAGRAMS} sequence diagrams across \
          docs/internals, found {total}"
     );
+    Ok(())
 }
 
 /// Mermaid syntax hazards that render as a *silently broken* diagram.
@@ -1266,7 +1276,7 @@ fn developer_docs_carry_their_diagram_set() {
 ///    `Term-->>Loop: ...` is a parse error even though `Loop->>Term: ...`
 ///    parses.
 #[test]
-fn mermaid_fences_avoid_syntax_hazards() {
+fn mermaid_fences_avoid_syntax_hazards() -> Result<(), TestError> {
     // Keywords the sequence-diagram lexer claims, lowercased.
     const KEYWORDS: &[&str] = &[
         "loop",
@@ -1296,8 +1306,8 @@ fn mermaid_fences_avoid_syntax_hazards() {
     ];
 
     let mut problems = Vec::new();
-    for page in internals_pages() {
-        let text = read(&page);
+    for page in internals_pages()? {
+        let text = read(&page)?;
         for (line_idx, body) in mermaid_fences(&text) {
             let at = format!("{}:{}", page.display(), line_idx + 1);
             for (n, line) in body.lines().enumerate() {
@@ -1338,6 +1348,7 @@ fn mermaid_fences_avoid_syntax_hazards() {
          on the site and on the wiki):\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,19 +1356,18 @@ fn mermaid_fences_avoid_syntax_hazards() {
 // ---------------------------------------------------------------------------
 
 /// `docs/internals/<name>.md` -> the site file it generates.
-fn site_mirror_name(page: &Path) -> String {
+fn site_mirror_name(page: &Path) -> Result<String, TestError> {
     // The path under docs/internals/, not the basename: two READMEs at
     // different depths both mapped to `_index.md`, so a nested page was
     // reported as published by matching the top-level page's mirror.
     let rel = page
-        .strip_prefix("docs/internals/")
-        .expect("under docs/internals/")
+        .strip_prefix("docs/internals/")?
         .to_string_lossy()
         .into_owned();
-    match rel.strip_suffix("README.md") {
+    Ok(match rel.strip_suffix("README.md") {
         Some(dir) => format!("{dir}_index.md"),
         None => rel,
-    }
+    })
 }
 
 /// Every developer page reaches the website, and no orphan mirror survives a
@@ -1365,12 +1375,12 @@ fn site_mirror_name(page: &Path) -> String {
 /// without this one a new page publishes to the wiki and silently never
 /// appears on sipnab.com.
 #[test]
-fn every_internals_page_is_published_to_the_site() {
+fn every_internals_page_is_published_to_the_site() -> Result<(), TestError> {
     let dir = repo().join("website/content/docs/internals");
-    let expected: Vec<String> = internals_pages()
+    let expected: Vec<String> = internals_pages()?
         .iter()
         .map(|p| site_mirror_name(p))
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     let mut missing = Vec::new();
     for name in &expected {
@@ -1386,13 +1396,10 @@ fn every_internals_page_is_published_to_the_site() {
     );
 
     let mut orphans: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
-        .map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.ends_with(".md") && !expected.contains(n))
         .collect();
     orphans.sort();
@@ -1402,6 +1409,7 @@ fn every_internals_page_is_published_to_the_site() {
          docs/internals (a renamed source left these behind):\n  {}",
         orphans.join("\n  ")
     );
+    Ok(())
 }
 
 /// The committed mirror equals what the generator produces today.
@@ -1411,7 +1419,7 @@ fn every_internals_page_is_published_to_the_site() {
 /// goes stale the first time someone edits the source and forgets the
 /// script. Regenerate into a temp dir and compare byte-for-byte.
 #[test]
-fn site_internals_mirror_is_current() {
+fn site_internals_mirror_is_current() -> Result<(), TestError> {
     let tmp = std::env::temp_dir().join(format!(
         "sipnab-site-internals-{}-{}",
         std::process::id(),
@@ -1423,11 +1431,7 @@ fn site_internals_mirror_is_current() {
         .arg(repo().join("scripts/build-site-internals.py"))
         .arg(&tmp)
         .current_dir(repo())
-        .output()
-        .expect(
-            "run scripts/build-site-internals.py — python3 must be on PATH \
-             (CI installs it; wiki-sync.yml already depends on it)",
-        );
+        .output()?;
     assert!(
         out.status.success(),
         "build-site-internals.py failed:\n{}",
@@ -1436,9 +1440,9 @@ fn site_internals_mirror_is_current() {
 
     let committed = repo().join("website/content/docs/internals");
     let mut stale = Vec::new();
-    for page in internals_pages() {
-        let name = site_mirror_name(&page);
-        let fresh = std::fs::read_to_string(tmp.join(&name)).expect("generated page");
+    for page in internals_pages()? {
+        let name = site_mirror_name(&page)?;
+        let fresh = std::fs::read_to_string(tmp.join(&name))?;
         let have = std::fs::read_to_string(committed.join(&name)).unwrap_or_default();
         if fresh != have {
             stale.push(name);
@@ -1452,6 +1456,7 @@ fn site_internals_mirror_is_current() {
          `python3 scripts/build-site-internals.py` and commit:\n  {}",
         stale.join("\n  ")
     );
+    Ok(())
 }
 
 /// A mirrored page with a diagram declares `has_diagrams`, and `page.html`
@@ -1461,14 +1466,14 @@ fn site_internals_mirror_is_current() {
 /// mermaid (the reader sees raw `sequenceDiagram` source), or the template
 /// stops gating on the flag and every doc page pays 3.4 MB.
 #[test]
-fn pages_with_diagrams_load_the_mermaid_bundle() {
+fn pages_with_diagrams_load_the_mermaid_bundle() -> Result<(), TestError> {
     let committed = repo().join("website/content/docs/internals");
     let mut wrong = Vec::new();
     let mut with_diagrams = 0;
-    for page in internals_pages() {
-        let name = site_mirror_name(&page);
+    for page in internals_pages()? {
+        let name = site_mirror_name(&page)?;
         let mirrored = std::fs::read_to_string(committed.join(&name)).unwrap_or_default();
-        let source_has = !mermaid_fences(&read(&page)).is_empty();
+        let source_has = !mermaid_fences(&read(&page)?).is_empty();
         let declares = mirrored.contains("has_diagrams = true");
         let rendered = mirrored.contains("<pre class=\"mermaid\">");
         if source_has {
@@ -1497,15 +1502,15 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
     // that explains the flag by name, so deleting the guard and keeping the
     // explanation left this green while every doc page unconditionally pulled
     // a 3.4 MB bundle.
-    let tpl = markdown::blank_tera_comments(&read("website/templates/page.html"));
+    let tpl = markdown::blank_tera_comments(&read("website/templates/page.html")?);
     let guard = "{% if page.extra.has_diagrams %}";
-    let open = tpl.find(guard).unwrap_or_else(|| {
-        panic!("page.html must gate the mermaid bundle on {guard}");
-    });
+    let open = tpl
+        .find(guard)
+        .ok_or_else(|| format!("page.html must gate the mermaid bundle on {guard}"))?;
     let close = tpl[open..]
         .find("{% endif %}")
         .map(|n| open + n)
-        .unwrap_or_else(|| panic!("page.html has {guard} with no {{% endif %}}"));
+        .ok_or_else(|| format!("page.html has {guard} with no {{% endif %}}"))?;
 
     for asset in ["js/mermaid.min.js", "js/diagram-viewer.js"] {
         assert!(
@@ -1529,6 +1534,7 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
              the mermaid bundle whether or not it has a diagram"
         );
     }
+    Ok(())
 }
 
 /// Every mirrored developer page is reachable from both docs navs.
@@ -1542,10 +1548,10 @@ fn pages_with_diagrams_load_the_mermaid_bundle() {
 /// mirrored page is reachable when the index is linked from the dropdown, both
 /// sidebars render the section, and the page is in the section at all.
 #[test]
-fn every_site_internals_page_is_reachable_from_the_docs_navs() {
+fn every_site_internals_page_is_reachable_from_the_docs_navs() -> Result<(), TestError> {
     // Comments blanked first: a link written inside a Tera comment never
     // reaches rendered HTML, and a gate reading it would pass on prose.
-    let base = markdown::blank_tera_comments(&read("website/templates/base.html"));
+    let base = markdown::blank_tera_comments(&read("website/templates/base.html")?);
     let index = "@/docs/internals/_index.md";
     let linked = base.lines().any(|l| {
         l.contains(index) && l.contains("<a ") && l.contains("href=") && l.contains("get_url")
@@ -1559,17 +1565,17 @@ fn every_site_internals_page_is_reachable_from_the_docs_navs() {
         "website/templates/page.html",
         "website/templates/section.html",
     ] {
-        let src = markdown::blank_tera_comments(&read(template));
+        let src = markdown::blank_tera_comments(&read(template)?);
         assert!(
             src.contains("macros::nav_section(")
                 && src.contains("section_path=\"docs/internals/_index.md\""),
             "{template} does not render the internals section in its sidebar"
         );
     }
-    let macros = markdown::blank_tera_comments(&read("website/templates/macros.html"));
+    let macros = markdown::blank_tera_comments(&read("website/templates/macros.html")?);
     let at = macros
         .find("macro nav_section(")
-        .expect("macros.html has no nav_section macro");
+        .ok_or("macros.html has no nav_section macro")?;
     assert!(
         macros[at..].contains("for p in sec.pages"),
         "nav_section no longer lists every page of its section"
@@ -1577,8 +1583,8 @@ fn every_site_internals_page_is_reachable_from_the_docs_navs() {
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("website/content/docs/internals");
     let mut missing = Vec::new();
-    for page in internals_pages() {
-        let name = site_mirror_name(&page);
+    for page in internals_pages()? {
+        let name = site_mirror_name(&page)?;
         if !dir.join(&name).is_file() {
             missing.push(name);
         }
@@ -1589,6 +1595,7 @@ fn every_site_internals_page_is_reachable_from_the_docs_navs() {
          nav can reach them:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// Every OPERATOR page the generator writes is in the docs nav list.
@@ -1611,13 +1618,12 @@ fn every_site_internals_page_is_reachable_from_the_docs_navs() {
 /// than restated, so a page added there has to appear in the list or fail
 /// here.
 #[test]
-fn every_site_operator_page_is_in_the_docs_nav_list() {
-    let script = read("scripts/build-site-pages.py");
+fn every_site_operator_page_is_in_the_docs_nav_list() -> Result<(), TestError> {
+    let script = read("scripts/build-site-pages.py")?;
     // The site filename is the SECOND string of each PAGES tuple, on the line
     // after the `"docs/….md",` source path. Keyed off the source path so a
     // description mentioning a filename cannot be mistaken for an entry.
-    let re =
-        regex::Regex::new(r#""docs/[a-z0-9-]+\.md",\s*\n\s*"([a-z0-9-]+\.md)","#).expect("regex");
+    let re = regex::Regex::new(r#""docs/[a-z0-9-]+\.md",\s*\n\s*"([a-z0-9-]+\.md)","#)?;
     let pages: Vec<String> = re
         .captures_iter(&script)
         .map(|c| c[1].to_string())
@@ -1629,12 +1635,11 @@ fn every_site_operator_page_is_in_the_docs_nav_list() {
         pages.len()
     );
 
-    let cfg: toml::Value =
-        toml::from_str(&read("website/config.toml")).expect("website/config.toml parses");
+    let cfg: toml::Value = toml::from_str(&read("website/config.toml")?)?;
     let listed: std::collections::BTreeSet<String> = cfg["extra"]
         .get("docs_nav")
         .and_then(|g| g.as_array())
-        .expect("website/config.toml has no [[extra.docs_nav]]")
+        .ok_or("website/config.toml has no [[extra.docs_nav]]")?
         .iter()
         .flat_map(|g| g["pages"].as_array().cloned().unwrap_or_default())
         .filter_map(|e| e["path"].as_str().map(str::to_string))
@@ -1657,6 +1662,7 @@ fn every_site_operator_page_is_in_the_docs_nav_list() {
          [[extra.docs_nav]] in website/config.toml:\n  {}",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// The workflow-inventory heading counts the workflows. Keep it honest.
@@ -1667,14 +1673,13 @@ fn every_site_operator_page_is_in_the_docs_nav_list() {
 /// "these are all of them" rather than as an omission. Nothing checked either
 /// half until `scorecard.yml` became the ninth.
 #[test]
-fn workflow_inventory_heading_counts_the_workflows() {
+fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
     const WORDS: [&str; 17] = [
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
         "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
     ];
     let dir = repo().join(".github/workflows");
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .expect("workflows dir")
+    let mut names: Vec<String> = std::fs::read_dir(&dir)?
         .flatten()
         .filter(|e| {
             e.path()
@@ -1687,9 +1692,9 @@ fn workflow_inventory_heading_counts_the_workflows() {
     let n = names.len();
     let word = WORDS
         .get(n)
-        .unwrap_or_else(|| panic!("{n} workflows — extend WORDS"));
+        .ok_or_else(|| format!("{n} workflows — extend WORDS"))?;
 
-    let doc = read("docs/internals/build-ci-release.md");
+    let doc = read("docs/internals/build-ci-release.md")?;
     let heading = format!("## The {word} workflows");
     assert!(
         doc.contains(&heading),
@@ -1703,7 +1708,7 @@ fn workflow_inventory_heading_counts_the_workflows() {
     // "The nine workflows", there really were nine files, and `docker.yml` was
     // described nowhere. `ci.yml`, `release.yml` and `quality.yml` had the same
     // slack.
-    let start = doc.find(&heading).expect("heading located above");
+    let start = doc.find(&heading).ok_or("heading located above")?;
     let body = &doc[start + heading.len()..];
     let end = body.find("\n## ").unwrap_or(body.len());
     let table: String = body[..end]
@@ -1726,6 +1731,7 @@ fn workflow_inventory_heading_counts_the_workflows() {
         "workflows counted by the heading but absent from the table under it: \
          {missing:?}"
     );
+    Ok(())
 }
 
 /// The release-artifact counts must come from the build matrix.
@@ -1750,7 +1756,7 @@ fn workflow_inventory_heading_counts_the_workflows() {
 /// precisely why the `noaudio` jobs ship both package formats. Reading their
 /// conditions rather than assuming keeps this gate honest if that ever changes.
 #[test]
-fn release_artifact_counts_match_the_build_matrix() {
+fn release_artifact_counts_match_the_build_matrix() -> Result<(), TestError> {
     // The doc spells these out, so the gate reads its words and compares
     // numbers. The first version did the reverse — formatted each derived count
     // into a word and string-matched it — which meant a count landing outside
@@ -1797,12 +1803,12 @@ fn release_artifact_counts_match_the_build_matrix() {
         Some(tens + units)
     };
 
-    let yaml = read(".github/workflows/release.yml");
+    let yaml = read(".github/workflows/release.yml")?;
 
     // The matrix block: `include:` up to the blank line before `steps:`.
     let block = yaml
         .split_once("      matrix:\n        include:\n")
-        .expect("release.yml has no build matrix")
+        .ok_or("release.yml has no build matrix")?
         .1;
     let block = &block[..block.find("\n\n").unwrap_or(block.len())];
 
@@ -1822,7 +1828,7 @@ fn release_artifact_counts_match_the_build_matrix() {
     // Tarballs come from every build the packaging step does not skip.
     let pkg = yaml
         .split_once("      - name: Package (tar.gz + checksum)\n")
-        .expect("release.yml no longer has the tar.gz packaging step")
+        .ok_or("release.yml no longer has the tar.gz packaging step")?
         .1;
     let pkg_if = pkg.lines().next().unwrap_or("").trim();
     assert_eq!(
@@ -1835,7 +1841,7 @@ fn release_artifact_counts_match_the_build_matrix() {
     // targets and never mentions `variant`.
     let deb_if = yaml
         .split_once("      - name: Build .deb (gnu Linux targets)\n")
-        .expect("release.yml no longer builds .deb")
+        .ok_or("release.yml no longer builds .deb")?
         .1
         .lines()
         .next()
@@ -1844,7 +1850,7 @@ fn release_artifact_counts_match_the_build_matrix() {
         .to_string();
     let rpm_if = yaml
         .split_once("      - name: Build .rpm (gnu Linux targets)\n")
-        .expect("release.yml no longer builds .rpm")
+        .ok_or("release.yml no longer builds .rpm")?
         .1
         .lines()
         .next()
@@ -1883,7 +1889,7 @@ fn release_artifact_counts_match_the_build_matrix() {
     // it, so a split narrowed to some builds changes the count here.
     let split = yaml
         .split_once("      - name: Split the debug symbols from the shipped binary\n")
-        .expect("release.yml no longer splits the debug symbols")
+        .ok_or("release.yml no longer splits the debug symbols")?
         .1;
     let split_if = split.lines().next().unwrap_or("").trim();
     assert!(
@@ -1902,7 +1908,7 @@ fn release_artifact_counts_match_the_build_matrix() {
     // Lowercased too — these counts appear mid-sentence and at sentence starts,
     // and a gate that fails on a capital letter teaches people to reword rather
     // than recount.
-    let doc = read("docs/internals/build-ci-release.md");
+    let doc = read("docs/internals/build-ci-release.md")?;
     let flat = doc
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -1935,28 +1941,28 @@ fn release_artifact_counts_match_the_build_matrix() {
     ];
 
     for (what, pattern, expected) in claims {
-        let re = regex::Regex::new(pattern).expect("claim pattern");
-        let caps = re.captures(&flat).unwrap_or_else(|| {
-            panic!(
+        let re = regex::Regex::new(pattern)?;
+        let caps = re.captures(&flat).ok_or_else(|| {
+            format!(
                 "docs/internals/build-ci-release.md no longer states {what} in the \
                  form this gate reads (/{pattern}/). The matrix has {builds} builds \
                  producing {tarballs} tarballs and {packages} of each package format \
                  — {installable} installable, {assets} assets. Restate it or update \
                  the pattern; do not delete the claim."
             )
-        });
+        })?;
         let found: Vec<usize> = (1..=expected.len())
             .map(|i| {
                 let word = caps.get(i).map(|m| m.as_str()).unwrap_or("");
-                parse_word(word).unwrap_or_else(|| {
-                    panic!(
+                parse_word(word).ok_or_else(|| {
+                    format!(
                         "docs/internals/build-ci-release.md writes \"{word}\" in \
                          {what}, which is not a number word this gate can read. \
                          Expected {expected:?} for that sentence."
                     )
                 })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         assert_eq!(
             &found, expected,
             "docs/internals/build-ci-release.md states {found:?} for {what}, but \
@@ -1965,6 +1971,7 @@ fn release_artifact_counts_match_the_build_matrix() {
              {installable} installable, {assets} assets"
         );
     }
+    Ok(())
 }
 
 /// Site pages generated from `docs/` must match what the generator produces.
@@ -1981,14 +1988,14 @@ fn release_artifact_counts_match_the_build_matrix() {
 /// page has fallen out of the registry — see the comment on `orphaned` for
 /// why the count of generated pages cannot answer that question.
 #[test]
-fn site_pages_mirror_is_current() {
+fn site_pages_mirror_is_current() -> Result<(), TestError> {
     let tmp = std::env::temp_dir().join(format!(
         "sipnab-site-pages-{}-{}",
         std::process::id(),
         line!()
     ));
     let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).expect("temp dir");
+    std::fs::create_dir_all(&tmp)?;
 
     // argv[2], not just argv[1]. The generator defaults its llms.txt and
     // llms-full.txt output to the REAL website/static/, so passing only the
@@ -2002,8 +2009,7 @@ fn site_pages_mirror_is_current() {
         .arg(tmp.join("pages"))
         .arg(tmp.join("static"))
         .current_dir(repo())
-        .output()
-        .expect("run scripts/build-site-pages.py — python3 must be on PATH");
+        .output()?;
     assert!(
         out.status.success(),
         "build-site-pages.py failed:\n{}",
@@ -2012,14 +2018,11 @@ fn site_pages_mirror_is_current() {
 
     let mut produced = Vec::new();
     let mut stale = Vec::new();
-    for entry in std::fs::read_dir(tmp.join("pages"))
-        .expect("generated pages")
-        .flatten()
-    {
+    for entry in std::fs::read_dir(tmp.join("pages"))?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         produced.push(name.clone());
-        let fresh = std::fs::read_to_string(entry.path()).expect("generated page");
-        let have = read(format!("website/content/docs/{name}"));
+        let fresh = std::fs::read_to_string(entry.path())?;
+        let have = read(format!("website/content/docs/{name}"))?;
         if fresh != have {
             stale.push(name);
         }
@@ -2035,15 +2038,12 @@ fn site_pages_mirror_is_current() {
     // not move, and needs no number kept in sync with PAGES.
     const BANNER_MARK: &str = "Generated by scripts/build-site-pages.py";
     let mut orphaned = Vec::new();
-    for entry in std::fs::read_dir(repo().join("website/content/docs"))
-        .expect("read website/content/docs")
-        .flatten()
-    {
+    for entry in std::fs::read_dir(repo().join("website/content/docs"))?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if !name.ends_with(".md") || produced.contains(&name) {
             continue;
         }
-        if read(format!("website/content/docs/{name}")).contains(BANNER_MARK) {
+        if read(format!("website/content/docs/{name}"))?.contains(BANNER_MARK) {
             orphaned.push(name);
         }
     }
@@ -2067,6 +2067,7 @@ fn site_pages_mirror_is_current() {
          `python3 scripts/build-site-pages.py` and commit:\n  {}",
         stale.join("\n  ")
     );
+    Ok(())
 }
 
 /// `DOCS_TO_SITE` must map every docs page that has a site page, and nothing
@@ -2085,7 +2086,7 @@ fn site_pages_mirror_is_current() {
 ///
 /// The map is read from the generator itself rather than restated here.
 #[test]
-fn docs_to_site_map_is_complete() {
+fn docs_to_site_map_is_complete() -> Result<(), TestError> {
     let out = std::process::Command::new("python3")
         .arg("-c")
         .arg(
@@ -2102,7 +2103,7 @@ fn docs_to_site_map_is_complete() {
         )
         .current_dir(repo())
         .output()
-        .expect("run generators");
+        ?;
     assert!(
         out.status.success(),
         "could not read the generator registries: {}",
@@ -2111,21 +2112,24 @@ fn docs_to_site_map_is_complete() {
     let json = String::from_utf8_lossy(&out.stdout);
 
     // Minimal extraction — the values are flat string lists and a flat map.
-    let grab = |key: &str| -> Vec<String> {
-        let at = json.find(&format!("\"{key}\":")).expect("key present");
+    let grab = |key: &str| -> Result<Vec<String>, TestError> {
+        let at = json.find(&format!("\"{key}\":")).ok_or("key present")?;
         let rest = &json[at..];
-        let open = rest.find(['[', '{']).expect("open");
-        let close = rest[open..].find([']', '}']).expect("close");
-        rest[open..open + close]
+        let open = rest.find(['[', '{']).ok_or("open")?;
+        let close = rest[open..].find([']', '}']).ok_or("close")?;
+        Ok(rest[open..open + close]
             .split(',')
             .filter_map(|t| t.rsplit(':').next())
             .filter_map(|t| t.trim().trim_matches('"').to_string().into())
             .filter(|t: &String| t.ends_with(".md"))
-            .collect()
+            .collect())
     };
 
-    let mapped = grab("map");
-    let generated: Vec<String> = grab("pages").into_iter().chain(grab("internals")).collect();
+    let mapped = grab("map")?;
+    let generated: Vec<String> = grab("pages")?
+        .into_iter()
+        .chain(grab("internals")?)
+        .collect();
     assert!(
         mapped.len() >= 10 && !generated.is_empty(),
         "read {} mapped and {} generated pages — the registry extraction stopped \
@@ -2169,14 +2173,14 @@ fn docs_to_site_map_is_complete() {
     let docs_dir = repo().join("docs");
     let site_dir = repo().join("website/content/docs");
     let mut paired = 0;
-    for entry in std::fs::read_dir(&docs_dir).expect("read docs/") {
-        let p = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&docs_dir)? {
+        let p = entry?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         let name = p
             .file_name()
-            .expect("file name")
+            .ok_or("file name")?
             .to_string_lossy()
             .into_owned();
         if !site_dir.join(&name).is_file() {
@@ -2205,14 +2209,14 @@ fn docs_to_site_map_is_complete() {
     // them in a hand-kept allowlist would be one more list to drift; asking
     // disk whether a source exists cannot drift.
     let mut exempt = Vec::new();
-    for entry in std::fs::read_dir(&site_dir).expect("read website/content/docs/") {
-        let p = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&site_dir)? {
+        let p = entry?.path();
         if p.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
         let name = p
             .file_name()
-            .expect("file name")
+            .ok_or("file name")?
             .to_string_lossy()
             .into_owned();
         if mapped.contains(&name) || name == "_index.md" {
@@ -2239,6 +2243,7 @@ fn docs_to_site_map_is_complete() {
         "DOCS_TO_SITE disagrees with what is on disk:\n  {}",
         problems.join("\n  ")
     );
+    Ok(())
 }
 
 /// A line citation still points at the code its sentence names.
@@ -2264,12 +2269,11 @@ fn docs_to_site_map_is_complete() {
 /// and its fixer must derive from one rule; the cheapest way to guarantee that
 /// is for there to be only one.
 #[test]
-fn line_citations_point_at_the_code_they_name() {
+fn line_citations_point_at_the_code_they_name() -> Result<(), TestError> {
     let out = std::process::Command::new("python3")
         .arg("scripts/check-line-drift.py")
         .current_dir(repo())
-        .output()
-        .expect("run scripts/check-line-drift.py");
+        .output()?;
     let report = String::from_utf8_lossy(&out.stdout);
 
     // Anti-vacuity. The checker only examines citations whose prose names a
@@ -2286,7 +2290,7 @@ fn line_citations_point_at_the_code_they_name() {
                 .parse()
                 .ok()
         })
-        .expect("the checker must report how many citations it checked");
+        .ok_or("the checker must report how many citations it checked")?;
     // Exact, not a floor — the same rule `linked_code_targets_exist` learned
     // above, and for the same reason. A floor of 40 sat so far under the truth
     // that it could not see the checker go blind: it read 59 while 296
@@ -2457,6 +2461,7 @@ fn line_citations_point_at_the_code_they_name() {
          with a single unambiguous definition; the rest name a symbol that has \
          moved, been deleted, or has two definitions, and need a person."
     );
+    Ok(())
 }
 
 /// One page of citations, written where `--apply` may rewrite it.
@@ -2466,14 +2471,18 @@ fn line_citations_point_at_the_code_they_name() {
 /// leaving the gate green because the test fixed it, which is the shape of a
 /// gate proving nothing. The cited source resolves against the repository, so
 /// the fixture still names real code at a real line.
-fn citation_fixture(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+fn citation_fixture(
+    dir: &std::path::Path,
+    name: &str,
+    body: &str,
+) -> Result<std::path::PathBuf, TestError> {
     let page = dir.join(name);
-    std::fs::write(&page, body).expect("write the citation fixture");
-    page
+    std::fs::write(&page, body)?;
+    Ok(page)
 }
 
 /// Run the checker over named pages and return (exit ok, stdout).
-fn drift_check(pages: &[&std::path::Path], apply: bool) -> (bool, String) {
+fn drift_check(pages: &[&std::path::Path], apply: bool) -> Result<(bool, String), TestError> {
     let mut cmd = std::process::Command::new("python3");
     cmd.arg("scripts/check-line-drift.py").current_dir(repo());
     if apply {
@@ -2482,11 +2491,11 @@ fn drift_check(pages: &[&std::path::Path], apply: bool) -> (bool, String) {
     for p in pages {
         cmd.arg(p);
     }
-    let out = cmd.output().expect("run scripts/check-line-drift.py");
-    (
+    let out = cmd.output()?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).to_string(),
-    )
+    ))
 }
 
 /// What `--apply` writes, the gate accepts.
@@ -2504,15 +2513,15 @@ fn drift_check(pages: &[&std::path::Path], apply: bool) -> (bool, String) {
 /// the second check below fails: the two must move together or the link and
 /// the text it labels disagree.
 #[test]
-fn what_the_fixer_writes_the_gate_accepts() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn what_the_fixer_writes_the_gate_accepts() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let page = citation_fixture(
         dir.path(),
         "drifted.md",
         "`process_packet` ([`src/pipeline.rs:1`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1)) applies one packet.\n",
-    );
+    )?;
 
-    let (ok, report) = drift_check(&[&page], false);
+    let (ok, report) = drift_check(&[&page], false)?;
     assert!(
         !ok,
         "a citation 2000 lines from its symbol must be reported, not passed:\n{report}"
@@ -2522,14 +2531,14 @@ fn what_the_fixer_writes_the_gate_accepts() {
         "the report must name the symbol whose citation drifted:\n{report}"
     );
 
-    let (_, applied) = drift_check(&[&page], true);
+    let (_, applied) = drift_check(&[&page], true)?;
     assert!(
         applied.contains("re-pointed 1 citation(s)"),
         "the fixer must repair a citation with one unambiguous definition:\n{applied}"
     );
 
-    let repaired = std::fs::read_to_string(&page).expect("read the repaired page");
-    let (ok, report) = drift_check(&[&page], false);
+    let repaired = std::fs::read_to_string(&page)?;
+    let (ok, report) = drift_check(&[&page], false)?;
     assert!(
         ok,
         "the gate rejected what its own fixer wrote:\n{report}\n{repaired}"
@@ -2539,6 +2548,7 @@ fn what_the_fixer_writes_the_gate_accepts() {
         "the label and the link fragment must BOTH move, or they disagree \
          about the same citation:\n{repaired}"
     );
+    Ok(())
 }
 
 /// A citation past the end of its file is reported as that, not as drift.
@@ -2551,19 +2561,20 @@ fn what_the_fixer_writes_the_gate_accepts() {
 /// to be in range, so the branch could have been deleted and the suite would
 /// not have noticed.
 #[test]
-fn a_citation_past_the_end_of_the_file_says_so() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_citation_past_the_end_of_the_file_says_so() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let page = citation_fixture(
         dir.path(),
         "beyond-eof.md",
         "`process_packet` ([`src/pipeline.rs:999999`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L999999)) applies one packet.\n",
-    );
+    )?;
 
-    let (ok, report) = drift_check(&[&page], false);
+    let (ok, report) = drift_check(&[&page], false)?;
     assert!(!ok, "a citation past EOF must fail the gate:\n{report}");
     assert!(
         report.contains("but that file has") && report.contains("lines"),
         "the report must say the file is not that long, rather than reporting \
          it as ordinary drift -- they send the reader to different places:\n{report}"
     );
+    Ok(())
 }

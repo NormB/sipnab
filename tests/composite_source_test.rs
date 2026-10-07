@@ -52,6 +52,8 @@ mod pcap_build;
 mod schema;
 use pcap_build::udp_frame;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// UDP, as both the HEP-mirrored signaling and the media are.
 const UDP: u8 = 17;
 
@@ -72,16 +74,16 @@ fn cli(args: &[&str]) -> Cli {
 /// This is the defect SRC1 names: the chain resolved to one source by type,
 /// `-d` sat above `-L`, and the listener evaporated with no diagnostic.
 #[test]
-fn a_live_device_and_a_hep_listener_compose_into_one_source() {
+fn a_live_device_and_a_hep_listener_compose_into_one_source() -> Result<(), TestError> {
     let p = bootstrap::plan(
         &cli(&["-N", "-d", "eth9", "-L", "127.0.0.1:19060"]),
         &Config::default(),
     )
-    .expect("plan");
+    .map_err(|e| format!("plan: {e:?}"))?;
 
     let members = match p.source {
         Some(CaptureSource::Composite(ref m)) => m,
-        other => panic!("-d with -L must compose, got {other:?}"),
+        other => return Err(format!("-d with -L must compose, got {other:?}").into()),
     };
     assert_eq!(
         members.len(),
@@ -96,6 +98,7 @@ fn a_live_device_and_a_hep_listener_compose_into_one_source() {
         matches!(members[1], CaptureSource::Hep { ref bind_addr, .. } if bind_addr == "127.0.0.1:19060"),
         "the HEP listener must survive the chain: {members:?}"
     );
+    Ok(())
 }
 
 /// A device named in the CONFIG FILE composes exactly as `-d` does.
@@ -106,14 +109,15 @@ fn a_live_device_and_a_hep_listener_compose_into_one_source() {
 /// the device name was written, which is a distinction with no mechanism
 /// behind it.
 #[test]
-fn a_config_file_device_composes_with_a_hep_listener_too() {
+fn a_config_file_device_composes_with_a_hep_listener_too() -> Result<(), TestError> {
     let mut config = Config::default();
     config.capture.device = Some("cfg0".into());
 
-    let p = bootstrap::plan(&cli(&["-N", "-L", "127.0.0.1:19060"]), &config).expect("plan");
+    let p = bootstrap::plan(&cli(&["-N", "-L", "127.0.0.1:19060"]), &config)
+        .map_err(|e| format!("plan: {e:?}"))?;
     let members = match p.source {
         Some(CaptureSource::Composite(ref m)) => m,
-        other => panic!("a config device with -L must compose, got {other:?}"),
+        other => return Err(format!("a config device with -L must compose, got {other:?}").into()),
     };
     assert!(
         matches!(members[0], CaptureSource::Live { ref device } if device == "cfg0"),
@@ -123,26 +127,29 @@ fn a_config_file_device_composes_with_a_hep_listener_too() {
         matches!(members[1], CaptureSource::Hep { .. }),
         "{members:?}"
     );
+    Ok(())
 }
 
 /// Each flag alone must be exactly what it was. A composite is what the PAIR
 /// means, never what one of them means.
 #[test]
-fn either_flag_alone_still_resolves_to_a_single_source() {
-    let p = bootstrap::plan(&cli(&["-N", "-d", "eth9"]), &Config::default()).expect("plan");
+fn either_flag_alone_still_resolves_to_a_single_source() -> Result<(), TestError> {
+    let p = bootstrap::plan(&cli(&["-N", "-d", "eth9"]), &Config::default())
+        .map_err(|e| format!("plan: {e:?}"))?;
     assert!(
         matches!(p.source, Some(CaptureSource::Live { .. })),
         "-d alone is still one live source: {:?}",
         p.source
     );
 
-    let p =
-        bootstrap::plan(&cli(&["-N", "-L", "127.0.0.1:19060"]), &Config::default()).expect("plan");
+    let p = bootstrap::plan(&cli(&["-N", "-L", "127.0.0.1:19060"]), &Config::default())
+        .map_err(|e| format!("plan: {e:?}"))?;
     assert!(
         matches!(p.source, Some(CaptureSource::Hep { .. })),
         "-L alone is still one HEP source: {:?}",
         p.source
     );
+    Ok(())
 }
 
 // ── Refusals: the combinations that would produce a wrong answer ─────────
@@ -157,13 +164,14 @@ fn either_flag_alone_still_resolves_to_a_single_source() {
 /// while the per-packet gate waves file-origin packets through — sipnab
 /// transmitting at historical third-party addresses.
 #[test]
-fn an_input_file_with_a_hep_listener_is_refused_with_the_security_reason() {
+fn an_input_file_with_a_hep_listener_is_refused_with_the_security_reason() -> Result<(), TestError>
+{
     let err = bootstrap::plan(
         &cli(&["-N", "-I", FIXTURE, "-L", "127.0.0.1:19060"]),
         &Config::default(),
     )
     .err()
-    .expect("-I with -L must be refused, not silently resolved to the file");
+    .ok_or("-I with -L must be refused, not silently resolved to the file")?;
 
     assert_eq!(err.exit_code, 2, "an argument refusal exits 2: {err:?}");
     let m = &err.message;
@@ -172,6 +180,7 @@ fn an_input_file_with_a_hep_listener_is_refused_with_the_security_reason() {
         m.contains("historical") || m.contains("third part"),
         "the refusal must state the security reason, not say \"unsupported\": {m}"
     );
+    Ok(())
 }
 
 /// `-O` alongside a composite is refused, and the message names `--hep-send`.
@@ -184,11 +193,11 @@ fn an_input_file_with_a_hep_listener_is_refused_with_the_security_reason() {
 /// worse: it appends a second interface and writes bare SIP text as if it
 /// were a frame of the declared link type.
 #[test]
-fn writing_a_capture_file_from_a_composite_is_refused() {
+fn writing_a_capture_file_from_a_composite_is_refused() -> Result<(), TestError> {
     // A unique directory per process: `plan()` never opens this path, but a
     // fixed one under /tmp is shared state two concurrent runs would collide
     // on, and a collision here would look like a flaky refusal.
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
     let out = dir.path().join("out.pcap");
     let out_s = out.to_string_lossy().to_string();
 
@@ -197,7 +206,7 @@ fn writing_a_capture_file_from_a_composite_is_refused() {
         &Config::default(),
     )
     .err()
-    .expect("-O with a composite must be refused");
+    .ok_or("-O with a composite must be refused")?;
 
     assert_eq!(err.exit_code, 2, "{err:?}");
     assert!(err.message.contains("-O"), "name the flag: {}", err.message);
@@ -207,12 +216,13 @@ fn writing_a_capture_file_from_a_composite_is_refused() {
          forwarded rather than written: {}",
         err.message
     );
+    Ok(())
 }
 
 /// `--multi-device` with `-L` is refused: composing a DEVICE LIST with a HEP
 /// member is reasonable and belongs to stage three, not to this one.
 #[test]
-fn multi_device_with_a_hep_listener_is_refused() {
+fn multi_device_with_a_hep_listener_is_refused() -> Result<(), TestError> {
     let err = bootstrap::plan(
         &cli(&[
             "-N",
@@ -225,7 +235,7 @@ fn multi_device_with_a_hep_listener_is_refused() {
         &Config::default(),
     )
     .err()
-    .expect("--multi-device with -L must be refused");
+    .ok_or("--multi-device with -L must be refused")?;
 
     assert_eq!(err.exit_code, 2, "{err:?}");
     assert!(
@@ -233,6 +243,7 @@ fn multi_device_with_a_hep_listener_is_refused() {
         "name both: {}",
         err.message
     );
+    Ok(())
 }
 
 // ── The correlation seam ────────────────────────────────────────────────
@@ -377,12 +388,12 @@ impl Mixed {
     }
 
     /// The Call-ID the one stream in the store is bound to, if any.
-    fn only_stream_dialog(&self) -> Option<String> {
+    fn only_stream_dialog(&self) -> Result<Option<String>, TestError> {
         let s = self.streams.read();
         let mut it = s.iter();
-        let first = it.next().expect("exactly one stream was fed");
+        let first = it.next().ok_or("exactly one stream was fed")?;
         assert!(it.next().is_none(), "this helper expects one stream");
-        first.associated_dialog.clone()
+        Ok(first.associated_dialog.clone())
     }
 
     fn stream_count(&self) -> usize {
@@ -398,7 +409,7 @@ impl Mixed {
 /// same call bind, with no new correlation code: the SDP endpoint map is
 /// keyed on `(IpAddr, u16)` and never consults the capture source.
 #[test]
-fn hep_signaling_binds_the_stream_the_nic_captured() {
+fn hep_signaling_binds_the_stream_the_nic_captured() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -411,10 +422,11 @@ fn hep_signaling_binds_the_stream_the_nic_captured() {
     assert_eq!(m.dialog_count(), 1, "the HEP INVITE must build a dialog");
     assert_eq!(m.stream_count(), 1, "the wire RTP must build a stream");
     assert_eq!(
-        m.only_stream_dialog().as_deref(),
+        m.only_stream_dialog()?.as_deref(),
         Some(CALL_ID),
         "a stream the NIC captured must bind to the dialog HEP delivered"
     );
+    Ok(())
 }
 
 /// **Reverse order.** A HEP hop is a network delay, so RTP captured locally
@@ -423,13 +435,13 @@ fn hep_signaling_binds_the_stream_the_nic_captured() {
 /// and the endpoint sweep handles RTP-then-SDP — and this pins that it stays
 /// so once two sources make the inversion ordinary rather than exotic.
 #[test]
-fn rtp_arriving_before_the_hep_invite_still_binds() {
+fn rtp_arriving_before_the_hep_invite_still_binds() -> Result<(), TestError> {
     let mut m = Mixed::new();
     for seq in 0..5u16 {
         m.feed(&wire_rtp(PEER_IP, PEER_PORT, MEDIA_IP, MEDIA_PORT, seq));
     }
     assert_eq!(
-        m.only_stream_dialog(),
+        m.only_stream_dialog()?,
         None,
         "before the INVITE arrives the stream must claim no dialog"
     );
@@ -439,10 +451,11 @@ fn rtp_arriving_before_the_hep_invite_still_binds() {
         2001,
     ));
     assert_eq!(
-        m.only_stream_dialog().as_deref(),
+        m.only_stream_dialog()?.as_deref(),
         Some(CALL_ID),
         "the late INVITE must sweep the endpoint index and claim the stream"
     );
+    Ok(())
 }
 
 /// **No false binding.** A HEP dialog advertising one socket must not claim a
@@ -451,7 +464,7 @@ fn rtp_arriving_before_the_hep_invite_still_binds() {
 /// dozens of calls answer per second and every one starts media, so "the
 /// stream started 40 ms after the 200 OK" is a coincidence detector.
 #[test]
-fn a_hep_dialog_does_not_claim_a_stream_on_a_different_socket() {
+fn a_hep_dialog_does_not_claim_a_stream_on_a_different_socket() -> Result<(), TestError> {
     let mut m = Mixed::new();
     // The mirror says media is at MEDIA_PORT; the NIC sees it somewhere else,
     // which is what a media relay rewriting the SDP produces.
@@ -466,19 +479,20 @@ fn a_hep_dialog_does_not_claim_a_stream_on_a_different_socket() {
     assert_eq!(m.dialog_count(), 1, "the dialog still exists");
     assert_eq!(m.stream_count(), 1, "the stream still exists");
     assert_eq!(
-        m.only_stream_dialog(),
+        m.only_stream_dialog()?,
         None,
         "an unmatched stream must stay ORPHANED. A stream attributed to the \
          wrong dialog is worse than an unattributed one, because the wrong \
          attribution arrives looking like a measurement"
     );
+    Ok(())
 }
 
 /// **A HEP dialog whose media never arrives.** Definite rather than silent:
 /// the dialog exists and NO stream is fabricated for it. A stream is only
 /// ever created from real RTP packets, and there are none.
 #[test]
-fn a_hep_dialog_with_no_local_media_creates_no_stream() {
+fn a_hep_dialog_with_no_local_media_creates_no_stream() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -491,12 +505,13 @@ fn a_hep_dialog_with_no_local_media_creates_no_stream() {
         0,
         "an SDP endpoint is a promise about media, not evidence of it"
     );
+    Ok(())
 }
 
 /// **A local stream with no HEP dialog.** Orphaned immediately, with no
 /// timeout to wait out and no dialog invented for it.
 #[test]
-fn wire_media_with_no_hep_dialog_is_orphaned() {
+fn wire_media_with_no_hep_dialog_is_orphaned() -> Result<(), TestError> {
     let mut m = Mixed::new();
     for seq in 0..5u16 {
         m.feed(&wire_rtp(PEER_IP, PEER_PORT, MEDIA_IP, MEDIA_PORT, seq));
@@ -504,12 +519,13 @@ fn wire_media_with_no_hep_dialog_is_orphaned() {
 
     assert_eq!(m.dialog_count(), 0, "no signaling arrived");
     assert_eq!(m.stream_count(), 1);
-    assert_eq!(m.only_stream_dialog(), None, "an orphan must say so");
+    assert_eq!(m.only_stream_dialog()?, None, "an orphan must say so");
     assert_eq!(
         m.streams.read().orphaned_count(),
         1,
         "and must be counted as one"
     );
+    Ok(())
 }
 
 /// **Wrong-node collision (F2), pinned as it behaves today.**
@@ -522,7 +538,7 @@ fn wire_media_with_no_hep_dialog_is_orphaned() {
 /// node dimension shows up as a CHANGE rather than as a silent improvement
 /// nobody can date.
 #[test]
-fn two_hep_nodes_advertising_one_socket_collide_and_the_last_offer_wins() {
+fn two_hep_nodes_advertising_one_socket_collide_and_the_last_offer_wins() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet(
         invite_with_sdp("node-a-call@site1", MEDIA_IP, MEDIA_PORT),
@@ -538,12 +554,13 @@ fn two_hep_nodes_advertising_one_socket_collide_and_the_last_offer_wins() {
 
     assert_eq!(m.dialog_count(), 2, "both nodes' dialogs exist");
     assert_eq!(
-        m.only_stream_dialog().as_deref(),
+        m.only_stream_dialog()?.as_deref(),
         Some("node-b-call@site2"),
         "TODAY the last offer wins. This is a known wrong-attribution mode \
          (F2), confined by documenting stage one as single-node; when the \
          node dimension lands this assertion must be updated deliberately"
     );
+    Ok(())
 }
 
 // ── Stage 2: provenance and honest limits ───────────────────────────────
@@ -607,7 +624,7 @@ fn t0() -> chrono::DateTime<chrono::Utc> {
 ///
 /// Both directions asserted: fresh still binds, stale does not.
 #[test]
-fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() {
+fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() -> Result<(), TestError> {
     // Control: within the TTL the binding is unchanged.
     let mut fresh = Mixed::new();
     fresh.feed(&hep_packet_at(
@@ -626,7 +643,7 @@ fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() {
         ));
     }
     assert_eq!(
-        fresh.only_stream_dialog().as_deref(),
+        fresh.only_stream_dialog()?.as_deref(),
         Some(CALL_ID),
         "media 10s after the offer is the ordinary case and must still bind"
     );
@@ -657,12 +674,13 @@ fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() {
          not discard media"
     );
     assert_eq!(
-        stale.only_stream_dialog(),
+        stale.only_stream_dialog()?,
         None,
         "an offer an hour stale must not name a new stream's dialog. A media \
          gateway cycles a finite port range, so the next call on that socket \
          would inherit the previous call's identity"
     );
+    Ok(())
 }
 
 /// **The cross-source flag marks a stream bound ACROSS sources, and only
@@ -677,7 +695,7 @@ fn an_sdp_endpoint_older_than_the_ttl_does_not_claim_a_new_stream() {
 /// The second half is the half that can rot: a flag that is always set says
 /// nothing at all.
 #[test]
-fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
+fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() -> Result<(), TestError> {
     // HEP signaling, wire media — the deployment this whole feature is for.
     let mut across = Mixed::new();
     across.feed(&hep_packet_at(
@@ -697,7 +715,7 @@ fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
     }
     let flagged = {
         let s = across.streams.read();
-        let st = s.iter().next().expect("one stream").clone();
+        let st = s.iter().next().ok_or("one stream")?.clone();
         assert_eq!(
             st.associated_dialog.as_deref(),
             Some(CALL_ID),
@@ -729,7 +747,7 @@ fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
     }
     let same_source = {
         let s = within.streams.read();
-        let st = s.iter().next().expect("one stream").clone();
+        let st = s.iter().next().ok_or("one stream")?.clone();
         assert_eq!(
             st.associated_dialog.as_deref(),
             Some(CALL_ID),
@@ -766,7 +784,7 @@ fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
     ));
     let late_bind = {
         let s = reversed.streams.read();
-        let st = s.iter().next().expect("one stream").clone();
+        let st = s.iter().next().ok_or("one stream")?.clone();
         assert_eq!(
             st.associated_dialog.as_deref(),
             Some(CALL_ID),
@@ -779,6 +797,7 @@ fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
         "a binding made by the endpoint sweep must record its source exactly \
          as one made at stream creation does"
     );
+    Ok(())
 }
 
 /// **A live-captured stream has a resolvable `first_frame`.**
@@ -799,7 +818,7 @@ fn the_cross_source_flag_marks_only_a_stream_bound_across_sources() {
 /// pieces the loop composes — the counter it holds and the propagation from
 /// packet to stream — and the one line joining them is covered only by review.
 #[test]
-fn a_live_captured_stream_has_a_resolvable_first_frame() {
+fn a_live_captured_stream_has_a_resolvable_first_frame() -> Result<(), TestError> {
     use sipnab::capture::packet::FrameCounter;
 
     let mut m = Mixed::new();
@@ -825,18 +844,13 @@ fn a_live_captured_stream_has_a_resolvable_first_frame() {
         let s = m.streams.read();
         s.iter()
             .map(|st| {
-                st.first_frame
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "a live-captured stream must name the frame it \
-                             began at; before stage two the live reader \
-                             stamped no ordinal, so this was always None"
-                        )
-                    })
+                st.first_frame.as_ref().map(ToString::to_string).ok_or(
+                    "a live-captured stream must name the frame it \
+                         began at; before stage two the live reader \
+                         stamped no ordinal, so this was always None",
+                )
             })
-            .collect()
+            .collect::<Result<_, _>>()?
     };
     pointers.sort();
     assert_eq!(
@@ -852,16 +866,19 @@ fn a_live_captured_stream_has_a_resolvable_first_frame() {
         s.iter()
             .find(|st| st.key.dst.port() == MEDIA_PORT)
             .and_then(|st| st.first_frame.clone())
-            .expect("the first stream keeps its pointer")
+            .ok_or("the first stream keeps its pointer")?
     };
-    let round_trip = sipnab::capture::resolve::parse_pointer("eth9#0").expect(
-        "the pointer an operator reads off a report must parse back to the \
-         one the run minted",
-    );
+    let round_trip = sipnab::capture::resolve::parse_pointer("eth9#0").map_err(|e| {
+        format!(
+            "the pointer an operator reads off a report must parse back to the \
+             one the run minted: {e:?}"
+        )
+    })?;
     assert_eq!(
         round_trip, minted,
         "the text form and the in-memory form must be the same pointer"
     );
+    Ok(())
 }
 
 // ── SRC2: the two witnesses, compared ───────────────────────────────────
@@ -901,30 +918,30 @@ fn ok_for(call_id: &str) -> Vec<u8> {
 impl Mixed {
     /// The text call report for the one dialog in the store — the surface an
     /// operator pastes into a ticket.
-    fn call_report(&self) -> String {
+    fn call_report(&self) -> Result<String, TestError> {
         let ds = self.dialogs.read();
-        let dialog = ds.iter().next().expect("one dialog was fed");
-        sipnab::output::generate_call_report(
+        let dialog = ds.iter().next().ok_or("one dialog was fed")?;
+        Ok(sipnab::output::generate_call_report(
             dialog,
             &[],
             &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
             sipnab::output::ReportFormat::Text,
             sipnab::rtp::quality::MosDelay::unknown(),
-        )
+        ))
     }
 
     /// The dialog JSON `--json-dialogs`, `--call-report --json`, the REST
     /// `/v1/dialogs/:call_id` route and MCP all render through.
-    fn dialog_json(&self) -> serde_json::Value {
+    fn dialog_json(&self) -> Result<serde_json::Value, TestError> {
         let ds = self.dialogs.read();
-        let dialog = ds.iter().next().expect("one dialog was fed");
+        let dialog = ds.iter().next().ok_or("one dialog was fed")?;
         let raw = sipnab::output::dialog_to_json(
             dialog,
             &[],
             &sipnab::rtp::diagnosis::MediaDiagnosis::default(),
             sipnab::rtp::quality::MosDelay::unknown(),
         );
-        serde_json::from_str(&raw).expect("dialog JSON parses")
+        Ok(serde_json::from_str(&raw).map_err(|e| format!("dialog JSON parses: {e:?}"))?)
     }
 }
 
@@ -932,7 +949,7 @@ impl Mixed {
 /// what licenses the comparison — and then the proxy mirrors an answer that
 /// never left the box.
 #[test]
-fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
+fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet_at(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -949,7 +966,7 @@ fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
         t0() + chrono::Duration::milliseconds(9),
     ));
 
-    let report = m.call_report();
+    let report = m.call_report()?;
     assert!(
         report.contains("Capture sources disagree"),
         "the finding must reach the report an operator pastes into a ticket:\n{report}"
@@ -959,7 +976,7 @@ fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
         "and must name WHICH witness reported it alone:\n{report}"
     );
 
-    let json = m.dialog_json();
+    let json = m.dialog_json()?;
     let sd = &json["signaling_diagnosis"]["source_disagreement"];
     assert_eq!(sd["agreed"], 1, "the INVITE reached both witnesses: {sd}");
     assert_eq!(
@@ -969,10 +986,11 @@ fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
     assert!(
         sd["wire_only"]
             .as_array()
-            .expect("wire_only is an array")
+            .ok_or("wire_only is an array")?
             .is_empty(),
         "the wire carried nothing the mirror missed: {sd}"
     );
+    Ok(())
 }
 
 /// **Differing in SDP, end to end.** The proxy's account names one media
@@ -980,7 +998,7 @@ fn a_message_only_the_mirror_reported_reaches_the_report_and_the_json() {
 /// truth, because a rewrite here is sometimes the SBC doing its job and
 /// sometimes the bug.
 #[test]
-fn an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json() {
+fn an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet_at(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -992,7 +1010,7 @@ fn an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json() {
         t0() + chrono::Duration::milliseconds(4),
     ));
 
-    let json = m.dialog_json();
+    let json = m.dialog_json()?;
     let d = &json["signaling_diagnosis"]["source_disagreement"]["sdp_differs"][0];
     assert_eq!(
         d["mirror"][0], "audio 198.51.100.7:20000",
@@ -1003,19 +1021,20 @@ fn an_sdp_rewritten_between_the_two_witnesses_reaches_the_dialog_json() {
         "what left the box: {d}"
     );
 
-    let report = m.call_report();
+    let report = m.call_report()?;
     assert!(
         report.contains("advertises audio 198.51.100.7:20000 on the mirror")
             && report.contains("audio 203.0.113.77:40000 on the wire"),
         "both accounts side by side, each attributed:\n{report}"
     );
+    Ok(())
 }
 
 /// **A single-source run reports nothing new.** The whole detection exists for
 /// a composite run; one witness cannot disagree with itself, and a run with
 /// one source must serialize exactly as it did before SRC2.
 #[test]
-fn a_single_source_run_carries_no_source_disagreement() {
+fn a_single_source_run_carries_no_source_disagreement() -> Result<(), TestError> {
     for label in ["wire only", "mirror only"] {
         let mut m = Mixed::new();
         let invite = invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT);
@@ -1033,16 +1052,17 @@ fn a_single_source_run_carries_no_source_disagreement() {
         }
 
         assert!(
-            !m.call_report().contains("Capture sources disagree"),
+            !m.call_report()?.contains("Capture sources disagree"),
             "{label}: nothing to compare against"
         );
-        let json = m.dialog_json();
+        let json = m.dialog_json()?;
         assert!(
             json["signaling_diagnosis"]["source_disagreement"].is_null(),
             "{label}: absent, never null-and-checked: {}",
             json["signaling_diagnosis"]
         );
     }
+    Ok(())
 }
 
 /// **A call one witness never saw at all says nothing, deliberately.**
@@ -1055,7 +1075,7 @@ fn a_single_source_run_carries_no_source_disagreement() {
 /// media-only, which is the filter `composite_filter_warning` pushes a
 /// composite run towards.
 #[test]
-fn a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement() {
+fn a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet_at(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -1082,10 +1102,11 @@ fn a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement() {
 
     assert_eq!(m.stream_count(), 1, "the media bound as it always did");
     assert!(
-        m.dialog_json()["signaling_diagnosis"]["source_disagreement"].is_null(),
+        m.dialog_json()?["signaling_diagnosis"]["source_disagreement"].is_null(),
         "a witness that carried no signaling for this call is silent, not a \
          witness that contradicts the mirror"
     );
+    Ok(())
 }
 
 /// **The schema and the emitted shape agree.** `--call-report --json`, the
@@ -1097,7 +1118,7 @@ fn a_whole_call_only_the_mirror_saw_is_not_reported_as_a_disagreement() {
 /// never fail — so this validates an instance that actually carries the
 /// finding, not a clean one.
 #[test]
-fn the_disagreement_json_validates_against_the_call_report_schema() {
+fn the_disagreement_json_validates_against_the_call_report_schema() -> Result<(), TestError> {
     let mut m = Mixed::new();
     m.feed(&hep_packet_at(
         invite_with_sdp(CALL_ID, MEDIA_IP, MEDIA_PORT),
@@ -1114,11 +1135,12 @@ fn the_disagreement_json_validates_against_the_call_report_schema() {
         t0() + chrono::Duration::milliseconds(9),
     ));
 
-    let json = m.dialog_json();
+    let json = m.dialog_json()?;
     assert!(
         !json["signaling_diagnosis"]["source_disagreement"].is_null(),
         "the instance under validation must carry the finding: {json}"
     );
-    let validator = schema::load_validator_or_panic("call_report.schema.json");
+    let validator = schema::load_validator("call_report.schema.json")?;
     schema::assert_valid(&validator, &json, "composite dialog JSON");
+    Ok(())
 }

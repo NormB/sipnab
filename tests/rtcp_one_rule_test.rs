@@ -32,6 +32,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -130,7 +132,7 @@ fn word_length_sites() -> Vec<(String, String, usize)> {
 /// silently reduce it to finding nothing. A scan that matches nothing agrees
 /// with every tree.
 #[test]
-fn the_scan_finds_the_word_length_rule_in_its_own_module() {
+fn the_scan_finds_the_word_length_rule_in_its_own_module() -> Result<(), TestError> {
     let sites = word_length_sites();
     let owned = sites.iter().filter(|(f, _, _)| f == OWNER).count();
     assert!(
@@ -139,11 +141,12 @@ fn the_scan_finds_the_word_length_rule_in_its_own_module() {
          stopped matching and proves nothing about anywhere else. Found: \
          {sites:?}"
     );
+    Ok(())
 }
 
 /// Nothing outside the RTCP module computes a sub-packet's length unnamed.
 #[test]
-fn the_rtcp_word_length_arithmetic_lives_in_one_module() {
+fn the_rtcp_word_length_arithmetic_lives_in_one_module() -> Result<(), TestError> {
     let unexplained: Vec<String> = word_length_sites()
         .into_iter()
         .filter(|(f, _, _)| f != OWNER)
@@ -158,6 +161,7 @@ fn the_rtcp_word_length_arithmetic_lives_in_one_module() {
          the capture path never calls. Either call the rtcp module, or add the \
          function to EXEMPT with the reason it answers a different question"
     );
+    Ok(())
 }
 
 /// The muxed arm of the pipeline's classifier delegates rather than deciding.
@@ -166,13 +170,12 @@ fn the_rtcp_word_length_arithmetic_lives_in_one_module() {
 /// mentions RTCP elsewhere, and a whole-file check would either pass on the
 /// wrong evidence or fail on the right code.
 #[test]
-fn the_muxed_arm_delegates_to_the_rtcp_module() {
-    let src = std::fs::read_to_string(repo().join("src/pipeline.rs"))
-        .expect("src/pipeline.rs is in the tree");
+fn the_muxed_arm_delegates_to_the_rtcp_module() -> Result<(), TestError> {
+    let src = std::fs::read_to_string(repo().join("src/pipeline.rs"))?;
     let start = src
         .find("pub fn is_rtcp_packet(")
-        .expect("src/pipeline.rs still defines is_rtcp_packet");
-    let body_start = start + src[start..].find('{').expect("the function has a body");
+        .ok_or("src/pipeline.rs still defines is_rtcp_packet")?;
+    let body_start = start + src[start..].find('{').ok_or("the function has a body")?;
     let mut depth = 0i32;
     let mut end = body_start;
     for (offset, ch) in src[body_start..].char_indices() {
@@ -204,4 +207,5 @@ fn the_muxed_arm_delegates_to_the_rtcp_module() {
         "is_rtcp_packet frames a sub-packet itself again; that arithmetic \
          belongs to {OWNER}"
     );
+    Ok(())
 }

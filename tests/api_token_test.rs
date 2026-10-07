@@ -10,6 +10,8 @@
 //! than shelling out.
 #![cfg(feature = "api")]
 
+use server::TestError;
+
 #[path = "support/server.rs"]
 mod server;
 
@@ -29,8 +31,8 @@ fn now() -> i64 {
 
 /// A token minted with the server's signing key and a future expiry gets 200.
 #[test]
-fn valid_signed_token_is_accepted() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn valid_signed_token_is_accepted() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "valid-id",
@@ -38,23 +40,25 @@ fn valid_signed_token_is_accepted() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &token);
+    let resp = srv.get_bearer("/v1/dialogs", &token)?;
     assert_eq!(resp.status, 200, "valid signed token should be 200");
+    Ok(())
 }
 
 /// With signed-token auth enabled, a request with no Authorization header gets 401.
 #[test]
-fn missing_token_is_rejected() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
-    let resp = srv.get_or_panic("/v1/dialogs");
+fn missing_token_is_rejected() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
+    let resp = srv.get("/v1/dialogs")?;
     assert_eq!(resp.status, 401, "missing token should be 401");
+    Ok(())
 }
 
 /// A correctly-signed token whose `exp` is already in the past gets 401
 /// (deterministic: minted expired, no sleeping).
 #[test]
-fn expired_signed_token_is_rejected() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn expired_signed_token_is_rejected() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     // exp already in the past — deterministic, no sleeping.
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
@@ -63,14 +67,15 @@ fn expired_signed_token_is_rejected() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &token);
+    let resp = srv.get_bearer("/v1/dialogs", &token)?;
     assert_eq!(resp.status, 401, "expired token should be 401");
+    Ok(())
 }
 
 /// A token minted with a different signing key than the server's gets 401.
 #[test]
-fn forged_wrong_key_token_is_rejected() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn forged_wrong_key_token_is_rejected() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let token = sipnab::auth::mint(
         b"a-totally-different-key",
         "id",
@@ -78,14 +83,15 @@ fn forged_wrong_key_token_is_rejected() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &token);
+    let resp = srv.get_bearer("/v1/dialogs", &token)?;
     assert_eq!(resp.status, 401, "forged token should be 401");
+    Ok(())
 }
 
 /// Flipping one byte in a valid token's payload part invalidates the HMAC → 401.
 #[test]
-fn tampered_payload_token_is_rejected() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn tampered_payload_token_is_rejected() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id",
@@ -98,26 +104,27 @@ fn tampered_payload_token_is_rejected() {
     let mut bytes = parts[1].clone().into_bytes();
     let idx = bytes.len() / 2;
     bytes[idx] = if bytes[idx] == b'A' { b'B' } else { b'A' };
-    parts[1] = String::from_utf8(bytes).unwrap();
+    parts[1] = String::from_utf8(bytes)?;
     let tampered = parts.join(".");
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &tampered);
+    let resp = srv.get_bearer("/v1/dialogs", &tampered)?;
     assert_eq!(resp.status, 401, "tampered payload should be 401");
+    Ok(())
 }
 
 /// With `--api-revoked-file`, a valid unexpired token whose id is on the
 /// denylist gets 401 while a token with a fresh id still gets 200.
 #[test]
-fn revoked_id_is_rejected_via_denylist_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn revoked_id_is_rejected_via_denylist_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let revoked_path = dir.path().join("revoked.txt");
-    std::fs::write(&revoked_path, "revoked-jti\n").expect("write denylist");
+    std::fs::write(&revoked_path, "revoked-jti\n")?;
 
-    let srv = ApiServer::spawn_or_panic(&[
+    let srv = ApiServer::spawn(&[
         "--api-signing-key",
         SIGNING_KEY,
         "--api-revoked-file",
-        revoked_path.to_str().unwrap(),
-    ]);
+        revoked_path.to_str().ok_or("revoked_path is not UTF-8")?,
+    ])?;
 
     // A valid, unexpired token whose id is on the denylist → 401.
     let revoked = sipnab::auth::mint(
@@ -127,7 +134,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &revoked);
+    let resp = srv.get_bearer("/v1/dialogs", &revoked)?;
     assert_eq!(resp.status, 401, "revoked id should be 401");
 
     // A fresh token with a different id is accepted.
@@ -138,17 +145,17 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::AUDIENCE_API,
         sipnab::auth::SCOPE_FULL,
     );
-    let resp = srv.get_bearer_or_panic("/v1/dialogs", &fresh);
+    let resp = srv.get_bearer("/v1/dialogs", &fresh)?;
     assert_eq!(resp.status, 200, "non-revoked id should be 200");
+    Ok(())
 }
 
 /// With two `--api-signing-key` flags (rotation), tokens minted under either
 /// key are accepted with 200.
 #[test]
-fn rotation_accepts_tokens_from_either_key() {
+fn rotation_accepts_tokens_from_either_key() -> Result<(), TestError> {
     let key2 = "second-rotation-key-abcdef0123456789";
-    let srv =
-        ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY, "--api-signing-key", key2]);
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY, "--api-signing-key", key2])?;
     let t1 = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id1",
@@ -164,36 +171,37 @@ fn rotation_accepts_tokens_from_either_key() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", &t1).status,
+        srv.get_bearer("/v1/dialogs", &t1)?.status,
         200,
         "key1 token"
     );
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", &t2).status,
+        srv.get_bearer("/v1/dialogs", &t2)?.status,
         200,
         "key2 token"
     );
+    Ok(())
 }
 
 /// The legacy `--api-key` static-secret path still works: correct secret → 200,
 /// wrong secret → 401.
 #[test]
-fn static_api_key_backward_compat() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "legacy-static-secret"]);
+fn static_api_key_backward_compat() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "legacy-static-secret"])?;
     // Correct static secret → 200.
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", "legacy-static-secret")
+        srv.get_bearer("/v1/dialogs", "legacy-static-secret")?
             .status,
         200,
         "correct static key should be 200"
     );
     // Wrong static secret → 401.
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", "wrong-secret")
-            .status,
+        srv.get_bearer("/v1/dialogs", "wrong-secret")?.status,
         401,
         "wrong static key should be 401"
     );
+    Ok(())
 }
 
 /// A `metrics`-scoped token scrapes `/metrics` and is refused everywhere else.
@@ -207,8 +215,8 @@ fn static_api_key_backward_compat() {
 /// returns message bodies. Before this claim existed, a monitoring system that
 /// needed one counter had to hold a credential that could read all of it.
 #[test]
-fn a_metrics_scoped_token_reaches_only_the_metrics_endpoint() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn a_metrics_scoped_token_reaches_only_the_metrics_endpoint() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let scrape = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "scrape-job",
@@ -218,19 +226,20 @@ fn a_metrics_scoped_token_reaches_only_the_metrics_endpoint() {
     );
 
     assert_eq!(
-        srv.get_bearer_or_panic("/metrics", &scrape).status,
+        srv.get_bearer("/metrics", &scrape)?.status,
         200,
         "a metrics token must be able to scrape /metrics"
     );
 
     for path in ["/v1/dialogs", "/v1/streams", "/v1/stats"] {
         assert_eq!(
-            srv.get_bearer_or_panic(path, &scrape).status,
+            srv.get_bearer(path, &scrape)?.status,
             401,
             "a metrics token must be refused at {path} — it is scoped to /metrics \
              precisely so a scrape job cannot read dialogs or message bodies"
         );
     }
+    Ok(())
 }
 
 /// A `full` token still reaches everything, including `/metrics`.
@@ -238,8 +247,8 @@ fn a_metrics_scoped_token_reaches_only_the_metrics_endpoint() {
 /// Adding the scope claim must not narrow an existing deployment: every token
 /// already minted, and every one minted without `--token-scope`, is `full`.
 #[test]
-fn a_full_token_still_reaches_metrics_and_the_v1_surface() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn a_full_token_still_reaches_metrics_and_the_v1_surface() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let full = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "ops",
@@ -250,11 +259,12 @@ fn a_full_token_still_reaches_metrics_and_the_v1_surface() {
 
     for path in ["/metrics", "/v1/dialogs", "/v1/stats"] {
         assert_eq!(
-            srv.get_bearer_or_panic(path, &full).status,
+            srv.get_bearer(path, &full)?.status,
             200,
             "a full token must still reach {path}"
         );
     }
+    Ok(())
 }
 
 /// `GET /v1/hep/senders` is full scope: a `metrics` token is refused, a
@@ -266,8 +276,8 @@ fn a_full_token_still_reaches_metrics_and_the_v1_surface() {
 /// counts, with no per-sender label, for the same reason.
 #[cfg(feature = "hep")]
 #[test]
-fn the_hep_sender_roster_needs_a_full_token() {
-    let srv = ApiServer::spawn_or_panic(&["--api-signing-key", SIGNING_KEY]);
+fn the_hep_sender_roster_needs_a_full_token() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY])?;
     let scrape = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "scrape-job",
@@ -283,13 +293,14 @@ fn the_hep_sender_roster_needs_a_full_token() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/hep/senders", &scrape).status,
+        srv.get_bearer("/v1/hep/senders", &scrape)?.status,
         401,
         "a metrics token must not read which senders feed this collector"
     );
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/hep/senders", &full).status,
+        srv.get_bearer("/v1/hep/senders", &full)?.status,
         200,
         "a full token reads the roster"
     );
+    Ok(())
 }

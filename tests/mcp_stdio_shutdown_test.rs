@@ -40,6 +40,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -47,24 +49,26 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Spawn a stdio MCP server over a slow source, hand back the child.
-fn spawn_replaying_server() -> std::process::Child {
-    Command::new(env!("CARGO_BIN_EXE_sipnab"))
+fn spawn_replaying_server() -> Result<std::process::Child, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["--mcp", "-N", "--quiet", "--replay", "-I"])
         .arg(fixture("sip_call.pcap"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --mcp")
+        .spawn()?)
 }
 
 /// Wait for exit, or report how long we waited.
-fn wait_for_exit(child: &mut std::process::Child, limit: Duration) -> Option<Duration> {
+fn wait_for_exit(
+    child: &mut std::process::Child,
+    limit: Duration,
+) -> Result<Option<Duration>, TestError> {
     let start = Instant::now();
     loop {
-        match child.try_wait().expect("try_wait") {
-            Some(_) => return Some(start.elapsed()),
-            None if start.elapsed() >= limit => return None,
+        match child.try_wait()? {
+            Some(_) => return Ok(Some(start.elapsed())),
+            None if start.elapsed() >= limit => return Ok(None),
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     }
@@ -72,32 +76,30 @@ fn wait_for_exit(child: &mut std::process::Child, limit: Duration) -> Option<Dur
 
 /// Closing stdin is how an MCP client shuts a stdio server down. It must exit.
 #[test]
-fn closing_stdin_terminates_the_server_even_mid_capture() {
-    let mut child = spawn_replaying_server();
+fn closing_stdin_terminates_the_server_even_mid_capture() -> Result<(), TestError> {
+    let mut child = spawn_replaying_server()?;
 
     // Let it get past startup and into the packet loop with the source still
     // open -- the state a live capture is in permanently.
     std::thread::sleep(Duration::from_millis(2500));
     assert!(
-        child.try_wait().expect("try_wait").is_none(),
+        child.try_wait()?.is_none(),
         "the server exited before the test could act; --replay is not pacing \
          the fixture and this test is not exercising the defect"
     );
 
-    drop(child.stdin.take().expect("stdin piped"));
+    drop(child.stdin.take().ok_or("stdin piped")?);
 
-    let waited = wait_for_exit(&mut child, Duration::from_secs(20));
+    let waited = wait_for_exit(&mut child, Duration::from_secs(20))?;
     if waited.is_none() {
         let _ = child.kill();
         let _ = child.wait();
     }
-    let waited = waited.unwrap_or_else(|| {
-        panic!(
-            "the server was still running 20s after its client closed stdin. \
+    let waited = waited.ok_or(
+        "the server was still running 20s after its client closed stdin. \
              This is #229: every client disconnect leaks a process that keeps \
-             capturing."
-        )
-    });
+             capturing.",
+    )?;
 
     // Promptly, not eventually. Without the fix the process survives until the
     // replay finishes (~60s for this fixture), which a generous timeout would
@@ -107,16 +109,17 @@ fn closing_stdin_terminates_the_server_even_mid_capture() {
         "exited, but took {waited:?} -- that is the source draining, not the \
          client-gone check firing"
     );
+    Ok(())
 }
 
 /// SIGTERM must still work, and must not have been broken by the fix.
 #[cfg(unix)]
 #[test]
-fn sigterm_still_terminates_the_server() {
-    let mut child = spawn_replaying_server();
+fn sigterm_still_terminates_the_server() -> Result<(), TestError> {
+    let mut child = spawn_replaying_server()?;
     std::thread::sleep(Duration::from_millis(2500));
     assert!(
-        child.try_wait().expect("try_wait").is_none(),
+        child.try_wait()?.is_none(),
         "exited before the signal could be sent"
     );
 
@@ -125,12 +128,13 @@ fn sigterm_still_terminates_the_server() {
         libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
     }
 
-    let waited = wait_for_exit(&mut child, Duration::from_secs(15));
+    let waited = wait_for_exit(&mut child, Duration::from_secs(15))?;
     if waited.is_none() {
         let _ = child.kill();
         let _ = child.wait();
-        panic!("SIGTERM no longer terminates the MCP server");
+        return Err("SIGTERM no longer terminates the MCP server".into());
     }
+    Ok(())
 }
 
 /// A server whose client never disconnects keeps running.
@@ -139,9 +143,9 @@ fn sigterm_still_terminates_the_server() {
 /// leaving, not by the server quitting on its own after a couple of seconds,
 /// which would make the first test pass for the wrong reason.
 #[test]
-fn a_server_with_a_live_client_keeps_running() {
-    let mut child = spawn_replaying_server();
-    let mut stdin = child.stdin.take().expect("stdin piped");
+fn a_server_with_a_live_client_keeps_running() -> Result<(), TestError> {
+    let mut child = spawn_replaying_server()?;
+    let mut stdin = child.stdin.take().ok_or("stdin piped")?;
 
     std::thread::sleep(Duration::from_millis(2500));
     // Hold the pipe open and keep it alive.
@@ -149,7 +153,7 @@ fn a_server_with_a_live_client_keeps_running() {
     let _ = stdin.flush();
     std::thread::sleep(Duration::from_millis(3000));
 
-    let running = child.try_wait().expect("try_wait").is_none();
+    let running = child.try_wait()?.is_none();
     let _ = child.kill();
     let _ = child.wait();
     assert!(
@@ -157,4 +161,5 @@ fn a_server_with_a_live_client_keeps_running() {
         "the server exited while its client was still attached, so the first \
          test's exit cannot be attributed to the client leaving"
     );
+    Ok(())
 }

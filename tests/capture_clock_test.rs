@@ -44,6 +44,8 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Call-ID of the long dialog both fixtures build.
 const CALL_ID: &str = "long-dialog-1@10.1.0.1";
 
@@ -90,7 +92,7 @@ type Record = (u64, Vec<u8>);
 /// either fixture here: one needs a multi-second span so `--replay` produces a
 /// genuinely slow read, the other needs a span longer than the ten-minute idle
 /// threshold.
-fn write_pcap_at(path: &Path, records: &[Record]) {
+fn write_pcap_at(path: &Path, records: &[Record]) -> Result<(), TestError> {
     /// Arbitrary fixed epoch for the capture (2023-11-14T22:13:20Z). Fixed so
     /// the fixture bytes are reproducible; in the past so that any code still
     /// comparing packet time against `Utc::now()` sees a huge idle age.
@@ -115,7 +117,8 @@ fn write_pcap_at(path: &Path, records: &[Record]) {
         out.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         out.extend_from_slice(frame);
     }
-    std::fs::write(path, out).expect("write pcap");
+    std::fs::write(path, out)?;
+    Ok(())
 }
 
 /// The [`DIALOG_MESSAGES`] SIP payloads of one long call, paired with the
@@ -290,28 +293,29 @@ fn filler_records(start_us: u64, step_us: u64, count: u64) -> Vec<Record> {
 }
 
 /// Run `sipnab --report` over `pcap`, asserting exit 0, and return stdout.
-fn report(pcap: &Path, extra: &[&str]) -> String {
-    let path = pcap.to_str().expect("utf-8 fixture path");
+fn report(pcap: &Path, extra: &[&str]) -> Result<String, TestError> {
+    let path = pcap.to_str().ok_or("utf-8 fixture path")?;
     let mut args = vec!["-N", "-I", path, "--report", "--no-cli-print", "-q"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run_support::run_or_panic(&args, Some("off"));
+    let (stdout, stderr, code) = run_support::run(&args, Some("off"))?;
     assert_eq!(code, Some(0), "sipnab {args:?} failed: {stderr}");
-    stdout
+    Ok(stdout)
 }
 
 /// The `Msgs` column of the report row for `call_id`.
 ///
 /// Read from the right: `Msgs` is third-from-last (`… Msgs PDD Tags`), which
 /// survives a `Duration` cell that splits into two tokens (`1m 30s`).
-fn dialog_msg_count(report: &str, call_id: &str) -> usize {
+fn dialog_msg_count(report: &str, call_id: &str) -> Result<usize, TestError> {
     let row = report
         .lines()
         .find(|l| l.starts_with(call_id))
-        .unwrap_or_else(|| panic!("no report row for {call_id} in:\n{report}"));
+        .ok_or_else(|| format!("no report row for {call_id} in:\n{report}"))?;
     let fields: Vec<&str> = row.split_whitespace().collect();
     let msgs = fields[fields.len() - 3];
-    msgs.parse()
-        .unwrap_or_else(|e| panic!("Msgs cell {msgs:?} of row {row:?} is not a count: {e}"))
+    Ok(msgs
+        .parse()
+        .map_err(|e| format!("Msgs cell {msgs:?} of row {row:?} is not a count: {e}"))?)
 }
 
 /// Reading the same capture fast and slowly must produce the same report.
@@ -328,8 +332,8 @@ fn dialog_msg_count(report: &str, call_id: &str) -> usize {
 /// wall seconds on a 130-packet file would make the two runs agree, not
 /// disagree — the failure mode is a missed regression, never a false alarm.
 #[test]
-fn offline_report_is_identical_fast_and_slow() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn offline_report_is_identical_fast_and_slow() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("speed.pcap");
 
     // 44 SIP messages over the first 3.44 s, then RTP out to ~7.2 s. All of
@@ -337,17 +341,17 @@ fn offline_report_is_identical_fast_and_slow() {
     // a wrongly-fired compaction cannot be refilled by later messages.
     let mut records = dialog_records(0, 80_000);
     records.extend(rtp_records(3_600_000, 40_000, 90));
-    write_pcap_at(&pcap, &records);
+    write_pcap_at(&pcap, &records)?;
 
-    let fast = report(&pcap, &[]);
-    let slow = report(&pcap, &["--replay"]);
+    let fast = report(&pcap, &[])?;
+    let slow = report(&pcap, &["--replay"])?;
 
     assert_eq!(
         fast, slow,
         "offline report changed with read speed.\n--- fast read ---\n{fast}\n--- slow read (--replay) ---\n{slow}"
     );
     assert_eq!(
-        dialog_msg_count(&fast, CALL_ID),
+        dialog_msg_count(&fast, CALL_ID)?,
         DIALOG_MESSAGES,
         "the fast read lost messages from {CALL_ID}:\n{fast}"
     );
@@ -363,6 +367,7 @@ fn offline_report_is_identical_fast_and_slow() {
         "stream {SSRC} is claimed by no dialog and must be reported as an \
          orphan:\n{fast}"
     );
+    Ok(())
 }
 
 /// Offline sweeps still fire — on the capture's clock.
@@ -373,8 +378,8 @@ fn offline_report_is_identical_fast_and_slow() {
 /// orphan section. Both are asserted from a fast read, where wall time never
 /// gets anywhere near the compaction threshold.
 #[test]
-fn offline_compaction_follows_capture_time() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn offline_compaction_follows_capture_time() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("idle.pcap");
 
     // The dialog and the RTP burst finish inside the first six seconds; filler
@@ -383,12 +388,12 @@ fn offline_compaction_follows_capture_time() {
     let mut records = dialog_records(0, 80_000);
     records.extend(rtp_records(4_000_000, 20_000, 100));
     records.extend(filler_records(10_000_000, 5_000_000, 179));
-    write_pcap_at(&pcap, &records);
+    write_pcap_at(&pcap, &records)?;
 
-    let out = report(&pcap, &[]);
+    let out = report(&pcap, &[])?;
 
     assert_eq!(
-        dialog_msg_count(&out, CALL_ID),
+        dialog_msg_count(&out, CALL_ID)?,
         KEPT_WHEN_IDLE,
         "a dialog idle for five minutes of capture time was not compacted to \
          keep_messages_per_idle_dialog():\n{out}"
@@ -396,12 +401,13 @@ fn offline_compaction_follows_capture_time() {
     let orphans = out
         .split_once("Orphaned Streams:")
         .map(|(_, tail)| tail)
-        .unwrap_or_else(|| panic!("no orphaned-stream section:\n{out}"));
+        .ok_or_else(|| format!("no orphaned-stream section:\n{out}"))?;
     assert!(
         orphans.contains(SSRC),
         "stream {SSRC} is claimed by no dialog and must appear in the orphan \
          section:\n{out}"
     );
+    Ok(())
 }
 
 // ── `--cores` parity: the sweep must cross the parallel boundary ────
@@ -441,7 +447,7 @@ fn orphan_section(report: &str) -> &str {
 /// thirty seconds unassociated, and leave it alone — a third answer, agreeing
 /// with neither path. Only a single sweep at the whole capture's final
 /// timestamp reproduces what the single-threaded run reports.
-fn two_leg_idle_capture(path: &Path) {
+fn two_leg_idle_capture(path: &Path) -> Result<(), TestError> {
     let mut records = dialog_records(0, 80_000);
     records.extend(rtp_records(4_000_000, 20_000, 100));
     records.extend(dialog_records_between(C, D, CALL_ID_2, 100_000, 80_000));
@@ -456,7 +462,8 @@ fn two_leg_idle_capture(path: &Path) {
     records.extend(filler_records(10_000_000, 5_000_000, 179));
     // A pcap reader trusts file order, and so does the capture clock.
     records.sort_by_key(|(offset_us, _)| *offset_us);
-    write_pcap_at(path, &records);
+    write_pcap_at(path, &records)?;
+    Ok(())
 }
 
 /// Fail loudly when the fixture's two legs no longer land on different
@@ -491,14 +498,14 @@ fn legs_shard_apart() {
 /// The equality is asserted against a count the single-threaded path is also
 /// pinned to, so "both agree on none" cannot pass this test.
 #[test]
-fn cores_flags_the_same_orphans_as_the_single_threaded_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn cores_flags_the_same_orphans_as_the_single_threaded_path() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("cores-orphans.pcap");
-    two_leg_idle_capture(&pcap);
+    two_leg_idle_capture(&pcap)?;
     legs_shard_apart();
 
-    let single = report(&pcap, &[]);
-    let cores = report(&pcap, &["--cores", "4"]);
+    let single = report(&pcap, &[])?;
+    let cores = report(&pcap, &["--cores", "4"])?;
 
     assert_eq!(
         orphan_rows(&single),
@@ -520,6 +527,7 @@ fn cores_flags_the_same_orphans_as_the_single_threaded_path() {
              flagged orphaned under --cores too:\n{cores}"
         );
     }
+    Ok(())
 }
 
 /// `--cores` must sweep on the CAPTURE's clock, like the single-threaded path.
@@ -537,25 +545,25 @@ fn cores_flags_the_same_orphans_as_the_single_threaded_path() {
 /// and is no longer clock-dependent at all (#113), so what it asserts here is
 /// parity between the two paths rather than a timeout.
 #[test]
-fn cores_sweeps_on_capture_time_not_wall_time() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn cores_sweeps_on_capture_time_not_wall_time() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("cores-short.pcap");
 
     let mut records = dialog_records(0, 80_000);
     records.extend(rtp_records(3_600_000, 40_000, 90));
-    write_pcap_at(&pcap, &records);
+    write_pcap_at(&pcap, &records)?;
 
-    let single = report(&pcap, &[]);
-    let cores = report(&pcap, &["--cores", "4"]);
+    let single = report(&pcap, &[])?;
+    let cores = report(&pcap, &["--cores", "4"])?;
 
     assert_eq!(
-        dialog_msg_count(&single, CALL_ID),
+        dialog_msg_count(&single, CALL_ID)?,
         DIALOG_MESSAGES,
         "the fixture must keep every message single-threaded, or this test \
          cannot tell a capture-clock sweep from a wall-clock one:\n{single}"
     );
     assert_eq!(
-        dialog_msg_count(&cores, CALL_ID),
+        dialog_msg_count(&cores, CALL_ID)?,
         DIALOG_MESSAGES,
         "--cores compacted a dialog that was idle for three seconds of capture \
          time, which only a wall-clock sweep would do:\n{cores}"
@@ -571,6 +579,7 @@ fn cores_sweeps_on_capture_time_not_wall_time() {
         "--cores and the single-threaded path disagree about which streams no \
          dialog claims:\n--- single ---\n{single}\n--- cores ---\n{cores}"
     );
+    Ok(())
 }
 
 /// `--cores` must compact idle dialogs like the single-threaded path.
@@ -584,30 +593,31 @@ fn cores_sweeps_on_capture_time_not_wall_time() {
 /// leave alone, because its own worker's last packet is fourteen minutes
 /// before the capture's.
 #[test]
-fn cores_compacts_idle_dialogs_like_the_single_threaded_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn cores_compacts_idle_dialogs_like_the_single_threaded_path() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("cores-idle.pcap");
-    two_leg_idle_capture(&pcap);
+    two_leg_idle_capture(&pcap)?;
     legs_shard_apart();
 
-    let single = report(&pcap, &[]);
-    let cores = report(&pcap, &["--cores", "4"]);
+    let single = report(&pcap, &[])?;
+    let cores = report(&pcap, &["--cores", "4"])?;
 
     for call_id in [CALL_ID, CALL_ID_2] {
         // Positive control: the single-threaded path really did compact, so a
         // change that stopped BOTH paths sweeping fails here rather than
         // passing on an agreed 44.
         assert_eq!(
-            dialog_msg_count(&single, call_id),
+            dialog_msg_count(&single, call_id)?,
             KEPT_WHEN_IDLE,
             "{call_id} was idle for minutes of capture time and must be \
              compacted single-threaded, or the parity below is vacuous:\n{single}"
         );
         assert_eq!(
-            dialog_msg_count(&cores, call_id),
-            dialog_msg_count(&single, call_id),
+            dialog_msg_count(&cores, call_id)?,
+            dialog_msg_count(&single, call_id)?,
             "--cores kept a different number of messages for {call_id}.\
              \n--- single ---\n{single}\n--- cores 4 ---\n{cores}"
         );
     }
+    Ok(())
 }

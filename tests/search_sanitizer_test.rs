@@ -31,15 +31,17 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// The search script's source.
-fn source() -> String {
+fn source() -> Result<String, TestError> {
     let p = repo().join("website/static/js/docs-search.js");
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Run the REAL `plain()` from the shipped file against one input, in node.
@@ -47,9 +49,11 @@ fn source() -> String {
 /// The function is extracted by source text and evaluated, so this exercises
 /// what ships rather than a Rust transliteration of it. Returns `None` when
 /// node is unavailable, which callers must report rather than pass.
-fn plain_source() -> Option<String> {
-    let src = source();
-    let start = src.find("function plain(")?;
+fn plain_source() -> Result<Option<String>, TestError> {
+    let src = source()?;
+    let Some(start) = src.find("function plain(") else {
+        return Ok(None);
+    };
     // Brace-matched, never a fixed window. `the_fixed_point_loop_is_bounded`
     // originally scanned 800 characters from the declaration and broke the
     // moment the doc comment above the loop grew past that — a window sized to
@@ -62,29 +66,36 @@ fn plain_source() -> Option<String> {
             b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(src[start..=i].to_string());
+                    return Ok(Some(src[start..=i].to_string()));
                 }
             }
             _ => {}
         }
     }
-    None
+    Ok(None)
 }
 
 /// Run the REAL `plain()` from the shipped file against one input, in node.
-fn plain_via_node(input: &str) -> Option<String> {
-    let func = plain_source()?;
+fn plain_via_node(input: &str) -> Result<Option<String>, TestError> {
+    let Some(func) = plain_source()? else {
+        return Ok(None);
+    };
     let program = format!("{func}\nprocess.stdout.write(plain(JSON.parse(process.argv[1])));",);
-    let out = Command::new("node")
+    let Ok(arg) = serde_json::to_string(input) else {
+        return Ok(None);
+    };
+    let Ok(out) = Command::new("node")
         .arg("-e")
         .arg(&program)
-        .arg(serde_json::to_string(input).ok()?)
+        .arg(arg)
         .output()
-        .ok()?;
+    else {
+        return Ok(None);
+    };
     if !out.status.success() {
-        return None;
+        return Ok(None);
     }
-    Some(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
 }
 
 /// The extractor found the real function.
@@ -93,25 +104,29 @@ fn plain_via_node(input: &str) -> Option<String> {
 /// wrong text — or nothing — node would either fail or evaluate something else
 /// entirely, and a silent skip would look like a pass.
 #[test]
-fn the_shipped_sanitizer_can_be_extracted_and_run() {
-    let src = source();
+fn the_shipped_sanitizer_can_be_extracted_and_run() -> Result<(), TestError> {
+    let src = source()?;
     assert!(
         src.contains("function plain("),
         "docs-search.js no longer defines plain(); the tests below run a \
          function that does not exist"
     );
-    match plain_via_node("<mark>hit</mark>") {
+    match plain_via_node("<mark>hit</mark>")? {
         Some(v) => assert_eq!(
             v, "hit",
             "the extracted function did not strip a plain <mark> pair, so it \
              is not the sanitizer"
         ),
-        None => panic!(
-            "could not run the shipped sanitizer in node. This test must not \
-             be allowed to pass by skipping: an unrunnable check looks exactly \
-             like a passing one."
-        ),
+        None => {
+            return Err(
+                "could not run the shipped sanitizer in node. This test must not \
+                 be allowed to pass by skipping: an unrunnable check looks exactly \
+                 like a passing one."
+                    .into(),
+            );
+        }
     }
+    Ok(())
 }
 
 /// Hostile input leaves no open angle bracket.
@@ -121,14 +136,14 @@ fn the_shipped_sanitizer_can_be_extracted_and_run() {
 /// set does, and a test whose name asserts something it does not measure is
 /// how a suite starts lying about its own coverage.
 #[test]
-fn hostile_input_leaves_no_open_angle_bracket() {
+fn hostile_input_leaves_no_open_angle_bracket() -> Result<(), TestError> {
     for hostile in [
         "<<a>script>alert(1)<</a>/script>",
         "<<<<a>>>>",
         "<scr<a>ipt>x</scr<a>ipt>",
         "<<img src=x onerror=y>>",
     ] {
-        let got = plain_via_node(hostile).expect("node must run the sanitizer");
+        let got = plain_via_node(hostile)?.ok_or("node must run the sanitizer")?;
         assert!(
             !got.contains('<'),
             "sanitizing {hostile:?} left {got:?}, which still contains `<`. A \
@@ -136,6 +151,7 @@ fn hostile_input_leaves_no_open_angle_bracket() {
              innerHTML assignment — could complete."
         );
     }
+    Ok(())
 }
 
 /// Ordinary excerpts survive intact.
@@ -144,7 +160,7 @@ fn hostile_input_leaves_no_open_angle_bracket() {
 /// then the hole comes back. The marked terms are the whole point of showing
 /// an excerpt.
 #[test]
-fn ordinary_excerpts_keep_their_text() {
+fn ordinary_excerpts_keep_their_text() -> Result<(), TestError> {
     let cases = [
         (
             "<mark>capture</mark> a live interface",
@@ -154,9 +170,10 @@ fn ordinary_excerpts_keep_their_text() {
         ("", ""),
     ];
     for (input, want) in cases {
-        let got = plain_via_node(input).expect("node must run the sanitizer");
+        let got = plain_via_node(input)?.ok_or("node must run the sanitizer")?;
         assert_eq!(got, want, "sanitizing {input:?} changed the visible text");
     }
+    Ok(())
 }
 
 /// The file never assigns `innerHTML`.
@@ -166,8 +183,8 @@ fn ordinary_excerpts_keep_their_text() {
 /// rather than an element. It is asserted rather than assumed because the
 /// whole argument for the alert being low-impact rests on it.
 #[test]
-fn the_search_script_never_assigns_inner_html() {
-    let src = source();
+fn the_search_script_never_assigns_inner_html() -> Result<(), TestError> {
+    let src = source()?;
     for banned in [
         "innerHTML",
         "outerHTML",
@@ -190,6 +207,7 @@ fn the_search_script_never_assigns_inner_html() {
         "the file assigns neither innerHTML nor textContent; it no longer \
          renders anything and this gate is checking a file that moved"
     );
+    Ok(())
 }
 
 /// The strip is bounded, so a pathological input cannot spin.
@@ -198,8 +216,8 @@ fn the_search_script_never_assigns_inner_html() {
 /// tab. The bound is asserted in the source because a test cannot wait for a
 /// hang to prove one is possible.
 #[test]
-fn the_fixed_point_loop_is_bounded() {
-    let body = plain_source().expect("plain() exists and is brace-balanced");
+fn the_fixed_point_loop_is_bounded() -> Result<(), TestError> {
+    let body = plain_source()?.ok_or("plain() exists and is brace-balanced")?;
     assert!(
         body.contains("for (") || body.contains("while ("),
         "plain() no longer loops; a single pass is the incomplete sanitizer \
@@ -210,4 +228,5 @@ fn the_fixed_point_loop_is_bounded() {
         "plain() loops without a ceiling; a pathological excerpt would hang \
          the tab"
     );
+    Ok(())
 }

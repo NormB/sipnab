@@ -45,14 +45,17 @@
 
 use std::path::Path;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Read a repo-relative file, panicking with the path on failure.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The workflows whose jobs run on GitHub-hosted runners without a container.
@@ -61,20 +64,20 @@ fn read(rel: &str) -> String {
 /// never declares a `container:` is one of these by construction, so a new
 /// workflow is covered the day it lands instead of the day someone remembers
 /// to add it here. A gate that hardcodes its subjects cannot see a new one.
-fn hosted_workflows_installing_packages() -> Vec<String> {
+fn hosted_workflows_installing_packages() -> Result<Vec<String>, TestError> {
     let dir = repo().join(".github/workflows");
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read .github/workflows") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("yml") {
             continue;
         }
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .expect("workflow file name")
+            .ok_or("workflow file name")?
             .to_string();
-        let text = std::fs::read_to_string(&path).expect("read workflow");
+        let text = std::fs::read_to_string(&path)?;
         // A workflow that never installs anything has nothing to convert.
         if !text.contains("apt-get install") && !text.contains("system-deps") {
             continue;
@@ -87,7 +90,7 @@ fn hosted_workflows_installing_packages() -> Vec<String> {
         out.push(name);
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// A hosted job must not shell out to `apt-get install` on the common path.
@@ -96,10 +99,10 @@ fn hosted_workflows_installing_packages() -> Vec<String> {
 /// assertion is on the *absence of the fetch*, not on the presence of a
 /// guard: the guard was already there and was structurally unable to fire.
 #[test]
-fn no_hosted_workflow_installs_system_packages_from_the_archives() {
+fn no_hosted_workflow_installs_system_packages_from_the_archives() -> Result<(), TestError> {
     let mut offenders: Vec<String> = Vec::new();
-    for wf in hosted_workflows_installing_packages() {
-        let text = read(&format!(".github/workflows/{wf}"));
+    for wf in hosted_workflows_installing_packages()? {
+        let text = read(&format!(".github/workflows/{wf}"))?;
         for (i, line) in text.lines().enumerate() {
             // A comment that mentions the command is prose, not a fetch. Left
             // scanned-but-skipped rather than stripped, because the history of
@@ -121,6 +124,7 @@ fn no_hosted_workflow_installs_system_packages_from_the_archives() {
          libpcap-dev libasound2-dev\n\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// No local action interpolates an expression into a shell script body.
@@ -137,16 +141,16 @@ fn no_hosted_workflow_installs_system_packages_from_the_archives() {
 /// holds the pattern rather than the reachability argument, because the
 /// reachability argument is the part that changes without anyone noticing.
 #[test]
-fn no_local_action_interpolates_an_expression_into_a_shell_script() {
+fn no_local_action_interpolates_an_expression_into_a_shell_script() -> Result<(), TestError> {
     let dir = repo().join(".github/actions");
     if !dir.exists() {
-        return;
+        return Ok(());
     }
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
 
-    for entry in std::fs::read_dir(&dir).expect("read .github/actions") {
-        let action = entry.expect("dir entry").path().join("action.yml");
+    for entry in std::fs::read_dir(&dir)? {
+        let action = entry?.path().join("action.yml");
         if !action.exists() {
             continue;
         }
@@ -156,7 +160,7 @@ fn no_local_action_interpolates_an_expression_into_a_shell_script() {
             .unwrap_or(&action)
             .display()
             .to_string();
-        let text = std::fs::read_to_string(&action).expect("read action");
+        let text = std::fs::read_to_string(&action)?;
 
         // Walk the file tracking whether we are inside a `run: |` block. Only
         // those bodies execute; `env:`, `key:` and `if:` are evaluated by the
@@ -192,6 +196,7 @@ fn no_local_action_interpolates_an_expression_into_a_shell_script() {
          for p in $PACKAGES; do ...\n\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// The shared action must install from the cache without touching the network.
@@ -202,8 +207,8 @@ fn no_local_action_interpolates_an_expression_into_a_shell_script() {
 /// to use `dpkg -i` — which cannot reach a network — and the cold path is
 /// asserted to be bounded by a timeout.
 #[test]
-fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() {
-    let action = read(".github/actions/system-deps/action.yml");
+fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() -> Result<(), TestError> {
+    let action = read(".github/actions/system-deps/action.yml")?;
 
     assert!(
         action.contains("dpkg -i"),
@@ -222,6 +227,7 @@ fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() {
          by a timeout -- an unbounded apt-get is exactly what consumed 15 \
          minutes before being canceled:\n{action}"
     );
+    Ok(())
 }
 
 /// The image scanner's vulnerability DB must be cached, and must be able to
@@ -233,8 +239,8 @@ fn the_shared_action_installs_from_cache_and_bounds_the_cold_path() {
 /// without `restore-keys` a cold key on a day the mirror is down leaves the
 /// job in exactly the same position.
 #[test]
-fn the_image_scanner_caches_its_vulnerability_db_with_a_fallback() {
-    let docker = read(".github/workflows/docker.yml");
+fn the_image_scanner_caches_its_vulnerability_db_with_a_fallback() -> Result<(), TestError> {
+    let docker = read(".github/workflows/docker.yml")?;
 
     assert!(
         docker.contains("TRIVY_CACHE_DIR"),
@@ -253,6 +259,7 @@ fn the_image_scanner_caches_its_vulnerability_db_with_a_fallback() {
          down has no DB to fall back to and the job dies -- which is the exact \
          failure this cache exists to prevent"
     );
+    Ok(())
 }
 
 /// A scan that never ran must not be reported as a scan that failed.
@@ -263,14 +270,15 @@ fn the_image_scanner_caches_its_vulnerability_db_with_a_fallback() {
 /// FINDS something is the intent; uploading a file that was never created is
 /// not.
 #[test]
-fn the_sarif_upload_does_not_fail_when_the_scan_wrote_nothing() {
-    let docker = read(".github/workflows/docker.yml");
+fn the_sarif_upload_does_not_fail_when_the_scan_wrote_nothing() -> Result<(), TestError> {
+    let docker = read(".github/workflows/docker.yml")?;
     assert!(
         docker.contains("always() && hashFiles('trivy.sarif') != ''"),
         "the SARIF upload must be guarded on the report existing, or a scan \
          that died before writing one produces a second, misleading failure \
          that points at the upload rather than the download:\n{docker}"
     );
+    Ok(())
 }
 
 /// Every converted workflow must actually reference the shared action.
@@ -278,9 +286,9 @@ fn the_sarif_upload_does_not_fail_when_the_scan_wrote_nothing() {
 /// Deleting an apt step passes the first test as surely as converting it does.
 /// This asserts the dependency is still installed, by the intended route.
 #[test]
-fn converted_workflows_reference_the_shared_action() {
-    for wf in hosted_workflows_installing_packages() {
-        let text = read(&format!(".github/workflows/{wf}"));
+fn converted_workflows_reference_the_shared_action() -> Result<(), TestError> {
+    for wf in hosted_workflows_installing_packages()? {
+        let text = read(&format!(".github/workflows/{wf}"))?;
         assert!(
             text.contains("./.github/actions/system-deps"),
             "{wf} needs system packages but does not use \
@@ -289,6 +297,7 @@ fn converted_workflows_reference_the_shared_action() {
              carry"
         );
     }
+    Ok(())
 }
 
 // ── The release path ────────────────────────────────────────────────────────
@@ -311,22 +320,22 @@ fn converted_workflows_reference_the_shared_action() {
 /// Derived from the directory rather than listed, for the same reason
 /// `hosted_workflows_installing_packages` is: a third musl target gets these
 /// gates the day its Dockerfile lands, not the day someone remembers it.
-fn cross_dockerfiles() -> Vec<String> {
+fn cross_dockerfiles() -> Result<Vec<String>, TestError> {
     let dir = repo().join("docker/cross");
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read docker/cross") {
-        let path = entry.expect("dir entry").path();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .expect("file name")
+            .ok_or("file name")?
             .to_string();
         if name.starts_with("Dockerfile") {
             out.push(format!("docker/cross/{name}"));
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Join a Dockerfile's `\` continuations into one string per instruction.
@@ -388,8 +397,8 @@ fn is_annotation(line: &str) -> bool {
 /// instruction, so adding a fourth download without a pin fails here rather
 /// than appearing to inherit the previous one.
 #[test]
-fn every_download_in_the_cross_images_is_pinned_by_a_checksum() {
-    let files = cross_dockerfiles();
+fn every_download_in_the_cross_images_is_pinned_by_a_checksum() -> Result<(), TestError> {
+    let files = cross_dockerfiles()?;
     assert!(
         !files.is_empty(),
         "no cross Dockerfiles were scanned; this gate is checking nothing"
@@ -398,7 +407,7 @@ fn every_download_in_the_cross_images_is_pinned_by_a_checksum() {
     let mut pinned = 0usize;
 
     for f in &files {
-        let text = read(f);
+        let text = read(f)?;
         assert!(
             text.contains("sha256sum -c"),
             "{f} downloads pinned inputs but never verifies one; a checksum \
@@ -433,6 +442,7 @@ fn every_download_in_the_cross_images_is_pinned_by_a_checksum() {
          to be checksummed, found {pinned}; if a download was deleted rather \
          than pinned, the image builds against something else"
     );
+    Ok(())
 }
 
 /// A stalled mirror costs minutes, not the job's whole 45.
@@ -450,9 +460,9 @@ fn every_download_in_the_cross_images_is_pinned_by_a_checksum() {
 /// stayed green. These files document their own flags, so a whole-file search
 /// is satisfied by prose ABOUT a retry rather than by a retry.
 #[test]
-fn every_download_in_the_cross_images_is_bounded_and_retried() {
-    for f in &cross_dockerfiles() {
-        let text = read(f);
+fn every_download_in_the_cross_images_is_bounded_and_retried() -> Result<(), TestError> {
+    for f in &cross_dockerfiles()? {
+        let text = read(f)?;
         let mut wget_calls = 0usize;
         let mut apt_calls = 0usize;
 
@@ -466,7 +476,7 @@ fn every_download_in_the_cross_images_is_bounded_and_retried() {
             // a download it says nothing about.
             if line.contains("wget -") {
                 wget_calls += 1;
-                let w = line.find("wget -").expect("just matched");
+                let w = line.find("wget -").ok_or("just matched")?;
                 // `timeout` must precede wget to bound it. A `--timeout=`
                 // flag bounds one stalled read inside wget; it does not bound
                 // wget, and the fifteen-minute 0.5.118 hang was not an error.
@@ -518,6 +528,7 @@ fn every_download_in_the_cross_images_is_bounded_and_retried() {
              against something else"
         );
     }
+    Ok(())
 }
 
 /// A failed fetch must not be quoted as a failed build.
@@ -530,15 +541,15 @@ fn every_download_in_the_cross_images_is_bounded_and_retried() {
 ///
 /// Splitting them is the fix, and this is the gate that keeps them split.
 #[test]
-fn no_cross_image_instruction_mixes_a_download_with_a_build() {
+fn no_cross_image_instruction_mixes_a_download_with_a_build() -> Result<(), TestError> {
     // Commands that compile or link. If one of these shares an instruction
     // with a download, the log cannot say which half failed.
     const BUILD_COMMANDS: &[&str] = &["./configure", "make -j", "make install", "ar t "];
     let mut offenders = Vec::new();
     let mut scanned = 0usize;
 
-    for f in &cross_dockerfiles() {
-        let text = read(f);
+    for f in &cross_dockerfiles()? {
+        let text = read(f)?;
         for (line, instr) in dockerfile_instructions(&text) {
             if !instr.starts_with("RUN ") {
                 continue;
@@ -569,6 +580,7 @@ fn no_cross_image_instruction_mixes_a_download_with_a_build() {
          downloads in their own RUN.\n\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// Every package install in the release workflow is bounded by a timeout.
@@ -581,8 +593,8 @@ fn no_cross_image_instruction_mixes_a_download_with_a_build() {
 /// is not, and a release fetch failing is strictly worse than a CI fetch
 /// failing because the tag is already public by the time it happens.
 #[test]
-fn every_package_install_in_the_release_workflow_is_bounded() {
-    let text = read(".github/workflows/release.yml");
+fn every_package_install_in_the_release_workflow_is_bounded() -> Result<(), TestError> {
+    let text = read(".github/workflows/release.yml")?;
     assert!(
         text.contains("apt-get install"),
         "release.yml no longer installs anything; if the dependency was \
@@ -619,6 +631,7 @@ fn every_package_install_in_the_release_workflow_is_bounded() {
          apt-get -o Acquire::Retries=5 install -y <pkgs>\n\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// Every direct download in the release workflow retries and is checksummed.
@@ -628,8 +641,9 @@ fn every_package_install_in_the_release_workflow_is_bounded() {
 /// `github.com` here fails a gnu build, and every gnu artifact plus both
 /// packages ship from that job.
 #[test]
-fn every_direct_download_in_the_release_workflow_retries_and_is_checksummed() {
-    let text = read(".github/workflows/release.yml");
+fn every_direct_download_in_the_release_workflow_retries_and_is_checksummed()
+-> Result<(), TestError> {
+    let text = read(".github/workflows/release.yml")?;
     let mut curls = 0usize;
     let mut offenders = Vec::new();
     for (i, line) in text.lines().enumerate() {
@@ -656,4 +670,5 @@ fn every_direct_download_in_the_release_workflow_retries_and_is_checksummed() {
          an artifact built from bytes nobody checked is attested and \
          published all the same"
     );
+    Ok(())
 }

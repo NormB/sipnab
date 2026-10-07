@@ -14,6 +14,9 @@
 use sipnab::relay::rtpproxy::{info_statistics, query_statistics};
 use sipnab::stats_vocab::{StatisticTier, StatisticValue, lookup, relay_reported};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Exactly the bytes the harness rtpproxy sends after the cookie, on a relay
 /// that has seen one call.
 const INFO_REPLY: &str = "sessions created: 1\nactive sessions: 0\nactive streams: 2\npackets received: 9000\npackets transmitted: 9000\n";
@@ -23,7 +26,7 @@ const QUERY_REPLY: &str = "60 3381 3381 6762 0";
 
 /// The `I` reply parses into the relay's own labels, kept verbatim.
 #[test]
-fn an_info_reply_reads_into_the_relays_own_labels() {
+fn an_info_reply_reads_into_the_relays_own_labels() -> Result<(), TestError> {
     let pairs = info_statistics(INFO_REPLY);
     let tiered = relay_reported(&pairs);
     assert_eq!(
@@ -56,6 +59,7 @@ fn an_info_reply_reads_into_the_relays_own_labels() {
         lookup(&tiered, "active streams"),
         StatisticValue::Counted("2".to_string())
     );
+    Ok(())
 }
 
 /// A line that is not `label: value` is skipped, not guessed at.
@@ -65,7 +69,7 @@ fn an_info_reply_reads_into_the_relays_own_labels() {
 /// last two are why the parser filters empty sides -- `split_once(':')` alone
 /// admits `label:` as `(label, "")` and `: value` as `("", value)`, both junk.
 #[test]
-fn a_line_that_is_not_label_colon_value_is_skipped() {
+fn a_line_that_is_not_label_colon_value_is_skipped() -> Result<(), TestError> {
     let pairs = info_statistics(
         "sessions created: 1\nno colon here\ntrailing colon:\n: leading colon\nactive sessions: 0\n",
     );
@@ -85,12 +89,13 @@ fn a_line_that_is_not_label_colon_value_is_skipped() {
             .all(|(name, value)| !name.is_empty() && !value.is_empty()),
         "an empty label or value was kept: {pairs:?}"
     );
+    Ok(())
 }
 
 /// The five `Q` positional fields get the names ST-S2 established, in order.
 #[test]
-fn a_query_reply_names_its_five_positional_fields() {
-    let pairs = query_statistics(QUERY_REPLY).expect("a five-field Q reply parses");
+fn a_query_reply_names_its_five_positional_fields() -> Result<(), TestError> {
+    let pairs = query_statistics(QUERY_REPLY).ok_or("a five-field Q reply parses")?;
     assert_eq!(
         pairs,
         vec![
@@ -103,18 +108,20 @@ fn a_query_reply_names_its_five_positional_fields() {
         "the Q fields must be named in the binary's own order"
     );
     // The arithmetic ST-S2 corroborated: nrelayed == npkts_ina + npkts_ino.
-    let v = |n: &str| {
-        pairs
+    let v = |n: &str| -> Result<u64, TestError> {
+        Ok(pairs
             .iter()
             .find(|(name, _)| name == n)
-            .map(|(_, val)| val.parse::<u64>().unwrap())
-            .unwrap()
+            .ok_or_else(|| format!("no field named {n}"))?
+            .1
+            .parse::<u64>()?)
     };
     assert_eq!(
-        v("nrelayed"),
-        v("npkts_ina") + v("npkts_ino"),
+        v("nrelayed")?,
+        v("npkts_ina")? + v("npkts_ino")?,
         "the field labels are wrong if this identity does not hold"
     );
+    Ok(())
 }
 
 /// A `Q` reply that is not exactly five integer fields is REFUSED.
@@ -123,7 +130,7 @@ fn a_query_reply_names_its_five_positional_fields() {
 /// counter from whatever sat in the position -- the exact mistake the decoder
 /// refuses elsewhere.
 #[test]
-fn a_query_reply_of_the_wrong_arity_is_refused() {
+fn a_query_reply_of_the_wrong_arity_is_refused() -> Result<(), TestError> {
     assert_eq!(
         query_statistics("60 3381 3381"),
         None,
@@ -144,4 +151,5 @@ fn a_query_reply_of_the_wrong_arity_is_refused() {
         None,
         "a non-integer field means this is not a positional Q reply"
     );
+    Ok(())
 }

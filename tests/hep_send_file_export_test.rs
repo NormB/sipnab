@@ -40,6 +40,8 @@ use std::thread;
 
 include!("support/timeout.rs");
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The phrase the file-export announcement must carry. Anchored on the exact
 /// wording rather than a loose keyword: "file" and "HEP" both appear in
 /// unrelated startup lines, and a substring match on those would let this test
@@ -52,10 +54,10 @@ const NOTICE_ANCHOR: &str = "capture FILE";
 const SENDER_ANCHOR: &str = "HEP sender targeting";
 
 /// Bind a loopback collector socket and return it with the port it got.
-fn bound_collector() -> (UdpSocket, u16) {
-    let sock = UdpSocket::bind(("127.0.0.1", 0)).expect("bind loopback collector");
-    let port = sock.local_addr().expect("collector local addr").port();
-    (sock, port)
+fn bound_collector() -> Result<(UdpSocket, u16), TestError> {
+    let sock = UdpSocket::bind(("127.0.0.1", 0))?;
+    let port = sock.local_addr()?.port();
+    Ok((sock, port))
 }
 
 /// The fixture capture forwarded by these tests.
@@ -87,7 +89,7 @@ struct ExportRun {
 /// Run `sipnab -N -I <fixture> --hep-send 127.0.0.1:<port>` against a
 /// collector this test owns, draining both the socket and stderr while it
 /// runs, and return what was observed.
-fn run_export(collector: UdpSocket, port: u16) -> ExportRun {
+fn run_export(collector: UdpSocket, port: u16) -> Result<ExportRun, TestError> {
     run_export_at_log_level(collector, port, "warn")
 }
 
@@ -97,15 +99,17 @@ fn run_export(collector: UdpSocket, port: u16) -> ExportRun {
 /// announcement against is an `info` line. Everything else runs at `warn`, so
 /// that the assertions on announcement *content* keep matching against a
 /// stderr that holds essentially nothing else.
-fn run_export_at_log_level(collector: UdpSocket, port: u16, level: &str) -> ExportRun {
+fn run_export_at_log_level(
+    collector: UdpSocket,
+    port: u16,
+    level: &str,
+) -> Result<ExportRun, TestError> {
     let target = format!("127.0.0.1:{port}");
     let pcap = fixture_capture();
 
     // Drain the collector on its own thread: the run must not block on a full
     // socket buffer.
-    collector
-        .set_read_timeout(Some(test_timeout(5)))
-        .expect("collector read timeout");
+    collector.set_read_timeout(Some(test_timeout(5)))?;
     let (count_tx, count_rx) = mpsc::channel();
     let collector_thread = thread::spawn(move || {
         let mut buf = [0u8; 65535];
@@ -126,12 +130,11 @@ fn run_export_at_log_level(collector: UdpSocket, port: u16, level: &str) -> Expo
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --hep-send");
+        .spawn()?;
 
     // Read stderr line by line and keep the sequence: the order in which the
     // run wrote these lines is itself an assertion below.
-    let err_pipe = child.stderr.take().expect("stderr pipe");
+    let err_pipe = child.stderr.take().ok_or("stderr pipe")?;
     let err_thread = thread::spawn(move || {
         BufReader::new(err_pipe)
             .lines()
@@ -139,42 +142,35 @@ fn run_export_at_log_level(collector: UdpSocket, port: u16, level: &str) -> Expo
             .collect::<Vec<String>>()
     });
 
-    let status = child.wait().expect("wait for sipnab");
-    let stderr_lines = err_thread.join().expect("join stderr reader");
-    let (datagrams, bytes, hep3) = count_rx
-        .recv_timeout(test_timeout(20))
-        .expect("collector thread must report a count");
-    collector_thread.join().expect("join collector thread");
+    let status = child.wait()?;
+    let stderr_lines = err_thread.join().map_err(|_| "a thread panicked")?;
+    let (datagrams, bytes, hep3) = count_rx.recv_timeout(test_timeout(20))?;
+    collector_thread.join().map_err(|_| "a thread panicked")?;
 
-    ExportRun {
+    Ok(ExportRun {
         datagrams,
         bytes,
         hep3,
         stderr: stderr_lines.join("\n"),
         stderr_lines,
         code: status.code(),
-    }
+    })
 }
 
 /// The collector really can see a datagram sent to it by the same route
 /// `--hep-send` uses. Without this control, every count assertion in this file
 /// could be passing because the socket observes nothing at all.
 #[test]
-fn harness_observes_a_transmit_when_one_happens() {
-    let (sock, port) = bound_collector();
-    sock.set_read_timeout(Some(test_timeout(5)))
-        .expect("read timeout");
-    let sender = UdpSocket::bind(("127.0.0.1", 0)).expect("bind control sender");
-    sender
-        .send_to(b"HEP3\x00\x06", ("127.0.0.1", port))
-        .expect("send control datagram");
+fn harness_observes_a_transmit_when_one_happens() -> Result<(), TestError> {
+    let (sock, port) = bound_collector()?;
+    sock.set_read_timeout(Some(test_timeout(5)))?;
+    let sender = UdpSocket::bind(("127.0.0.1", 0))?;
+    sender.send_to(b"HEP3\x00\x06", ("127.0.0.1", port))?;
 
     let mut buf = [0u8; 65535];
-    let (n, _from) = sock.recv_from(&mut buf).expect(
-        "the control datagram must arrive — otherwise this harness cannot \
-         observe a HEP export at all",
-    );
+    let (n, _from) = sock.recv_from(&mut buf)?;
     assert_eq!(n, 6, "control datagram truncated");
+    Ok(())
 }
 
 /// A file source plus `--hep-send` must announce that the capture's contents
@@ -184,9 +180,9 @@ fn harness_observes_a_transmit_when_one_happens() {
 /// describes the socket, not the consequence, and an engineer pointing a HEP
 /// pipeline at a customer capture reads right past it.
 #[test]
-fn hep_send_on_a_file_source_announces_what_leaves_the_machine() {
-    let (sock, port) = bound_collector();
-    let run = run_export(sock, port);
+fn hep_send_on_a_file_source_announces_what_leaves_the_machine() -> Result<(), TestError> {
+    let (sock, port) = bound_collector()?;
+    let run = run_export(sock, port)?;
 
     assert!(
         run.stderr.contains(NOTICE_ANCHOR),
@@ -212,6 +208,7 @@ fn hep_send_on_a_file_source_announces_what_leaves_the_machine() {
          stderr said:\n{}",
         run.stderr
     );
+    Ok(())
 }
 
 /// The operator gets the announcement *before* anything can transmit.
@@ -234,34 +231,34 @@ fn hep_send_on_a_file_source_announces_what_leaves_the_machine() {
 /// real happens-before — `plan()` emits the announcement and must return before
 /// `batch` can build a sender at all.
 #[test]
-fn the_announcement_precedes_anything_that_could_transmit() {
-    let (sock, port) = bound_collector();
-    let run = run_export_at_log_level(sock, port, "info");
+fn the_announcement_precedes_anything_that_could_transmit() -> Result<(), TestError> {
+    let (sock, port) = bound_collector()?;
+    let run = run_export_at_log_level(sock, port, "info")?;
 
     let announced = run
         .stderr_lines
         .iter()
         .position(|l| l.contains(NOTICE_ANCHOR))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "no file-export announcement was seen on stderr at all; \
                  stderr said:\n{}",
                 run.stderr
             )
-        });
+        })?;
     let sender_built = run
         .stderr_lines
         .iter()
         .position(|l| l.contains(SENDER_ANCHOR))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "no `{SENDER_ANCHOR}` line was seen, so this test has lost the \
                  landmark it orders the announcement against. Restore that line \
                  or re-anchor this test on whatever now reports the sender \
                  coming up; stderr said:\n{}",
                 run.stderr
             )
-        });
+        })?;
 
     assert!(
         announced < sender_built,
@@ -279,29 +276,31 @@ fn the_announcement_precedes_anything_that_could_transmit() {
          export that never happened; stderr said:\n{}",
         run.stderr
     );
+    Ok(())
 }
 
 /// Every `.rs` file under `src/`, concatenated, for the source-shape guard
 /// below.
-fn crate_sources() -> String {
-    fn walk(dir: &std::path::Path, out: &mut String) {
-        let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}"));
+fn crate_sources() -> Result<String, TestError> {
+    fn walk(dir: &std::path::Path, out: &mut String) -> Result<(), TestError> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("read {dir:?}: {e}"))?;
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                walk(&path, out);
+                walk(&path, out)?;
             } else if path.extension().is_some_and(|e| e == "rs") {
                 out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
                 out.push('\n');
             }
         }
+        Ok(())
     }
     let mut out = String::new();
     walk(
         &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut out,
-    );
-    out
+    )?;
+    Ok(out)
 }
 
 /// What stops a recorded address becoming an export target is the *absence* of
@@ -319,8 +318,9 @@ fn crate_sources() -> String {
 /// Verified as source shape rather than behavior because there is no runtime
 /// signal for a conversion nobody wrote yet.
 #[test]
-fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {
-    let src = crate_sources();
+fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit()
+-> Result<(), TestError> {
+    let src = crate_sources()?;
 
     // Any conversion trait implemented FOR either type hands out an instance
     // without going through the operator's flag. The scan is line based
@@ -372,12 +372,12 @@ fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {
     let header = "pub struct OperatorDestination {";
     let fields_start = src
         .find(header)
-        .expect("the OperatorDestination declaration must exist")
+        .ok_or("the OperatorDestination declaration must exist")?
         + header.len();
     let fields = &src[fields_start..];
     let fields_end = fields
         .find("\n}\n")
-        .expect("the OperatorDestination declaration must terminate");
+        .ok_or("the OperatorDestination declaration must terminate")?;
     assert!(
         !fields[..fields_end].contains("pub "),
         "OperatorDestination must keep private fields, or a struct literal \
@@ -387,11 +387,11 @@ fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {
     // And nothing capture-derived may reach the destination's constructors.
     let block_start = src
         .find("impl OperatorDestination {")
-        .expect("the OperatorDestination impl block must exist");
+        .ok_or("the OperatorDestination impl block must exist")?;
     let block = &src[block_start..];
     let block_end = block
         .find("\n}\n")
-        .expect("the OperatorDestination impl block must terminate");
+        .ok_or("the OperatorDestination impl block must terminate")?;
     let block = &block[..block_end];
     for capture_derived in ["IpAddr", "SocketAddr", "SipMessage", "HepPacket", "Packet"] {
         assert!(
@@ -401,6 +401,7 @@ fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {
              something the capture supplied."
         );
     }
+    Ok(())
 }
 
 /// The export still works. `--hep-send` names a collector the operator chose,
@@ -408,9 +409,9 @@ fn nothing_can_convert_an_address_or_the_other_permit_into_an_export_permit() {
 /// break replaying an archived capture into a Homer instance, which is the
 /// workflow the flag exists for.
 #[test]
-fn hep_send_on_a_file_source_still_forwards_the_capture() {
-    let (sock, port) = bound_collector();
-    let run = run_export(sock, port);
+fn hep_send_on_a_file_source_still_forwards_the_capture() -> Result<(), TestError> {
+    let (sock, port) = bound_collector()?;
+    let run = run_export(sock, port)?;
 
     assert_eq!(run.code, Some(0), "the run itself must still succeed");
     assert!(
@@ -424,4 +425,5 @@ fn hep_send_on_a_file_source_still_forwards_the_capture() {
         "every forwarded datagram must be HEP3 ({} of {} were, {} bytes total)",
         run.hep3, run.datagrams, run.bytes
     );
+    Ok(())
 }

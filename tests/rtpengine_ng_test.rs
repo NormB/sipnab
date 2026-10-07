@@ -42,6 +42,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The relay Call-ID the control plane assigned, from the capture itself.
 const CALL_ID: &str = "km-670bd208@sipnab";
 /// The relay's own allocated ports, one per leg. Only the address changed in
@@ -62,43 +65,41 @@ fn fixture() -> String {
 /// Both, because the two carry different halves of the answer: the report
 /// itself goes to stdout, and the run's summary line — which is what says
 /// whether any SIP was seen — goes to stderr.
-fn run(extra: &[&str]) -> (String, String) {
+fn run(extra: &[&str]) -> Result<(String, String), TestError> {
     let mut args = vec!["-N", "-I", &*Box::leak(fixture().into_boxed_str())];
     args.extend_from_slice(extra);
     args.push("--no-cli-print");
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(&args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab exited {:?}; stderr:\n{}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    (
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
-fn report(extra: &[&str]) -> String {
+fn report(extra: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["-N", "-I", &*Box::leak(fixture().into_boxed_str())];
     args.extend_from_slice(extra);
     args.push("--no-cli-print");
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(&args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab exited {:?}; stderr:\n{}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The guard that keeps every other assertion in this file meaningful.
@@ -107,8 +108,8 @@ fn report(extra: &[&str]) -> String {
 /// and this suite would prove nothing about the `ng` decoder while still
 /// passing. Anti-vacuity, checked first.
 #[test]
-fn the_fixture_contains_no_sip_at_all() {
-    let (stdout, stderr) = run(&["--report"]);
+fn the_fixture_contains_no_sip_at_all() -> Result<(), TestError> {
+    let (stdout, stderr) = run(&["--report"])?;
     assert!(
         stderr.contains("No SIP signaling found"),
         "fixture must hold ZERO SIP messages, or the attribution below proves \
@@ -120,13 +121,14 @@ fn the_fixture_contains_no_sip_at_all() {
         !stdout.contains("BYE") && !stdout.contains("INVITE"),
         "no SIP method may appear in the report:\n{stdout}"
     );
+    Ok(())
 }
 
 /// RE1's acceptance, end to end: streams that are orphans without the control
 /// plane resolve to the Call-ID the proxy assigned.
 #[test]
-fn relay_media_is_attributed_to_the_call_the_control_plane_named() {
-    let out = report(&["--report"]);
+fn relay_media_is_attributed_to_the_call_the_control_plane_named() -> Result<(), TestError> {
+    let out = report(&["--report"])?;
     assert!(
         out.contains(CALL_ID),
         "the report must NAME the call the relay assigned; got:\n{out}"
@@ -136,6 +138,7 @@ fn relay_media_is_attributed_to_the_call_the_control_plane_named() {
         "no stream may remain orphaned once the control plane named them; \
          got:\n{out}"
     );
+    Ok(())
 }
 
 /// The four sockets of BOTH legs, under one Call-ID.
@@ -145,8 +148,8 @@ fn relay_media_is_attributed_to_the_call_the_control_plane_named() {
 /// and an implementation that attributed only the pair it saw in one SDP body
 /// would pass a weaker test than this.
 #[test]
-fn all_four_sockets_of_both_legs_resolve_to_one_call() {
-    let out = report(&["--report"]);
+fn all_four_sockets_of_both_legs_resolve_to_one_call() -> Result<(), TestError> {
+    let out = report(&["--report"])?;
     for socket in RELAY_PORTS.iter().chain(PARTY_PORTS.iter()) {
         assert!(
             out.contains(socket),
@@ -167,6 +170,7 @@ fn all_four_sockets_of_both_legs_resolve_to_one_call() {
         "all four streams must be counted against the call; row was {:?}",
         relay_named[0]
     );
+    Ok(())
 }
 
 /// The codec comes from the control plane too.
@@ -175,12 +179,13 @@ fn all_four_sockets_of_both_legs_resolve_to_one_call() {
 /// `PCMU` here is evidence the SDP body was parsed and applied, not merely
 /// that a Call-ID string was copied across.
 #[test]
-fn the_control_plane_sdp_supplies_the_codec() {
-    let out = report(&["--report"]);
+fn the_control_plane_sdp_supplies_the_codec() -> Result<(), TestError> {
+    let out = report(&["--report"])?;
     assert!(
         out.contains("PCMU"),
         "the rtpmap from the ng SDP must reach the stream:\n{out}"
     );
+    Ok(())
 }
 
 /// A dialog the run DROPPED is not a call a relay named.
@@ -195,7 +200,7 @@ fn the_control_plane_sdp_supplies_the_codec() {
 /// This capture contains no HEP and no rtpengine control plane at all, so the
 /// section must be absent however many dialogs get dropped.
 #[test]
-fn a_dialog_dropped_by_limit_is_not_reported_as_relay_named() {
+fn a_dialog_dropped_by_limit_is_not_reported_as_relay_named() -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
@@ -207,13 +212,13 @@ fn a_dialog_dropped_by_limit_is_not_reported_as_relay_named() {
             "--no-cli-print",
         ])
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("named by a media relay"),
         "an evicted dialog is not a relay-named call; report was:\n{stdout}"
     );
+    Ok(())
 }
 
 /// The same media, with and without the control plane.
@@ -228,7 +233,7 @@ fn a_dialog_dropped_by_limit_is_not_reported_as_relay_named() {
 /// consistent with sipnab having attributed them for some entirely unrelated
 /// reason, and the suite would never notice.
 #[test]
-fn stripping_the_control_plane_returns_every_stream_to_orphan() {
+fn stripping_the_control_plane_returns_every_stream_to_orphan() -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",
@@ -238,8 +243,7 @@ fn stripping_the_control_plane_returns_every_stream_to_orphan() {
             "--no-cli-print",
         ])
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
@@ -262,6 +266,7 @@ fn stripping_the_control_plane_returns_every_stream_to_orphan() {
             "socket {socket} must still be in the capture:\n{stdout}"
         );
     }
+    Ok(())
 }
 
 // ── RE-T: the pair, not just the relay ──────────────────────────────────────
@@ -294,7 +299,7 @@ fn stripping_the_control_plane_returns_every_stream_to_orphan() {
 /// The call's Call-ID, recoverable on a host with no SIP in it.
 const OPENSIPS_CALL_ID: &str = "1-4062@198.51.100.21";
 
-fn relay_report(fixture: &str) -> String {
+fn relay_report(fixture: &str) -> Result<String, TestError> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(fixture);
@@ -307,21 +312,20 @@ fn relay_report(fixture: &str) -> String {
             "--no-cli-print",
         ])
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab exited {:?}",
         out.status.code()
     );
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// RE-T: a call OpenSIPS named is recoverable on the relay, from the relay's
 /// own control plane, with no SIP anywhere in the capture.
 #[test]
-fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
-    let out = relay_report("rtpengine-opensips-ng.pcap");
+fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() -> Result<(), TestError> {
+    let out = relay_report("rtpengine-opensips-ng.pcap")?;
     assert!(
         out.contains(OPENSIPS_CALL_ID),
         "the proxy's Call-ID must survive the trip to the relay:\n{out}"
@@ -339,12 +343,13 @@ fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
     let row = out
         .lines()
         .find(|l| l.starts_with(OPENSIPS_CALL_ID))
-        .unwrap_or_else(|| panic!("no relay-named row for the call:\n{out}"));
+        .ok_or_else(|| format!("no relay-named row for the call:\n{out}"))?;
     assert_eq!(
         row.split_whitespace().last(),
         Some("2"),
         "both legs must count against the call; row was {row:?}"
     );
+    Ok(())
 }
 
 /// The control case, from the SAME capture with only the control plane removed.
@@ -353,8 +358,8 @@ fn an_opensips_call_is_named_on_a_relay_that_captured_no_sip() {
 /// identical media, identical sockets, and without the four control-plane
 /// packets every stream is an unattributable orphan again.
 #[test]
-fn the_same_relay_capture_orphans_without_the_control_plane() {
-    let out = relay_report("rtpengine-opensips-media-only.pcap");
+fn the_same_relay_capture_orphans_without_the_control_plane() -> Result<(), TestError> {
+    let out = relay_report("rtpengine-opensips-media-only.pcap")?;
     assert!(
         out.contains("Orphaned Streams"),
         "with no control plane the relay's media is unattributable:\n{out}"
@@ -363,4 +368,5 @@ fn the_same_relay_capture_orphans_without_the_control_plane() {
         !out.contains(OPENSIPS_CALL_ID),
         "nothing may name the call once the control plane is gone:\n{out}"
     );
+    Ok(())
 }

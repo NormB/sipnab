@@ -40,6 +40,8 @@ use sipnab::capture::hep::{
 use sipnab::net::TransportProto;
 use std::net::IpAddr;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The shared secret every signed datagram here is built and checked under.
 const KEY: &[u8] = b"val9-shared-hmac-key";
 /// A fixed token timestamp, so the acceptance window is never the reason a
@@ -68,25 +70,26 @@ const CHUNK_CORRELATION_ID: u16 = 0x0011;
 /// chunks stay repeatable and that the MAC still covers them.
 const CHUNK_UNKNOWN: u16 = 0x7fff;
 
-fn ip(s: &str) -> IpAddr {
-    s.parse().expect("test address literal")
+fn ip(s: &str) -> Result<IpAddr, TestError> {
+    s.parse()
+        .map_err(|e| format!("test address literal {s:?}: {e}").into())
 }
 
-fn endpoint() -> HepEndpoint {
-    HepEndpoint {
-        src_addr: ip(HONEST_SRC),
-        dst_addr: ip(HONEST_DST),
+fn endpoint() -> Result<HepEndpoint, TestError> {
+    Ok(HepEndpoint {
+        src_addr: ip(HONEST_SRC)?,
+        dst_addr: ip(HONEST_DST)?,
         src_port: 5060,
         dst_port: 5060,
         transport: TransportProto::Udp,
-    }
+    })
 }
 
 /// A datagram signed by the production sender, asserting [`HONEST_SRC`] →
 /// [`HONEST_DST`].
-fn signed(payload: &[u8], nonce_byte: u8) -> Vec<u8> {
-    build_hep_v3_hmac(
-        &endpoint(),
+fn signed(payload: &[u8], nonce_byte: u8) -> Result<Vec<u8>, TestError> {
+    Ok(build_hep_v3_hmac(
+        &endpoint()?,
         chrono::Utc::now(),
         HepProtocol::Sip,
         1,
@@ -96,7 +99,7 @@ fn signed(payload: &[u8], nonce_byte: u8) -> Vec<u8> {
             nonce: &[nonce_byte; 16],
         },
         payload,
-    )
+    ))
 }
 
 /// Append one chunk to a finished HEP v3 datagram and fix up the total-length
@@ -112,11 +115,11 @@ fn append_chunk(pkt: &mut Vec<u8>, chunk_type: u16, data: &[u8]) {
 }
 
 /// The `0x000e` chunk's data span in a datagram, as the receiver derives it.
-fn auth_span(pkt: &[u8]) -> (usize, usize) {
-    parse_hep(pkt)
-        .expect("datagram must parse for its span to be read")
+fn auth_span(pkt: &[u8]) -> Result<(usize, usize), TestError> {
+    Ok(parse_hep(pkt)
+        .map_err(|e| format!("datagram must parse for its span to be read: {e}"))?
         .auth_span
-        .expect("a signed datagram carries an auth chunk")
+        .ok_or("a signed datagram carries an auth chunk")?)
 }
 
 /// Run the receiver's verification exactly as the listener does.
@@ -141,21 +144,28 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
 /// arrival proof for the rest — it establishes that a datagram built this way
 /// reaches the verifier and is understood.
 #[test]
-fn an_unmodified_signed_datagram_is_accepted_and_records_the_addresses_it_signed() {
-    let pkt = signed(b"REGISTER sip:example.com SIP/2.0\r\n", 0x11);
-    let parsed = parse_hep(&pkt).expect("a datagram the sender built must parse");
-    assert_eq!(parsed.src_addr, ip(HONEST_SRC), "records the signed source");
+fn an_unmodified_signed_datagram_is_accepted_and_records_the_addresses_it_signed()
+-> Result<(), TestError> {
+    let pkt = signed(b"REGISTER sip:example.com SIP/2.0\r\n", 0x11)?;
+    let parsed =
+        parse_hep(&pkt).map_err(|e| format!("a datagram the sender built must parse: {e}"))?;
+    assert_eq!(
+        parsed.src_addr,
+        ip(HONEST_SRC)?,
+        "records the signed source"
+    );
     assert_eq!(
         parsed.dst_addr,
-        ip(HONEST_DST),
+        ip(HONEST_DST)?,
         "records the signed destination"
     );
     assert_eq!(parsed.src_port, 5060);
     assert_eq!(
-        verify(&pkt, auth_span(&pkt)),
+        verify(&pkt, auth_span(&pkt)?),
         Ok(()),
         "an untouched signed datagram must still authenticate"
     );
+    Ok(())
 }
 
 // ── VAL9's core: appended chunks ─────────────────────────────────────
@@ -169,11 +179,11 @@ fn an_unmodified_signed_datagram_is_accepted_and_records_the_addresses_it_signed
 /// bytes are present and that the unappended original is accepted; a crafted
 /// packet that never arrived would pass a rejection test for the wrong reason.
 #[test]
-fn appended_address_chunks_after_signing_are_refused() {
+fn appended_address_chunks_after_signing_are_refused() -> Result<(), TestError> {
     let payload = b"INVITE sip:victim@example.com SIP/2.0\r\n";
-    let original = signed(payload, 0x21);
+    let original = signed(payload, 0x21)?;
     assert_eq!(
-        verify(&original, auth_span(&original)),
+        verify(&original, auth_span(&original)?),
         Ok(()),
         "premise: the packet being attacked is one that verifies"
     );
@@ -210,6 +220,7 @@ fn appended_address_chunks_after_signing_are_refused() {
         "a repeated address chunk must be refused, not taken last-wins; \
          parse said: {err:?}"
     );
+    Ok(())
 }
 
 /// A chunk the parser tolerates repeating — an unknown type — still breaks
@@ -220,17 +231,18 @@ fn appended_address_chunks_after_signing_are_refused() {
 /// proves the signature genuinely covers bytes appended after signing rather
 /// than the parser merely happening to notice this one shape.
 #[test]
-fn an_appended_chunk_the_parser_tolerates_still_breaks_the_signature() {
-    let original = signed(b"OPTIONS sip:probe SIP/2.0\r\n", 0x22);
-    let span = auth_span(&original);
+fn an_appended_chunk_the_parser_tolerates_still_breaks_the_signature() -> Result<(), TestError> {
+    let original = signed(b"OPTIONS sip:probe SIP/2.0\r\n", 0x22)?;
+    let span = auth_span(&original)?;
     assert_eq!(verify(&original, span), Ok(()), "premise: it verified");
 
     let mut forged = original.clone();
     append_chunk(&mut forged, CHUNK_UNKNOWN, b"appended-after-signing");
-    let parsed = parse_hep(&forged).expect("an unknown chunk is still parsed, by design");
+    let parsed = parse_hep(&forged)
+        .map_err(|e| format!("an unknown chunk is still parsed, by design: {e}"))?;
     assert_eq!(
         parsed.src_addr,
-        ip(HONEST_SRC),
+        ip(HONEST_SRC)?,
         "premise: the forgery is well formed and reaches the verifier"
     );
     assert_eq!(
@@ -238,6 +250,7 @@ fn an_appended_chunk_the_parser_tolerates_still_breaks_the_signature() {
         Err(HmacAuthError::BadMac),
         "bytes appended after signing must break the MAC"
     );
+    Ok(())
 }
 
 /// Address chunks MODIFIED IN PLACE — same length, same offsets, no repeat —
@@ -248,15 +261,16 @@ fn an_appended_chunk_the_parser_tolerates_still_breaks_the_signature() {
 /// the attacker's addresses, so the MAC is the only thing standing between a
 /// forged packet and a recorded one.
 #[test]
-fn address_chunks_modified_in_place_are_refused() {
-    let original = signed(b"INVITE sip:x SIP/2.0\r\n", 0x31);
-    let span = auth_span(&original);
+fn address_chunks_modified_in_place_are_refused() -> Result<(), TestError> {
+    let original = signed(b"INVITE sip:x SIP/2.0\r\n", 0x31)?;
+    let span = auth_span(&original)?;
     assert_eq!(verify(&original, span), Ok(()), "premise: it verified");
 
     let mut forged = original.clone();
-    let src_at = find(&forged, &[10, 0, 0, 1]).expect("the signed source is in the datagram");
+    let src_at = find(&forged, &[10, 0, 0, 1]).ok_or("the signed source is in the datagram")?;
     forged[src_at..src_at + 4].copy_from_slice(&[203, 0, 113, 9]);
-    let dst_at = find(&forged, &[10, 0, 0, 2]).expect("the signed destination is in the datagram");
+    let dst_at =
+        find(&forged, &[10, 0, 0, 2]).ok_or("the signed destination is in the datagram")?;
     forged[dst_at..dst_at + 4].copy_from_slice(&[198, 51, 100, 7]);
 
     assert_eq!(
@@ -265,19 +279,21 @@ fn address_chunks_modified_in_place_are_refused() {
         "premise: an in-place edit, so every offset — the token's included — \
          is exactly where it was"
     );
-    let parsed = parse_hep(&forged).expect("structurally still a valid datagram");
+    let parsed =
+        parse_hep(&forged).map_err(|e| format!("structurally still a valid datagram: {e}"))?;
     assert_eq!(
         parsed.src_addr,
-        ip(FORGED_SRC),
+        ip(FORGED_SRC)?,
         "premise: the parser has no way to see this and reports the \
          attacker's source — the MAC is the only guard"
     );
-    assert_eq!(parsed.dst_addr, ip(FORGED_DST));
+    assert_eq!(parsed.dst_addr, ip(FORGED_DST)?);
     assert_eq!(
         verify(&forged, span),
         Err(HmacAuthError::BadMac),
         "an address chunk changed in place must break the MAC"
     );
+    Ok(())
 }
 
 /// Every other field that steers attribution is inside the signature too:
@@ -287,7 +303,7 @@ fn address_chunks_modified_in_place_are_refused() {
 /// is that the signed region is the whole datagram rather than a hand-picked
 /// list of fields somebody has to remember to extend.
 #[test]
-fn ports_and_correlation_id_are_inside_the_signature_as_well() {
+fn ports_and_correlation_id_are_inside_the_signature_as_well() -> Result<(), TestError> {
     for (label, needle, replacement) in [
         ("source port", 5060u16.to_be_bytes(), 31337u16.to_be_bytes()),
         (
@@ -296,10 +312,10 @@ fn ports_and_correlation_id_are_inside_the_signature_as_well() {
             5061u16.to_be_bytes(),
         ),
     ] {
-        let original = signed(b"BYE sip:x SIP/2.0\r\n", 0x41);
-        let span = auth_span(&original);
+        let original = signed(b"BYE sip:x SIP/2.0\r\n", 0x41)?;
+        let span = auth_span(&original)?;
         let mut forged = original.clone();
-        let at = find(&forged, &needle).unwrap_or_else(|| panic!("{label} is in the datagram"));
+        let at = find(&forged, &needle).ok_or_else(|| format!("{label} is in the datagram"))?;
         forged[at..at + 2].copy_from_slice(&replacement);
         assert_eq!(
             verify(&forged, span),
@@ -311,8 +327,8 @@ fn ports_and_correlation_id_are_inside_the_signature_as_well() {
     // The correlation id is not emitted by this builder, so append one and
     // watch the signature refuse it: an attacker adding the field that names
     // the call is the same class of forgery as one changing an address.
-    let original = signed(b"BYE sip:x SIP/2.0\r\n", 0x42);
-    let span = auth_span(&original);
+    let original = signed(b"BYE sip:x SIP/2.0\r\n", 0x42)?;
+    let span = auth_span(&original)?;
     let mut forged = original.clone();
     append_chunk(
         &mut forged,
@@ -321,7 +337,7 @@ fn ports_and_correlation_id_are_inside_the_signature_as_well() {
     );
     assert_eq!(
         parse_hep(&forged)
-            .expect("premise: still parses")
+            .map_err(|e| format!("premise: still parses: {e}"))?
             .correlation_id
             .as_deref(),
         Some("attacker-chosen-call-id"),
@@ -332,6 +348,7 @@ fn ports_and_correlation_id_are_inside_the_signature_as_well() {
         Err(HmacAuthError::BadMac),
         "an appended correlation id must break the MAC"
     );
+    Ok(())
 }
 
 // ── Duplicate chunks, independent of any auth mode ───────────────────
@@ -345,7 +362,7 @@ fn ports_and_correlation_id_are_inside_the_signature_as_well() {
 /// `SRC_IPV4` followed by `SRC_IPV6` is two claims about the source, not two
 /// fields.
 #[test]
-fn duplicate_chunks_are_refused_rather_than_last_wins() {
+fn duplicate_chunks_are_refused_rather_than_last_wins() -> Result<(), TestError> {
     // The unduplicated baseline: proves the builder below emits a datagram
     // the parser accepts, so every rejection under it is about the repeat.
     let base = hep3(&[
@@ -356,8 +373,9 @@ fn duplicate_chunks_are_refused_rather_than_last_wins() {
         (CHUNK_AUTH_KEY, vec![0u8; HMAC_TOKEN_LEN]),
         (CHUNK_PAYLOAD, b"OPTIONS sip:x SIP/2.0\r\n".to_vec()),
     ]);
-    let parsed = parse_hep(&base).expect("premise: the baseline datagram parses");
-    assert_eq!(parsed.src_addr, ip(HONEST_SRC));
+    let parsed =
+        parse_hep(&base).map_err(|e| format!("premise: the baseline datagram parses: {e}"))?;
+    assert_eq!(parsed.src_addr, ip(HONEST_SRC)?);
     assert_eq!(parsed.src_port, 5060);
 
     let cases: [(&str, (u16, Vec<u8>)); 7] = [
@@ -397,6 +415,7 @@ fn duplicate_chunks_are_refused_rather_than_last_wins() {
             parsed.as_ref().ok().map(|p| p.src_port),
         );
     }
+    Ok(())
 }
 
 /// Unknown chunk types may still repeat.
@@ -406,7 +425,7 @@ fn duplicate_chunks_are_refused_rather_than_last_wins() {
 /// because nothing reads it. Refusing those would break senders that are not
 /// attacking anything.
 #[test]
-fn an_unknown_chunk_type_may_still_repeat() {
+fn an_unknown_chunk_type_may_still_repeat() -> Result<(), TestError> {
     let mut pkt = hep3(&[
         (CHUNK_SRC_IPV4, vec![10, 0, 0, 1]),
         (CHUNK_DST_IPV4, vec![10, 0, 0, 2]),
@@ -414,8 +433,10 @@ fn an_unknown_chunk_type_may_still_repeat() {
     ]);
     append_chunk(&mut pkt, CHUNK_UNKNOWN, b"one");
     append_chunk(&mut pkt, CHUNK_UNKNOWN, b"two");
-    let parsed = parse_hep(&pkt).expect("repeated unknown chunks must stay acceptable");
-    assert_eq!(parsed.src_addr, ip(HONEST_SRC));
+    let parsed = parse_hep(&pkt)
+        .map_err(|e| format!("repeated unknown chunks must stay acceptable: {e}"))?;
+    assert_eq!(parsed.src_addr, ip(HONEST_SRC)?);
+    Ok(())
 }
 
 // ── The version decision ─────────────────────────────────────────────
@@ -428,9 +449,10 @@ fn an_unknown_chunk_type_may_still_repeat() {
 /// other encoding would look fixed and still be forgeable. Exactly one value
 /// verifies, and it is the current one.
 #[test]
-fn only_the_current_token_version_is_accepted_and_version_one_is_refused_by_name() {
-    let pkt = signed(b"REGISTER sip:x SIP/2.0\r\n", 0x51);
-    let (start, end) = auth_span(&pkt);
+fn only_the_current_token_version_is_accepted_and_version_one_is_refused_by_name()
+-> Result<(), TestError> {
+    let pkt = signed(b"REGISTER sip:x SIP/2.0\r\n", 0x51)?;
+    let (start, end) = auth_span(&pkt)?;
     assert_eq!(
         pkt[start], HMAC_TOKEN_VERSION,
         "premise: the sender stamps the current version"
@@ -458,6 +480,7 @@ fn only_the_current_token_version_is_accepted_and_version_one_is_refused_by_name
             );
         }
     }
+    Ok(())
 }
 
 // ── Malformed input stays harmless ───────────────────────────────────
@@ -474,8 +497,8 @@ fn only_the_current_token_version_is_accepted_and_version_one_is_refused_by_name
 /// a declared length by reserving it would pass a "does not panic" test
 /// while being a one-datagram denial of service.
 #[test]
-fn malformed_datagrams_do_not_panic_hang_or_allocate() {
-    let valid = signed(b"INVITE sip:x SIP/2.0\r\n", 0x61);
+fn malformed_datagrams_do_not_panic_hang_or_allocate() -> Result<(), TestError> {
+    let valid = signed(b"INVITE sip:x SIP/2.0\r\n", 0x61)?;
     let mut corpus: Vec<Vec<u8>> = Vec::new();
 
     // Every truncation of a valid datagram, header included.
@@ -557,6 +580,7 @@ fn malformed_datagrams_do_not_panic_hang_or_allocate() {
             20_000,
         );
     }
+    Ok(())
 }
 
 /// Resident set size in bytes, or `None` where `/proc` does not answer.

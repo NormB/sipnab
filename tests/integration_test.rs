@@ -12,6 +12,8 @@ mod support;
 use std::path::PathBuf;
 use std::process::Command;
 
+use support::TestError;
+
 /// Path to the SIP call fixture (INVITE/100/180/200/ACK/BYE/200).
 fn sip_call_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -40,7 +42,7 @@ fn udp_5060_fixture() -> PathBuf {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab(args: &[&str]) -> (String, String, i32) {
+fn run_sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     run_sipnab_with_log(args, "warn")
 }
 
@@ -55,28 +57,33 @@ fn run_sipnab(args: &[&str]) -> (String, String, i32) {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab_with_log(args: &[&str], log_level: &str) -> (String, String, i32) {
+fn run_sipnab_with_log(args: &[&str], log_level: &str) -> Result<(String, String, i32), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let output = Command::new(binary)
         .args(args)
         .env("SIPNAB_LOG", log_level)
         .output()
-        .expect("failed to execute sipnab");
+        .map_err(|e| format!("failed to execute sipnab: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let code = output.status.code().unwrap_or(-1);
 
-    (stdout, stderr, code)
+    Ok((stdout, stderr, code))
 }
 
 // ── SIP detection and JSON output ───────────────────────────────────
 
 /// All 7 fixture messages emit as JSON with schema_version 1 and a call_id; the first is the INVITE request and the fourth is a 200 OK response.
 #[test]
-fn sip_messages_detected_and_output_as_json() {
+fn sip_messages_detected_and_output_as_json() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, _stderr, code) = run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "--json"]);
+    let (stdout, _stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        "--json",
+    ])?;
 
     assert_eq!(code, 0, "should exit successfully");
 
@@ -85,8 +92,8 @@ fn sip_messages_detected_and_output_as_json() {
     assert_eq!(lines.len(), 7, "fixture has 7 SIP messages");
 
     for (i, line) in lines.iter().enumerate() {
-        let parsed: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("line {i} is not valid JSON: {e}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(line).map_err(|e| format!("line {i} is not valid JSON: {e}"))?;
         assert_eq!(
             parsed["schema_version"], 1,
             "line {i} should have schema_version=1"
@@ -98,24 +105,30 @@ fn sip_messages_detected_and_output_as_json() {
     }
 
     // First message should be an INVITE
-    let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let first: serde_json::Value = serde_json::from_str(lines[0])?;
     assert_eq!(first["method"], "INVITE");
     assert_eq!(first["is_request"], true);
     assert_eq!(first["call_id"], SIP_CALL_ID);
 
     // Fourth message should be a 200 OK response
-    let fourth: serde_json::Value = serde_json::from_str(lines[3]).unwrap();
+    let fourth: serde_json::Value = serde_json::from_str(lines[3])?;
     assert_eq!(fourth["status_code"], 200);
     assert_eq!(fourth["is_request"], false);
+    Ok(())
 }
 
 // ── Dialog report ───────────────────────────────────────────────────
 
 /// `--report` shows the Call-ID, both users, the Completed state, and the 0.5s PDD.
 #[test]
-fn report_contains_dialog_info() {
+fn report_contains_dialog_info() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, _stderr, code) = run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "--report"]);
+    let (stdout, _stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        "--report",
+    ])?;
 
     assert_eq!(code, 0);
 
@@ -137,63 +150,73 @@ fn report_contains_dialog_info() {
 
     // Report should show PDD (time from INVITE to 180 Ringing = 0.5s)
     assert!(stdout.contains("0.5s"), "report should contain PDD of 0.5s");
+    Ok(())
 }
 
 // ── Count limit ─────────────────────────────────────────────────────
 
 /// `-n 3` emits exactly 3 JSON messages.
 #[test]
-fn count_limit_stops_after_n_packets() {
+fn count_limit_stops_after_n_packets() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, _stderr, code) =
-        run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "--json", "-n", "3"]);
+    let (stdout, _stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        "--json",
+        "-n",
+        "3",
+    ])?;
 
     assert_eq!(code, 0);
 
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
     assert_eq!(json_lines.len(), 3, "should output exactly 3 JSON messages");
+    Ok(())
 }
 
 // ── From filter ─────────────────────────────────────────────────────
 
 /// `--from 1001` matches all 7 messages (shared From user).
 #[test]
-fn from_filter_selects_matching_messages() {
+fn from_filter_selects_matching_messages() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
 
     // All messages have From: sip:1001@... so --from 1001 matches everything
     let (stdout, _stderr, code) = run_sipnab(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
         "--json",
         "--from",
         "1001",
-    ]);
+    ])?;
 
     assert_eq!(code, 0);
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
     assert_eq!(json_lines.len(), 7, "all messages match --from 1001");
+    Ok(())
 }
 
 /// A non-matching `--from 9999` emits zero messages.
 #[test]
-fn from_filter_rejects_nonmatching_messages() {
+fn from_filter_rejects_nonmatching_messages() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
 
     // --from 9999 matches nothing
     let (stdout, _stderr, code) = run_sipnab(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
         "--json",
         "--from",
         "9999",
-    ]);
+    ])?;
 
     assert_eq!(code, 0);
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
     assert_eq!(json_lines.len(), 0, "no messages should match --from 9999");
+    Ok(())
 }
 
 // ── Calls-only filter ───────────────────────────────────────────────
@@ -201,10 +224,15 @@ fn from_filter_rejects_nonmatching_messages() {
 /// `-c` (calls-only) emits the whole call, not just its INVITE: the fixture
 /// is one INVITE dialog of seven messages, all sharing its Call-ID.
 #[test]
-fn calls_only_shows_the_whole_call() {
+fn calls_only_shows_the_whole_call() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, _stderr, code) =
-        run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "--json", "-c"]);
+    let (stdout, _stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        "--json",
+        "-c",
+    ])?;
 
     assert_eq!(code, 0);
     let json_lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
@@ -216,23 +244,30 @@ fn calls_only_shows_the_whole_call() {
 
     let parsed: Vec<serde_json::Value> = json_lines
         .iter()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
+        .map(|l| serde_json::from_str(l))
+        .collect::<Result<_, _>>()?;
     assert_eq!(parsed[0]["method"], "INVITE");
     assert!(
         parsed.iter().all(|m| m["call_id"] == parsed[0]["call_id"]),
         "every message belongs to the one call"
     );
+    Ok(())
 }
 
 // ── Summary line ────────────────────────────────────────────────────
 
 /// The info-level summary reports `7 packets captured` and `7 SIP messages`.
 #[test]
-fn summary_reports_packet_counts() {
+fn summary_reports_packet_counts() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, stderr, code) =
-        run_sipnab_with_log(&["-N", "-I", fixture.to_str().unwrap()], "info");
+    let (stdout, stderr, code) = run_sipnab_with_log(
+        &[
+            "-N",
+            "-I",
+            fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        ],
+        "info",
+    )?;
 
     assert_eq!(code, 0);
 
@@ -246,22 +281,23 @@ fn summary_reports_packet_counts() {
         combined.contains("7 SIP messages"),
         "should report 7 SIP messages: got:\n{combined}"
     );
+    Ok(())
 }
 
 // ── Hexdump ─────────────────────────────────────────────────────────
 
 /// `--hexdump` output has hex offset markers and the ASCII column delimiter.
 #[test]
-fn hexdump_shows_hex_output() {
+fn hexdump_shows_hex_output() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
     let (stdout, _stderr, code) = run_sipnab(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
         "--hexdump",
         "-n",
         "1",
-    ]);
+    ])?;
 
     assert_eq!(code, 0);
     // Hexdump output should contain hex offset markers
@@ -271,6 +307,7 @@ fn hexdump_shows_hex_output() {
     );
     // Should contain pipe delimiters for ASCII column
     assert!(stdout.contains('|'), "hexdump should contain ASCII column");
+    Ok(())
 }
 
 // ── Auto-detect device (no explicit source) ─────────────────────────
@@ -291,7 +328,7 @@ fn can_live_capture() -> Option<bool> {
 /// (permission denied) without — the specific code is asserted per the
 /// probed capability, never "either is fine".
 #[test]
-fn no_source_auto_detects_device() {
+fn no_source_auto_detects_device() -> Result<(), TestError> {
     // `--duration 1s` is load-bearing, not tidiness. Without a bound this test
     // is `sipnab -N -F` against an auto-detected LIVE device: on a host that
     // holds capture rights it opens the interface and follows it forever,
@@ -310,7 +347,7 @@ fn no_source_auto_detects_device() {
     // packets that may never arrive, which is the same hang with extra steps.
     // Both assertions survive — with capture rights the run now ends by
     // timeout and exits 0, without them it still fails to open and exits 1.
-    let (_stdout, stderr, code) = run_sipnab(&["-N", "-F", "--duration", "1s"]);
+    let (_stdout, stderr, code) = run_sipnab(&["-N", "-F", "--duration", "1s"])?;
     // With auto-detection, sipnab should NOT print the old "no capture source"
     // message. It either succeeds (has permissions) or fails on permission/open.
     assert!(
@@ -336,16 +373,23 @@ fn no_source_auto_detects_device() {
              (no /proc/self/status); observed exit {code}"
         ),
     }
+    Ok(())
 }
 
 // ── Original fixture backward compat ────────────────────────────────
 
 /// The udp_5060 fixture still yields `10 packets captured` and `10 SIP messages` (Call-ID-less 200 OKs count as SIP).
 #[test]
-fn original_fixture_still_works() {
+fn original_fixture_still_works() -> Result<(), TestError> {
     let fixture = udp_5060_fixture();
-    let (stdout, stderr, code) =
-        run_sipnab_with_log(&["-N", "-I", fixture.to_str().unwrap()], "info");
+    let (stdout, stderr, code) = run_sipnab_with_log(
+        &[
+            "-N",
+            "-I",
+            fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        ],
+        "info",
+    )?;
 
     assert_eq!(code, 0);
     let combined = format!("{stdout}{stderr}");
@@ -358,16 +402,23 @@ fn original_fixture_still_works() {
         combined.contains("10 SIP messages"),
         "should detect 10 SIP messages: got:\n{combined}"
     );
+    Ok(())
 }
 
 // ── Text dump mode ──────────────────────────────────────────────────
 
 /// `-T` shows the raw INVITE request line and the Call-ID header.
 #[test]
-fn text_dump_shows_raw_sip() {
+fn text_dump_shows_raw_sip() -> Result<(), TestError> {
     let fixture = sip_call_fixture();
-    let (stdout, _stderr, code) =
-        run_sipnab(&["-N", "-I", fixture.to_str().unwrap(), "-T", "-n", "1"]);
+    let (stdout, _stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
+        "-T",
+        "-n",
+        "1",
+    ])?;
 
     assert_eq!(code, 0);
     assert!(
@@ -378,40 +429,41 @@ fn text_dump_shows_raw_sip() {
         stdout.contains("Call-ID:"),
         "text dump should contain Call-ID header"
     );
+    Ok(())
 }
 
 // ── Self-describing pcapng export (SNB-0001) ────────────────────────
 
 /// SNB-0001 regression pin: headless `-O --pcapng --names --resolve` writes the NRB (with resolved record), the SHB application string, and the IDB interface name.
 #[test]
-fn headless_pcapng_export_is_self_describing() {
+fn headless_pcapng_export_is_self_describing() -> Result<(), TestError> {
     // SNB-0001: a headless `-O --pcapng` export must be self-describing —
     // carrying a Name Resolution Block when `--names/--resolve` are active, the
     // capture source as the interface name, and the producing app/OS — so
     // tshark/capinfos no longer show "unknown"/no application. Pre-fix, none of
     // these were written by the headless path.
     let dir = std::env::temp_dir().join(format!("sipnab-snb0001-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(&dir)?;
     let names = dir.join("names.hosts");
-    std::fs::write(&names, "1.2.3.4 sbc-edge.example\n").unwrap();
+    std::fs::write(&names, "1.2.3.4 sbc-edge.example\n")?;
     let out = dir.join("export.pcapng");
     let fixture = sip_call_fixture();
 
     let (_stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        fixture.to_str().ok_or("fixture path is not UTF-8")?,
         "-O",
-        out.to_str().unwrap(),
+        out.to_str().ok_or("out path is not UTF-8")?,
         "--pcapng",
         "--names",
-        names.to_str().unwrap(),
+        names.to_str().ok_or("names path is not UTF-8")?,
         "--resolve",
         "-q",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab should exit 0; stderr:\n{stderr}");
 
-    let bytes = std::fs::read(&out).expect("export file should exist");
+    let bytes = std::fs::read(&out).map_err(|e| format!("export file should exist: {e}"))?;
     let hay = String::from_utf8_lossy(&bytes);
 
     // (1) NRB present with sipnab's producer comment + the resolved record.
@@ -435,4 +487,5 @@ fn headless_pcapng_export_is_self_describing() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }

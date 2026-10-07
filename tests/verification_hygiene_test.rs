@@ -137,6 +137,8 @@ const NOT_SYMBOLS: &[&str] = &[
 ];
 
 /// The repository root.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -204,7 +206,8 @@ fn cargo_filter_matches<'a>(names: &[&'a str], filter: &str) -> Vec<&'a str> {
 /// the same line, with the same exit status. There is nothing at the call site
 /// to react to, which is why the only defense is not writing one.
 #[test]
-fn a_cargo_test_filter_is_a_substring_and_a_regex_written_there_selects_nothing() {
+fn a_cargo_test_filter_is_a_substring_and_a_regex_written_there_selects_nothing()
+-> Result<(), TestError> {
     let regex_patterns: Vec<String> = vec![
         ".*".to_string(),
         "^a_zero_passed".to_string(),
@@ -229,7 +232,7 @@ fn a_cargo_test_filter_is_a_substring_and_a_regex_written_there_selects_nothing(
         );
 
         let re = Regex::new(pattern)
-            .unwrap_or_else(|e| panic!("the fixture pattern {pattern} must be a valid regex: {e}"));
+            .map_err(|e| format!("the fixture pattern {pattern} must be a valid regex: {e}"))?;
         let as_regex: Vec<&str> = TEST_NAMES
             .iter()
             .copied()
@@ -253,14 +256,14 @@ fn a_cargo_test_filter_is_a_substring_and_a_regex_written_there_selects_nothing(
          the incident is then not reproducible and this whole file rests on a \
          misremembered command"
     );
-    let as_modern = Regex::new(&bre).expect("an escaped pipe is a valid pattern");
+    let as_modern = Regex::new(&bre)?;
     assert!(
         !TEST_NAMES.iter().any(|n| as_modern.is_match(n)),
         "`{bre}` matched a name as a modern regex. In this dialect `\\|` is an \
          escaped literal pipe, so it must not — if it now alternates, the note \
          above about BRE is wrong and the advice built on it misleads."
     );
-    let as_bre = Regex::new(&bre.replace("\\|", "|")).expect("the BRE reading is a valid pattern");
+    let as_bre = Regex::new(&bre.replace("\\|", "|"))?;
     let intended: Vec<&str> = TEST_NAMES
         .iter()
         .copied()
@@ -291,6 +294,7 @@ fn a_cargo_test_filter_is_a_substring_and_a_regex_written_there_selects_nothing(
         "a whole test name must select exactly that test — the invocation \
          incident 1 should have used, twice, instead of one alternation"
     );
+    Ok(())
 }
 
 // ── 2. a zero-passed summary is not a run ───────────────────────────
@@ -331,31 +335,29 @@ impl Summary {
 /// was full and the argument selected none of it, which points at the filter's
 /// syntax. A zero beside a zero says the binary was empty, which points
 /// somewhere else entirely — a feature gate, a wrong `--test` name.
-fn classify(line: &str) -> Summary {
-    let summary = Regex::new(r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed")
-        .expect("the cargo summary pattern must compile");
-    let filtered =
-        Regex::new(r"(\d+) filtered out").expect("the filtered-out pattern must compile");
+fn classify(line: &str) -> Result<Summary, TestError> {
+    let summary = Regex::new(r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed")?;
+    let filtered = Regex::new(r"(\d+) filtered out")?;
     let Some(caps) = summary.captures(line) else {
-        return Summary::NotAResultLine;
+        return Ok(Summary::NotAResultLine);
     };
     let passed: usize = caps[2].parse().unwrap_or(0);
     let failed: usize = caps[3].parse().unwrap_or(0);
     if &caps[1] == "FAILED" || failed > 0 {
-        return Summary::Failed;
+        return Ok(Summary::Failed);
     }
     if passed == 0 {
         let filtered_out: usize = filtered
             .captures(line)
             .and_then(|c| c[1].parse().ok())
             .unwrap_or(0);
-        return if filtered_out > 0 {
+        return Ok(if filtered_out > 0 {
             Summary::FilterMatchedNothing { filtered_out }
         } else {
             Summary::BinaryHeldNothing
-        };
+        });
     }
-    Summary::Verified(passed)
+    Ok(Summary::Verified(passed))
 }
 
 /// A summary with `0 passed` beside a large `filtered out` accuses the filter.
@@ -376,7 +378,7 @@ fn classify(line: &str) -> Summary {
 ///
 /// The exact line from the incident is the first row, verbatim.
 #[test]
-fn a_filter_that_selected_nothing_is_visible_in_the_summary_it_prints() {
+fn a_filter_that_selected_nothing_is_visible_in_the_summary_it_prints() -> Result<(), TestError> {
     let incident = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; \
                     4448 filtered out; finished in 0.00s";
     let cases: Vec<(&str, Summary)> = vec![
@@ -415,27 +417,27 @@ fn a_filter_that_selected_nothing_is_visible_in_the_summary_it_prints() {
 
     for (line, expected) in &cases {
         assert_eq!(
-            &classify(line),
+            &classify(line)?,
             expected,
             "misclassified a real cargo summary line: {line}"
         );
     }
 
     assert!(
-        !classify(incident).is_evidence(),
+        !classify(incident)?.is_evidence(),
         "the line from incident 1 was classified as evidence. It reports that \
          4448 tests were excluded and none ran; accepting it is how a run that \
          executed nothing gets filed as two tests passing."
     );
     assert!(
-        classify(cases[1].0).is_evidence(),
+        classify(cases[1].0)?.is_evidence(),
         "a genuine `12 passed` was not classified as evidence; a classifier \
          that refuses everything is not a classifier and would be trusted \
          about nothing"
     );
     assert_ne!(
-        classify(incident),
-        classify(cases[2].0),
+        classify(incident)?,
+        classify(cases[2].0)?,
         "a filter that selected nothing and a binary that holds nothing \
          collapsed to one verdict. They have different fixes — retype the \
          filter, or check the feature set — and one verdict sends every reader \
@@ -443,13 +445,14 @@ fn a_filter_that_selected_nothing_is_visible_in_the_summary_it_prints() {
     );
     assert!(
         matches!(
-            classify(incident),
+            classify(incident)?,
             Summary::FilterMatchedNothing { filtered_out } if filtered_out >= 100
         ),
         "the filtered-out count was lost. That number is the accusation: a \
          binary with hundreds of tests, and an argument that matched none of \
          them, is a filter that cannot match rather than one that is narrow."
     );
+    Ok(())
 }
 
 // ── 3. an ambiguous citation must say which definition ──────────────
@@ -467,20 +470,19 @@ struct Citation {
 }
 
 /// Every line citation on a page.
-fn citations(text: &str) -> Vec<Citation> {
-    let re = Regex::new(r"\[`([A-Za-z0-9_./-]+\.rs):(\d+)`\]\(([^)\s]*)\)")
-        .expect("the citation pattern must compile");
-    re.captures_iter(text)
-        .map(|c| {
-            let whole = c.get(0).expect("group 0 always exists");
-            Citation {
-                label: c[1].to_string(),
-                href: c[3].to_string(),
-                start: whole.start(),
-                end: whole.end(),
-            }
-        })
-        .collect()
+fn citations(text: &str) -> Result<Vec<Citation>, TestError> {
+    let re = Regex::new(r"\[`([A-Za-z0-9_./-]+\.rs):(\d+)`\]\(([^)\s]*)\)")?;
+    let mut out = Vec::new();
+    for c in re.captures_iter(text) {
+        let whole = c.get(0).ok_or("group 0 always exists")?;
+        out.push(Citation {
+            label: c[1].to_string(),
+            href: c[3].to_string(),
+            start: whole.start(),
+            end: whole.end(),
+        });
+    }
+    Ok(out)
 }
 
 /// The source file a citation is about, or `None` when it cannot be told.
@@ -489,17 +491,20 @@ fn citations(text: &str) -> Vec<Citation> {
 /// from the repository root only sometimes. The link always says which file is
 /// meant, and is the fallback — the same order `scripts/check-line-drift.py`
 /// uses.
-fn source_for(label: &str, href: &str) -> Option<PathBuf> {
+fn source_for(label: &str, href: &str) -> Result<Option<PathBuf>, TestError> {
     let direct = repo().join(label);
     if direct.is_file() {
-        return Some(direct);
+        return Ok(Some(direct));
     }
-    let blob = Regex::new(r"^https?://[^/]*github\.com/[^/]+/[^/]+/blob/[^/]+/(.+)$")
-        .expect("the blob pattern must compile");
-    let path = href.split('#').next()?;
-    let caps = blob.captures(path)?;
+    let blob = Regex::new(r"^https?://[^/]*github\.com/[^/]+/[^/]+/blob/[^/]+/(.+)$")?;
+    let Some(path) = href.split('#').next() else {
+        return Ok(None);
+    };
+    let Some(caps) = blob.captures(path) else {
+        return Ok(None);
+    };
     let cand = repo().join(&caps[1]);
-    cand.is_file().then_some(cand)
+    Ok(cand.is_file().then_some(cand))
 }
 
 /// Whether an identifier found in prose can be a citation's subject.
@@ -513,17 +518,16 @@ fn usable(name: &str) -> bool {
 /// use, and an identifier after one belongs to the NEXT citation — the same
 /// finding `scripts/check-line-drift.py` records after its ranking-by-distance
 /// version re-pointed correct citations at their neighbor's subject.
-fn symbol_near(text: &str, start: usize) -> Option<String> {
+fn symbol_near(text: &str, start: usize) -> Result<Option<String>, TestError> {
     let before = window(text, start.saturating_sub(CONTEXT_CHARS), start);
-    let ident = Regex::new(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)")
-        .expect("the identifier pattern must compile");
-    ident
+    let ident = Regex::new(r"`([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*)")?;
+    Ok(ident
         .captures_iter(before)
         .filter_map(|c| {
             let m = c.get(1)?;
             usable(m.as_str()).then(|| m.as_str().to_string())
         })
-        .last()
+        .last())
 }
 
 /// 1-based lines where `sym` is DEFINED, not merely mentioned.
@@ -531,13 +535,12 @@ fn symbol_near(text: &str, start: usize) -> Option<String> {
 /// `impl` blocks are dropped when any other definition matches. A type has one
 /// definition and any number of impl blocks, so counting the blocks would
 /// report every documented type as ambiguous and drown the real cases.
-fn definition_lines(lines: &[&str], sym: &str) -> Vec<usize> {
+fn definition_lines(lines: &[&str], sym: &str) -> Result<Vec<usize>, TestError> {
     let pat = Regex::new(&format!(
         r"\b(?:fn|struct|enum|const|static|impl|type|trait|mod|macro_rules!)\s+{}\b",
         regex::escape(sym)
-    ))
-    .expect("the definition pattern must compile");
-    let is_impl = Regex::new(r"^\s*(?:pub\s+)?impl\b").expect("the impl pattern must compile");
+    ))?;
+    let is_impl = Regex::new(r"^\s*(?:pub\s+)?impl\b")?;
     let hits: Vec<usize> = lines
         .iter()
         .enumerate()
@@ -549,7 +552,7 @@ fn definition_lines(lines: &[&str], sym: &str) -> Vec<usize> {
         .copied()
         .filter(|n| !is_impl.is_match(lines[n - 1]))
         .collect();
-    if real.is_empty() { hits } else { real }
+    Ok(if real.is_empty() { hits } else { real })
 }
 
 /// Which segment of `Type::member` the prose is citing, or `None`.
@@ -557,18 +560,18 @@ fn definition_lines(lines: &[&str], sym: &str) -> Vec<usize> {
 /// The member first: a sentence naming `McpAuth::BearerVerified` is about the
 /// variant, and resolving it to the type would point at a different line with
 /// a different meaning.
-fn resolve_symbol(lines: &[&str], qualified: &str) -> Option<String> {
+fn resolve_symbol(lines: &[&str], qualified: &str) -> Result<Option<String>, TestError> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     let segments: Vec<&str> = qualified.split("::").collect();
     for cand in segments.into_iter().rev() {
         if !seen.insert(cand) || !usable(cand) {
             continue;
         }
-        if !definition_lines(lines, cand).is_empty() {
-            return Some(cand.to_string());
+        if !definition_lines(lines, cand)?.is_empty() {
+            return Ok(Some(cand.to_string()));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Words that would tell a reader which of several definitions is meant.
@@ -578,9 +581,8 @@ fn resolve_symbol(lines: &[&str], qualified: &str) -> Option<String> {
 /// `mcp-http`, which is exactly the word the backlog sentence uses. The
 /// generic vocabulary — `cfg`, `arm`, `branch`, `variant` — is added by the
 /// caller, since prose can disambiguate without naming a feature.
-fn cfg_features(lines: &[&str], defs: &[usize]) -> BTreeSet<String> {
-    let feature = Regex::new(r#"feature\s*=\s*"([A-Za-z0-9_.-]+)""#)
-        .expect("the feature pattern must compile");
+fn cfg_features(lines: &[&str], defs: &[usize]) -> Result<BTreeSet<String>, TestError> {
+    let feature = Regex::new(r#"feature\s*=\s*"([A-Za-z0-9_.-]+)""#)?;
     let mut out = BTreeSet::new();
     for &def in defs {
         let first = def.saturating_sub(CFG_LOOKBACK).max(1);
@@ -593,7 +595,7 @@ fn cfg_features(lines: &[&str], defs: &[usize]) -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// A citation whose symbol has two definitions must say which one it means.
@@ -629,40 +631,39 @@ fn cfg_features(lines: &[&str], defs: &[usize]) -> BTreeSet<String> {
 ///   it names the correct arm is not decidable from here, and claiming
 ///   otherwise would be a second confident wrong answer.
 #[test]
-fn a_citation_whose_symbol_has_two_definitions_names_which_one() {
+fn a_citation_whose_symbol_has_two_definitions_names_which_one() -> Result<(), TestError> {
     let Some(text) = backlog_text() else {
-        return;
+        return Ok(());
     };
-    let cites = citations(&text);
+    let cites = citations(&text)?;
     assert!(
         !cites.is_empty(),
         "no line citation was found in {BACKLOG}; the pattern has stopped \
          matching how this page writes them and the walk below examines nothing"
     );
 
-    let generic = Regex::new(r"\b(cfg|arm|arms|branch|branches|variant|variants)\b")
-        .expect("the generic-vocabulary pattern must compile");
+    let generic = Regex::new(r"\b(cfg|arm|arms|branch|branches|variant|variants)\b")?;
     let mut resolvable = 0usize;
     let mut ambiguous = 0usize;
     let mut silent: Vec<String> = Vec::new();
 
     for c in &cites {
-        let Some(path) = source_for(&c.label, &c.href) else {
+        let Some(path) = source_for(&c.label, &c.href)? else {
             continue;
         };
         let Ok(src) = std::fs::read_to_string(&path) else {
             continue;
         };
         let lines: Vec<&str> = src.lines().collect();
-        let Some(qualified) = symbol_near(&text, c.start) else {
+        let Some(qualified) = symbol_near(&text, c.start)? else {
             continue;
         };
-        let Some(sym) = resolve_symbol(&lines, &qualified) else {
+        let Some(sym) = resolve_symbol(&lines, &qualified)? else {
             continue;
         };
         resolvable += 1;
 
-        let defs = definition_lines(&lines, &sym);
+        let defs = definition_lines(&lines, &sym)?;
         if defs.len() < 2 {
             continue;
         }
@@ -674,7 +675,7 @@ fn a_citation_whose_symbol_has_two_definitions_names_which_one() {
             c.end + PROSE_CHARS,
         )
         .to_ascii_lowercase();
-        let features = cfg_features(&lines, &defs);
+        let features = cfg_features(&lines, &defs)?;
         if features.iter().any(|f| prose.contains(f)) || generic.is_match(&prose) {
             continue;
         }
@@ -712,6 +713,7 @@ fn a_citation_whose_symbol_has_two_definitions_names_which_one() {
          again.",
         silent.join("\n")
     );
+    Ok(())
 }
 
 // ── 4. none of the above ran over nothing ───────────────────────────
@@ -723,9 +725,9 @@ fn a_citation_whose_symbol_has_two_definitions_names_which_one() {
 /// here is well under the measured value, so ordinary churn does not move it
 /// while a corpus that has collapsed falls through loudly.
 #[test]
-fn the_corpus_behind_these_rules_is_not_empty() {
+fn the_corpus_behind_these_rules_is_not_empty() -> Result<(), TestError> {
     let Some(text) = backlog_text() else {
-        return;
+        return Ok(());
     };
     assert!(
         text.len() >= MIN_BACKLOG_BYTES,
@@ -741,8 +743,7 @@ fn the_corpus_behind_these_rules_is_not_empty() {
         text.lines().count()
     );
 
-    let src_cites = Regex::new(r"src/[A-Za-z0-9_./-]+\.rs:\d+")
-        .expect("the src-citation pattern must compile")
+    let src_cites = Regex::new(r"src/[A-Za-z0-9_./-]+\.rs:\d+")?
         .find_iter(&text)
         .count();
     assert!(
@@ -752,7 +753,7 @@ fn the_corpus_behind_these_rules_is_not_empty() {
          over a handful of lines and a clean result means nothing."
     );
 
-    let linked = citations(&text).len();
+    let linked = citations(&text)?.len();
     assert!(
         linked >= MIN_SRC_CITATIONS,
         "only {linked} citations parse as `[`path.rs:NNN`](url)`; the citation \
@@ -773,4 +774,5 @@ fn the_corpus_behind_these_rules_is_not_empty() {
         "the fixture repeats a name, so the exact-selection assertions above \
          are counting one entry twice"
     );
+    Ok(())
 }

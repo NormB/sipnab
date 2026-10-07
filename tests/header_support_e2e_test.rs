@@ -32,7 +32,10 @@ mod run;
 
 use std::path::{Path, PathBuf};
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
+
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
 
 /// Call-ID of the call that carries the interesting headers.
 const CALL_A: &str = "hdr-a@test";
@@ -83,7 +86,7 @@ fn sip(first_line: &str, call_id: &str, from_user: &str, cseq: &str, extra: &[&s
 }
 
 /// The synthetic capture: call A answered, call B busy.
-fn headers_capture(dir: &Path) -> PathBuf {
+fn headers_capture(dir: &Path) -> Result<PathBuf, TestError> {
     let a = [10, 1, 0, 1];
     let b = [10, 2, 0, 1];
     let frames = vec![
@@ -129,8 +132,8 @@ fn headers_capture(dir: &Path) -> PathBuf {
         ),
     ];
     let path = dir.join("headers.pcap");
-    write_pcap_or_panic(&path, &frames);
-    path
+    write_pcap(&path, &frames)?;
+    Ok(path)
 }
 
 /// Every `header.` filter this suite asks, with the calls it must select.
@@ -155,13 +158,15 @@ const FILTER_CASES: &[(&str, &[&str])] = &[
 ];
 
 /// The Call-IDs, sorted, in a set of JSON dialog rows.
-fn call_ids(rows: &[serde_json::Value]) -> Vec<String> {
+fn call_ids(rows: &[serde_json::Value]) -> Result<Vec<String>, TestError> {
     let mut ids: Vec<String> = rows
         .iter()
-        .map(|r| r["call_id"].as_str().expect("a call_id").to_string())
-        .collect();
+        .map(|r| -> Result<_, TestError> {
+            Ok(r["call_id"].as_str().ok_or("a call_id")?.to_string())
+        })
+        .collect::<Result<_, TestError>>()?;
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 /// `expected` as a sorted owned list, for comparison with [`call_ids`].
@@ -172,43 +177,45 @@ fn sorted(expected: &[&str]) -> Vec<String> {
 }
 
 /// The JSON objects among a run's stdout lines.
-fn json_lines(stdout: &str) -> Vec<serde_json::Value> {
+fn json_lines(stdout: &str) -> Result<Vec<serde_json::Value>, TestError> {
     stdout
         .lines()
         .filter(|l| l.starts_with('{'))
-        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("bad JSON line {l}: {e}")))
-        .collect()
+        .map(|l| -> Result<_, TestError> {
+            Ok(serde_json::from_str(l).map_err(|e| format!("bad JSON line {l}: {e}"))?)
+        })
+        .collect::<Result<_, TestError>>()
 }
 
 /// `--json` carries every header the message did, `X-`, vendor and custom
 /// alike, in wire order with repeats kept and compact names expanded.
 #[test]
-fn per_message_json_carries_every_header_in_wire_order() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = headers_capture(dir.path());
-    let (stdout, stderr, code) = run::run_or_panic(
+fn per_message_json_carries_every_header_in_wire_order() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = headers_capture(dir.path())?;
+    let (stdout, stderr, code) = run::run(
         &[
             "-N",
             "-I",
-            pcap.to_str().expect("utf-8"),
+            pcap.to_str().ok_or("utf-8")?,
             "--json",
             "--quiet",
             "--no-config",
         ],
         None,
-    );
+    )?;
     assert_eq!(code, Some(0), "sipnab --json failed: {stderr}");
-    let messages = json_lines(&stdout);
+    let messages = json_lines(&stdout)?;
     let invite = messages
         .iter()
         .find(|m| m["call_id"] == CALL_A && m["method"] == "INVITE")
-        .unwrap_or_else(|| panic!("no INVITE for {CALL_A} in:\n{stdout}"));
+        .ok_or_else(|| format!("no INVITE for {CALL_A} in:\n{stdout}"))?;
     let got: Vec<&str> = invite["extension_headers"]
         .as_array()
-        .expect("extension_headers")
+        .ok_or("extension_headers")?
         .iter()
-        .map(|v| v.as_str().expect("a string entry"))
-        .collect();
+        .map(|v| -> Result<_, TestError> { Ok(v.as_str().ok_or("a string entry")?) })
+        .collect::<Result<_, TestError>>()?;
     assert_eq!(
         got,
         vec![
@@ -229,26 +236,27 @@ fn per_message_json_carries_every_header_in_wire_order() {
     let ok = messages
         .iter()
         .find(|m| m["call_id"] == CALL_A && m["status_code"] == 200)
-        .expect("the 200 OK");
+        .ok_or("the 200 OK")?;
     assert!(
         ok["extension_headers"]
             .as_array()
-            .expect("extension_headers")
+            .ok_or("extension_headers")?
             .iter()
             .any(|v| v == "X-Answer-Node: media-7"),
         "the answer's own header: {ok}"
     );
+    Ok(())
 }
 
 /// `--filter` with `header.<name>` selects by any header on the CLI, through
 /// the post-capture dialog output.
 #[test]
-fn cli_filter_selects_by_any_named_header() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = headers_capture(dir.path());
-    let pcap = pcap.to_str().expect("utf-8");
+fn cli_filter_selects_by_any_named_header() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = headers_capture(dir.path())?;
+    let pcap = pcap.to_str().ok_or("utf-8")?;
     for (expr, want) in FILTER_CASES {
-        let (stdout, stderr, code) = run::run_or_panic(
+        let (stdout, stderr, code) = run::run(
             &[
                 "-N",
                 "-I",
@@ -260,21 +268,22 @@ fn cli_filter_selects_by_any_named_header() {
                 expr,
             ],
             None,
-        );
+        )?;
         assert_eq!(code, Some(0), "{expr}: {stderr}");
-        let rows: Vec<serde_json::Value> = json_lines(&stdout)
+        let rows: Vec<serde_json::Value> = json_lines(&stdout)?
             .into_iter()
             .filter(|v| v.get("msg_count").is_some())
             .collect();
-        assert_eq!(call_ids(&rows), sorted(want), "--filter {expr:?}");
+        assert_eq!(call_ids(&rows)?, sorted(want), "--filter {expr:?}");
     }
+    Ok(())
 }
 
 /// The REST API's `filter` parameter takes the same field, and so answers the
 /// same question as the CLI.
 #[cfg(feature = "api")]
 #[test]
-fn rest_filter_selects_by_any_named_header() {
+fn rest_filter_selects_by_any_named_header() -> Result<(), TestError> {
     #[path = "support/server.rs"]
     mod server;
 
@@ -290,50 +299,47 @@ fn rest_filter_selects_by_any_named_header() {
             .collect()
     }
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = headers_capture(dir.path());
-    let srv = server::ApiServer::spawn_with_pcap_or_panic(
-        pcap.to_str().expect("utf-8"),
-        &["--no-config"],
-    );
+    let dir = tempfile::tempdir()?;
+    let pcap = headers_capture(dir.path())?;
+    let srv = server::ApiServer::spawn_with_pcap(pcap.to_str().ok_or("utf-8")?, &["--no-config"])?;
     for (expr, want) in FILTER_CASES {
-        let resp = srv.get_or_panic(&format!("/v1/dialogs?filter={}", pct(expr)));
+        let resp = srv.get(&format!("/v1/dialogs?filter={}", pct(expr)))?;
         assert_eq!(resp.status, 200, "{expr}: {}", resp.body);
-        let body = resp.json_or_panic();
-        let rows = body["dialogs"].as_array().expect("dialogs").clone();
-        assert_eq!(call_ids(&rows), sorted(want), "REST filter {expr:?}");
+        let body = resp.json()?;
+        let rows = body["dialogs"].as_array().ok_or("dialogs")?.clone();
+        assert_eq!(call_ids(&rows)?, sorted(want), "REST filter {expr:?}");
     }
-    let bad = srv.get_or_panic(&format!(
+    let bad = srv.get(&format!(
         "/v1/dialogs?filter={}",
         pct("header.\"a b\" == 'x'")
-    ));
+    ))?;
     assert_eq!(
         bad.status, 400,
         "a malformed header name is the caller's error"
     );
     assert!(bad.body.contains("header name"), "{}", bad.body);
+    Ok(())
 }
 
 /// MCP: the per-message projection carries every header, and `list_dialogs`
 /// and `validate_filter` take the `header.` field.
 #[cfg(feature = "mcp")]
 #[test]
-fn mcp_projects_and_filters_every_header() {
+fn mcp_projects_and_filters_every_header() -> Result<(), TestError> {
     #[path = "support/mcp.rs"]
     mod mcp;
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = headers_capture(dir.path());
-    let mut session =
-        mcp::McpSession::start_or_panic(pcap.to_str().expect("utf-8"), &["--no-config"]);
+    let dir = tempfile::tempdir()?;
+    let pcap = headers_capture(dir.path())?;
+    let mut session = mcp::McpSession::start(pcap.to_str().ok_or("utf-8")?, &["--no-config"])?;
 
-    let dialog = session.ok_or_panic("get_dialog", serde_json::json!({"call_id": CALL_A}));
+    let dialog = session.ok("get_dialog", serde_json::json!({"call_id": CALL_A}))?;
     let invite_headers: Vec<String> = dialog["messages"][0]["extension_headers"]
         .as_array()
-        .unwrap_or_else(|| panic!("extension_headers on the INVITE: {dialog}"))
+        .ok_or_else(|| format!("extension_headers on the INVITE: {dialog}"))?
         .iter()
-        .map(|v| v.as_str().expect("a string").to_string())
-        .collect();
+        .map(|v| -> Result<_, TestError> { Ok(v.as_str().ok_or("a string")?.to_string()) })
+        .collect::<Result<_, TestError>>()?;
     // Each entry is fenced whole on this surface — the name is the sender's
     // choice too — so look for the wire text inside each entry, in order.
     let wanted = [
@@ -348,25 +354,25 @@ fn mcp_projects_and_filters_every_header() {
     ];
     let positions: Vec<usize> = wanted
         .iter()
-        .map(|w| {
-            invite_headers
+        .map(|w| -> Result<_, TestError> {
+            Ok(invite_headers
                 .iter()
                 .position(|h| h.contains(w))
-                .unwrap_or_else(|| panic!("{w:?} missing from {invite_headers:?}"))
+                .ok_or_else(|| format!("{w:?} missing from {invite_headers:?}"))?)
         })
-        .collect();
+        .collect::<Result<_, TestError>>()?;
     assert!(
         positions.windows(2).all(|p| p[0] < p[1]),
         "wire order kept: {positions:?} in {invite_headers:?}"
     );
-    let answer = session.ok_or_panic(
+    let answer = session.ok(
         "get_message",
         serde_json::json!({"call_id": CALL_A, "index": 1}),
-    );
+    )?;
     assert!(
         answer["extension_headers"]
             .as_array()
-            .expect("extension_headers")
+            .ok_or("extension_headers")?
             .iter()
             .any(|v| v
                 .as_str()
@@ -375,10 +381,10 @@ fn mcp_projects_and_filters_every_header() {
     );
 
     for (expr, want) in FILTER_CASES {
-        let listed = session.ok_or_panic("list_dialogs", serde_json::json!({"filter": expr}));
-        let rows = listed["dialogs"].as_array().expect("dialogs").clone();
-        assert_eq!(call_ids(&rows), sorted(want), "MCP list_dialogs {expr:?}");
-        let checked = session.ok_or_panic("validate_filter", serde_json::json!({"expr": expr}));
+        let listed = session.ok("list_dialogs", serde_json::json!({"filter": expr}))?;
+        let rows = listed["dialogs"].as_array().ok_or("dialogs")?.clone();
+        assert_eq!(call_ids(&rows)?, sorted(want), "MCP list_dialogs {expr:?}");
+        let checked = session.ok("validate_filter", serde_json::json!({"expr": expr}))?;
         assert_eq!(checked["valid"], true, "{expr}: {checked}");
         assert_eq!(
             checked["total_matched"].as_u64(),
@@ -386,31 +392,32 @@ fn mcp_projects_and_filters_every_header() {
             "MCP validate_filter {expr:?}: {checked}"
         );
     }
+    Ok(())
 }
 
 /// The TUI's raw message view shows every header exactly as captured, and its
 /// filter dialog's Header field selects by any header.
 #[cfg(feature = "tui")]
 #[test]
-fn tui_shows_and_filters_every_header() {
+fn tui_shows_and_filters_every_header() -> Result<(), TestError> {
     use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use sipnab::tui::{App, View};
 
     /// The screen as text, one row per line.
-    fn screen(app: &mut App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(200, 60)).expect("terminal");
-        terminal.draw(|frame| app.render(frame)).expect("draw");
+    fn screen(app: &mut App) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(200, 60))?;
+        terminal.draw(|frame| app.render(frame))?;
         let buf = terminal.backend().buffer();
         let mut out = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                out.push_str(buf.cell((x, y)).expect("cell in bounds").symbol());
+                out.push_str(buf.cell((x, y)).ok_or("cell in bounds")?.symbol());
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// Open the capture through the file browser, as a user would.
@@ -428,8 +435,8 @@ fn tui_shows_and_filters_every_header() {
         app
     }
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    headers_capture(dir.path());
+    let dir = tempfile::tempdir()?;
+    headers_capture(dir.path())?;
 
     // Raw view: Enter on call A opens its flow, Enter again the INVITE raw.
     let mut app = open(dir.path());
@@ -440,7 +447,7 @@ fn tui_shows_and_filters_every_header() {
         app.current_view()
     );
     app.handle_key(KeyCode::Enter);
-    let text = screen(&mut app);
+    let text = screen(&mut app)?;
     for line in A_INVITE_EXTRA {
         assert!(
             text.contains(line),
@@ -466,12 +473,13 @@ fn tui_shows_and_filters_every_header() {
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.active_popup(), None, "{typed:?} applies and closes");
         assert_eq!(app.visible_dialog_count(), 1, "{typed:?} selects one call");
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(
             text.contains(from_user),
             "{typed:?} keeps {from_user}:\n{text}"
         );
     }
+    Ok(())
 }
 
 /// RFC 6648 section 2: no analysis, lint rule or projection treats a header
@@ -485,8 +493,8 @@ fn tui_shows_and_filters_every_header() {
 /// Both captures sit under the same file name, in two directories, so the frame
 /// pointers otherwise agree.
 #[test]
-fn an_x_prefix_changes_no_analysis() {
-    fn capture(dir: &Path, name: &str, value: &str) -> PathBuf {
+fn an_x_prefix_changes_no_analysis() -> Result<(), TestError> {
+    fn capture(dir: &Path, name: &str, value: &str) -> Result<PathBuf, TestError> {
         let header = format!("{name}: {value}");
         let frames = vec![
             udp_frame(
@@ -517,10 +525,10 @@ fn an_x_prefix_changes_no_analysis() {
             ),
         ];
         let path = dir.join("same-name.pcap");
-        write_pcap_or_panic(&path, &frames);
-        path
+        write_pcap(&path, &frames)?;
+        Ok(path)
     }
-    let digest = regex::Regex::new(r"@[0-9a-f]{16}").expect("regex");
+    let digest = regex::Regex::new(r"@[0-9a-f]{16}")?;
     let long = "v".repeat(9000);
     let battery: &[&str] = &[
         "plain-value",
@@ -539,27 +547,27 @@ fn an_x_prefix_changes_no_analysis() {
     let mut compared = 0usize;
     for (x_name, plain) in [("X-Foo", "Foo"), ("X-Trunk-Hint", "Trunk-Hint")] {
         for value in battery {
-            let xdir = tempfile::tempdir().expect("tempdir");
-            let pdir = tempfile::tempdir().expect("tempdir");
-            let xcap = capture(xdir.path(), x_name, value);
-            let pcap = capture(pdir.path(), plain, value);
+            let xdir = tempfile::tempdir()?;
+            let pdir = tempfile::tempdir()?;
+            let xcap = capture(xdir.path(), x_name, value)?;
+            let pcap = capture(pdir.path(), plain, value)?;
             for mode in modes {
-                let out = |cap: &Path| {
+                let out = |cap: &Path| -> Result<String, TestError> {
                     let mut args = vec![
                         "-N",
                         "-I",
-                        cap.to_str().expect("utf-8"),
+                        cap.to_str().ok_or("utf-8")?,
                         "--quiet",
                         "--no-config",
                     ];
                     args.extend_from_slice(mode);
-                    let (stdout, stderr, code) = run::run_or_panic(&args, None);
+                    let (stdout, stderr, code) = run::run(&args, None)?;
                     assert_eq!(code, Some(0), "{mode:?}: {stderr}");
-                    let dir = cap.parent().and_then(Path::to_str).expect("a utf-8 dir");
-                    digest.replace_all(&stdout, "@DIGEST").replace(dir, "<dir>")
+                    let dir = cap.parent().and_then(Path::to_str).ok_or("a utf-8 dir")?;
+                    Ok(digest.replace_all(&stdout, "@DIGEST").replace(dir, "<dir>"))
                 };
-                let with_x = out(&xcap).replace(x_name, plain);
-                let without = out(&pcap);
+                let with_x = out(&xcap)?.replace(x_name, plain);
+                let without = out(&pcap)?;
                 assert_eq!(
                     with_x,
                     without,
@@ -586,4 +594,5 @@ fn an_x_prefix_changes_no_analysis() {
         }
     }
     assert_eq!(compared, 2 * battery.len() * modes.len());
+    Ok(())
 }

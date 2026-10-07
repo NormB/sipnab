@@ -23,12 +23,15 @@ use std::net::{IpAddr, Ipv4Addr};
 use sipnab::relay::reconcile::RelayLink;
 use sipnab::relay::rtpproxy::{Pairing, decode_command, decode_reply};
 
-fn command(text: &str) -> sipnab::relay::rtpproxy::RtpproxyControl {
-    decode_command(text.as_bytes()).unwrap_or_else(|| panic!("fixture must decode: {text:?}"))
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
+fn command(text: &str) -> Result<sipnab::relay::rtpproxy::RtpproxyControl, TestError> {
+    Ok(decode_command(text.as_bytes()).ok_or_else(|| format!("fixture must decode: {text:?}"))?)
 }
 
-fn reply(text: &str) -> sipnab::relay::rtpproxy::RtpproxyControl {
-    decode_reply(text.as_bytes()).unwrap_or_else(|| panic!("fixture must decode: {text:?}"))
+fn reply(text: &str) -> Result<sipnab::relay::rtpproxy::RtpproxyControl, TestError> {
+    Ok(decode_reply(text.as_bytes()).ok_or_else(|| format!("fixture must decode: {text:?}"))?)
 }
 
 fn lab_endpoint(call_id: &str) -> RelayLink {
@@ -40,54 +43,59 @@ fn lab_endpoint(call_id: &str) -> RelayLink {
 }
 
 #[test]
-fn an_update_and_its_reply_name_the_relays_media_for_the_call() {
+fn an_update_and_its_reply_name_the_relays_media_for_the_call() -> Result<(), TestError> {
     let mut p = Pairing::new(16);
     assert_eq!(
-        p.observe(command("p2 U rpwire-probe-1 192.0.2.10 40000 ftag1\n")),
+        p.observe(command("p2 U rpwire-probe-1 192.0.2.10 40000 ftag1\n")?),
         None,
         "a command alone names no port"
     );
     assert_eq!(
-        p.observe(reply("p2 49514 10.0.0.40\n")),
+        p.observe(reply("p2 49514 10.0.0.40\n")?),
         Some(lab_endpoint("rpwire-probe-1"))
     );
     assert_eq!(p.pending(), 0, "a paired command is done with");
+    Ok(())
 }
 
 #[test]
-fn a_lookup_and_its_reply_name_the_relays_media_too() {
+fn a_lookup_and_its_reply_name_the_relays_media_too() -> Result<(), TestError> {
     let mut p = Pairing::new(16);
     p.observe(command(
         "q1 L rpwire-probe-1 192.0.2.20 40002 ftag1 ttag1\n",
-    ));
+    )?);
     assert_eq!(
-        p.observe(reply("q1 49514 10.0.0.40\n")),
+        p.observe(reply("q1 49514 10.0.0.40\n")?),
         Some(lab_endpoint("rpwire-probe-1"))
     );
+    Ok(())
 }
 
 #[test]
-fn a_reply_nobody_asked_for_names_nothing() {
+fn a_reply_nobody_asked_for_names_nothing() -> Result<(), TestError> {
     let mut p = Pairing::new(16);
-    assert_eq!(p.observe(reply("p2 49514 10.0.0.40\n")), None);
+    assert_eq!(p.observe(reply("p2 49514 10.0.0.40\n")?), None);
     assert_eq!(p.pending(), 0);
+    Ok(())
 }
 
 #[test]
-fn a_reply_to_another_cookie_names_nothing_and_leaves_the_command_waiting() {
+fn a_reply_to_another_cookie_names_nothing_and_leaves_the_command_waiting() -> Result<(), TestError>
+{
     let mut p = Pairing::new(16);
-    p.observe(command("p2 U rpwire-probe-1 192.0.2.10 40000 ftag1\n"));
-    assert_eq!(p.observe(reply("zz 49514 10.0.0.40\n")), None);
+    p.observe(command("p2 U rpwire-probe-1 192.0.2.10 40000 ftag1\n")?);
+    assert_eq!(p.observe(reply("zz 49514 10.0.0.40\n")?), None);
     assert_eq!(p.pending(), 1);
     assert_eq!(
-        p.observe(reply("p2 49514 10.0.0.40\n")),
+        p.observe(reply("p2 49514 10.0.0.40\n")?),
         Some(lab_endpoint("rpwire-probe-1")),
         "its own reply still pairs"
     );
+    Ok(())
 }
 
 #[test]
-fn recording_streams_are_never_named_as_the_calls_media() {
+fn recording_streams_are_never_named_as_the_calls_media() -> Result<(), TestError> {
     // `R` and `C` open recording or copy streams. Naming one as the call's
     // media would put a party in the call that the call never had.
     // `C` names where the copy goes before the tag, per rtpproxy's argument
@@ -97,32 +105,36 @@ fn recording_streams_are_never_named_as_the_calls_media() {
         ("C", "rpwire-probe-1 copy.rtp ftag1"),
     ] {
         let mut p = Pairing::new(16);
-        p.observe(command(&format!("r1 {verb} {args}\n")));
-        assert_eq!(p.observe(reply("r1 49514 10.0.0.40\n")), None, "{verb}");
+        p.observe(command(&format!("r1 {verb} {args}\n"))?);
+        assert_eq!(p.observe(reply("r1 49514 10.0.0.40\n")?), None, "{verb}");
         assert_eq!(p.pending(), 0, "{verb}: its reply still clears it");
     }
+    Ok(())
 }
 
 #[test]
-fn a_refusal_names_nothing_and_clears_the_command() {
+fn a_refusal_names_nothing_and_clears_the_command() -> Result<(), TestError> {
     let mut p = Pairing::new(16);
-    p.observe(command("e1 U rpwire-probe-1 192.0.2.10 40000 ftag1\n"));
-    assert_eq!(p.observe(reply("e1 E50\n")), None);
+    p.observe(command("e1 U rpwire-probe-1 192.0.2.10 40000 ftag1\n")?);
+    assert_eq!(p.observe(reply("e1 E50\n")?), None);
     assert_eq!(p.pending(), 0);
+    Ok(())
 }
 
 #[test]
-fn commands_that_open_nothing_pair_to_nothing() {
+fn commands_that_open_nothing_pair_to_nothing() -> Result<(), TestError> {
     let mut p = Pairing::new(16);
-    p.observe(command("p3 D rpwire-probe-1 ftag1\n"));
-    p.observe(command("p1 V\n"));
-    assert_eq!(p.observe(reply("p3 0\n")), None);
-    assert_eq!(p.observe(reply("p1 20040107\n")), None);
+    p.observe(command("p3 D rpwire-probe-1 ftag1\n")?);
+    p.observe(command("p1 V\n")?);
+    assert_eq!(p.observe(reply("p3 0\n")?), None);
+    assert_eq!(p.observe(reply("p1 20040107\n")?), None);
     assert_eq!(p.pending(), 0);
+    Ok(())
 }
 
 #[test]
-fn a_retried_command_names_the_same_media_once_per_reply_and_leaves_nothing_behind() {
+fn a_retried_command_names_the_same_media_once_per_reply_and_leaves_nothing_behind()
+-> Result<(), TestError> {
     // RP4. rtpproxy answers a retransmitted command from its reply cache, so
     // one cookie is seen twice in each direction. Whatever order the four
     // datagrams arrive in, every name produced is the same endpoint and the
@@ -134,9 +146,9 @@ fn a_retried_command_names_the_same_media_once_per_reply_and_leaves_nothing_behi
         let mut named = Vec::new();
         for (i, datagram) in order.iter().enumerate() {
             let control = if *datagram == cmd {
-                command(datagram)
+                command(datagram)?
             } else {
-                reply(datagram)
+                reply(datagram)?
             };
             if let Some(endpoint) = p.observe(control) {
                 named.push((i, endpoint));
@@ -151,32 +163,37 @@ fn a_retried_command_names_the_same_media_once_per_reply_and_leaves_nothing_behi
         );
         assert_eq!(p.pending(), 0, "{order:?}");
     }
+    Ok(())
 }
 
 #[test]
-fn unanswered_commands_are_bounded_and_the_oldest_go_first() {
+fn unanswered_commands_are_bounded_and_the_oldest_go_first() -> Result<(), TestError> {
     // A relay that never answers, or a capture that saw only one direction,
     // must not grow the table without limit.
     let mut p = Pairing::new(4);
     for i in 0..10 {
-        p.observe(command(&format!("k{i} U call-{i} 192.0.2.10 40000 ftag\n")));
+        p.observe(command(&format!(
+            "k{i} U call-{i} 192.0.2.10 40000 ftag\n"
+        ))?);
     }
     assert_eq!(p.pending(), 4);
-    assert_eq!(p.observe(reply("k0 49514 10.0.0.40\n")), None, "evicted");
+    assert_eq!(p.observe(reply("k0 49514 10.0.0.40\n")?), None, "evicted");
     assert_eq!(
-        p.observe(reply("k9 49514 10.0.0.40\n")),
+        p.observe(reply("k9 49514 10.0.0.40\n")?),
         Some(lab_endpoint("call-9")),
         "kept"
     );
+    Ok(())
 }
 
 #[test]
-fn a_reply_address_that_is_not_an_ip_address_names_nothing() {
+fn a_reply_address_that_is_not_an_ip_address_names_nothing() -> Result<(), TestError> {
     // The endpoint is matched against packets, which carry addresses. A name
     // would have to be resolved, and resolving what a sniffed datagram says
     // is a lookup on an attacker's behalf.
     let mut p = Pairing::new(16);
-    p.observe(command("h1 U rpwire-probe-1 192.0.2.10 40000 ftag1\n"));
-    assert_eq!(p.observe(reply("h1 49514 relay.example\n")), None);
+    p.observe(command("h1 U rpwire-probe-1 192.0.2.10 40000 ftag1\n")?);
+    assert_eq!(p.observe(reply("h1 49514 relay.example\n")?), None);
     assert_eq!(p.pending(), 0);
+    Ok(())
 }

@@ -36,6 +36,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/absence_scan.rs"]
 mod absence_scan;
 
@@ -84,19 +86,23 @@ fn read(p: &Path) -> String {
 /// The decision about any one token lives in [`cross_reference`], driven from
 /// both sides by `scanner_calibration_test`. This function only supplies it
 /// with the real tree.
-fn cross_references() -> Vec<(String, String, String)> {
+fn cross_references() -> Result<Vec<(String, String, String)>, TestError> {
     let exists = |left: &str| repo().join("tests").join(format!("{left}.rs")).exists();
     let mut out = Vec::new();
     for path in test_files() {
         let src = read(&path);
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for token in src.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':')) {
             if let Some((left, right)) = cross_reference(token, &exists) {
                 out.push((file.clone(), left, right));
             }
         }
     }
-    out
+    Ok(out)
 }
 
 // ── A. cross-references must resolve ────────────────────────────────
@@ -106,8 +112,8 @@ fn cross_references() -> Vec<(String, String, String)> {
 /// Every rule below reads what this returns. A scanner that matched nothing
 /// would report a perfectly consistent tree.
 #[test]
-fn the_cross_reference_scanner_reads_real_references() {
-    let refs = cross_references();
+fn the_cross_reference_scanner_reads_real_references() -> Result<(), TestError> {
+    let refs = cross_references()?;
     assert!(
         refs.len() >= 3,
         "found only {} `some_test::some_fn` reference(s) across {} test \
@@ -116,6 +122,7 @@ fn the_cross_reference_scanner_reads_real_references() {
         refs.len(),
         test_files().len()
     );
+    Ok(())
 }
 
 /// Every test named in a cross-reference exists.
@@ -123,17 +130,21 @@ fn the_cross_reference_scanner_reads_real_references() {
 /// The mechanical half of the defect: a sentence that names a gate is a claim
 /// about the tree, and a renamed test turns it into a confident wrong answer.
 #[test]
-fn every_test_named_in_a_cross_reference_exists() {
+fn every_test_named_in_a_cross_reference_exists() -> Result<(), TestError> {
     // Build the name index once, across every test binary.
     let mut known: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in test_files() {
-        let file = path.file_stem().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_stem()
+            .ok_or("path has no file stem")?
+            .to_string_lossy()
+            .to_string();
         for f in test_fns(&read(&path)) {
             known.entry(f).or_default().push(file.clone());
         }
     }
     let mut broken = Vec::new();
-    for (from, target_file, target_fn) in cross_references() {
+    for (from, target_file, target_fn) in cross_references()? {
         let Some(files) = known.get(&target_fn) else {
             broken.push(format!(
                 "  {from} names {target_file}::{target_fn}, which is not a \
@@ -155,6 +166,7 @@ fn every_test_named_in_a_cross_reference_exists() {
          and sends the next reader looking for something that moved.",
         broken.join("\n")
     );
+    Ok(())
 }
 
 /// The gate the pre-push hook points at exists and can fire.
@@ -164,7 +176,7 @@ fn every_test_named_in_a_cross_reference_exists() {
 /// were renamed the reminder would send an operator to a gate that is not
 /// there, at exactly the moment they are trying to finish a release.
 #[test]
-fn the_gate_the_pre_push_prompt_names_exists() {
+fn the_gate_the_pre_push_prompt_names_exists() -> Result<(), TestError> {
     let hook = read(&repo().join(".githooks/pre-push"));
     assert!(
         !hook.is_empty(),
@@ -174,7 +186,7 @@ fn the_gate_the_pre_push_prompt_names_exists() {
     if !hook.contains(named) {
         // The prompt may legitimately be reworded; what must not happen is it
         // naming something that does not exist. Nothing to check here.
-        return;
+        return Ok(());
     }
     let completeness = read(&repo().join("tests/release_completeness_test.rs"));
     assert!(
@@ -182,13 +194,14 @@ fn the_gate_the_pre_push_prompt_names_exists() {
         "the pre-push prompt names {named}, which release_completeness_test no \
          longer defines"
     );
+    Ok(())
 }
 
 // ── B. a duplicated gate is what a missed grep produces ─────────────
 
 /// The test-name index reads the whole tree.
 #[test]
-fn the_test_name_scanner_reads_the_whole_tree() {
+fn the_test_name_scanner_reads_the_whole_tree() -> Result<(), TestError> {
     let files = test_files();
     assert!(
         files.len() >= 40,
@@ -202,6 +215,7 @@ fn the_test_name_scanner_reads_the_whole_tree() {
          stopped matching and the duplicate rule below would pass by \
          examining nothing"
     );
+    Ok(())
 }
 
 /// No two tests share a name AND a body.
@@ -220,10 +234,14 @@ fn the_test_name_scanner_reads_the_whole_tree() {
 /// maintenance and, when the copies drift, gives the tree an argument with
 /// itself that neither side can win.
 #[test]
-fn no_two_tests_share_a_name_and_a_body() {
+fn no_two_tests_share_a_name_and_a_body() -> Result<(), TestError> {
     let mut seen: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         let src = read(&path);
         for (name, body) in test_bodies(&src) {
             seen.entry((name, body)).or_default().push(file.clone());
@@ -241,6 +259,7 @@ fn no_two_tests_share_a_name_and_a_body() {
          like from the outside.",
         dupes.join("\n")
     );
+    Ok(())
 }
 
 /// A ratchet constant is pinned in exactly one place.
@@ -249,10 +268,14 @@ fn no_two_tests_share_a_name_and_a_body() {
 /// `EXPECTED_TABLES` would both have to be moved together, and whichever is
 /// forgotten becomes a gate asserting a number nobody maintains.
 #[test]
-fn no_ratchet_constant_is_pinned_in_two_files() {
+fn no_ratchet_constant_is_pinned_in_two_files() -> Result<(), TestError> {
     let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for (name, value) in ratchet_pins(&read(&path)) {
             seen.entry(format!("{name} = {value}"))
                 .or_default()
@@ -278,13 +301,14 @@ fn no_ratchet_constant_is_pinned_in_two_files() {
          gate asserting a figure nobody maintains.",
         dupes.join("\n")
     );
+    Ok(())
 }
 
 // ── C. claims of absence must name what was searched ────────────────
 
 /// The absence-claim scanner finds real claims.
 #[test]
-fn the_absence_claim_scanner_finds_real_claims() {
+fn the_absence_claim_scanner_finds_real_claims() -> Result<(), TestError> {
     let mut count = 0usize;
     for path in test_files() {
         let src = read(&path).to_ascii_lowercase();
@@ -298,6 +322,7 @@ fn the_absence_claim_scanner_finds_real_claims() {
          the phrase list has stopped matching how this repository writes them, \
          or the rule below is checking nothing"
     );
+    Ok(())
 }
 
 /// No claim of absence names a gate that exists.
@@ -309,14 +334,18 @@ fn the_absence_claim_scanner_finds_real_claims() {
 /// Matched conservatively: the claim must name a specific test that exists.
 /// A prose claim with no name is caught by the rule below instead.
 #[test]
-fn no_claim_of_absence_names_a_test_that_exists() {
+fn no_claim_of_absence_names_a_test_that_exists() -> Result<(), TestError> {
     let mut known: Vec<String> = Vec::new();
     for path in test_files() {
         known.extend(test_fns(&read(&path)));
     }
     let mut wrong = Vec::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for line in read(&path).lines() {
             let lower = line.to_ascii_lowercase();
             if !ABSENCE_PHRASES.iter().any(|p| lower.contains(p)) {
@@ -337,6 +366,7 @@ fn no_claim_of_absence_names_a_test_that_exists() {
         "claims of absence that name something present:\n{}",
         wrong.join("\n")
     );
+    Ok(())
 }
 
 /// The delivery gates still cover the tagged-but-unadvertised state.
@@ -345,7 +375,7 @@ fn no_claim_of_absence_names_a_test_that_exists() {
 /// than a quiet narrowing — and so a future reader tempted to build a second
 /// one finds this pointing at the first.
 #[test]
-fn the_tagged_but_unadvertised_state_is_covered_exactly_once() {
+fn the_tagged_but_unadvertised_state_is_covered_exactly_once() -> Result<(), TestError> {
     let completeness = read(&repo().join("tests/release_completeness_test.rs"));
     let named = "fn the_site_advertises_the_newest_release_whose_assets_exist";
     assert!(
@@ -371,6 +401,7 @@ fn the_tagged_but_unadvertised_state_is_covered_exactly_once() {
         "that gate is defined {defs} times; a second copy is the duplicate \
          this file exists to prevent"
     );
+    Ok(())
 }
 
 /// The gate that covers it actually asserts the site version.
@@ -379,11 +410,11 @@ fn the_tagged_but_unadvertised_state_is_covered_exactly_once() {
 /// body and requires it to compare `published_version` against the tag,
 /// because a test could keep its name while its assertion was hollowed out.
 #[test]
-fn the_advertisement_gate_still_compares_the_site_to_the_tag() {
+fn the_advertisement_gate_still_compares_the_site_to_the_tag() -> Result<(), TestError> {
     let src = read(&repo().join("tests/release_completeness_test.rs"));
     let start = src
         .find("fn the_site_advertises_the_newest_release_whose_assets_exist")
-        .expect("the gate exists");
+        .ok_or("the gate exists")?;
     let body = &src[start..];
     let end = body.find("\n}\n").map_or(body.len(), |i| i + 3);
     let body = &body[..end];
@@ -395,7 +426,7 @@ fn the_advertisement_gate_still_compares_the_site_to_the_tag() {
     let cmp = body
         .find("assert_eq!")
         .map(|i| &body[i..])
-        .expect("the gate compares something");
+        .ok_or("the gate compares something")?;
     let first_literal = cmp.find('"').unwrap_or(cmp.len());
     let operands = &cmp[..first_literal];
     assert!(
@@ -414,4 +445,5 @@ fn the_advertisement_gate_still_compares_the_site_to_the_tag() {
         "the gate no longer considers whether assets exist, so it would demand \
          the site advertise a release nobody can download"
     );
+    Ok(())
 }

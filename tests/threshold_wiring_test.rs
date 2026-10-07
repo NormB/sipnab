@@ -25,7 +25,11 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-use pcap_build::{invite_without_max_forwards, udp_frame, write_pcap_at_or_panic};
+use pcap_build::{invite_without_max_forwards, udp_frame, write_pcap_at};
+
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
 
 /// Caller side of every synthetic capture here.
 const A: [u8; 4] = [10, 1, 0, 1];
@@ -47,36 +51,40 @@ const C: [u8; 4] = [10, 3, 0, 1];
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run(args: &[&str]) -> (String, String) {
-    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("warn"));
+fn run(args: &[&str]) -> Result<(String, String), TestError> {
+    let (stdout, stderr, code) = run_support::run(args, Some("warn"))?;
     assert_eq!(code, Some(0), "sipnab must exit cleanly; stderr:\n{stderr}");
-    (stdout, stderr)
+    Ok((stdout, stderr))
 }
 
 /// Write `content` as `sipnab.toml` inside `dir` and return its path.
 ///
 /// # Side effects
 /// Creates a file under the caller's tempdir.
-fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
+fn write_config(dir: &tempfile::TempDir, content: &str) -> Result<PathBuf, TestError> {
     let path = dir.path().join("sipnab.toml");
-    let mut f = std::fs::File::create(&path).expect("create config");
-    write!(f, "{content}").expect("write config");
-    path
+    let mut f = std::fs::File::create(&path)?;
+    write!(f, "{content}")?;
+    Ok(path)
 }
 
 /// Write `frames` (payload, microseconds from capture start) as a pcap.
 ///
 /// # Side effects
 /// Creates `<name>.pcap` under the caller's tempdir.
-fn write_capture(dir: &tempfile::TempDir, name: &str, frames: &[(Vec<u8>, u64)]) -> PathBuf {
+fn write_capture(
+    dir: &tempfile::TempDir,
+    name: &str,
+    frames: &[(Vec<u8>, u64)],
+) -> Result<PathBuf, TestError> {
     let path = dir.path().join(format!("{name}.pcap"));
-    write_pcap_at_or_panic(&path, frames, 1);
-    path
+    write_pcap_at(&path, frames, 1)?;
+    Ok(path)
 }
 
 /// The path as the CLI takes it.
-fn arg(path: &Path) -> String {
-    path.to_str().expect("utf-8 path").to_string()
+fn arg(path: &Path) -> Result<String, TestError> {
+    Ok(path.to_str().ok_or("utf-8 path")?.to_string())
 }
 
 // ── SIP message builders ────────────────────────────────────────────────
@@ -314,10 +322,10 @@ fn working_peer_keepalive() -> Vec<(Vec<u8>, u64)> {
 ///
 /// `--kill-scanner` is what builds the detector; offline it only reports, and
 /// never transmits.
-fn scan(pcap: &str, extra: &[&str]) -> String {
+fn scan(pcap: &str, extra: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["-N", "-I", pcap, "--kill-scanner"];
     args.extend_from_slice(extra);
-    run(&args).1
+    Ok(run(&args)?.1)
 }
 
 // ── [security] reg_flood_threshold ──────────────────────────────────────
@@ -329,24 +337,27 @@ fn scan(pcap: &str, extra: &[&str]) -> String {
 /// carrier-registrar figure and a small PBX is brute-forced at ten. A
 /// declared 2/s does see them.
 #[test]
-fn reg_flood_threshold_decides_when_a_burst_is_a_flood() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn reg_flood_threshold_decides_when_a_burst_is_a_flood() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let frames: Vec<(Vec<u8>, u64)> = (0..5)
         .flat_map(|i| {
             let at = i as u64 * 10_000;
             [(register(i), at), (refused_register(i), at + 1_000)]
         })
         .collect();
-    let pcap = arg(&write_capture(&dir, "regflood", &frames));
-    let cfg = arg(&write_config(&dir, "[security]\nreg_flood_threshold = 2\n"));
+    let pcap = arg(&write_capture(&dir, "regflood", &frames)?)?;
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nreg_flood_threshold = 2\n",
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"])?;
     assert!(
         !alerted(&shipped, "reg_flood"),
         "five REGISTERs are below the shipped 50/s, so nothing should fire:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--reg-flood", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--reg-flood", "--config", &cfg])?;
     assert!(
         alerted(&declared, "reg_flood"),
         "[security] reg_flood_threshold = 2 must reach the detector:\n{declared}"
@@ -361,24 +372,25 @@ fn reg_flood_threshold_decides_when_a_burst_is_a_flood() {
         "200",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "reg_flood"),
         "--reg-flood-threshold must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 // ── [security] reg_flood_window_secs / reg_flood_transaction_timeout_ms ──
 
 /// Three credentialed REGISTERs, each refused, two seconds of capture apart.
-fn paced_refusals(dir: &tempfile::TempDir) -> String {
+fn paced_refusals(dir: &tempfile::TempDir) -> Result<String, TestError> {
     let frames: Vec<(Vec<u8>, u64)> = (0..3)
         .flat_map(|i| {
             let at = i as u64 * 2_000_000;
             [(register(i), at), (refused_register(i), at + 1_000)]
         })
         .collect();
-    arg(&write_capture(dir, "paced", &frames))
+    arg(&write_capture(dir, "paced", &frames)?)
 }
 
 /// The declared counting window decides how concentrated refusals must be.
@@ -387,9 +399,9 @@ fn paced_refusals(dir: &tempfile::TempDir) -> String {
 /// so threshold 2 never sees more than one. A declared ten-second window holds
 /// all three, from the flag and from the key, and the flag beats the key.
 #[test]
-fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = paced_refusals(&dir);
+fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = paced_refusals(&dir)?;
     let base = [
         "-N",
         "-I",
@@ -398,18 +410,18 @@ fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() {
         "--reg-flood-threshold",
         "2",
     ];
-    let with = |extra: &[&str]| {
+    let with = |extra: &[&str]| -> Result<String, TestError> {
         let mut args = base.to_vec();
         args.extend_from_slice(extra);
-        run(&args).1
+        Ok(run(&args)?.1)
     };
 
-    let shipped = with(&["--no-config"]);
+    let shipped = with(&["--no-config"])?;
     assert!(
         !alerted(&shipped, "reg_flood"),
         "three refusals two seconds apart must not fire in a one-second window:\n{shipped}"
     );
-    let flagged = with(&["--no-config", "--reg-flood-window", "10"]);
+    let flagged = with(&["--no-config", "--reg-flood-window", "10"])?;
     assert!(
         alerted(&flagged, "reg_flood"),
         "--reg-flood-window 10 must reach the detector:\n{flagged}"
@@ -417,17 +429,18 @@ fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() {
     let cfg = arg(&write_config(
         &dir,
         "[security]\nreg_flood_window_secs = 10\n",
-    ));
-    let keyed = with(&["--config", &cfg]);
+    )?)?;
+    let keyed = with(&["--config", &cfg])?;
     assert!(
         alerted(&keyed, "reg_flood"),
         "[security] reg_flood_window_secs = 10 must reach the detector:\n{keyed}"
     );
-    let overridden = with(&["--config", &cfg, "--reg-flood-window", "1"]);
+    let overridden = with(&["--config", &cfg, "--reg-flood-window", "1"])?;
     assert!(
         !alerted(&overridden, "reg_flood"),
         "--reg-flood-window must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared transaction timeout decides whether a late challenge counts.
@@ -438,8 +451,9 @@ fn reg_flood_window_secs_decides_how_concentrated_refusals_must_be() {
 /// A network running T1 at one second has a 64 s Timer F, where the same 401
 /// is a second failure and fires.
 #[test]
-fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
     let late = 40_000_000;
     let frames = vec![
         (register(0), 0),
@@ -447,7 +461,7 @@ fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() {
         (refused_register(1), late + 1_000),
         (refused_register(0), late + 2_000),
     ];
-    let pcap = arg(&write_capture(&dir, "late", &frames));
+    let pcap = arg(&write_capture(&dir, "late", &frames)?)?;
     let base = [
         "-N",
         "-I",
@@ -456,18 +470,18 @@ fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() {
         "--reg-flood-threshold",
         "1",
     ];
-    let with = |extra: &[&str]| {
+    let with = |extra: &[&str]| -> Result<String, TestError> {
         let mut args = base.to_vec();
         args.extend_from_slice(extra);
-        run(&args).1
+        Ok(run(&args)?.1)
     };
 
-    let shipped = with(&["--no-config"]);
+    let shipped = with(&["--no-config"])?;
     assert!(
         !alerted(&shipped, "reg_flood"),
         "a 401 forty seconds late must not count under the shipped 32 s:\n{shipped}"
     );
-    let flagged = with(&["--no-config", "--reg-flood-transaction-timeout", "64000"]);
+    let flagged = with(&["--no-config", "--reg-flood-transaction-timeout", "64000"])?;
     assert!(
         alerted(&flagged, "reg_flood"),
         "--reg-flood-transaction-timeout 64000 must reach the detector:\n{flagged}"
@@ -475,25 +489,26 @@ fn reg_flood_transaction_timeout_decides_whether_a_late_challenge_counts() {
     let cfg = arg(&write_config(
         &dir,
         "[security]\nreg_flood_transaction_timeout_ms = 64000\n",
-    ));
-    let keyed = with(&["--config", &cfg]);
+    )?)?;
+    let keyed = with(&["--config", &cfg])?;
     assert!(
         alerted(&keyed, "reg_flood"),
         "[security] reg_flood_transaction_timeout_ms must reach the detector:\n{keyed}"
     );
-    let overridden = with(&["--config", &cfg, "--reg-flood-transaction-timeout", "32000"]);
+    let overridden = with(&["--config", &cfg, "--reg-flood-transaction-timeout", "32000"])?;
     assert!(
         !alerted(&overridden, "reg_flood"),
         "--reg-flood-transaction-timeout must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// An absurd registration-flood window or timeout fails the run by name, from
 /// the flag and from the key.
 #[test]
-fn an_absurd_reg_flood_policy_is_refused_by_name() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = paced_refusals(&dir);
+fn an_absurd_reg_flood_policy_is_refused_by_name() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = paced_refusals(&dir)?;
     for (flag, key, bad) in [
         ("--reg-flood-window", "reg_flood_window_secs", "0"),
         ("--reg-flood-window", "reg_flood_window_secs", "3601"),
@@ -508,26 +523,30 @@ fn an_absurd_reg_flood_policy_is_refused_by_name() {
             "600001",
         ),
     ] {
-        let (_, stderr, code) = run_support::run_or_panic(
+        let (_, stderr, code) = run_support::run(
             &["-N", "-I", &pcap, "--reg-flood", "--no-config", flag, bad],
             Some("error"),
-        );
+        )?;
         assert_ne!(code, Some(0), "{flag} {bad} must fail the run");
         assert!(
             stderr.contains(flag) && stderr.contains(bad),
             "the refusal must name {flag} and {bad}; got {stderr}"
         );
-        let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = {bad}\n")));
-        let (_, stderr, code) = run_support::run_or_panic(
+        let cfg = arg(&write_config(
+            &dir,
+            &format!("[security]\n{key} = {bad}\n"),
+        )?)?;
+        let (_, stderr, code) = run_support::run(
             &["-N", "-I", &pcap, "--reg-flood", "--config", &cfg],
             Some("error"),
-        );
+        )?;
         assert_ne!(code, Some(0), "{key} = {bad} must fail the run");
         assert!(
             stderr.contains(key) && stderr.contains(bad),
             "the refusal must name {key} and {bad}; got {stderr}"
         );
     }
+    Ok(())
 }
 
 // ── reg_flood: when the capture cannot show a credential failure ────────
@@ -541,13 +560,13 @@ fn an_absurd_reg_flood_policy_is_refused_by_name() {
 /// as "nobody was guessing passwords". The notice is advisory: the run still
 /// exits 0 and no source is named.
 #[test]
-fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() {
+fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() -> Result<(), TestError> {
     let notice = "reg_flood cannot establish credential failures";
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
 
     let one_way: Vec<(Vec<u8>, u64)> = (0..5).map(|i| (register(i), i as u64 * 10_000)).collect();
-    let pcap = arg(&write_capture(&dir, "oneway", &one_way));
-    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"]);
+    let pcap = arg(&write_capture(&dir, "oneway", &one_way)?)?;
+    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"])?;
     assert!(
         stderr.contains(notice) && stderr.contains("5 REGISTER"),
         "five REGISTERs with no answer must be reported as unestablished:\n{stderr}"
@@ -563,8 +582,8 @@ fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() {
             [(register(i), at), (refused_register(i), at + 1_000)]
         })
         .collect();
-    let pcap = arg(&write_capture(&dir, "answered", &answered));
-    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"]);
+    let pcap = arg(&write_capture(&dir, "answered", &answered)?)?;
+    let (_, stderr) = run(&["-N", "-I", &pcap, "--reg-flood", "--no-config"])?;
     assert!(
         !stderr.contains("reg_flood cannot establish"),
         "a capture that shows every challenge establishes every outcome:\n{stderr}"
@@ -574,13 +593,14 @@ fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() {
     let (_, stderr) = run(&[
         "-N",
         "-I",
-        &arg(&dir.path().join("oneway.pcap")),
+        &arg(&dir.path().join("oneway.pcap"))?,
         "--no-config",
-    ]);
+    ])?;
     assert!(
         !stderr.contains(notice),
         "no --reg-flood, no notice:\n{stderr}"
     );
+    Ok(())
 }
 
 // ── [security] fraud_* ──────────────────────────────────────────────────
@@ -592,8 +612,8 @@ fn reg_flood_says_when_the_capture_cannot_show_a_credential_failure() {
 /// second — the case that matters, a carrier whose ring-no-answer clears
 /// faster than the shipped default assumes — makes them ordinary calls.
 #[test]
-fn fraud_short_call_secs_decides_which_calls_are_short() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fraud_short_call_secs_decides_which_calls_are_short() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..3u64 {
         frames.extend(answered_call(
@@ -604,20 +624,20 @@ fn fraud_short_call_secs_decides_which_calls_are_short() {
             2_000_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "wangiri3", &frames));
+    let pcap = arg(&write_capture(&dir, "wangiri3", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_short_call_secs = 1\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         alerted(&shipped, "Wangiri"),
         "two-second calls are short under the shipped three, so three of them \
          to one prefix must raise wangiri:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         !alerted(&declared, "Wangiri"),
         "[security] fraud_short_call_secs = 1 must make a two-second call \
@@ -633,17 +653,18 @@ fn fraud_short_call_secs_decides_which_calls_are_short() {
         "5",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         alerted(&overridden, "Wangiri"),
         "--fraud-short-call must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared count decides how many short calls make a lure.
 #[test]
-fn fraud_wangiri_calls_decides_how_many_short_calls_are_a_lure() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fraud_wangiri_calls_decides_how_many_short_calls_are_a_lure() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..2u64 {
         frames.extend(answered_call(
@@ -654,16 +675,19 @@ fn fraud_wangiri_calls_decides_how_many_short_calls_are_a_lure() {
             1_000_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "wangiri2", &frames));
-    let cfg = arg(&write_config(&dir, "[security]\nfraud_wangiri_calls = 2\n"));
+    let pcap = arg(&write_capture(&dir, "wangiri2", &frames)?)?;
+    let cfg = arg(&write_config(
+        &dir,
+        "[security]\nfraud_wangiri_calls = 2\n",
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         !alerted(&shipped, "Wangiri"),
         "two short calls are below the shipped three:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         alerted(&declared, "Wangiri"),
         "[security] fraud_wangiri_calls = 2 must reach the detector:\n{declared}"
@@ -678,17 +702,18 @@ fn fraud_wangiri_calls_decides_how_many_short_calls_are_a_lure() {
         "9",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "Wangiri"),
         "--fraud-wangiri-calls must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared run length decides how long a dial-plan walk must be.
 #[test]
-fn fraud_sequential_calls_decides_how_long_a_scan_must_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fraud_sequential_calls_decides_how_long_a_scan_must_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..2u64 {
         frames.extend(refused_call(
@@ -698,19 +723,19 @@ fn fraud_sequential_calls_decides_how_long_a_scan_must_be() {
             i * 5_000_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "sequential", &frames));
+    let pcap = arg(&write_capture(&dir, "sequential", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_sequential_calls = 2\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         !alerted(&shipped, "SequentialScanning"),
         "two consecutive refusals are below the shipped three:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         alerted(&declared, "SequentialScanning"),
         "[security] fraud_sequential_calls = 2 must reach the detector:\n{declared}"
@@ -725,11 +750,12 @@ fn fraud_sequential_calls_decides_how_long_a_scan_must_be() {
         "9",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "SequentialScanning"),
         "--fraud-sequential-calls must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// Narrowing the VOLUME window must not narrow sequential scanning with it.
@@ -743,8 +769,8 @@ fn fraud_sequential_calls_decides_how_long_a_scan_must_be() {
 /// is defined by the numbers being consecutive, not by any rate — so they now
 /// have separate windows and this pins them apart.
 #[test]
-fn a_narrow_volume_window_leaves_sequential_scanning_alone() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_narrow_volume_window_leaves_sequential_scanning_alone() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..3u64 {
         frames.extend(refused_call(
@@ -754,9 +780,9 @@ fn a_narrow_volume_window_leaves_sequential_scanning_alone() {
             i * 15_000_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "widescan", &frames));
+    let pcap = arg(&write_capture(&dir, "widescan", &frames)?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         alerted(&shipped, "SequentialScanning"),
         "three consecutive dead numbers over 30s is the shipped detection, or \
@@ -771,12 +797,13 @@ fn a_narrow_volume_window_leaves_sequential_scanning_alone() {
         "--fraud-volume-window",
         "5",
         "--no-config",
-    ]);
+    ])?;
     assert!(
         alerted(&narrowed, "SequentialScanning"),
         "--fraud-volume-window 5 asks a question about bursts and must not \
          shorten the run a dial-plan walk has to make:\n{narrowed}"
     );
+    Ok(())
 }
 
 /// A capture that establishes a baseline of two calls a minute and then places
@@ -786,7 +813,7 @@ fn a_narrow_volume_window_leaves_sequential_scanning_alone() {
 /// from, so the first two calls are what makes the burst measurable at all.
 /// Bare `INVITE`s: nothing terminates, so neither the wangiri nor the
 /// sequential detector can claim the alert instead.
-fn volume_spike_capture(dir: &tempfile::TempDir) -> String {
+fn volume_spike_capture(dir: &tempfile::TempDir) -> Result<String, TestError> {
     let mut frames = Vec::new();
     let mut n = 0usize;
     for secs in [0u64, 5] {
@@ -803,27 +830,27 @@ fn volume_spike_capture(dir: &tempfile::TempDir) -> String {
         ));
         n += 1;
     }
-    arg(&write_capture(dir, "volume", &frames))
+    arg(&write_capture(dir, "volume", &frames)?)
 }
 
 /// The declared multiple decides how far above its own baseline a source has
 /// to go.
 #[test]
-fn fraud_volume_multiplier_decides_how_big_a_spike_must_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = volume_spike_capture(&dir);
+fn fraud_volume_multiplier_decides_how_big_a_spike_must_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = volume_spike_capture(&dir)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_volume_multiplier = 10\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         alerted(&shipped, "VolumeSpike"),
         "fifteen calls against a baseline of two clears the shipped 5x:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         !alerted(&declared, "VolumeSpike"),
         "[security] fraud_volume_multiplier = 10 needs 20 calls, and there are \
@@ -839,30 +866,31 @@ fn fraud_volume_multiplier_decides_how_big_a_spike_must_be() {
         "2",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         alerted(&overridden, "VolumeSpike"),
         "--fraud-volume-multiplier must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared floor decides how few calls are too few to call a spike.
 #[test]
-fn fraud_volume_min_calls_decides_the_floor_under_a_spike() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = volume_spike_capture(&dir);
+fn fraud_volume_min_calls_decides_the_floor_under_a_spike() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = volume_spike_capture(&dir)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_volume_min_calls = 40\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         alerted(&shipped, "VolumeSpike"),
         "fifteen calls is over the shipped floor of six:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         !alerted(&declared, "VolumeSpike"),
         "[security] fraud_volume_min_calls = 40 must silence a fifteen-call \
@@ -878,11 +906,12 @@ fn fraud_volume_min_calls_decides_the_floor_under_a_spike() {
         "6",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         alerted(&overridden, "VolumeSpike"),
         "--fraud-volume-min-calls must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared wangiri window decides whether a PACED lure is visible at all.
@@ -901,8 +930,8 @@ fn fraud_volume_min_calls_decides_the_floor_under_a_spike() {
 /// run whose sweep age is a constant reports nothing here even with the window
 /// wired. The sweep age is derived from the widest configured window instead.
 #[test]
-fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..3u64 {
         frames.extend(answered_call(
@@ -913,20 +942,20 @@ fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() {
             1_000_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "pacedlure", &frames));
+    let pcap = arg(&write_capture(&dir, "pacedlure", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_wangiri_window_secs = 900\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         !alerted(&shipped, "Wangiri"),
         "five minutes apart, the shipped sixty-second window never holds two \
          of these at once:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         alerted(&declared, "Wangiri"),
         "[security] fraud_wangiri_window_secs = 900 must both reach the \
@@ -942,11 +971,12 @@ fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() {
         "60",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "Wangiri"),
         "--fraud-wangiri-window must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared volume window decides how concentrated a burst has to be.
@@ -958,8 +988,8 @@ fn fraud_wangiri_window_secs_decides_whether_a_paced_lure_is_visible() {
 /// inside a minute of ordinary one-a-second traffic and average away to
 /// nothing, and only a window shorter than the burst separates them.
 #[test]
-fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     let mut n = 0usize;
     // Seventy seconds of ordinary traffic at one call a second, which is what
@@ -979,20 +1009,20 @@ fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() {
         ));
         n += 1;
     }
-    let pcap = arg(&write_capture(&dir, "microburst", &frames));
+    let pcap = arg(&write_capture(&dir, "microburst", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nfraud_volume_window_secs = 5\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         !alerted(&shipped, "VolumeSpike"),
         "the shipped sixty-second window already holds sixty ordinary calls, \
          so forty more inside one second is not five times anything:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         alerted(&declared, "VolumeSpike"),
         "[security] fraud_volume_window_secs = 5 measures the burst against \
@@ -1008,11 +1038,12 @@ fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() {
         "60",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "VolumeSpike"),
         "--fraud-volume-window must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// Declaring business hours is what makes the off-hours detection reachable.
@@ -1021,25 +1052,25 @@ fn fraud_volume_window_secs_decides_how_concentrated_a_burst_must_be() {
 /// detector shipped with a documented detection that no run could produce.
 /// The capture's fixed base timestamp falls at 22:13 UTC.
 #[test]
-fn business_hours_make_the_off_hours_detection_reachable() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn business_hours_make_the_off_hours_detection_reachable() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = arg(&write_capture(
         &dir,
         "offhours",
         &[(invite("oh-1", "o1", "3000", None), 0)],
-    ));
+    )?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nbusiness_hours = \"8-18\"\n",
-    ));
+    )?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--fraud-detect", "--no-config"])?;
     assert!(
         !alerted(&shipped, "OffHours"),
         "with no window declared there is no outside:\n{shipped}"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--fraud-detect", "--config", &cfg])?;
     assert!(
         alerted(&declared, "OffHours"),
         "[security] business_hours must reach the detector; the capture is \
@@ -1055,36 +1086,38 @@ fn business_hours_make_the_off_hours_detection_reachable() {
         "20-23",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !alerted(&overridden, "OffHours"),
         "--business-hours must beat the config key, and 22:13 is inside \
          20:00-23:00:\n{overridden}"
     );
+    Ok(())
 }
 
 /// A business-hours spec that is not two whole hours is refused by name.
 #[test]
-fn a_malformed_business_hours_spec_is_refused_by_name() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_malformed_business_hours_spec_is_refused_by_name() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = arg(&write_capture(
         &dir,
         "offhours",
         &[(invite("oh-1", "o1", "3000", None), 0)],
-    ));
+    )?)?;
     for bad in ["8:30-18", "8", "8-99", "eight-six"] {
         let cfg = arg(&write_config(
             &dir,
             &format!("[security]\nbusiness_hours = \"{bad}\"\n"),
-        ));
+        )?)?;
         let (_, stderr, code) =
-            run_support::run_or_panic(&["-N", "-I", &pcap, "--config", &cfg], Some("error"));
+            run_support::run(&["-N", "-I", &pcap, "--config", &cfg], Some("error"))?;
         assert_ne!(code, Some(0), "{bad:?} must fail the run");
         assert!(
             stderr.contains("business_hours"),
             "the error must name the key; got {stderr}"
         );
     }
+    Ok(())
 }
 
 // ── [security] scanner_* ────────────────────────────────────────────────
@@ -1098,8 +1131,8 @@ fn a_malformed_business_hours_spec_is_refused_by_name() {
 /// every count driven to its floor of 1, the window left alone, still reports
 /// nothing.
 #[test]
-fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..8u64 {
         let branch = format!("-slow-{i}");
@@ -1110,13 +1143,13 @@ fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
             i * 10_000_000 + 50_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "slowsweep", &frames));
+    let pcap = arg(&write_capture(&dir, "slowsweep", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_window_secs = 60\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         !alerted(&shipped, "detection="),
         "a probe every 10s never puts two in one 5s window, so the shipped \
@@ -1136,7 +1169,7 @@ fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
             "--scanner-unanswered-probes",
             "1",
         ],
-    );
+    )?;
     assert!(
         !alerted(&floored, "detection="),
         "with the window unchanged the counts cannot reach this sweep at ANY \
@@ -1144,7 +1177,7 @@ fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
          and no settled outcome:\n{floored}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         alerted(&declared, "detection=enumeration"),
         "[security] scanner_window_secs = 60 holds all eight probes at once, so \
@@ -1152,11 +1185,12 @@ fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
          together:\n{declared}"
     );
 
-    let overridden = scan(&pcap, &["--scanner-window", "5", "--config", &cfg]);
+    let overridden = scan(&pcap, &["--scanner-window", "5", "--config", &cfg])?;
     assert!(
         !alerted(&overridden, "detection="),
         "--scanner-window must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared probe count decides when an aggregated rate is a scanner.
@@ -1165,8 +1199,9 @@ fn scanner_window_secs_decides_whether_a_paced_sweep_is_visible() {
 /// traffic clears the shipped ten probes in five seconds and the whole site is
 /// reported as one scanner.
 #[test]
-fn scanner_behavioral_probes_decides_when_an_aggregated_rate_is_a_scanner() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_behavioral_probes_decides_when_an_aggregated_rate_is_a_scanner() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..15u64 {
         let branch = format!("-agg-{i}");
@@ -1176,19 +1211,19 @@ fn scanner_behavioral_probes_decides_when_an_aggregated_rate_is_a_scanner() {
             i * 100_000 + 10_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "aggregated", &frames));
+    let pcap = arg(&write_capture(&dir, "aggregated", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_behavioral_probes = 100\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         alerted(&shipped, "detection=behavioral"),
         "fifteen refused REGISTERs in 1.5s clears the shipped ten:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         !alerted(&declared, "detection="),
         "[security] scanner_behavioral_probes = 100 must reach the \
@@ -1198,17 +1233,18 @@ fn scanner_behavioral_probes_decides_when_an_aggregated_rate_is_a_scanner() {
     let overridden = scan(
         &pcap,
         &["--scanner-behavioral-probes", "10", "--config", &cfg],
-    );
+    )?;
     assert!(
         alerted(&overridden, "detection=behavioral"),
         "--scanner-behavioral-probes must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared target count decides how wide a sweep has to be.
 #[test]
-fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..8u64 {
         let branch = format!("-wide-{i}");
@@ -1219,19 +1255,19 @@ fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
             i * 100_000 + 10_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "widesweep", &frames));
+    let pcap = arg(&write_capture(&dir, "widesweep", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_enumeration_targets = 50\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         alerted(&shipped, "detection=enumeration"),
         "eight extensions, none of them found, clears the shipped five:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         !alerted(&declared, "detection="),
         "an SBC fronting a large hunt group reaches dozens of extensions a \
@@ -1241,17 +1277,18 @@ fn scanner_enumeration_targets_decides_how_wide_a_sweep_must_be() {
     let overridden = scan(
         &pcap,
         &["--scanner-enumeration-targets", "5", "--config", &cfg],
-    );
+    )?;
     assert!(
         alerted(&overridden, "detection=enumeration"),
         "--scanner-enumeration-targets must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared refusal count decides how much saying no is evidence.
 #[test]
-fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = Vec::new();
     for i in 0..12u64 {
         let branch = format!("-crack-{i}");
@@ -1261,37 +1298,38 @@ fn scanner_rejected_probes_decides_how_much_refusal_is_evidence() {
             i * 100_000 + 10_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "refused", &frames));
+    let pcap = arg(&write_capture(&dir, "refused", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_rejected_probes = 20\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         alerted(&shipped, "detection=behavioral"),
         "twelve refusals clears the shipped five, which is what makes the rate \
          reportable:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         !alerted(&declared, "detection="),
         "a registrar that refuses every unauthenticated first attempt earns \
          refusals all day, so twenty must reach the detector:\n{declared}"
     );
 
-    let overridden = scan(&pcap, &["--scanner-rejected-probes", "5", "--config", &cfg]);
+    let overridden = scan(&pcap, &["--scanner-rejected-probes", "5", "--config", &cfg])?;
     assert!(
         alerted(&overridden, "detection=behavioral"),
         "--scanner-rejected-probes must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared unanswered count decides how much silence is evidence.
 #[test]
-fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = working_peer_keepalive();
     for i in 0..15u64 {
         frames.push((
@@ -1299,19 +1337,19 @@ fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
             100_000 + i * 100_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "hole", &frames));
+    let pcap = arg(&write_capture(&dir, "hole", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_unanswered_probes = 40\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         alerted(&shipped, "detection=behavioral"),
         "fifteen probes nothing answered clears the shipped five:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         !alerted(&declared, "detection="),
         "[security] scanner_unanswered_probes = 40 must reach the \
@@ -1321,17 +1359,18 @@ fn scanner_unanswered_probes_decides_how_much_silence_is_evidence() {
     let overridden = scan(
         &pcap,
         &["--scanner-unanswered-probes", "5", "--config", &cfg],
-    );
+    )?;
     assert!(
         alerted(&overridden, "detection=behavioral"),
         "--scanner-unanswered-probes must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared factor decides what completing a registration buys a peer.
 #[test]
-fn scanner_established_factor_decides_what_a_registration_buys() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_established_factor_decides_what_a_registration_buys() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     // The registration that makes A a peer we serve: a REGISTER, its challenge,
     // the authenticated retry, and the 200 OK.
     let mut frames = vec![
@@ -1349,20 +1388,20 @@ fn scanner_established_factor_decides_what_a_registration_buys() {
             110_000 + i * 100_000,
         ));
     }
-    let pcap = arg(&write_capture(&dir, "compromised", &frames));
+    let pcap = arg(&write_capture(&dir, "compromised", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_established_factor = 1\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         !alerted(&shipped, "detection="),
         "a registered peer needs four times the evidence, and ten refusals is \
          twice:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         alerted(&declared, "detection=enumeration"),
         "[security] scanner_established_factor = 1 grants a registration no \
@@ -1372,11 +1411,12 @@ fn scanner_established_factor_decides_what_a_registration_buys() {
     let overridden = scan(
         &pcap,
         &["--scanner-established-factor", "4", "--config", &cfg],
-    );
+    )?;
     assert!(
         !alerted(&overridden, "detection="),
         "--scanner-established-factor must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared answer grace decides how slow a link may be.
@@ -1385,8 +1425,8 @@ fn scanner_established_factor_decides_what_a_registration_buys() {
 /// than that has every probe outstanding when the next goes out, so an ordinary
 /// working peer reads as a sweep into a hole.
 #[test]
-fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let mut frames = working_peer_keepalive();
     for i in 0..15u64 {
         let branch = format!("-slowlink-{i}");
@@ -1397,42 +1437,43 @@ fn scanner_answer_grace_ms_decides_how_slow_a_link_may_be() {
         ));
     }
     frames.sort_by_key(|(_, t)| *t);
-    let pcap = arg(&write_capture(&dir, "slowlink", &frames));
+    let pcap = arg(&write_capture(&dir, "slowlink", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[security]\nscanner_answer_grace_ms = 3000\n",
-    ));
+    )?)?;
 
-    let shipped = scan(&pcap, &["--no-config"]);
+    let shipped = scan(&pcap, &["--no-config"])?;
     assert!(
         alerted(&shipped, "detection=behavioral"),
         "under a 500 ms grace every probe on a 2s link is 'unanswered', so a \
          working peer is reported:\n{shipped}"
     );
 
-    let declared = scan(&pcap, &["--config", &cfg]);
+    let declared = scan(&pcap, &["--config", &cfg])?;
     assert!(
         !alerted(&declared, "detection="),
         "[security] scanner_answer_grace_ms = 3000 covers this link's round \
          trip, so nothing here was ever unanswered:\n{declared}"
     );
 
-    let overridden = scan(&pcap, &["--scanner-answer-grace", "500", "--config", &cfg]);
+    let overridden = scan(&pcap, &["--scanner-answer-grace", "500", "--config", &cfg])?;
     assert!(
         alerted(&overridden, "detection=behavioral"),
         "--scanner-answer-grace must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// A zero scanner threshold is refused by name rather than read as "off".
 #[test]
-fn a_zero_scanner_threshold_is_refused_by_name() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_zero_scanner_threshold_is_refused_by_name() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = arg(&write_capture(
         &dir,
         "zero",
         &[(probe(A, "OPTIONS", "trunk", "-z"), 0)],
-    ));
+    )?)?;
     for key in [
         "scanner_behavioral_probes",
         "scanner_enumeration_targets",
@@ -1442,17 +1483,18 @@ fn a_zero_scanner_threshold_is_refused_by_name() {
         "scanner_established_factor",
         "scanner_answer_grace_ms",
     ] {
-        let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = 0\n")));
-        let (_, stderr, code) = run_support::run_or_panic(
+        let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = 0\n"))?)?;
+        let (_, stderr, code) = run_support::run(
             &["-N", "-I", &pcap, "--kill-scanner", "--config", &cfg],
             Some("error"),
-        );
+        )?;
         assert_ne!(code, Some(0), "{key} = 0 must fail the run");
         assert!(
             stderr.contains(key),
             "the error must name the key; got {stderr}"
         );
     }
+    Ok(())
 }
 
 // ── [diagnosis] signaling thresholds ───────────────────────────────────
@@ -1462,8 +1504,8 @@ fn a_zero_scanner_threshold_is_refused_by_name() {
 /// Five seconds to the `180`: inside E.721's international 95th-percentile
 /// figure of eleven, outside a network that knows its calls are local.
 #[test]
-fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let frames = vec![
         (invite("pdd-1", "p1", "bob", None), 0),
         (
@@ -1481,19 +1523,19 @@ fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() {
             8_100_000,
         ),
     ];
-    let pcap = arg(&write_capture(&dir, "pdd", &frames));
+    let pcap = arg(&write_capture(&dir, "pdd", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[diagnosis]\npost_dial_delay_secs = 2.0\n",
-    ));
+    )?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         !shipped.contains("post_dial_delay"),
         "five seconds is inside the shipped 11 s:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         declared.contains("post_dial_delay"),
         "[diagnosis] post_dial_delay_secs = 2.0 must reach the diagnosis:\n{declared}"
@@ -1508,11 +1550,12 @@ fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() {
         "30",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !overridden.contains("post_dial_delay"),
         "--pdd-threshold must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared `ACK` timeout is what turns an unacknowledged `200` into a
@@ -1522,8 +1565,8 @@ fn diagnosis_post_dial_delay_threshold_decides_a_slow_ringback() {
 /// that it never saw an `ACK` — and the last message of the dialog, so ten
 /// seconds is what the detection measures.
 #[test]
-fn diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let frames = vec![
         (invite("ack-1", "a1", "bob", None), 0),
         (
@@ -1535,16 +1578,19 @@ fn diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault() {
             10_100_000,
         ),
     ];
-    let pcap = arg(&write_capture(&dir, "ack", &frames));
-    let cfg = arg(&write_config(&dir, "[diagnosis]\nack_timeout_secs = 5.0\n"));
+    let pcap = arg(&write_capture(&dir, "ack", &frames)?)?;
+    let cfg = arg(&write_config(
+        &dir,
+        "[diagnosis]\nack_timeout_secs = 5.0\n",
+    )?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         !shipped.contains("ack_missing"),
         "ten seconds is inside Timer H's 32 s:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         declared.contains("ack_missing"),
         "[diagnosis] ack_timeout_secs = 5.0 must reach the diagnosis:\n{declared}"
@@ -1559,18 +1605,19 @@ fn diagnosis_ack_timeout_decides_when_a_missing_ack_is_a_fault() {
         "60",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !overridden.contains("ack_missing"),
         "--ack-timeout must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared Timer C budget is what decides when silence is worth
 /// reporting.
 #[test]
-fn diagnosis_no_final_response_timeout_decides_when_silence_is_reported() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn diagnosis_no_final_response_timeout_decides_when_silence_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let frames = vec![
         (invite("nf-1", "n1", "bob", None), 0),
         (
@@ -1582,19 +1629,19 @@ fn diagnosis_no_final_response_timeout_decides_when_silence_is_reported() {
             10_000_000,
         ),
     ];
-    let pcap = arg(&write_capture(&dir, "nofinal", &frames));
+    let pcap = arg(&write_capture(&dir, "nofinal", &frames)?)?;
     let cfg = arg(&write_config(
         &dir,
         "[diagnosis]\nno_final_response_secs = 5.0\n",
-    ));
+    )?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         !shipped.contains("\"abandoned\":{"),
         "ten seconds of ringing is inside Timer C's 180 s:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         declared.contains("\"abandoned\":{"),
         "[diagnosis] no_final_response_secs = 5.0 must reach the diagnosis:\n{declared}"
@@ -1609,11 +1656,12 @@ fn diagnosis_no_final_response_timeout_decides_when_silence_is_reported() {
         "600",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !overridden.contains("\"abandoned\":{"),
         "--no-final-response-timeout must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 // ── [diagnosis] media asymmetry thresholds ──────────────────────────────
@@ -1644,7 +1692,7 @@ fn sdp(ip: &str, port: u16) -> String {
 /// That puts the capture between the shipped thresholds and the declared ones
 /// in both directions at once: a 3 s / 60% duration delta is over the shipped
 /// 2 s / 5%, and 200 ms of late media is under the shipped 500 ms.
-fn asymmetric_media_capture(dir: &tempfile::TempDir) -> String {
+fn asymmetric_media_capture(dir: &tempfile::TempDir) -> Result<String, TestError> {
     let offer = sdp("10.1.0.1", 40_000);
     let answer = sdp("10.2.0.1", 40_002);
     let mut frames = vec![
@@ -1694,26 +1742,26 @@ fn asymmetric_media_capture(dir: &tempfile::TempDir) -> String {
         6_100_000,
     ));
     frames.sort_by_key(|(_, t)| *t);
-    arg(&write_capture(dir, "media", &frames))
+    arg(&write_capture(dir, "media", &frames)?)
 }
 
 /// The declared duration delta decides when two legs are asymmetric.
 #[test]
-fn diagnosis_duration_asymmetry_threshold_decides_when_legs_disagree() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = asymmetric_media_capture(&dir);
+fn diagnosis_duration_asymmetry_threshold_decides_when_legs_disagree() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = asymmetric_media_capture(&dir)?;
     let cfg = arg(&write_config(
         &dir,
         "[diagnosis]\nduration_asymmetry_secs = 4.0\n",
-    ));
+    )?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         shipped.contains("Duration asymmetry"),
         "a 3 s delta is over the shipped 2 s:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         !declared.contains("Duration asymmetry"),
         "[diagnosis] duration_asymmetry_secs = 4.0 must reach the diagnosis:\n{declared}"
@@ -1728,25 +1776,26 @@ fn diagnosis_duration_asymmetry_threshold_decides_when_legs_disagree() {
         "0.5",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         overridden.contains("Duration asymmetry"),
         "--duration-asymmetry-secs must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared percentage is the other half of the duration test, and either
 /// one alone quiets it.
 #[test]
-fn diagnosis_duration_asymmetry_percentage_reaches_the_diagnosis() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = asymmetric_media_capture(&dir);
+fn diagnosis_duration_asymmetry_percentage_reaches_the_diagnosis() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = asymmetric_media_capture(&dir)?;
     let cfg = arg(&write_config(
         &dir,
         "[diagnosis]\nduration_asymmetry_pct = 80.0\n",
-    ));
+    )?)?;
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         !declared.contains("Duration asymmetry"),
         "a 60% delta is under a declared 80%:\n{declared}"
@@ -1761,28 +1810,29 @@ fn diagnosis_duration_asymmetry_percentage_reaches_the_diagnosis() {
         "10",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         overridden.contains("Duration asymmetry"),
         "--duration-asymmetry-pct must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// The declared late-media budget decides when media that started 200 ms after
 /// the `200 OK` is worth reporting.
 #[test]
-fn diagnosis_late_media_threshold_decides_when_media_is_late() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = asymmetric_media_capture(&dir);
-    let cfg = arg(&write_config(&dir, "[diagnosis]\nlate_media_ms = 100\n"));
+fn diagnosis_late_media_threshold_decides_when_media_is_late() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = asymmetric_media_capture(&dir)?;
+    let cfg = arg(&write_config(&dir, "[diagnosis]\nlate_media_ms = 100\n")?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         !shipped.contains("Late media"),
         "200 ms is inside the shipped 500 ms:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         declared.contains("Late media"),
         "[diagnosis] late_media_ms = 100 must reach the diagnosis:\n{declared}"
@@ -1797,11 +1847,12 @@ fn diagnosis_late_media_threshold_decides_when_media_is_late() {
         "1000",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         !overridden.contains("Late media"),
         "--late-media-ms must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 /// A 12-byte RTP header at payload type `pt`, plus a frame.
@@ -1818,7 +1869,7 @@ fn rtp_packet_pt(seq: u16, timestamp: u32, ssrc: u32, pt: u8) -> Vec<u8> {
 /// point: at the shipped ratio comfort noise "explains" the asymmetry and
 /// one-way audio is never reported, and 40 % CN is what a VoLTE or mobile
 /// trunk running aggressive voice-activity detection actually produces.
-fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> String {
+fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> Result<String, TestError> {
     let offer = sdp("10.1.0.1", 40_000);
     let answer = sdp("10.2.0.1", 40_002);
     let mut frames = vec![
@@ -1860,7 +1911,7 @@ fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> String {
         3_100_000,
     ));
     frames.sort_by_key(|(_, t)| *t);
-    arg(&write_capture(dir, "comfort-noise", &frames))
+    arg(&write_capture(dir, "comfort-noise", &frames)?)
 }
 
 /// The declared comfort-noise ratio decides whether one-way audio is reported
@@ -1872,22 +1923,23 @@ fn one_way_call_with_comfort_noise(dir: &tempfile::TempDir) -> String {
 /// explanation, and the single most-reported VoIP fault goes unreported with
 /// nothing in the output to say why.
 #[test]
-fn diagnosis_cn_suppression_ratio_decides_whether_one_way_audio_is_reported() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = one_way_call_with_comfort_noise(&dir);
+fn diagnosis_cn_suppression_ratio_decides_whether_one_way_audio_is_reported()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = one_way_call_with_comfort_noise(&dir)?;
     let cfg = arg(&write_config(
         &dir,
         "[diagnosis]\ncn_suppression_ratio = 0.5\n",
-    ));
+    )?)?;
 
-    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"]);
+    let (shipped, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--no-config"])?;
     assert!(
         shipped.contains("\"one_way_audio\":false"),
         "40 % comfort noise is over the shipped 0.3, so the finding is \
          suppressed — this is the state the key exists to change:\n{shipped}"
     );
 
-    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg]);
+    let (declared, _) = run(&["-N", "-I", &pcap, "--json-dialogs", "--config", &cfg])?;
     assert!(
         declared.contains("\"one_way_audio\":true"),
         "[diagnosis] cn_suppression_ratio = 0.5 must reach the diagnosis, so \
@@ -1903,11 +1955,12 @@ fn diagnosis_cn_suppression_ratio_decides_whether_one_way_audio_is_reported() {
         "0.2",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert!(
         overridden.contains("\"one_way_audio\":false"),
         "--cn-suppression-ratio must beat the config key:\n{overridden}"
     );
+    Ok(())
 }
 
 // ── [limits] lint_max_per_rule ──────────────────────────────────────────
@@ -1917,18 +1970,18 @@ fn diagnosis_cn_suppression_ratio_decides_whether_one_way_audio_is_reported() {
 /// Forty `INVITE`s in one dialog, none carrying `Max-Forwards`, so exactly one
 /// rule fires forty times and the count on the summary line is the cap.
 #[test]
-fn lint_max_per_rule_bounds_the_findings_one_rule_prints() {
+fn lint_max_per_rule_bounds_the_findings_one_rule_prints() -> Result<(), TestError> {
     /// The number sipnab reports on its own summary line.
-    fn findings(stderr: &str) -> usize {
-        stderr
+    fn findings(stderr: &str) -> Result<usize, TestError> {
+        Ok(stderr
             .lines()
             .find_map(|l| l.strip_prefix("Lint: "))
             .and_then(|rest| rest.split(' ').next())
             .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no lint summary line in:\n{stderr}"))
+            .ok_or_else(|| format!("no lint summary line in:\n{stderr}"))?)
     }
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let frames: Vec<(Vec<u8>, u64)> = (0..40u32)
         .map(|i| {
             (
@@ -1937,19 +1990,19 @@ fn lint_max_per_rule_bounds_the_findings_one_rule_prints() {
             )
         })
         .collect();
-    let pcap = arg(&write_capture(&dir, "lint", &frames));
-    let cfg = arg(&write_config(&dir, "[limits]\nlint_max_per_rule = 5\n"));
+    let pcap = arg(&write_capture(&dir, "lint", &frames)?)?;
+    let cfg = arg(&write_config(&dir, "[limits]\nlint_max_per_rule = 5\n")?)?;
 
-    let (_, shipped) = run(&["-N", "-I", &pcap, "--lint", "--no-config"]);
+    let (_, shipped) = run(&["-N", "-I", &pcap, "--lint", "--no-config"])?;
     assert_eq!(
-        findings(&shipped),
+        findings(&shipped)?,
         25,
         "the shipped cap is 25, so 40 repeats must print 25"
     );
 
-    let (_, declared) = run(&["-N", "-I", &pcap, "--lint", "--config", &cfg]);
+    let (_, declared) = run(&["-N", "-I", &pcap, "--lint", "--config", &cfg])?;
     assert_eq!(
-        findings(&declared),
+        findings(&declared)?,
         5,
         "[limits] lint_max_per_rule = 5 must reach the linter"
     );
@@ -1963,32 +2016,34 @@ fn lint_max_per_rule_bounds_the_findings_one_rule_prints() {
         "40",
         "--config",
         &cfg,
-    ]);
+    ])?;
     assert_eq!(
-        findings(&overridden),
+        findings(&overridden)?,
         40,
         "--lint-max-per-rule must beat the config key, and must be able to \
          RAISE the cap as well as lower it"
     );
+    Ok(())
 }
 
 /// `lint_max_per_rule = 0` is refused by name rather than read as "uncapped".
 #[test]
-fn a_zero_lint_cap_is_refused_by_name() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_zero_lint_cap_is_refused_by_name() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = arg(&write_capture(
         &dir,
         "lint",
         &[(invite_without_max_forwards("lint-1", "l1", 1), 0)],
-    ));
-    let cfg = arg(&write_config(&dir, "[limits]\nlint_max_per_rule = 0\n"));
-    let (_, stderr, code) = run_support::run_or_panic(
+    )?)?;
+    let cfg = arg(&write_config(&dir, "[limits]\nlint_max_per_rule = 0\n")?)?;
+    let (_, stderr, code) = run_support::run(
         &["-N", "-I", &pcap, "--lint", "--config", &cfg],
         Some("error"),
-    );
+    )?;
     assert_ne!(code, Some(0), "a zero cap must fail the run");
     assert!(
         stderr.contains("lint_max_per_rule"),
         "the error must name the key; got {stderr}"
     );
+    Ok(())
 }

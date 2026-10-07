@@ -14,6 +14,8 @@ use std::net::Ipv4Addr;
 use sipnab::security::actions::{TfpsActions, TfpsCtl, TfpsReply};
 use sipnab::security::tfps::TfpsLocator;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/executable.rs"]
 mod executable;
 
@@ -21,14 +23,14 @@ const BAN: &str = include_str!("fixtures/tfps-ban-golden.jsonl");
 const UNBAN: &str = include_str!("fixtures/tfps-unban-golden.jsonl");
 const BANNED: &str = include_str!("fixtures/tfps-banned-golden.jsonl");
 
-fn line(fixture: &str, n: usize) -> &str {
-    fixture.lines().nth(n - 1).expect("fixture line")
+fn line(fixture: &str, n: usize) -> Result<&str, TestError> {
+    Ok(fixture.lines().nth(n - 1).ok_or("fixture line")?)
 }
 
 /// A `tfps_ctl` that prints `ban_line` to ban, `unban_line` to unban, and
 /// the golden list to banned, and records its argv.
-fn fake(ban_line: &str, unban_line: &str) -> (tempfile::TempDir, TfpsCtl) {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fake(ban_line: &str, unban_line: &str) -> Result<(tempfile::TempDir, TfpsCtl), TestError> {
+    let dir = tempfile::tempdir()?;
     let here = dir.path().display();
     let script = format!(
         "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"{here}/argv\"\n\
@@ -39,50 +41,51 @@ fn fake(ban_line: &str, unban_line: &str) -> (tempfile::TempDir, TfpsCtl) {
          esac\n"
     );
     let path = dir.path().join("tfps_ctl");
-    executable::write_executable(&path, &script).expect("write");
+    executable::write_executable(&path, &script)?;
     let ctl = TfpsCtl::new(TfpsLocator::new(Some(path), None));
-    (dir, ctl)
+    Ok((dir, ctl))
 }
 
 #[test]
-fn an_applied_ban_is_applied_and_carries_the_lifetime() {
-    let (dir, ctl) = fake(line(BAN, 1), line(UNBAN, 1));
-    let reply = ctl
-        .ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0)
-        .expect("asked");
+fn an_applied_ban_is_applied_and_carries_the_lifetime() -> Result<(), TestError> {
+    let (dir, ctl) = fake(line(BAN, 1)?, line(UNBAN, 1)?)?;
+    let reply = ctl.ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0)?;
     assert_eq!(reply, TfpsReply::Applied);
-    let argv = std::fs::read_to_string(dir.path().join("argv")).expect("argv");
+    let argv = std::fs::read_to_string(dir.path().join("argv"))?;
     assert!(
         argv.contains("198.51.100.20") && argv.contains("--ttl\n600"),
         "{argv}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_ban_tfps_refuses_is_a_refusal_in_its_words() {
-    let (_dir, ctl) = fake(line(BAN, 3), line(UNBAN, 1));
-    let reply = ctl.ban(Ipv4Addr::new(192, 0, 2, 1), 600, 0).expect("asked");
+fn a_ban_tfps_refuses_is_a_refusal_in_its_words() -> Result<(), TestError> {
+    let (_dir, ctl) = fake(line(BAN, 3)?, line(UNBAN, 1)?)?;
+    let reply = ctl.ban(Ipv4Addr::new(192, 0, 2, 1), 600, 0)?;
     assert_eq!(reply, TfpsReply::Refused("local".to_string()));
+    Ok(())
 }
 
 #[test]
-fn unban_applied_and_not_blocked() {
-    let (_dir, ctl) = fake(line(BAN, 1), line(UNBAN, 1));
+fn unban_applied_and_not_blocked() -> Result<(), TestError> {
+    let (_dir, ctl) = fake(line(BAN, 1)?, line(UNBAN, 1)?)?;
     assert_eq!(
-        ctl.unban(Ipv4Addr::new(198, 51, 100, 20)).expect("asked"),
+        ctl.unban(Ipv4Addr::new(198, 51, 100, 20))?,
         TfpsReply::Applied
     );
-    let (_dir2, ctl2) = fake(line(BAN, 1), line(UNBAN, 2));
+    let (_dir2, ctl2) = fake(line(BAN, 1)?, line(UNBAN, 2)?)?;
     assert_eq!(
-        ctl2.unban(Ipv4Addr::new(198, 51, 100, 21)).expect("asked"),
+        ctl2.unban(Ipv4Addr::new(198, 51, 100, 21))?,
         TfpsReply::Refused("not-blocked".to_string())
     );
+    Ok(())
 }
 
 #[test]
-fn banned_lists_every_address_with_its_expiry() {
-    let (_dir, ctl) = fake(line(BAN, 1), line(UNBAN, 1));
-    let list = ctl.banned().expect("asked");
+fn banned_lists_every_address_with_its_expiry() -> Result<(), TestError> {
+    let (_dir, ctl) = fake(line(BAN, 1)?, line(UNBAN, 1)?)?;
+    let list = ctl.banned()?;
     assert_eq!(list.len(), BANNED.lines().count());
     assert!(
         list.contains(&(Ipv4Addr::new(198, 51, 100, 10), Some(1_756_921_200))),
@@ -92,27 +95,31 @@ fn banned_lists_every_address_with_its_expiry() {
         list.contains(&(Ipv4Addr::new(198, 51, 100, 11), None)),
         "{list:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_machine_without_tfps_is_an_error_that_says_so() {
-    let empty = tempfile::tempdir().expect("tempdir");
+fn a_machine_without_tfps_is_an_error_that_says_so() -> Result<(), TestError> {
+    let empty = tempfile::tempdir()?;
     let ctl = TfpsCtl::new(TfpsLocator::new(None, None).with_search_path(empty.path().as_os_str()));
-    let err = ctl
-        .ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0)
-        .expect_err("no TFPS");
+    let err = match ctl.ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0) {
+        Ok(reply) => return Err(format!("no TFPS: expected an error, got {reply:?}").into()),
+        Err(e) => e,
+    };
     assert!(err.contains("tfps_ctl"), "{err}");
     assert!(ctl.banned().is_err(), "an absent peer is not an empty list");
+    Ok(())
 }
 
 #[test]
-fn an_unban_asks_tfps_to_unban_and_nothing_else() {
-    let (dir, ctl) = fake(line(BAN, 1), line(UNBAN, 1));
-    ctl.unban(Ipv4Addr::new(198, 51, 100, 20)).expect("asked");
-    let argv = std::fs::read_to_string(dir.path().join("argv")).expect("argv");
+fn an_unban_asks_tfps_to_unban_and_nothing_else() -> Result<(), TestError> {
+    let (dir, ctl) = fake(line(BAN, 1)?, line(UNBAN, 1)?)?;
+    ctl.unban(Ipv4Addr::new(198, 51, 100, 20))?;
+    let argv = std::fs::read_to_string(dir.path().join("argv"))?;
     let verbs: Vec<&str> = argv
         .lines()
         .filter(|l| ["ban", "unban", "banned"].contains(l))
         .collect();
     assert_eq!(verbs, ["unban"], "{argv}");
+    Ok(())
 }

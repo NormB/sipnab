@@ -30,6 +30,9 @@ use clap::CommandFactory;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -231,7 +234,7 @@ fn unknown_flag_claims_excluding(
 
 /// Flags named in the task-facing documentation must exist.
 #[test]
-fn every_flag_named_in_prose_docs_exists_in_the_binary() {
+fn every_flag_named_in_prose_docs_exists_in_the_binary() -> Result<(), TestError> {
     // `docs/design/` and `docs/research/` are deliberately outside this scan.
     // They are planning documents: they describe flags that were PROPOSED, and
     // some were deliberately withdrawn. `implementation-plan-v6.md` shows a
@@ -256,11 +259,12 @@ fn every_flag_named_in_prose_docs_exists_in_the_binary() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
 }
 
 /// The same rule for the website copy, which is what the public reads.
 #[test]
-fn every_flag_named_on_the_website_exists_in_the_binary() {
+fn every_flag_named_on_the_website_exists_in_the_binary() -> Result<(), TestError> {
     let (bad, files, _) = unknown_flag_claims(&["website/content"]);
     assert!(
         files >= 10,
@@ -275,6 +279,7 @@ fn every_flag_named_on_the_website_exists_in_the_binary() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    Ok(())
 }
 
 /// A flag reference must match a whole flag, never a prefix of a longer one.
@@ -284,7 +289,7 @@ fn every_flag_named_on_the_website_exists_in_the_binary() {
 /// therefore tested against that pair by name, so a future rewrite that
 /// reintroduces prefix matching fails here rather than in a report.
 #[test]
-fn a_flag_reference_is_matched_as_a_whole_word_not_a_prefix() {
+fn a_flag_reference_is_matched_as_a_whole_word_not_a_prefix() -> Result<(), TestError> {
     let have = clap_long_flags();
     assert!(
         have.contains("--fail2ban"),
@@ -319,6 +324,7 @@ fn a_flag_reference_is_matched_as_a_whole_word_not_a_prefix() {
         "a document naming `--fail` must be extracted as --fail and judged \
          against the real flag set; got {claimed:?}"
     );
+    Ok(())
 }
 
 /// The extractor must actually read code spans, not everything or nothing.
@@ -327,7 +333,7 @@ fn a_flag_reference_is_matched_as_a_whole_word_not_a_prefix() {
 /// every document pass, and one that returns every `--`-prefixed word floods
 /// the gate with other tools' flags until someone deletes it.
 #[test]
-fn the_flag_extractor_reads_sipnab_invocations_and_nothing_else() {
+fn the_flag_extractor_reads_sipnab_invocations_and_nothing_else() -> Result<(), TestError> {
     let got = flags_in("use `sipnab --quiet` here; tcpdump takes --immediate-mode instead");
     assert!(
         got.contains("--quiet"),
@@ -383,6 +389,7 @@ fn the_flag_extractor_reads_sipnab_invocations_and_nothing_else() {
         flags_in("`RUST_LOG=debug sipnab --quiet`").contains("--quiet"),
         "extractor lost a flag behind an environment prefix"
     );
+    Ok(())
 }
 
 /// The clap side must be derived, and must be a real program's worth of flags.
@@ -392,7 +399,7 @@ fn the_flag_extractor_reads_sipnab_invocations_and_nothing_else() {
 /// a floor and a few known names makes "the derivation broke" a distinct
 /// outcome from "the docs are wrong".
 #[test]
-fn the_binary_flag_set_is_derived_from_clap_and_is_not_a_stub() {
+fn the_binary_flag_set_is_derived_from_clap_and_is_not_a_stub() -> Result<(), TestError> {
     let have = clap_long_flags();
     assert!(
         have.len() >= 100,
@@ -407,6 +414,7 @@ fn the_binary_flag_set_is_derived_from_clap_and_is_not_a_stub() {
              has — the extraction is reading the wrong thing"
         );
     }
+    Ok(())
 }
 
 /// A documented flag that is one edit away from a real one is a typo, and
@@ -417,7 +425,7 @@ fn the_binary_flag_set_is_derived_from_clap_and_is_not_a_stub() {
 /// never built. A gate that cannot tell them apart makes the reader do the
 /// diagnosis the gate already had the information to do.
 #[test]
-fn an_unknown_documented_flag_is_reported_as_a_typo_when_it_is_one() {
+fn an_unknown_documented_flag_is_reported_as_a_typo_when_it_is_one() -> Result<(), TestError> {
     /// Levenshtein distance, capped: we only care about 0, 1 or "more".
     fn within_one(a: &str, b: &str) -> bool {
         if a == b {
@@ -478,6 +486,7 @@ fn an_unknown_documented_flag_is_reported_as_a_typo_when_it_is_one() {
         "documented flags that look like typos of real ones:\n{}",
         typos.join("\n")
     );
+    Ok(())
 }
 
 /// The real-world captures page is worked examples, so its flags must be real.
@@ -486,12 +495,12 @@ fn an_unknown_documented_flag_is_reported_as_a_typo_when_it_is_one() {
 /// gate is what keeps that true after a flag is renamed, without needing to
 /// run 32 commands against an 8.8 GB corpus that is not in the repository.
 #[test]
-fn every_flag_in_the_real_world_captures_page_exists() {
+fn every_flag_in_the_real_world_captures_page_exists() -> Result<(), TestError> {
     let path = repo().join("docs/real-world-captures.md");
     if !path.exists() {
-        return; // page not present in this checkout
+        return Ok(()); // page not present in this checkout
     }
-    let text = std::fs::read_to_string(&path).expect("read real-world-captures.md");
+    let text = std::fs::read_to_string(&path)?;
     let have = clap_long_flags();
     let named = flags_in(&text);
     assert!(
@@ -507,6 +516,7 @@ fn every_flag_in_the_real_world_captures_page_exists() {
          {bad:?}. Every command block on that page was run when it was written; \
          if a flag was renamed since, the examples no longer execute."
     );
+    Ok(())
 }
 
 /// Every exemption must state a reason, and must exempt something real.
@@ -516,7 +526,7 @@ fn every_flag_in_the_real_world_captures_page_exists() {
 /// or whose file no longer names it — leaves a hole that quietly excuses a
 /// future regression at that exact spot.
 #[test]
-fn every_exemption_states_a_reason_and_still_exempts_something() {
+fn every_exemption_states_a_reason_and_still_exempts_something() -> Result<(), TestError> {
     assert!(
         !NOT_A_CLAIM.is_empty(),
         "the exemption table is empty; delete the mechanism rather than \
@@ -535,13 +545,14 @@ fn every_exemption_states_a_reason_and_still_exempts_something() {
              entry is stale and is excusing nothing. Delete it."
         );
         let text = std::fs::read_to_string(repo().join(file))
-            .unwrap_or_else(|e| panic!("exemption names {file}, which cannot be read: {e}"));
+            .map_err(|e| format!("exemption names {file}, which cannot be read: {e}"))?;
         assert!(
             flags_in(&text).contains(*flag),
             "{file} no longer names {flag} in a sipnab invocation; the \
              exemption is stale and must be deleted"
         );
     }
+    Ok(())
 }
 
 /// The design-doc exclusion must remain narrow.
@@ -550,7 +561,7 @@ fn every_exemption_states_a_reason_and_still_exempts_something() {
 /// enough and it passes by reading nothing. This pins the excluded roots by
 /// name and asserts the scan still covers the great majority of the tree.
 #[test]
-fn the_design_doc_exclusion_stays_narrow() {
+fn the_design_doc_exclusion_stays_narrow() -> Result<(), TestError> {
     let all = markdown_under(&repo().join("docs")).len();
     let excluded = markdown_under(&repo().join("docs/design")).len()
         + markdown_under(&repo().join("docs/research")).len();
@@ -568,4 +579,5 @@ fn the_design_doc_exclusion_stays_narrow() {
         "the scan visited {files} file(s) but {scanned} are in scope — the \
          exclusion is dropping more than the two roots it names"
     );
+    Ok(())
 }

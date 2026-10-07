@@ -40,6 +40,8 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/release_logic.rs"]
 mod release_logic;
 
@@ -72,7 +74,7 @@ const GRAPH_DERIVED: &[(&str, &str)] = &[(
 /// reads as coverage and is a dangling promise: the gate that regenerates and
 /// compares cannot run at all.
 #[test]
-fn every_graph_derived_artifact_has_a_generator_that_exists() {
+fn every_graph_derived_artifact_has_a_generator_that_exists() -> Result<(), TestError> {
     assert!(
         !GRAPH_DERIVED.is_empty(),
         "no graph-derived artifacts are named, so every rule below examines \
@@ -90,6 +92,7 @@ fn every_graph_derived_artifact_has_a_generator_that_exists() {
              compares them cannot run, and a stale file would look current"
         );
     }
+    Ok(())
 }
 
 /// The artifact says how to regenerate it, in the artifact.
@@ -97,7 +100,7 @@ fn every_graph_derived_artifact_has_a_generator_that_exists() {
 /// Whoever meets the red gate is looking at a diff of this file, not at the
 /// test that failed. The instruction has to be where they are.
 #[test]
-fn the_artifact_names_its_own_generator() {
+fn the_artifact_names_its_own_generator() -> Result<(), TestError> {
     for (artifact, generator) in GRAPH_DERIVED {
         let body = read(artifact);
         assert!(
@@ -111,6 +114,7 @@ fn the_artifact_names_its_own_generator() {
              command they have to be told."
         );
     }
+    Ok(())
 }
 
 /// The notices cover the crates the lockfile names.
@@ -123,7 +127,7 @@ fn the_artifact_names_its_own_generator() {
 /// be dropped by a scoping mistake: the direct dependencies this project names
 /// in its own manifest.
 #[test]
-fn the_notices_cover_the_crates_the_lockfile_names() {
+fn the_notices_cover_the_crates_the_lockfile_names() -> Result<(), TestError> {
     let notices = read("THIRD-PARTY-NOTICES.md");
     let lock = read("Cargo.lock");
     assert!(
@@ -158,6 +162,7 @@ fn the_notices_cover_the_crates_the_lockfile_names() {
          the graph produces a file that agrees with itself.",
         names.len()
     );
+    Ok(())
 }
 
 /// A dependency bump does not exempt the artifacts it invalidates.
@@ -168,7 +173,7 @@ fn the_notices_cover_the_crates_the_lockfile_names() {
 /// forget, and exempting it would let the forgetting through the one gate
 /// positioned to notice.
 #[test]
-fn the_dependency_exemption_does_not_cover_a_graph_derived_artifact() {
+fn the_dependency_exemption_does_not_cover_a_graph_derived_artifact() -> Result<(), TestError> {
     for (artifact, _) in GRAPH_DERIVED {
         assert!(
             !dependency_path(artifact),
@@ -192,6 +197,7 @@ fn the_dependency_exemption_does_not_cover_a_graph_derived_artifact() {
          it changes a published attribution list, which is exactly the kind of \
          thing the changelog is for"
     );
+    Ok(())
 }
 
 /// The staleness gate still exists and still regenerates rather than guessing.
@@ -201,12 +207,12 @@ fn the_dependency_exemption_does_not_cover_a_graph_derived_artifact() {
 /// a byte count, a date stamp -- everything here keeps passing while nothing
 /// compares the file to the graph.
 #[test]
-fn the_staleness_gate_regenerates_and_compares() {
+fn the_staleness_gate_regenerates_and_compares() -> Result<(), TestError> {
     let src = read("tests/docs_drift_test.rs");
     assert!(!src.is_empty(), "docs_drift_test.rs must be readable");
     let start = src
         .find("fn third_party_notices_are_current")
-        .expect("the staleness gate still exists by name");
+        .ok_or("the staleness gate still exists by name")?;
     let body = &src[start..];
     let end = body.find("\n}\n").map_or(body.len(), |i| i + 3);
     let body = &body[..end];
@@ -219,6 +225,7 @@ fn the_staleness_gate_regenerates_and_compares() {
         body.contains("assert_eq!") || body.contains("assert!"),
         "the staleness gate compares nothing"
     );
+    Ok(())
 }
 
 /// The inputs every rule above reads are real.
@@ -227,7 +234,7 @@ fn the_staleness_gate_regenerates_and_compares() {
 /// the empty string here, and every `contains` over it is false -- which is the
 /// shape of a suite that passes because it looked at nothing.
 #[test]
-fn the_inputs_these_rules_read_are_real() {
+fn the_inputs_these_rules_read_are_real() -> Result<(), TestError> {
     for f in [
         "THIRD-PARTY-NOTICES.md",
         "Cargo.lock",
@@ -246,4 +253,5 @@ fn the_inputs_these_rules_read_are_real() {
         !DEPENDENCY_PATHS.is_empty(),
         "DEPENDENCY_PATHS is empty, so the exemption rule above proves nothing"
     );
+    Ok(())
 }

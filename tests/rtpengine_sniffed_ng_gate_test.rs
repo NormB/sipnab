@@ -46,7 +46,9 @@ use std::process::Command;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
+
+type TestError = Box<dyn std::error::Error>;
 
 /// The Call-ID a crafted datagram tries to introduce.
 const FORGED_CALL_ID: &str = "ATTACKER-CHOSEN-CALLID";
@@ -143,15 +145,15 @@ fn media_frames() -> Vec<Vec<u8>> {
 
 /// Write a capture into a fresh temp directory and return its path plus the
 /// directory guard that deletes it.
-fn capture(name: &str, frames: &[Vec<u8>]) -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn capture(name: &str, frames: &[Vec<u8>]) -> Result<(tempfile::TempDir, PathBuf), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join(name);
-    write_pcap_or_panic(&path, frames);
-    (dir, path)
+    write_pcap(&path, frames)?;
+    Ok((dir, path))
 }
 
 /// Run sipnab over `path` and return `(stdout, stderr)`.
-fn run(path: &Path, extra: &[&str]) -> (String, String) {
+fn run(path: &Path, extra: &[&str]) -> Result<(String, String), TestError> {
     let mut args: Vec<String> = vec![
         "-N".into(),
         "-I".into(),
@@ -162,18 +164,17 @@ fn run(path: &Path, extra: &[&str]) -> (String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(&args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("run sipnab");
+        .output()?;
     assert!(
         out.status.success(),
         "sipnab exited {:?}; stderr:\n{}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    (
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 // ── The positive control, first ──────────────────────────────────────
@@ -190,7 +191,7 @@ fn run(path: &Path, extra: &[&str]) -> (String, String) {
 /// this feature exists on a standalone relay, and a gate that closed it
 /// entirely would be worse than the hole it replaced.
 #[test]
-fn a_sniffed_mirror_on_the_hep_port_is_believed_and_names_the_call() {
+fn a_sniffed_mirror_on_the_hep_port_is_believed_and_names_the_call() -> Result<(), TestError> {
     let mut frames = vec![udp_frame(
         RELAY_IP,
         COLLECTOR_IP,
@@ -199,8 +200,8 @@ fn a_sniffed_mirror_on_the_hep_port_is_believed_and_names_the_call() {
         &hep_ng(HONEST_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
     frames.extend(media_frames());
-    let (_dir, path) = capture("mirror-on-hep-port.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("mirror-on-hep-port.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         stdout.contains(HONEST_CALL_ID),
@@ -210,6 +211,7 @@ fn a_sniffed_mirror_on_the_hep_port_is_believed_and_names_the_call() {
         !stdout.contains("Orphaned Streams"),
         "and the media it named must stop being orphaned; report was:\n{stdout}"
     );
+    Ok(())
 }
 
 // ── The gate ─────────────────────────────────────────────────────────
@@ -222,7 +224,7 @@ fn a_sniffed_mirror_on_the_hep_port_is_believed_and_names_the_call() {
 /// absent AND the media is back to being orphaned — because a report that
 /// merely omitted the string could still have applied the binding.
 #[test]
-fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() {
+fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() -> Result<(), TestError> {
     let mut frames = vec![udp_frame(
         RELAY_IP,
         COLLECTOR_IP,
@@ -231,8 +233,8 @@ fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() {
         &hep_ng(HONEST_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
     frames.extend(media_frames());
-    let (_dir, path) = capture("mirror-off-port.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("mirror-off-port.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         !stdout.contains(HONEST_CALL_ID),
@@ -242,6 +244,7 @@ fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() {
         stdout.contains("Orphaned Streams"),
         "and its media must stay orphaned; report was:\n{stdout}"
     );
+    Ok(())
 }
 
 /// A Call-ID the attacker chose, in the correlation-id chunk, from an
@@ -253,7 +256,7 @@ fn a_sniffed_ng_datagram_on_an_unexpected_port_names_no_call() {
 /// ONLY thing naming the call, and it is copied verbatim out of a datagram
 /// nothing authenticated.
 #[test]
-fn an_attacker_chosen_call_id_from_an_arbitrary_source_names_nothing() {
+fn an_attacker_chosen_call_id_from_an_arbitrary_source_names_nothing() -> Result<(), TestError> {
     let mut frames = vec![udp_frame(
         ATTACKER_IP,
         ATTACKER_DST_IP,
@@ -262,8 +265,8 @@ fn an_attacker_chosen_call_id_from_an_arbitrary_source_names_nothing() {
         &hep_ng(FORGED_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
     frames.extend(media_frames());
-    let (_dir, path) = capture("attacker-callid.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("attacker-callid.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         !stdout.contains(FORGED_CALL_ID),
@@ -278,11 +281,12 @@ fn an_attacker_chosen_call_id_from_an_arbitrary_source_names_nothing() {
     // The same claim on the JSON door, which is what a machine consumer
     // reads. A key absent from the report but present in --json would be the
     // same bug wearing a different hat.
-    let (json, _) = run(&path, &["--json"]);
+    let (json, _) = run(&path, &["--json"])?;
     assert!(
         !json.contains(FORGED_CALL_ID),
         "nor may it surface on --json:\n{json}"
     );
+    Ok(())
 }
 
 /// A refused datagram cannot overwrite an attribution that was believed.
@@ -292,7 +296,7 @@ fn an_attacker_chosen_call_id_from_an_arbitrary_source_names_nothing() {
 /// call of the attacker's choosing. The honest name must survive and the
 /// forged one must never appear.
 #[test]
-fn a_refused_datagram_does_not_alter_an_attribution_already_made() {
+fn a_refused_datagram_does_not_alter_an_attribution_already_made() -> Result<(), TestError> {
     let mut frames = vec![
         udp_frame(
             RELAY_IP,
@@ -310,8 +314,8 @@ fn a_refused_datagram_does_not_alter_an_attribution_already_made() {
         ),
     ];
     frames.extend(media_frames());
-    let (_dir, path) = capture("overwrite-attempt.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("overwrite-attempt.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         stdout.contains(HONEST_CALL_ID),
@@ -321,6 +325,7 @@ fn a_refused_datagram_does_not_alter_an_attribution_already_made() {
         !stdout.contains(FORGED_CALL_ID),
         "and the forged one must never appear:\n{stdout}"
     );
+    Ok(())
 }
 
 /// The refusal is ANNOUNCED, not silent.
@@ -331,7 +336,7 @@ fn a_refused_datagram_does_not_alter_an_attribution_already_made() {
 /// but a rule inside sipnab. The line names the port it refused and the
 /// authenticated path to use instead.
 #[test]
-fn the_refusal_names_the_port_and_the_alternative() {
+fn the_refusal_names_the_port_and_the_alternative() -> Result<(), TestError> {
     let mut frames = vec![udp_frame(
         RELAY_IP,
         COLLECTOR_IP,
@@ -340,8 +345,8 @@ fn the_refusal_names_the_port_and_the_alternative() {
         &hep_ng(HONEST_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
     frames.extend(media_frames());
-    let (_dir, path) = capture("refusal-is-announced.pcap", &frames);
-    let (_, stderr) = run(&path, &["--report"]);
+    let (_dir, path) = capture("refusal-is-announced.pcap", &frames)?;
+    let (_, stderr) = run(&path, &["--report"])?;
 
     assert!(
         stderr.contains(&OFF_PORT.to_string()),
@@ -352,6 +357,7 @@ fn the_refusal_names_the_port_and_the_alternative() {
         "and point at the path that can actually authenticate a sender; \
          stderr was:\n{stderr}"
     );
+    Ok(())
 }
 
 /// A refused control datagram is still control traffic, not media.
@@ -361,7 +367,7 @@ fn the_refusal_names_the_port_and_the_alternative() {
 /// pass the RTP pre-filter would become a phantom stream, which is the
 /// failure the LLMNR arm above it in the pipeline exists to prevent.
 #[test]
-fn a_refused_ng_datagram_is_not_reconsidered_as_media() {
+fn a_refused_ng_datagram_is_not_reconsidered_as_media() -> Result<(), TestError> {
     let frames = vec![udp_frame(
         ATTACKER_IP,
         ATTACKER_DST_IP,
@@ -369,8 +375,8 @@ fn a_refused_ng_datagram_is_not_reconsidered_as_media() {
         OFF_PORT,
         &hep_ng(FORGED_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
-    let (_dir, path) = capture("refused-is-not-media.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("refused-is-not-media.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         !stdout.contains("192.168.77.77"),
@@ -380,6 +386,7 @@ fn a_refused_ng_datagram_is_not_reconsidered_as_media() {
         !stdout.contains("192.168.66.66"),
         "nor may its source:\n{stdout}"
     );
+    Ok(())
 }
 
 /// A refused datagram is still CLASSIFIED as control traffic.
@@ -397,7 +404,7 @@ fn a_refused_ng_datagram_is_not_reconsidered_as_media() {
 /// this one in `classify_packet` was written to prevent, after two 23-byte
 /// queries became two phantom RTP streams in a real capture.
 #[test]
-fn a_refused_datagram_is_classified_as_control_traffic_not_handed_on() {
+fn a_refused_datagram_is_classified_as_control_traffic_not_handed_on() -> Result<(), TestError> {
     let datagram = hep_ng(FORGED_CALL_ID, MEDIA_IP, MEDIA_PORT);
     assert_eq!(
         sipnab::rtpengine::sniffed_ng_sdp_links(HEP_PORT, &datagram).map(|l| l.len()),
@@ -417,6 +424,7 @@ fn a_refused_datagram_is_classified_as_control_traffic_not_handed_on() {
         "and something that is not control plane at all is still `None`, so \
          ordinary traffic keeps being classified"
     );
+    Ok(())
 }
 
 /// The residual, pinned on purpose: a mirror from ANY source is believed on
@@ -429,7 +437,7 @@ fn a_refused_datagram_is_classified_as_control_traffic_not_handed_on() {
 /// authenticated. If a later change DOES gate the source, this test fails and
 /// whoever made the change gets to update the sentence that promised it.
 #[test]
-fn a_mirror_from_any_source_is_still_believed_on_the_hep_port() {
+fn a_mirror_from_any_source_is_still_believed_on_the_hep_port() -> Result<(), TestError> {
     let mut frames = vec![udp_frame(
         ATTACKER_IP,
         ATTACKER_DST_IP,
@@ -438,8 +446,8 @@ fn a_mirror_from_any_source_is_still_believed_on_the_hep_port() {
         &hep_ng(FORGED_CALL_ID, MEDIA_IP, MEDIA_PORT),
     )];
     frames.extend(media_frames());
-    let (_dir, path) = capture("unlisted-source-on-hep-port.pcap", &frames);
-    let (stdout, _) = run(&path, &["--report"]);
+    let (_dir, path) = capture("unlisted-source-on-hep-port.pcap", &frames)?;
+    let (stdout, _) = run(&path, &["--report"])?;
 
     assert!(
         stdout.contains(FORGED_CALL_ID),
@@ -448,6 +456,7 @@ fn a_mirror_from_any_source_is_still_believed_on_the_hep_port() {
          the source is gated — update docs/rtpengine.md and this test \
          together; report was:\n{stdout}"
     );
+    Ok(())
 }
 
 /// The committed relay fixture is unaffected.
@@ -456,10 +465,10 @@ fn a_mirror_from_any_source_is_still_believed_on_the_hep_port() {
 /// the gate must be invisible to it. This is the regression guard with the
 /// most authority in the file because nothing about it was crafted.
 #[test]
-fn the_committed_relay_fixture_is_still_attributed() {
+fn the_committed_relay_fixture_is_still_attributed() -> Result<(), TestError> {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rtpengine-ng-hep.pcap");
-    let (stdout, _) = run(&fixture, &["--report"]);
+    let (stdout, _) = run(&fixture, &["--report"])?;
     assert!(
         stdout.contains("km-670bd208@sipnab"),
         "the fixture's relay-named call must survive the gate:\n{stdout}"
@@ -468,4 +477,5 @@ fn the_committed_relay_fixture_is_still_attributed() {
         !stdout.contains("Orphaned Streams"),
         "and none of its streams may go back to being orphans:\n{stdout}"
     );
+    Ok(())
 }

@@ -15,6 +15,8 @@ use std::io::Write;
 #[path = "support/markdown.rs"]
 mod markdown;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The full text of `docs/config-reference.md`, embedded at compile time.
 const CONFIG_REFERENCE: &str = include_str!("../docs/config-reference.md");
 
@@ -37,7 +39,7 @@ fn toml_blocks(md: &str) -> Vec<(usize, String)> {
 /// Every TOML block in `docs/config-reference.md` loads, validates, and uses
 /// only recognized keys.
 #[test]
-fn documented_config_samples_parse_and_validate() {
+fn documented_config_samples_parse_and_validate() -> Result<(), TestError> {
     let blocks = toml_blocks(CONFIG_REFERENCE);
     assert!(
         blocks.len() >= 5,
@@ -51,25 +53,25 @@ fn documented_config_samples_parse_and_validate() {
 
         // Load through the real loader (parse + validate), exactly as sipnab
         // would at startup, by writing the sample to a temp file.
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sample.toml");
-        let mut f = std::fs::File::create(&path).expect("create");
-        f.write_all(body.as_bytes()).expect("write");
+        let mut f = std::fs::File::create(&path)?;
+        f.write_all(body.as_bytes())?;
         drop(f);
 
         let loaded =
-            sipnab::config::Config::load_file_with_env(&path, &sample_env).unwrap_or_else(|e| {
-                panic!(
+            sipnab::config::Config::load_file_with_env(&path, &sample_env).map_err(|e| {
+                format!(
                     "config sample at {where_} failed to load (parse/validate):\n{body}\nerror: {e}"
-                );
-            });
+                )
+            })?;
         if body.contains("${") {
             expanded += 1;
         }
         // The limits section carries its own semantic validation.
-        loaded.limits.validate().unwrap_or_else(|e| {
-            panic!("config sample at {where_} limits failed validation:\n{body}\nerror: {e}");
-        });
+        loaded.limits.validate().map_err(|e| {
+            format!("config sample at {where_} limits failed validation:\n{body}\nerror: {e}")
+        })?;
 
         // Loading without error is not the claim a documented example makes.
         // `Config::load` is lenient by design — it ignores unknown fields so a
@@ -80,7 +82,7 @@ fn documented_config_samples_parse_and_validate() {
         // `[capture]`. A reader copying that example got nothing, and this
         // test said the example was proven.
         let unknown = sipnab::config::Config::unknown_keys(body)
-            .unwrap_or_else(|e| panic!("config sample at {where_} is not valid TOML: {e}"));
+            .map_err(|e| format!("config sample at {where_} is not valid TOML: {e}"))?;
         assert!(
             unknown.is_empty(),
             "config sample at {where_} names keys sipnab does not recognize: \
@@ -93,6 +95,7 @@ fn documented_config_samples_parse_and_validate() {
         "no documented sample names a `${{NAME}}`, so the environment this \
          gate supplies is doing nothing and the expansion path is unproven"
     );
+    Ok(())
 }
 
 /// The environment a documented sample is written for.
@@ -119,17 +122,17 @@ fn sample_env(name: &str) -> Option<String> {
 /// expansion CHANGES the loaded value, so the gate cannot pass on a sample
 /// whose variable was quietly left as literal text.
 #[test]
-fn a_documented_sample_that_names_a_variable_is_actually_expanded() {
+fn a_documented_sample_that_names_a_variable_is_actually_expanded() -> Result<(), TestError> {
     let sample = toml_blocks(CONFIG_REFERENCE)
         .into_iter()
         .find(|(_, body)| body.contains("${"))
-        .expect("a documented sample names a variable");
-    let dir = tempfile::tempdir().expect("tempdir");
+        .ok_or("a documented sample names a variable")?;
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("sample.toml");
-    std::fs::write(&path, sample.1.as_bytes()).expect("write");
+    std::fs::write(&path, sample.1.as_bytes())?;
 
     let loaded = sipnab::config::Config::load_file_with_env(&path, &sample_env)
-        .expect("the supplied environment covers this sample");
+        .map_err(|e| format!("the supplied environment covers this sample: {e}"))?;
     let dumped = format!("{loaded:?}");
     assert!(
         !dumped.contains("${"),
@@ -139,6 +142,7 @@ fn a_documented_sample_that_names_a_variable_is_actually_expanded() {
         dumped.contains("norm"),
         "the supplied value did not reach the loaded config: {dumped}"
     );
+    Ok(())
 }
 
 /// The default loader still reads the real environment.
@@ -149,17 +153,18 @@ fn a_documented_sample_that_names_a_variable_is_actually_expanded() {
 /// at all, with every other test here still green. `HOME` is read, never
 /// written, so this stays safe to run beside anything else.
 #[test]
-fn the_default_loader_reads_the_real_environment() {
+fn the_default_loader_reads_the_real_environment() -> Result<(), TestError> {
     let Ok(home) = std::env::var("HOME") else {
-        return;
+        return Ok(());
     };
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("sample.toml");
-    std::fs::write(&path, b"[capture]\ndevice = \"${HOME}\"\n").expect("write");
+    std::fs::write(&path, b"[capture]\ndevice = \"${HOME}\"\n")?;
 
-    let loaded = sipnab::config::Config::load(Some(path.to_str().expect("utf-8 path")), false);
-    let loaded = loaded.expect("HOME is set");
+    let loaded = sipnab::config::Config::load(Some(path.to_str().ok_or("utf-8 path")?), false);
+    let loaded = loaded.map_err(|e| format!("HOME is set: {e}"))?;
     assert_eq!(loaded.config.capture.device.as_deref(), Some(home.as_str()));
+    Ok(())
 }
 
 /// The gate distinguishes a recognized key from an unrecognized one.
@@ -167,17 +172,18 @@ fn the_default_loader_reads_the_real_environment() {
 /// Without this, `unknown_keys` returning an empty vector for everything would
 /// make the assertion above pass on any input, and nothing would notice.
 #[test]
-fn unknown_key_detection_actually_discriminates() {
+fn unknown_key_detection_actually_discriminates() -> Result<(), TestError> {
     let good = "[capture]\ndevice = \"eth0\"\n";
     assert!(
         sipnab::config::Config::unknown_keys(good)
-            .expect("valid toml")
+            .map_err(|e| format!("valid toml: {e}"))?
             .is_empty(),
         "a recognized key must not be reported as unknown"
     );
 
     let typo = "[capture]\ndevise = \"eth0\"\ninterfaces = 3\n";
-    let found = sipnab::config::Config::unknown_keys(typo).expect("valid toml");
+    let found =
+        sipnab::config::Config::unknown_keys(typo).map_err(|e| format!("valid toml: {e}"))?;
     assert!(
         found.iter().any(|k| k == "capture.devise"),
         "the documented typo must be reported, got {found:?}"
@@ -186,4 +192,5 @@ fn unknown_key_detection_actually_discriminates() {
         found.iter().any(|k| k == "capture.interfaces"),
         "an invented key must be reported, got {found:?}"
     );
+    Ok(())
 }

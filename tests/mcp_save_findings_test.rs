@@ -18,10 +18,12 @@
 
 #![cfg(feature = "mcp")]
 
+use support::TestError;
+
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload_or_panic};
+use support::{McpSession, ok_payload};
 
 /// Any capture will do: findings are about what the agent concluded, not about
 /// what the store holds.
@@ -30,32 +32,33 @@ const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 /// Without the flag, a real server refuses — and says which flag would permit
 /// it, so an operator reading the error knows what to change.
 #[test]
-fn a_stock_server_refuses_to_record_and_names_the_flag() {
-    let mut session = McpSession::start_or_panic(CAPTURE, &[]);
-    let reply = session.call_or_panic(
+fn a_stock_server_refuses_to_record_and_names_the_flag() -> Result<(), TestError> {
+    let mut session = McpSession::start(CAPTURE, &[])?;
+    let reply = session.call(
         "save_findings",
         serde_json::json!({ "summary": "should not be recorded" }),
-    );
+    )?;
     let text = serde_json::to_string(&reply).unwrap_or_default();
     assert!(
         text.contains("--mcp-allow-save-findings"),
         "a refusal must name the flag that would permit it: {text}"
     );
+    Ok(())
 }
 
 /// With the flag, the same call is accepted, and the reply states the two
 /// things a caller cannot otherwise know: that nothing will read this back, and
 /// where a human will find it.
 #[test]
-fn the_flag_arms_the_write_and_the_reply_says_where_it_went() {
-    let mut session = McpSession::start_or_panic(CAPTURE, &["--mcp-allow-save-findings"]);
-    let v = ok_payload_or_panic(&session.call_or_panic(
+fn the_flag_arms_the_write_and_the_reply_says_where_it_went() -> Result<(), TestError> {
+    let mut session = McpSession::start(CAPTURE, &["--mcp-allow-save-findings"])?;
+    let v = ok_payload(&session.call(
         "save_findings",
         serde_json::json!({
             "summary": "the 488 was a codec mismatch",
             "call_id": "example@host",
         }),
-    ));
+    )?)?;
     assert_eq!(v["seq"], 0, "the first finding of a process is seq 0");
     assert_eq!(v["recorded_total"], 1);
     assert_eq!(v["truncated"], false);
@@ -75,18 +78,17 @@ fn the_flag_arms_the_write_and_the_reply_says_where_it_went() {
         v["capture_identity"]["dialog_generation"].is_u64(),
         "a finding carries the same provenance as every other response"
     );
+    Ok(())
 }
 
 /// The bound is visible before it bites, not only when it refuses.
 #[test]
-fn remaining_counts_down_across_calls_on_a_live_server() {
-    let mut session = McpSession::start_or_panic(CAPTURE, &["--mcp-allow-save-findings"]);
-    let first = ok_payload_or_panic(
-        &session.call_or_panic("save_findings", serde_json::json!({ "summary": "one" })),
-    );
-    let second = ok_payload_or_panic(
-        &session.call_or_panic("save_findings", serde_json::json!({ "summary": "two" })),
-    );
+fn remaining_counts_down_across_calls_on_a_live_server() -> Result<(), TestError> {
+    let mut session = McpSession::start(CAPTURE, &["--mcp-allow-save-findings"])?;
+    let first =
+        ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "one" }))?)?;
+    let second =
+        ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "two" }))?)?;
 
     let (a, b) = (
         first["remaining"].as_u64().unwrap_or(0),
@@ -100,6 +102,7 @@ fn remaining_counts_down_across_calls_on_a_live_server() {
         second["seq"], 1,
         "sequence numbers are monotonic per process"
     );
+    Ok(())
 }
 
 /// The tool appears in the registry whether or not it is armed.
@@ -108,13 +111,11 @@ fn remaining_counts_down_across_calls_on_a_live_server() {
 /// no way to learn the capability exists and no error text pointing at the flag,
 /// so the operator would be debugging a silence.
 #[test]
-fn the_tool_is_listed_even_on_a_server_that_will_refuse_it() {
-    let mut session = McpSession::start_or_panic(CAPTURE, &[]);
+fn the_tool_is_listed_even_on_a_server_that_will_refuse_it() -> Result<(), TestError> {
+    let mut session = McpSession::start(CAPTURE, &[])?;
     assert!(
-        session
-            .list_tools_or_panic()
-            .iter()
-            .any(|t| t == "save_findings"),
+        session.list_tools()?.iter().any(|t| t == "save_findings"),
         "save_findings must be discoverable so its refusal can teach the flag"
     );
+    Ok(())
 }

@@ -43,6 +43,10 @@ use std::process::Command;
 
 use sipnab::seccomp::{self, SeccompMode, SeccompStatus};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Set by a parent on every child role. A child that finds it unset was
 /// started by hand and must not install a filter on whatever is hosting it.
 const CHILD_ENV: &str = "SIPNAB_SECCOMP_CHILD";
@@ -82,16 +86,15 @@ fn seccomp_possible() -> bool {
 }
 
 /// Run one `#[ignore]`d child role in a fresh process.
-fn run_child(role: &str) -> (bool, String) {
-    let exe = std::env::current_exe().expect("this test binary");
+fn run_child(role: &str) -> Result<(bool, String), TestError> {
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
-        .output()
-        .expect("spawn the child role");
+        .output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.success() && text.contains(CHILD_COMPLETE), text)
+    Ok((out.status.success() && text.contains(CHILD_COMPLETE), text))
 }
 
 /// Whether this process was started as a child role by a parent above.
@@ -117,9 +120,9 @@ fn in_child_role() -> bool {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_logging_filter_denies_nothing() {
+fn child_logging_filter_denies_nothing() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
     assert!(
         !seccomp::in_filter_mode(),
@@ -137,25 +140,26 @@ fn child_logging_filter_denies_nothing() {
     );
 
     // Ordinary work, after the filter is in force.
-    let dir = tempfile::tempdir().expect("tempdir after the filter");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("marker");
-    std::fs::write(&path, b"seccomp logging allows this").expect("write after the filter");
-    let read = std::fs::read(&path).expect("read after the filter");
+    std::fs::write(&path, b"seccomp logging allows this")?;
+    let read = std::fs::read(&path)?;
     assert_eq!(read, b"seccomp logging allows this");
     let mut sink = Vec::with_capacity(1024);
     sink.extend_from_slice(&read);
     assert_eq!(sink.len(), read.len());
     // A socket, because libpcap's calls are what this exists to record.
-    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind after the filter");
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0")?;
     assert!(listener.local_addr().is_ok());
 
     // A thread created AFTER the filter inherits it, which is the easy half.
     let after = std::thread::spawn(seccomp::in_filter_mode)
         .join()
-        .expect("the thread finishes");
+        .map_err(|_| "the thread finishes")?;
     assert!(after, "a thread created under the filter is not filtered");
 
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// The SHIPPED install covers a thread that already existed.
@@ -170,12 +174,12 @@ fn child_logging_filter_denies_nothing() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_shipped_install_reaches_a_thread_that_already_existed() {
+fn child_shipped_install_reaches_a_thread_that_already_existed() -> Result<(), TestError> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
     if !in_child_role() {
-        return;
+        return Ok(());
     }
     let installed = Arc::new(AtomicBool::new(false));
     let verdict = Arc::new(AtomicU8::new(0xff));
@@ -195,7 +199,7 @@ fn child_shipped_install_reaches_a_thread_that_already_existed() {
     let status = seccomp::install(SeccompMode::Log);
     assert_eq!(status, SeccompStatus::Logging, "install said {status:?}");
     installed.store(true, Ordering::Release);
-    sibling.join().expect("the sibling thread finishes");
+    sibling.join().map_err(|_| "the sibling thread finishes")?;
 
     assert_eq!(
         verdict.load(Ordering::Acquire),
@@ -203,6 +207,7 @@ fn child_shipped_install_reaches_a_thread_that_already_existed() {
         "the shipped install left a thread that already existed unfiltered.          sipnab installs after the capture thread is spawned, so that thread's          syscalls — the libpcap ones an allowlist most needs — would go          unrecorded"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// The same builder and the same install path, with a denying fallback.
@@ -223,19 +228,19 @@ fn child_shipped_install_reaches_a_thread_that_already_existed() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_denying_filter_refuses_the_call_it_left_out() {
+fn child_denying_filter_refuses_the_call_it_left_out() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
-    let arch = seccomp::audit_arch().expect("an architecture token");
-    let deny = seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM).expect("EPERM"));
-    let prog =
-        seccomp::build_program(arch, &[libc::SYS_exit_group], deny).expect("the program builds");
+    let arch = seccomp::audit_arch().ok_or("an architecture token")?;
+    let deny = seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM)?);
+    let prog = seccomp::build_program(arch, &[libc::SYS_exit_group], deny)
+        .map_err(|e| format!("the program builds: {e}"))?;
     // Deliberately WITHOUT thread sync. This filter denies almost everything,
     // and libtest's other threads are not the subject — synchronizing it onto
     // them would race their next syscall against this one's exit and could end
     // the process with somebody else's failure.
-    seccomp::load(&prog, 0).expect("the kernel accepts the program");
+    seccomp::load(&prog, 0)?;
 
     // SAFETY: `getpriority` takes two integers and touches no memory.
     let rc = unsafe { libc::syscall(libc::SYS_getpriority, 0, 0) };
@@ -271,7 +276,7 @@ fn child_denying_filter_refuses_the_call_it_left_out() {
 /// the sibling can answer the question about itself while every syscall it
 /// needs still works.
 #[cfg(target_os = "linux")]
-fn sibling_thread_is_filtered(flags: libc::c_uint) -> Option<bool> {
+fn sibling_thread_is_filtered(flags: libc::c_uint) -> Result<Option<bool>, TestError> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -286,27 +291,29 @@ fn sibling_thread_is_filtered(flags: libc::c_uint) -> Option<bool> {
         seen.store(u8::from(seccomp::in_filter_mode()), Ordering::Release);
     });
 
-    let arch = seccomp::audit_arch()?;
+    let Some(arch) = seccomp::audit_arch() else {
+        return Ok(None);
+    };
     // No allowlist and a logging action: nothing is denied, so nothing the
     // sibling needs can go missing.
-    let prog =
-        seccomp::build_program(arch, &[], seccomp::SECCOMP_RET_LOG).expect("the program builds");
-    seccomp::load(&prog, flags).expect("the kernel accepts the program");
+    let prog = seccomp::build_program(arch, &[], seccomp::SECCOMP_RET_LOG)
+        .map_err(|e| format!("the program builds: {e}"))?;
+    seccomp::load(&prog, flags)?;
     installed.store(true, Ordering::Release);
-    sibling.join().expect("the sibling thread finishes");
-    Some(observed.load(Ordering::Acquire) == 1)
+    sibling.join().map_err(|_| "the sibling thread finishes")?;
+    Ok(Some(observed.load(Ordering::Acquire) == 1))
 }
 
 /// With thread sync, a thread that already existed is covered.
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_sibling_thread_is_covered_with_thread_sync() {
+fn child_sibling_thread_is_covered_with_thread_sync() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
-    let filtered = sibling_thread_is_filtered(seccomp::SECCOMP_FILTER_FLAG_TSYNC)
-        .expect("an architecture token");
+    let filtered = sibling_thread_is_filtered(seccomp::SECCOMP_FILTER_FLAG_TSYNC)?
+        .ok_or("an architecture token")?;
     assert!(
         filtered,
         "the sibling thread reports no filter, so the install did not reach a \
@@ -315,6 +322,7 @@ fn child_sibling_thread_is_covered_with_thread_sync() {
          nothing from the thread running libpcap"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Without it, that thread escapes — which is why the flag is not optional.
@@ -325,11 +333,11 @@ fn child_sibling_thread_is_covered_with_thread_sync() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_sibling_thread_escapes_without_thread_sync() {
+fn child_sibling_thread_escapes_without_thread_sync() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
-    let filtered = sibling_thread_is_filtered(0).expect("an architecture token");
+    let filtered = sibling_thread_is_filtered(0)?.ok_or("an architecture token")?;
     assert!(
         !filtered,
         "the sibling was covered without the thread-sync flag, so this kernel \
@@ -337,52 +345,55 @@ fn child_sibling_thread_escapes_without_thread_sync() {
          says what it claims"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 // ── Parents ─────────────────────────────────────────────────────────────────
 
 /// The shipped filter allows the work a capture does.
 #[test]
-fn the_logging_filter_interferes_with_nothing() {
+fn the_logging_filter_interferes_with_nothing() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "the_logging_filter_interferes_with_nothing",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let (ok, out) = run_child("child_logging_filter_denies_nothing");
+    let (ok, out) = run_child("child_logging_filter_denies_nothing")?;
     assert!(ok, "the logging child did not complete:\n{out}");
+    Ok(())
 }
 
 /// The shipped install reaches threads that already existed.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_shipped_install_covers_the_capture_thread_shape() {
+fn the_shipped_install_covers_the_capture_thread_shape() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "the_shipped_install_covers_the_capture_thread_shape",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let (ok, out) = run_child("child_shipped_install_reaches_a_thread_that_already_existed");
+    let (ok, out) = run_child("child_shipped_install_reaches_a_thread_that_already_existed")?;
     assert!(ok, "the sibling-coverage child did not complete:\n{out}");
+    Ok(())
 }
 
 /// A filter built the same way, with a denying action, denies.
 ///
 /// Without this the file's other gate is unfalsifiable.
 #[test]
-fn a_filter_built_this_way_is_genuinely_loaded() {
+fn a_filter_built_this_way_is_genuinely_loaded() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "a_filter_built_this_way_is_genuinely_loaded",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let exe = std::env::current_exe().expect("this test binary");
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args([
             "--exact",
@@ -394,8 +405,7 @@ fn a_filter_built_this_way_is_genuinely_loaded() {
             CHILD_ENV,
             "child_denying_filter_refuses_the_call_it_left_out",
         )
-        .output()
-        .expect("spawn the denying child");
+        .output()?;
     let code = out.status.code();
     assert_ne!(
         code,
@@ -414,6 +424,7 @@ fn a_filter_built_this_way_is_genuinely_loaded() {
         "the denying child exited {code:?}; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(())
 }
 
 /// The two children differ only in the action, and the outcomes differ.
@@ -422,26 +433,26 @@ fn a_filter_built_this_way_is_genuinely_loaded() {
 /// architecture, one allows and one refuses. That is what makes the allowing
 /// child's silence evidence rather than an absence of evidence.
 #[test]
-fn the_two_children_share_everything_but_the_action() {
+fn the_two_children_share_everything_but_the_action() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "the_two_children_share_everything_but_the_action",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
     let logging = seccomp::build_program(
-        seccomp::audit_arch().expect("token"),
+        seccomp::audit_arch().ok_or("token")?,
         &[],
         seccomp::SECCOMP_RET_LOG,
     )
-    .expect("builds");
+    .map_err(|e| format!("the program builds: {e}"))?;
     let denying = seccomp::build_program(
-        seccomp::audit_arch().expect("token"),
+        seccomp::audit_arch().ok_or("token")?,
         &[],
-        seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM).expect("EPERM")),
+        seccomp::SECCOMP_RET_ERRNO | u32::from(u16::try_from(libc::EPERM)?),
     )
-    .expect("builds");
+    .map_err(|e| format!("the program builds: {e}"))?;
     assert_eq!(
         logging.len(),
         denying.len(),
@@ -459,6 +470,7 @@ fn the_two_children_share_everything_but_the_action() {
         vec![logging.len() - 2],
         "the programs differ at {differing:?}, not only at the fallback action"
     );
+    Ok(())
 }
 
 /// The filter reaches threads that already existed, and only with the flag.
@@ -468,24 +480,26 @@ fn the_two_children_share_everything_but_the_action() {
 /// alone.
 #[cfg(target_os = "linux")]
 #[test]
-fn thread_sync_is_what_reaches_a_thread_that_already_existed() {
+fn thread_sync_is_what_reaches_a_thread_that_already_existed() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "thread_sync_is_what_reaches_a_thread_that_already_existed",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let (covered, out) = run_child("child_sibling_thread_is_covered_with_thread_sync");
+    let (covered, out) = run_child("child_sibling_thread_is_covered_with_thread_sync")?;
     assert!(covered, "the thread-sync child did not complete:\n{out}");
-    let (escapes, out) = run_child("child_sibling_thread_escapes_without_thread_sync");
+    let (escapes, out) = run_child("child_sibling_thread_escapes_without_thread_sync")?;
     assert!(escapes, "the no-thread-sync child did not complete:\n{out}");
+    Ok(())
 }
 
 /// Off never installs anything, on any platform.
 #[test]
-fn off_is_off_everywhere() {
+fn off_is_off_everywhere() -> Result<(), TestError> {
     assert_eq!(seccomp::install(SeccompMode::Off), SeccompStatus::Disabled);
+    Ok(())
 }
 
 // ── The flag, through the binary an operator runs ───────────────────────────
@@ -500,13 +514,13 @@ fn off_is_off_everywhere() {
 /// required to say what it does not protect.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_flag_installs_the_filter_and_the_capture_still_finishes() {
+fn the_flag_installs_the_filter_and_the_capture_still_finishes() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "the_flag_installs_the_filter_and_the_capture_still_finishes",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
@@ -516,8 +530,7 @@ fn the_flag_installs_the_filter_and_the_capture_still_finishes() {
             "--seccomp",
             "log",
         ])
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         out.status.success(),
@@ -537,6 +550,7 @@ fn the_flag_installs_the_filter_and_the_capture_still_finishes() {
         String::from_utf8_lossy(&out.stdout).contains("INVITE"),
         "the capture produced no output under the filter, so something was denied"
     );
+    Ok(())
 }
 
 /// Without the flag, nothing is installed and nothing is said.
@@ -544,17 +558,17 @@ fn the_flag_installs_the_filter_and_the_capture_still_finishes() {
 /// The control. Without it the gate above would pass on a build that printed
 /// the line unconditionally and never installed anything.
 #[test]
-fn no_flag_installs_nothing_and_says_nothing() {
+fn no_flag_installs_nothing_and_says_nothing() -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I", "tests/fixtures/sip_call.pcap"])
-        .output()
-        .expect("run sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "the plain run failed: {stderr}");
     assert!(
         !stderr.contains("Syscall logging"),
         "a run that asked for nothing announced a syscall filter: {stderr}"
     );
+    Ok(())
 }
 
 // ── The three owed for the hand-derived allowlist that broke CI ─────────────
@@ -603,11 +617,10 @@ fn strip_string_literals(src: &str) -> String {
 }
 
 /// This file's own source, for the structural gates below.
-fn this_file() -> String {
-    std::fs::read_to_string(
+fn this_file() -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
-    )
-    .expect("this test file is in the tree")
+    )?)
 }
 
 /// No child role hand-lists the syscalls a runtime needs.
@@ -622,8 +635,8 @@ fn this_file() -> String {
 /// denying role allows `exit_group` and nothing else, so the child cannot need
 /// a call the author forgot on an architecture the author does not have.
 #[test]
-fn no_child_role_hand_lists_what_a_runtime_needs() {
-    let src = this_file();
+fn no_child_role_hand_lists_what_a_runtime_needs() -> Result<(), TestError> {
+    let src = this_file()?;
     let mut oversized = Vec::new();
     for (i, line) in src.lines().enumerate() {
         let Some(rest) = line.split_once("build_program(").map(|(_, r)| r) else {
@@ -645,6 +658,7 @@ fn no_child_role_hand_lists_what_a_runtime_needs() {
          wrong on the other, which is the failure this file exists to avoid \
          rather than reproduce"
     );
+    Ok(())
 }
 
 /// The denying role reaches its exit without touching libc again.
@@ -662,22 +676,22 @@ fn no_child_role_hand_lists_what_a_runtime_needs() {
 /// and the author has to have predicted.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_denying_role_touches_only_the_call_under_test_after_installing() {
-    let src = this_file();
+fn the_denying_role_touches_only_the_call_under_test_after_installing() -> Result<(), TestError> {
+    let src = this_file()?;
     let start = src
         .find("fn child_denying_filter_refuses_the_call_it_left_out")
-        .expect("the denying role is in this file");
+        .ok_or("the denying role is in this file")?;
     let body = &src[start..];
     let after_load = body
         .find("seccomp::load(")
         .and_then(|i| body[i..].find('\n').map(|j| i + j))
-        .expect("the role loads a filter");
+        .ok_or("the role loads a filter")?;
     // The raw exit CALL, not the allowlist entry naming the same syscall —
     // that entry sits before the load and slicing to it inverts the range.
     let exit = after_load
         + body[after_load..]
             .find("libc::syscall(libc::SYS_exit_group")
-            .expect("the role exits through a raw exit_group");
+            .ok_or("the role exits through a raw exit_group")?;
     let between = &body[after_load..exit];
     // CALLS, not references. `libc::EPERM` is a constant and makes no syscall;
     // counting it would make this gate fail on correct code, which is its own
@@ -708,6 +722,7 @@ fn the_denying_role_touches_only_the_call_under_test_after_installing() {
         calls[0].contains("SYS_getpriority"),
         "the one call between install and exit is not the one under test: {calls:?}"
     );
+    Ok(())
 }
 
 /// The verdict travels in the exit status, never through the runtime.
@@ -717,11 +732,11 @@ fn the_denying_role_touches_only_the_call_under_test_after_installing() {
 /// code instead, and this pins both halves so a future edit cannot quietly put
 /// the verdict back through stdout.
 #[test]
-fn the_denying_roles_verdict_travels_in_the_exit_status() {
-    let src = this_file();
+fn the_denying_roles_verdict_travels_in_the_exit_status() -> Result<(), TestError> {
+    let src = this_file()?;
     let start = src
         .find("fn child_denying_filter_refuses_the_call_it_left_out")
-        .expect("the denying role is in this file");
+        .ok_or("the denying role is in this file")?;
     let end = start
         + src[start..]
             .find("\n#[cfg")
@@ -747,6 +762,7 @@ fn the_denying_roles_verdict_travels_in_the_exit_status() {
     assert_ne!(EXIT_REFUSED_AS_EXPECTED, EXIT_NOT_REFUSED);
     assert_ne!(EXIT_REFUSED_AS_EXPECTED, EXIT_WRONG_ERRNO);
     assert_ne!(EXIT_NOT_REFUSED, EXIT_WRONG_ERRNO);
+    Ok(())
 }
 
 // ── Enforcement: the one mode that can end a run ────────────────────────────
@@ -772,9 +788,9 @@ const EXIT_ENFORCED_AND_SURVIVED: i32 = 50;
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() {
+fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
     let status = seccomp::install(SeccompMode::Enforce);
     match status {
@@ -800,14 +816,14 @@ fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() {
         other => {
             println!("{CHILD_COMPLETE}");
             eprintln!("enforcement refused, as it should be here: {other:?}");
-            return;
+            return Ok(());
         }
     }
 
-    let dir = tempfile::tempdir().expect("tempdir under the enforcing filter");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("marker");
-    std::fs::write(&path, b"enforced").expect("write under the enforcing filter");
-    let read = std::fs::read(&path).expect("read under the enforcing filter");
+    std::fs::write(&path, b"enforced")?;
+    let read = std::fs::read(&path)?;
     assert_eq!(read, b"enforced");
     let mut grown: Vec<u8> = Vec::new();
     grown.resize(4 * 1024 * 1024, 7);
@@ -822,21 +838,20 @@ fn child_enforcing_filter_does_not_kill_the_work_it_was_derived_for() {
 /// The enforcing filter does not kill the work it was derived for.
 #[cfg(target_os = "linux")]
 #[test]
-fn enforcement_does_not_kill_the_run_it_was_derived_from() {
+fn enforcement_does_not_kill_the_run_it_was_derived_from() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "enforcement_does_not_kill_the_run_it_was_derived_from",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let exe = std::env::current_exe().expect("this test binary");
+    let exe = std::env::current_exe()?;
     let role = "child_enforcing_filter_does_not_kill_the_work_it_was_derived_for";
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
-        .output()
-        .expect("spawn the enforcing child");
+        .output()?;
     let text =
         String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     // Either it enforced and survived, or it refused to enforce and said so.
@@ -853,6 +868,7 @@ fn enforcement_does_not_kill_the_run_it_was_derived_from() {
         "the enforcing child exited {code} without either surviving its work or \
          reporting a refusal:\n{text}"
     );
+    Ok(())
 }
 
 /// A list derived ON THIS HOST does not kill the work it was derived for.
@@ -874,28 +890,28 @@ fn enforcement_does_not_kill_the_run_it_was_derived_from() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_a_locally_derived_list_survives_the_work_it_covers() {
+fn child_a_locally_derived_list_survives_the_work_it_covers() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
     let Some(path) = std::env::var_os(seccomp::ALLOWLIST_ENV) else {
         // No list for this host, which is the default and the safe state.
         println!("{CHILD_COMPLETE}");
-        return;
+        return Ok(());
     };
-    let text = std::fs::read_to_string(&path).expect("the supplied allowlist reads");
-    let list = seccomp::parse_allowlist(&text).expect("the supplied allowlist parses");
-    let arch = seccomp::audit_arch().expect("an architecture token");
+    let text = std::fs::read_to_string(&path).ok_or("the supplied allowlist reads")?;
+    let list = seccomp::parse_allowlist(&text).ok_or("the supplied allowlist parses")?;
+    let arch = seccomp::audit_arch().ok_or("an architecture token")?;
     let prog = seccomp::build_program(arch, &list, seccomp::SECCOMP_RET_KILL_PROCESS)
-        .expect("the supplied list builds a filter");
+        .ok_or("the supplied list builds a filter")?;
     seccomp::load(&prog, seccomp::SECCOMP_FILTER_FLAG_TSYNC)
-        .expect("the kernel accepts the supplied filter");
+        .ok_or("the kernel accepts the supplied filter")?;
 
-    let dir = tempfile::tempdir().expect("tempdir under the filter");
+    let dir = tempfile::tempdir().ok_or("tempdir under the filter")?;
     let path = dir.path().join("marker");
-    std::fs::write(&path, b"survived").expect("write under the filter");
+    std::fs::write(&path, b"survived").ok_or("write under the filter")?;
     assert_eq!(
-        std::fs::read(&path).expect("read under the filter"),
+        std::fs::read(&path).ok_or("read under the filter")?,
         b"survived"
     );
 
@@ -907,21 +923,21 @@ fn child_a_locally_derived_list_survives_the_work_it_covers() {
 /// A supplied list does not kill the work it covers.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
-fn a_locally_derived_list_survives_the_work_it_covers() {
+fn a_locally_derived_list_survives_the_work_it_covers() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "a_locally_derived_list_survives_the_work_it_covers",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let exe = std::env::current_exe().expect("this test binary");
+    let exe = std::env::current_exe().ok_or("this test binary")?;
     let role = "child_a_locally_derived_list_survives_the_work_it_covers";
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
         .output()
-        .expect("spawn the child");
+        .ok_or("spawn the child")?;
     let text =
         String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -935,6 +951,7 @@ fn a_locally_derived_list_survives_the_work_it_covers() {
         "the child exited {code} without either surviving or reporting that no \
          list was supplied:\n{text}"
     );
+    Ok(())
 }
 
 /// Something that runs actually enforces a supplied list.
@@ -945,11 +962,10 @@ fn a_locally_derived_list_survives_the_work_it_covers() {
 /// killing filter at all. A control nothing exercises is a control nobody has
 /// tested.
 #[test]
-fn something_that_runs_actually_enforces_a_supplied_list() {
+fn something_that_runs_actually_enforces_a_supplied_list() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
-    )
-    .expect("this test file is in the tree");
+    )?;
     assert!(
         src.contains("fn a_locally_derived_list_survives_the_work_it_covers"),
         "nothing in this file drives a supplied allowlist, so the enforcing path \
@@ -957,8 +973,8 @@ fn something_that_runs_actually_enforces_a_supplied_list() {
     );
     let role = src
         .find("fn child_a_locally_derived_list_survives_the_work_it_covers")
-        .expect("the role that enforces a supplied list is in this file");
-    let body = &src[role..role + src[role..].find("\n}\n").expect("the role ends")];
+        .ok_or("the role that enforces a supplied list is in this file")?;
+    let body = &src[role..role + src[role..].find("\n}\n").ok_or("the role ends")?];
     assert!(
         body.contains("SECCOMP_RET_KILL_PROCESS"),
         "the role loads its list with something other than the killing action, \
@@ -974,6 +990,7 @@ fn something_that_runs_actually_enforces_a_supplied_list() {
         "the role enforces the list that ships in the binary, which settled on \
          one machine and killed the process on another"
     );
+    Ok(())
 }
 
 /// Enforcement refuses where no list was derived, rather than guessing.
@@ -993,9 +1010,9 @@ fn something_that_runs_actually_enforces_a_supplied_list() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a seccomp filter that cannot be removed"]
-fn child_enforcement_refuses_a_list_not_derived_for_this_binary() {
+fn child_enforcement_refuses_a_list_not_derived_for_this_binary() -> Result<(), TestError> {
     if !in_child_role() {
-        return;
+        return Ok(());
     }
     let derived_here = cfg!(target_arch = "x86_64")
         && sipnab::cli::compiled_features().join(",") == seccomp::DERIVED_FEATURES;
@@ -1018,28 +1035,33 @@ fn child_enforcement_refuses_a_list_not_derived_for_this_binary() {
                      status lying about what it did"
                 );
             }
-            other => panic!(
-                "a build the list was NOT derived for did not refuse: {other:?}. \
+            other => {
+                return Err(format!(
+                    "a build the list was NOT derived for did not refuse: {other:?}. \
                  Enforcing a borrowed list is how a capture dies"
-            ),
+                )
+                .into());
+            }
         }
     }
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// The refusals hold, checked from a process this file may filter.
 #[cfg(target_os = "linux")]
 #[test]
-fn enforcement_refuses_a_list_that_was_not_derived_for_this_binary() {
+fn enforcement_refuses_a_list_that_was_not_derived_for_this_binary() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "enforcement_refuses_a_list_that_was_not_derived_for_this_binary",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
-    let (ok, out) = run_child("child_enforcement_refuses_a_list_not_derived_for_this_binary");
+    let (ok, out) = run_child("child_enforcement_refuses_a_list_not_derived_for_this_binary")?;
     assert!(ok, "the enforcement-refusal child did not complete:\n{out}");
+    Ok(())
 }
 
 /// No gate that runs in the shared runner installs a filter.
@@ -1058,11 +1080,10 @@ fn enforcement_refuses_a_list_that_was_not_derived_for_this_binary() {
 /// searches for and reported itself — the same self-match that made five wait
 /// loops never fire earlier today.
 #[test]
-fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
+fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
-    )
-    .expect("this test file is in the tree");
+    )?;
 
     const SELF: &str = "fn no_gate_that_runs_in_the_shared_runner_installs_a_filter";
     let installs = [
@@ -1116,6 +1137,7 @@ fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
         "these install a filter in the shared runner, which then carries it \
          through every gate that follows: {offenders:?}"
     );
+    Ok(())
 }
 
 // ── Three owed for a source scanner that matched its own body ───────────────
@@ -1132,13 +1154,12 @@ fn no_gate_that_runs_in_the_shared_runner_installs_a_filter() {
 /// its own text, and there are only two honest ways — a name it excludes, or a
 /// filter that keeps code and drops comments.
 #[test]
-fn every_gate_that_reads_this_file_excludes_its_own_text() {
+fn every_gate_that_reads_this_file_excludes_its_own_text() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
-    )
-    .expect("this test file is in the tree");
+    )?;
     let mut unguarded = Vec::new();
-    let literal = regex::Regex::new(r#"(?:contains|find)\("([^"]{4,})"\)"#).expect("pattern");
+    let literal = regex::Regex::new(r#"(?:contains|find)\("([^"]{4,})"\)"#)?;
     for (i, line) in src.lines().enumerate() {
         if !line.starts_with("fn ") {
             continue;
@@ -1178,6 +1199,7 @@ fn every_gate_that_reads_this_file_excludes_its_own_text() {
         "these read this file and say nothing about skipping their own text, so \
          the strings they search for will match themselves: {unguarded:?}"
     );
+    Ok(())
 }
 
 /// The runner-gate scan sees an install added to a runner gate.
@@ -1187,7 +1209,7 @@ fn every_gate_that_reads_this_file_excludes_its_own_text() {
 /// report nothing and agree with any file. Driven on synthetic source carrying
 /// exactly the violation.
 #[test]
-fn the_runner_gate_scan_sees_an_install_in_a_plain_test() {
+fn the_runner_gate_scan_sees_an_install_in_a_plain_test() -> Result<(), TestError> {
     let src = "#[test]\nfn a_runner_gate() {\n    seccomp::install(SeccompMode::Log);\n}\n";
     let mut offenders = Vec::new();
     let mut attrs: Vec<String> = Vec::new();
@@ -1213,6 +1235,7 @@ fn the_runner_gate_scan_sees_an_install_in_a_plain_test() {
         1,
         "the attribute walk did not see an install in a plain `#[test]`: {offenders:?}"
     );
+    Ok(())
 }
 
 /// And it leaves an install inside an ignored role alone.
@@ -1221,7 +1244,7 @@ fn the_runner_gate_scan_sees_an_install_in_a_plain_test() {
 /// would flag every child in this file, and the only way to make it green would
 /// be to delete it — which is how a gate that cries wolf ends.
 #[test]
-fn the_runner_gate_scan_leaves_an_ignored_role_alone() {
+fn the_runner_gate_scan_leaves_an_ignored_role_alone() -> Result<(), TestError> {
     let src = "#[test]\n#[ignore = \"child role\"]\nfn child_role() {\n    \
                seccomp::install(SeccompMode::Log);\n}\n";
     let mut offenders = Vec::new();
@@ -1248,6 +1271,7 @@ fn the_runner_gate_scan_leaves_an_ignored_role_alone() {
         "an install inside an `#[ignore]`d child role was reported, which would \
          flag every role in this file: {offenders:?}"
     );
+    Ok(())
 }
 
 // ── Two owed for the filter a refusal check left in the shared runner ───────
@@ -1260,11 +1284,10 @@ fn the_runner_gate_scan_leaves_an_ignored_role_alone() {
 /// actually entered, so a rewrite that broke the walk fails loudly instead of
 /// going quiet.
 #[test]
-fn the_runner_gate_scan_examines_every_gate_in_this_file() {
+fn the_runner_gate_scan_examines_every_gate_in_this_file() -> Result<(), TestError> {
     let src = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/seccomp_child_test.rs"),
-    )
-    .expect("this test file is in the tree");
+    )?;
     let declared = src.lines().filter(|l| *l == "#[test]").count();
     let ignored = src
         .lines()
@@ -1281,6 +1304,7 @@ fn the_runner_gate_scan_examines_every_gate_in_this_file() {
         "only {ignored} child role(s) found; the roles are what may install, and \
          a scan that cannot see them would report every one as a violation"
     );
+    Ok(())
 }
 
 /// A filter left in the runner is visible to the next gate that looks.
@@ -1292,13 +1316,13 @@ fn the_runner_gate_scan_examines_every_gate_in_this_file() {
 /// else's state, and it says so rather than measuring it.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_shared_runner_carries_no_filter_from_an_earlier_gate() {
+fn the_shared_runner_carries_no_filter_from_an_earlier_gate() -> Result<(), TestError> {
     if !seccomp_possible() {
         announce_skip(
             "the_shared_runner_carries_no_filter_from_an_earlier_gate",
             "this target has no seccomp",
         );
-        return;
+        return Ok(());
     }
     assert!(
         !seccomp::in_filter_mode(),
@@ -1306,4 +1330,5 @@ fn the_shared_runner_carries_no_filter_from_an_earlier_gate() {
          binary installed one instead of spawning a child. Every measurement \
          taken after that point is about the wrong process"
     );
+    Ok(())
 }

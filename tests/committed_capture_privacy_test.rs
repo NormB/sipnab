@@ -28,6 +28,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/corpus.rs"]
 mod corpus_support;
 
@@ -168,7 +170,7 @@ fn rel(p: &Path) -> String {
 
 /// No file this repository ships carries either identifier.
 #[test]
-fn no_committed_capture_carries_a_subscriber_identifier() {
+fn no_committed_capture_carries_a_subscriber_identifier() -> Result<(), TestError> {
     let captures = committed_captures();
     let mut offenders: Vec<String> = Vec::new();
     for p in &captures {
@@ -192,6 +194,7 @@ fn no_committed_capture_carries_a_subscriber_identifier() {
          nothing publishes it, or redact it before committing.",
         offenders.join("\n")
     );
+    Ok(())
 }
 
 /// The scan examined the captures it claims to.
@@ -200,7 +203,7 @@ fn no_committed_capture_carries_a_subscriber_identifier() {
 /// stopped finding files, and this file already asserts an absence — the one
 /// shape where a broken instrument and a clean result look identical.
 #[test]
-fn the_scan_examined_the_captures_it_claims_to() {
+fn the_scan_examined_the_captures_it_claims_to() -> Result<(), TestError> {
     let captures = committed_captures();
     assert!(
         captures.len() >= 45,
@@ -220,6 +223,7 @@ fn the_scan_examined_the_captures_it_claims_to() {
          opened reports the same clean answer as one it read",
         captures.len() - readable
     );
+    Ok(())
 }
 
 /// Every pattern fires on material that carries it.
@@ -228,7 +232,7 @@ fn the_scan_examined_the_captures_it_claims_to() {
 /// passes forever, which is the failure mode of every absence-asserting gate
 /// this repository has had to fix.
 #[test]
-fn each_pattern_fires_on_material_that_carries_it() {
+fn each_pattern_fires_on_material_that_carries_it() -> Result<(), TestError> {
     for (needle, why) in SUBSCRIBER_IDENTIFIERS {
         assert!(
             !why.trim().is_empty(),
@@ -251,6 +255,7 @@ fn each_pattern_fires_on_material_that_carries_it() {
              not required to preserve the case a specification wrote"
         );
     }
+    Ok(())
 }
 
 /// One header line per pattern, written out by hand from the specification.
@@ -285,7 +290,7 @@ const WIRE_EXAMPLES: &[(&str, &str)] = &[
 
 /// Every pattern fires on a header line nobody derived from it.
 #[test]
-fn each_pattern_matches_a_literal_example_written_out_by_hand() {
+fn each_pattern_matches_a_literal_example_written_out_by_hand() -> Result<(), TestError> {
     for (needle, line) in WIRE_EXAMPLES {
         assert!(
             identifiers_in(line.as_bytes()).contains(needle),
@@ -293,6 +298,7 @@ fn each_pattern_matches_a_literal_example_written_out_by_hand() {
              pattern and the wire have parted company:\n  {line}"
         );
     }
+    Ok(())
 }
 
 /// Every pattern HAS a hand-written example.
@@ -301,7 +307,7 @@ fn each_pattern_matches_a_literal_example_written_out_by_hand() {
 /// this, a third pattern could be added with no independent example and the
 /// self-referential control would be back for that one alone.
 #[test]
-fn every_pattern_has_a_literal_example() {
+fn every_pattern_has_a_literal_example() -> Result<(), TestError> {
     for (needle, _) in SUBSCRIBER_IDENTIFIERS {
         assert!(
             WIRE_EXAMPLES.iter().any(|(n, _)| n == needle),
@@ -318,6 +324,7 @@ fn every_pattern_has_a_literal_example() {
              the example exercises nothing"
         );
     }
+    Ok(())
 }
 
 /// A match lying across a chunk boundary is still found.
@@ -328,14 +335,14 @@ fn every_pattern_has_a_literal_example() {
 /// Driven against a real file rather than the in-memory helper, because the
 /// carry lives in the reader and the helper never sees a boundary.
 #[test]
-fn a_match_across_a_chunk_boundary_is_still_found() {
+fn a_match_across_a_chunk_boundary_is_still_found() -> Result<(), TestError> {
     let (needle, _) = SUBSCRIBER_IDENTIFIERS[0];
     let dir = std::env::temp_dir().join(format!(
         "sipnab-boundary-{}-{}",
         std::process::id(),
         needle.len()
     ));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
     let path = dir.join("straddle.pcap");
 
     // Place the needle so it starts one byte before the 1 MiB block ends and
@@ -350,9 +357,9 @@ fn a_match_across_a_chunk_boundary_is_still_found() {
         at < BLOCK && at + needle.len() > BLOCK,
         "the fixture must straddle the boundary or it proves nothing"
     );
-    std::fs::write(&path, &bytes).expect("write fixture");
+    std::fs::write(&path, &bytes).map_err(|e| format!("write fixture: {e}"))?;
 
-    let found = identifiers_in_file(&path).expect("read fixture");
+    let found = identifiers_in_file(&path).map_err(|e| format!("read fixture: {e}"))?;
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
@@ -360,6 +367,7 @@ fn a_match_across_a_chunk_boundary_is_still_found() {
         "{needle} straddling a chunk boundary escaped the scan, which is how a \
          chunked reader reports a clean file it never really read"
     );
+    Ok(())
 }
 
 /// Ordinary fixture material does not trip the gate.
@@ -367,7 +375,7 @@ fn a_match_across_a_chunk_boundary_is_still_found() {
 /// The paired half. A pattern broad enough to catch everything catches every
 /// fixture, and a gate that fires on its own repository gets disabled.
 #[test]
-fn ordinary_sip_material_does_not_trip_the_gate() {
+fn ordinary_sip_material_does_not_trip_the_gate() -> Result<(), TestError> {
     for benign in [
         // RFC 5626 instance-id as a UUID, which is the common form and is not
         // a device serial number.
@@ -380,6 +388,7 @@ fn ordinary_sip_material_does_not_trip_the_gate() {
             "the gate fires on ordinary material: {benign}"
         );
     }
+    Ok(())
 }
 
 /// The private corpus is why this gate exists, and it proves the patterns
@@ -390,13 +399,13 @@ fn ordinary_sip_material_does_not_trip_the_gate() {
 /// scan: if none does, either the corpus no longer holds the captures this
 /// gate was written for, or the patterns have stopped describing them.
 #[test]
-fn the_corpus_holds_what_this_gate_refuses() {
+fn the_corpus_holds_what_this_gate_refuses() -> Result<(), TestError> {
     // Through the shared helper, never `std::env::var` here: the skip has to
     // be ANNOUNCED, and a binary that reads the variable itself skips silently
     // — which is how nine corpus binaries once reported `ok` while proving
     // nothing. `corpus_skip_notice_test` fails on a direct read.
     let Some(dir) = corpus_support::root() else {
-        return;
+        return Ok(());
     };
     // Collect first, then read SMALLEST FIRST. One hit is the whole claim, so
     // the cheapest evidence should be reached first: `read_dir` order put a
@@ -423,14 +432,15 @@ fn the_corpus_holds_what_this_gate_refuses() {
             // Reading the rest of an 8.8 GB corpus to count more would make
             // this the most expensive test in the suite and prove nothing
             // further.
-            return;
+            return Ok(());
         }
     }
-    panic!(
+    Err(
         "no capture under SIPNAB_CORPUS carries either identifier. The five \
          LTE captures added on 2026-09-06 do, and they are what this gate was \
          written against — so either they are gone or the patterns no longer \
          match them, and in both cases the gate above is now guarding against \
          a shape nobody has seen."
-    );
+            .into(),
+    )
 }

@@ -10,6 +10,8 @@
 //! and only one of those is visible to a reader. This gate reads the
 //! formatter and the page and compares them.
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/release_logic.rs"]
 mod release_logic;
 #[path = "support/source_scan.rs"]
@@ -84,7 +86,7 @@ fn emitted_families() -> Vec<String> {
 
 /// Every family the formatter emits appears in the REST API page.
 #[test]
-fn every_emitted_metric_is_documented() {
+fn every_emitted_metric_is_documented() -> Result<(), TestError> {
     let missing: Vec<String> = emitted_families()
         .into_iter()
         .filter(|name| !PAGE.contains(name.as_str()))
@@ -96,6 +98,7 @@ fn every_emitted_metric_is_documented() {
          mentions: {missing:?} — a scrape carries a series no operator has \
          been told about"
     );
+    Ok(())
 }
 
 /// Every family the page documents is one the formatter can emit.
@@ -104,7 +107,7 @@ fn every_emitted_metric_is_documented() {
 /// where an operator picks the series to alert on, so a name that survives a
 /// rename in the docs alone sends them to a series that will never exist.
 #[test]
-fn every_documented_metric_is_emitted() {
+fn every_documented_metric_is_emitted() -> Result<(), TestError> {
     let emitted = emitted_families();
     let phantom: Vec<String> = families(PAGE)
         .into_iter()
@@ -124,12 +127,13 @@ fn every_documented_metric_is_emitted() {
          {phantom:?} — an alert rule written from the page would go no-data \
          forever"
     );
+    Ok(())
 }
 
 /// The five metrics task #63 wired are named on the page, so the fix cannot
 /// be reverted in silence.
 #[test]
-fn the_wired_metrics_stay_documented() {
+fn the_wired_metrics_stay_documented() -> Result<(), TestError> {
     for name in [
         "sipnab_capture_packets_total",
         "sipnab_reassembly_timeouts_total",
@@ -146,6 +150,7 @@ fn the_wired_metrics_stay_documented() {
             "{name} must stay in the exposition"
         );
     }
+    Ok(())
 }
 
 /// Prose that counts the metrics says the number the exposition emits.
@@ -161,7 +166,7 @@ fn the_wired_metrics_stay_documented() {
 /// the same scan `every_emitted_metric_is_documented` compares against — so
 /// adding a metric moves the gate rather than silently invalidating prose.
 #[test]
-fn prose_metric_counts_match_the_exposition() {
+fn prose_metric_counts_match_the_exposition() -> Result<(), TestError> {
     let emitted = emitted_families().len();
     assert!(
         emitted >= 20,
@@ -169,7 +174,7 @@ fn prose_metric_counts_match_the_exposition() {
          gate is comparing prose against nothing"
     );
 
-    let claim = regex::Regex::new(r"(\d+) Prometheus metrics").expect("regex");
+    let claim = regex::Regex::new(r"(\d+) Prometheus metrics")?;
     // The changelog's `[Unreleased]` section only. A released entry says what
     // was true when it shipped, and holding it to today's exposition made the
     // HEP sender roster, which added metrics, rewrite 0.5.156's accurate "32".
@@ -211,4 +216,5 @@ fn prose_metric_counts_match_the_exposition() {
          either the sentence was reworded everywhere (drop this gate) or the \
          pattern stopped matching and it is now checking nothing"
     );
+    Ok(())
 }

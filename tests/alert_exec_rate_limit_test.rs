@@ -24,15 +24,18 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use sipnab::security::alerting::{AlertEngine, AlertRule};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Capture time `secs` seconds after a fixed base.
 ///
 /// Every budget the alert engine applies is measured against the packet
 /// timestamp, so a test drives time by choosing stamps rather than sleeping.
-fn at(secs: i64) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
         .single()
-        .expect("unambiguous base timestamp")
-        + chrono::Duration::seconds(secs)
+        .ok_or("unambiguous base timestamp")?
+        + chrono::Duration::seconds(secs))
 }
 
 /// The `n`th distinct source IP, as a detector naming many peers would supply.
@@ -61,12 +64,12 @@ fn append_one_byte(path: &Path) -> String {
 ///
 /// Children of tests running alongside only lengthen the wait. Capped so a
 /// hung child fails the test rather than the suite.
-fn settled_spawn_count(path: &Path) -> u64 {
+fn settled_spawn_count(path: &Path) -> Result<u64, TestError> {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let living = living_sh_children();
+        let living = living_sh_children()?;
         if living == 0 {
-            return std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+            return Ok(std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
         }
         assert!(
             Instant::now() < deadline,
@@ -78,14 +81,14 @@ fn settled_spawn_count(path: &Path) -> u64 {
 
 /// How many `sh` children of this process have not exited, read from `ps`
 /// (Linux and macOS both take these options).
-fn living_sh_children() -> usize {
+fn living_sh_children() -> Result<usize, TestError> {
     let me = std::process::id().to_string();
     let out = std::process::Command::new("ps")
         .args(["-A", "-o", "ppid=", "-o", "stat=", "-o", "comm="])
         .output()
-        .expect("run ps");
+        .map_err(|e| format!("run ps: {e}"))?;
     assert!(out.status.success(), "ps failed: {out:?}");
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|line| {
             let mut fields = line.split_whitespace();
@@ -96,15 +99,15 @@ fn living_sh_children() -> usize {
             };
             ppid == me && !stat.starts_with('Z') && comm.rsplit('/').next() == Some("sh")
         })
-        .count()
+        .count())
 }
 
 /// A temp file that exists and is empty, plus the command that appends to it.
-fn spawn_probe() -> (tempfile::NamedTempFile, String) {
-    let mut file = tempfile::NamedTempFile::new().expect("create tempfile");
-    file.flush().expect("flush");
+fn spawn_probe() -> Result<(tempfile::NamedTempFile, String), TestError> {
+    let mut file = tempfile::NamedTempFile::new().map_err(|e| format!("create tempfile: {e}"))?;
+    file.flush().map_err(|e| format!("flush: {e}"))?;
     let cmd = append_one_byte(file.path());
-    (file, cmd)
+    Ok((file, cmd))
 }
 
 /// The count is taken once the commands have RUN, however slowly they start.
@@ -114,20 +117,21 @@ fn spawn_probe() -> (tempfile::NamedTempFile, String) {
 /// then reports 0 spawns for commands that ran a moment later. A command that
 /// sleeps before writing stands in for that host.
 #[test]
-fn a_command_that_is_slow_to_run_is_still_counted() {
-    let file = tempfile::NamedTempFile::new().expect("create tempfile");
+fn a_command_that_is_slow_to_run_is_still_counted() -> Result<(), TestError> {
+    let file = tempfile::NamedTempFile::new().map_err(|e| format!("create tempfile: {e}"))?;
     let cmd = format!("sleep 1; {}", append_one_byte(file.path()));
 
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
-    engine.fire("scanner", peer(1), "slow", at(0));
+    engine.fire("scanner", peer(1), "slow", at(0)?);
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     assert_eq!(
         spawned, 1,
         "one fired alert ran its command once; the count must wait for it, not \
          report {spawned}"
     );
+    Ok(())
 }
 
 /// A detector that names many distinct peers must not spawn a process per
@@ -139,19 +143,19 @@ fn a_command_that_is_slow_to_run_is_still_counted() {
 /// enforces (`--exec-rate-limit`, default 10/s) and the kill worker already
 /// enforces (`DEFAULT_RATE_LIMIT = 10`).
 #[test]
-fn many_peers_in_one_second_cannot_spawn_a_process_each() {
-    let (file, cmd) = spawn_probe();
+fn many_peers_in_one_second_cannot_spawn_a_process_each() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
     // Threshold 1 so every event is eligible; distinct sources so no cooldown
     // suppresses anything. Only a rate limit can hold these back.
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
 
     for n in 0..30 {
-        engine.fire("scanner", peer(n), "detection=behavioral", at(0));
+        engine.fire("scanner", peer(n), "detection=behavioral", at(0)?);
     }
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     // Exactly ten, in both directions. Above it the budget is not a budget;
     // below it the operator's command has been silenced under exactly the
     // conditions it exists for, which is the same defect wearing a limiter's
@@ -161,6 +165,7 @@ fn many_peers_in_one_second_cannot_spawn_a_process_each() {
         "30 peers inside one capture second must run the command 10 times \
          (the global alert-exec budget), not {spawned}"
     );
+    Ok(())
 }
 
 /// One misidentified peer must not spend the whole budget.
@@ -170,26 +175,27 @@ fn many_peers_in_one_second_cannot_spawn_a_process_each() {
 /// `MAX_PER_DST_PER_MINUTE = 3` exists to prevent on the kill path
 /// (`docs/design/threat-mitigation-hooks.md` §5(c)).
 #[test]
-fn one_peer_cannot_spend_the_whole_budget() {
-    let (file, cmd) = spawn_probe();
+fn one_peer_cannot_spend_the_whole_budget() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
     // Ten distinct rule names for ONE source: the per-(src, rule) cooldown
     // cannot suppress any of them, so only a per-source exec budget can.
     let rules: Vec<AlertRule> = (0..10)
-        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")).expect("parse"))
-        .collect();
+        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")))
+        .collect::<Result<_, _>>()?;
     let mut engine = AlertEngine::new(rules, Some(cmd));
 
     for i in 0..10 {
-        engine.fire(&format!("rule{i}"), peer(1), "detection=behavioral", at(0));
+        engine.fire(&format!("rule{i}"), peer(1), "detection=behavioral", at(0)?);
     }
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     assert_eq!(
         spawned, 3,
         "one source fired 10 alerts in one capture minute; it must run the \
          command exactly 3 times (the per-source budget), not {spawned}"
     );
+    Ok(())
 }
 
 /// Spending one peer's budget must not silence the others.
@@ -198,38 +204,39 @@ fn one_peer_cannot_spend_the_whole_budget() {
 /// signature was wrong about. If a noisy peer's alerts consumed the global
 /// budget, the fix would have replaced one silence with another.
 #[test]
-fn a_noisy_peer_does_not_silence_the_quiet_ones() {
-    let (file, cmd) = spawn_probe();
+fn a_noisy_peer_does_not_silence_the_quiet_ones() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
     let mut rules: Vec<AlertRule> = (0..8)
-        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")).expect("parse"))
-        .collect();
-    rules.push(AlertRule::parse("quiet-a:1/1s:0s").expect("parse"));
-    rules.push(AlertRule::parse("quiet-b:1/1s:0s").expect("parse"));
+        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")))
+        .collect::<Result<_, _>>()?;
+    rules.push(AlertRule::parse("quiet-a:1/1s:0s").map_err(|e| format!("parse: {e}"))?);
+    rules.push(AlertRule::parse("quiet-b:1/1s:0s").map_err(|e| format!("parse: {e}"))?);
     let mut engine = AlertEngine::new(rules, Some(cmd));
 
     // The quiet peer is on the books BEFORE the flood. Letting it arrive
     // afterwards would let a single shared budget pass this test, because a
     // source seen for the first time starts on a fresh count either way.
-    engine.fire("quiet-a", peer(2), "quiet", at(0));
-    let baseline = settled_spawn_count(file.path());
+    engine.fire("quiet-a", peer(2), "quiet", at(0)?);
+    let baseline = settled_spawn_count(file.path())?;
     assert_eq!(baseline, 1, "the quiet peer's first command must run");
 
     // The noisy peer burns through its own budget.
     for i in 0..8 {
-        engine.fire(&format!("rule{i}"), peer(1), "noisy", at(0));
+        engine.fire(&format!("rule{i}"), peer(1), "noisy", at(0)?);
     }
-    let after_noisy = settled_spawn_count(file.path());
+    let after_noisy = settled_spawn_count(file.path())?;
 
     // The quiet peer, same capture second, still gets its command run.
-    engine.fire("quiet-b", peer(2), "quiet", at(0));
-    let after_quiet = settled_spawn_count(file.path());
+    engine.fire("quiet-b", peer(2), "quiet", at(0)?);
+    let after_quiet = settled_spawn_count(file.path())?;
 
     assert!(
         after_quiet > after_noisy,
         "the quiet peer's alert-exec was suppressed by the noisy peer's traffic \
          ({after_noisy} spawns before it fired, {after_quiet} after)"
     );
+    Ok(())
 }
 
 /// The budget is measured in CAPTURE time, so a replay behaves like live.
@@ -240,23 +247,24 @@ fn a_noisy_peer_does_not_silence_the_quiet_ones() {
 /// capture — the mirror image of the wall-clock defect already fixed in this
 /// engine's windows and cooldowns.
 #[test]
-fn the_exec_budget_follows_capture_time_not_wall_time() {
-    let (file, cmd) = spawn_probe();
+fn the_exec_budget_follows_capture_time_not_wall_time() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
 
     // 20 peers, one per capture minute. Every one is inside its own global
     // second AND its own per-source minute, so all 20 must run.
     for n in 0..20 {
-        engine.fire("scanner", peer(n), "spread out", at(i64::from(n) * 60));
+        engine.fire("scanner", peer(n), "spread out", at(i64::from(n) * 60)?);
     }
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     assert_eq!(
         spawned, 20,
         "alerts one capture minute apart are not a burst; all 20 commands must run"
     );
+    Ok(())
 }
 
 /// A capture stamp that goes backwards must not refill the budget.
@@ -265,26 +273,27 @@ fn the_exec_budget_follows_capture_time_not_wall_time() {
 /// out-of-order on a merged or replayed capture. Rolling the window on a
 /// backwards jump would hand an attacker a budget reset per crafted packet.
 #[test]
-fn a_backwards_capture_stamp_does_not_refill_the_budget() {
-    let (file, cmd) = spawn_probe();
+fn a_backwards_capture_stamp_does_not_refill_the_budget() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
     let rules: Vec<AlertRule> = (0..10)
-        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")).expect("parse"))
-        .collect();
+        .map(|i| AlertRule::parse(&format!("rule{i}:1/1s:0s")))
+        .collect::<Result<_, _>>()?;
     let mut engine = AlertEngine::new(rules, Some(cmd));
 
     // Alternate "now" and "an hour ago". The backwards stamps must not roll
     // either window; the peer still gets its 3 per minute and no more.
     for i in 0..10 {
-        let when = if i % 2 == 0 { at(3600) } else { at(0) };
+        let when = if i % 2 == 0 { at(3600)? } else { at(0)? };
         engine.fire(&format!("rule{i}"), peer(1), "replayed", when);
     }
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     assert!(
         spawned <= 3,
         "backwards capture stamps refilled the per-source budget: {spawned} spawns"
     );
+    Ok(())
 }
 
 /// A suppressed exec is counted and reportable, not merely warned about.
@@ -293,16 +302,16 @@ fn a_backwards_capture_stamp_does_not_refill_the_budget() {
 /// fix; a rate limit that drops silently just moves it. The run must be able
 /// to say how many operator commands it swallowed, and why.
 #[test]
-fn suppressed_execs_are_counted_by_reason() {
-    let (file, cmd) = spawn_probe();
+fn suppressed_execs_are_counted_by_reason() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
 
     for n in 0..30 {
-        engine.fire("scanner", peer(n), "detection=behavioral", at(0));
+        engine.fire("scanner", peer(n), "detection=behavioral", at(0)?);
     }
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
 
     let drops = engine.exec_drops();
     assert_eq!(
@@ -319,6 +328,7 @@ fn suppressed_execs_are_counted_by_reason() {
         drops.rate_limited > 0,
         "30 alerts in one capture second must record global rate-limit drops"
     );
+    Ok(())
 }
 
 /// The alert itself still fires when its exec is suppressed.
@@ -327,19 +337,19 @@ fn suppressed_execs_are_counted_by_reason() {
 /// rate limited, the *evidence* is not. The alert is logged, exposed on the
 /// JSON channel and kept in the findings buffer regardless.
 #[test]
-fn a_suppressed_exec_does_not_suppress_the_alert() {
-    let (file, cmd) = spawn_probe();
+fn a_suppressed_exec_does_not_suppress_the_alert() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
 
     let mut fired = 0;
     for n in 0..30 {
-        if engine.fire("scanner", peer(n), "detection=behavioral", at(0)) {
+        if engine.fire("scanner", peer(n), "detection=behavioral", at(0)?) {
             fired += 1;
         }
     }
-    let _ = settled_spawn_count(file.path());
+    let _ = settled_spawn_count(file.path())?;
 
     assert_eq!(
         fired, 30,
@@ -354,26 +364,27 @@ fn a_suppressed_exec_does_not_suppress_the_alert() {
         engine.exec_drops().total() > 0,
         "the run must know that it swallowed commands"
     );
+    Ok(())
 }
 
 /// Setting the global budget to zero disables it, matching
 /// `--exec-rate-limit 0` on the event-exec path. The per-source cap still
 /// applies, so an unlimited global budget is not an unlimited fork rate.
 #[test]
-fn a_zero_global_budget_is_unlimited_but_per_source_still_caps() {
-    let (file, cmd) = spawn_probe();
+fn a_zero_global_budget_is_unlimited_but_per_source_still_caps() -> Result<(), TestError> {
+    let (file, cmd) = spawn_probe()?;
 
-    let rule = AlertRule::parse("scanner:1/1s:0s").expect("parse");
+    let rule = AlertRule::parse("scanner:1/1s:0s").map_err(|e| format!("parse: {e}"))?;
     let mut engine = AlertEngine::new(vec![rule], Some(cmd));
     engine.set_exec_rate_limit(0);
 
     // 30 distinct peers, one alert each, all in the same capture second.
     // With no global cap every one is inside its own per-source budget.
     for n in 0..30 {
-        engine.fire("scanner", peer(n), "detection=behavioral", at(0));
+        engine.fire("scanner", peer(n), "detection=behavioral", at(0)?);
     }
 
-    let spawned = settled_spawn_count(file.path());
+    let spawned = settled_spawn_count(file.path())?;
     assert_eq!(
         spawned, 30,
         "a zero global budget must not limit; got {spawned} spawns"
@@ -383,4 +394,5 @@ fn a_zero_global_budget_is_unlimited_but_per_source_still_caps() {
         0,
         "no global drops when the global budget is disabled"
     );
+    Ok(())
 }

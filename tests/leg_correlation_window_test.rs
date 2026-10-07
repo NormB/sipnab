@@ -18,13 +18,15 @@
 //! operator or an agent asks the question.
 #![cfg(all(feature = "native", feature = "mcp"))]
 
+use mcp::TestError;
+
 #[path = "support/mcp.rs"]
 mod mcp;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
 use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap_at_or_panic};
+use pcap_build::{udp_frame, write_pcap_at};
 
 /// The one address pair both legs share, which is all the timing heuristic has
 /// to go on besides the clock.
@@ -55,25 +57,25 @@ fn bare_invite(call_id: &str, branch: &str, to_user: &str) -> Vec<u8> {
 }
 
 /// Ask `find_correlated` about `call_id` and report the strategies it named.
-fn strategies(session: &mut McpSession, call_id: &str) -> Vec<String> {
-    let msg = session.call_or_panic("find_correlated", serde_json::json!({ "call_id": call_id }));
+fn strategies(session: &mut McpSession, call_id: &str) -> Result<Vec<String>, TestError> {
+    let msg = session.call("find_correlated", serde_json::json!({ "call_id": call_id }))?;
     assert!(
         msg.get("error").is_none(),
         "find_correlated must answer, got: {msg}"
     );
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .expect("text payload")
+        .ok_or("text payload")?
         .to_string();
-    let value: serde_json::Value = serde_json::from_str(&text).expect("payload is JSON");
-    value["legs"]
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(value["legs"]
         .as_array()
         .map(|legs| {
             legs.iter()
                 .filter_map(|l| l["strategy"].as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// The declared window is what decides whether two legs of one call correlate.
@@ -82,10 +84,10 @@ fn strategies(session: &mut McpSession, call_id: &str) -> Vec<String> {
 /// leg goes out three seconds later. Nothing else in either message links
 /// them, so the shipped two seconds is the whole answer — and it is a "no".
 #[test]
-fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("dipped.pcap");
-    write_pcap_at_or_panic(
+    write_pcap_at(
         &path,
         &[
             (bare_invite("inbound-leg@10.1.0.1", "-in", "18005550100"), 0),
@@ -95,33 +97,34 @@ fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
             ),
         ],
         1,
-    );
-    let pcap = path.to_str().expect("utf-8 path").to_string();
+    )?;
+    let pcap = path.to_str().ok_or("utf-8 path")?.to_string();
 
-    let mut shipped = McpSession::start_or_panic(&pcap, &["--no-config"]);
+    let mut shipped = McpSession::start(&pcap, &["--no-config"])?;
     assert!(
-        strategies(&mut shipped, "inbound-leg@10.1.0.1").is_empty(),
+        strategies(&mut shipped, "inbound-leg@10.1.0.1")?.is_empty(),
         "three seconds is outside the shipped two-second window, so the two \
          legs of this call do not correlate at all"
     );
     drop(shipped);
 
     let mut widened =
-        McpSession::start_or_panic(&pcap, &["--no-config", "--leg-correlation-window", "5000"]);
+        McpSession::start(&pcap, &["--no-config", "--leg-correlation-window", "5000"])?;
     assert_eq!(
-        strategies(&mut widened, "inbound-leg@10.1.0.1"),
+        strategies(&mut widened, "inbound-leg@10.1.0.1")?,
         vec!["timing_heuristic".to_string()],
         "--leg-correlation-window 5000 must reach the store that answers, and \
          the strategy must still be named as the guess it is"
     );
+    Ok(())
 }
 
 /// The config key reaches the same store, and the flag outranks it.
 #[test]
-fn the_leg_correlation_window_resolves_flag_over_key() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_leg_correlation_window_resolves_flag_over_key() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("dipped-cfg.pcap");
-    write_pcap_at_or_panic(
+    write_pcap_at(
         &path,
         &[
             (
@@ -134,27 +137,28 @@ fn the_leg_correlation_window_resolves_flag_over_key() {
             ),
         ],
         1,
-    );
-    let pcap = path.to_str().expect("utf-8 path").to_string();
+    )?;
+    let pcap = path.to_str().ok_or("utf-8 path")?.to_string();
 
     let cfg_path = dir.path().join("sipnab.toml");
-    std::fs::write(&cfg_path, "[sip]\nleg_correlation_window_ms = 5000\n").expect("write config");
-    let cfg = cfg_path.to_str().expect("utf-8 path").to_string();
+    std::fs::write(&cfg_path, "[sip]\nleg_correlation_window_ms = 5000\n")?;
+    let cfg = cfg_path.to_str().ok_or("utf-8 path")?.to_string();
 
-    let mut declared = McpSession::start_or_panic(&pcap, &["--config", &cfg]);
+    let mut declared = McpSession::start(&pcap, &["--config", &cfg])?;
     assert_eq!(
-        strategies(&mut declared, "cfg-inbound@10.1.0.1"),
+        strategies(&mut declared, "cfg-inbound@10.1.0.1")?,
         vec!["timing_heuristic".to_string()],
         "[sip] leg_correlation_window_ms = 5000 must reach the store"
     );
     drop(declared);
 
-    let mut overridden = McpSession::start_or_panic(
+    let mut overridden = McpSession::start(
         &pcap,
         &["--config", &cfg, "--leg-correlation-window", "2000"],
-    );
+    )?;
     assert!(
-        strategies(&mut overridden, "cfg-inbound@10.1.0.1").is_empty(),
+        strategies(&mut overridden, "cfg-inbound@10.1.0.1")?.is_empty(),
         "--leg-correlation-window must beat the config key"
     );
+    Ok(())
 }

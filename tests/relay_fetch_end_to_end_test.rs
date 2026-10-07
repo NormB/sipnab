@@ -36,6 +36,8 @@ use std::time::{Duration, Instant};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The Call-ID every per-call question names.
 const CALL_ID: &str = "1-4242@192.0.2.10";
 
@@ -59,21 +61,22 @@ struct FakeRelay {
     /// Every verb asked, in arrival order.
     asked: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
 impl FakeRelay {
     /// Start answering; `answer` receives the verb and how many times that
     /// verb has been asked before.
-    fn start(mut answer: impl FnMut(&str, usize) -> Answer + Send + 'static) -> Self {
-        let sock = UdpSocket::bind("127.0.0.1:0").expect("bind the fake relay");
-        sock.set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("read timeout");
-        let addr = sock.local_addr().expect("relay address");
+    fn start(
+        mut answer: impl FnMut(&str, usize) -> Answer + Send + 'static,
+    ) -> Result<Self, TestError> {
+        let sock = UdpSocket::bind("127.0.0.1:0")?;
+        sock.set_read_timeout(Some(Duration::from_millis(100)))?;
+        let addr = sock.local_addr()?;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let (asked_t, stop_t) = (Arc::clone(&asked), Arc::clone(&stop));
-        let thread = std::thread::spawn(move || {
+        let thread = std::thread::spawn(move || -> Result<(), String> {
             let mut buf = [0u8; 65536];
             let mut counts: std::collections::HashMap<String, usize> = Default::default();
             while !stop_t.load(Ordering::Relaxed) {
@@ -84,7 +87,10 @@ impl FakeRelay {
                 let space = req.iter().position(|b| *b == b' ').unwrap_or(0);
                 let cookie = req[..space].to_vec();
                 let verb = verb_of(&req[space..]);
-                asked_t.lock().expect("asked lock").push(verb.clone());
+                asked_t
+                    .lock()
+                    .map_err(|e| e.to_string())?
+                    .push(verb.clone());
                 let seen = counts.entry(verb.clone()).or_default();
                 let nth = *seen;
                 *seen += 1;
@@ -100,18 +106,19 @@ impl FakeRelay {
                 };
                 let _ = sock.send_to(&out, peer);
             }
+            Ok(())
         });
-        Self {
+        Ok(Self {
             addr,
             asked,
             stop,
             thread: Some(thread),
-        }
+        })
     }
 
     /// The verbs asked so far.
-    fn asked(&self) -> Vec<String> {
-        self.asked.lock().expect("asked lock").clone()
+    fn asked(&self) -> Result<Vec<String>, TestError> {
+        Ok(self.asked.lock().map_err(|e| e.to_string())?.clone())
     }
 }
 
@@ -140,14 +147,14 @@ fn verb_of(body: &[u8]) -> String {
 }
 
 /// A committed rtpengine reply, without the cookie it was captured with.
-fn fixture_body(name: &str) -> Vec<u8> {
+fn fixture_body(name: &str) -> Result<Vec<u8>, TestError> {
     let path = format!("{}/tests/fixtures/relay/{name}", env!("CARGO_MANIFEST_DIR"));
-    let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let raw = std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?;
     let space = raw
         .iter()
         .position(|b| *b == b' ')
-        .expect("cookie separator");
-    raw[space + 1..].to_vec()
+        .ok_or("cookie separator")?;
+    Ok(raw[space + 1..].to_vec())
 }
 
 /// An empty, complete `list` answer: the relay holds no calls right now.
@@ -186,13 +193,13 @@ fn lines_of<R: std::io::Read + Send + 'static>(r: R) -> mpsc::Receiver<String> {
 impl Run {
     /// Start a HEP-listening run pointed at `relay`, plus `extra` flags, and
     /// wait until its capture is open.
-    fn start(relay: &FakeRelay, extra: &[&str]) -> Self {
+    fn start(relay: &FakeRelay, extra: &[&str]) -> Result<Self, TestError> {
         Self::start_with_control(&relay.addr.to_string(), extra)
     }
 
     /// As [`Run::start`], naming `control` verbatim as the relay address.
-    fn start_with_control(control: &str, extra: &[&str]) -> Self {
-        let home = tempfile::tempdir().expect("tempdir");
+    fn start_with_control(control: &str, extra: &[&str]) -> Result<Self, TestError> {
+        let home = tempfile::tempdir()?;
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args(["-N", "-L", "127.0.0.1:0", "--rtpengine-control", control])
@@ -205,10 +212,9 @@ impl Run {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn sipnab -L");
-        let stdout = lines_of(child.stdout.take().expect("stdout"));
-        let stderr = lines_of(child.stderr.take().expect("stderr"));
+            .spawn()?;
+        let stdout = lines_of(child.stdout.take().ok_or("stdout")?);
+        let stderr = lines_of(child.stderr.take().ok_or("stderr")?);
         let mut run = Self {
             child,
             stdout,
@@ -222,7 +228,7 @@ impl Run {
             "the HEP capture never opened:\n{}",
             run.err.join("\n")
         );
-        run
+        Ok(run)
     }
 
     /// Wait for a stderr line containing `needle`.
@@ -308,13 +314,16 @@ impl Finished {
 /// The comparison is reported as a gap, not as `1862 vs 0`: sipnab created no
 /// stream for the call, so its side is absent rather than a measured zero.
 #[test]
-fn a_live_run_prints_the_table_polls_it_and_reports_a_call_it_saw_no_media_for() {
-    let relay = FakeRelay::start(|verb, _| match verb {
+fn a_live_run_prints_the_table_polls_it_and_reports_a_call_it_saw_no_media_for()
+-> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
         "list" => no_calls(),
-        "statistics" => Answer::Body(fixture_body("rtpengine-statistics-12.5.1.bencode")),
-        "query" => Answer::Body(fixture_body("rtpengine-query-12.5.1.bencode")),
+        "statistics" => Answer::Body(statistics.clone()),
+        "query" => Answer::Body(query.clone()),
         _ => Answer::Silent,
-    });
+    })?;
     let label = format!("rtpengine at {}", relay.addr);
     let mut run = Run::start(
         &relay,
@@ -325,7 +334,7 @@ fn a_live_run_prints_the_table_polls_it_and_reports_a_call_it_saw_no_media_for()
             "--relay-compare",
             CALL_ID,
         ],
-    );
+    )?;
     assert!(
         run.wait_stdout(&format!("Relay statistics ({label}, asked "), 1),
         "the one-shot table must print:\n{}",
@@ -346,7 +355,7 @@ fn a_live_run_prints_the_table_polls_it_and_reports_a_call_it_saw_no_media_for()
         "the relay's per-call total is reported as unmatched, not compared to zero:\n{}",
         done.dump()
     );
-    let asked = relay.asked();
+    let asked = relay.asked()?;
     assert_eq!(asked.first().map(String::as_str), Some("list"), "{asked:?}");
     assert_eq!(
         asked.last().map(String::as_str),
@@ -357,22 +366,24 @@ fn a_live_run_prints_the_table_polls_it_and_reports_a_call_it_saw_no_media_for()
         asked.iter().filter(|v| *v == "statistics").count() >= 3,
         "one ask plus at least two polls: {asked:?}"
     );
+    Ok(())
 }
 
 /// `--json` turns the name list into one JSON document, and a relay that
 /// does not hold the compared call is reported as refusing, in its own words.
 #[test]
-fn the_name_list_prints_as_json_and_an_unknown_call_is_a_refusal() {
-    let relay = FakeRelay::start(|verb, _| match verb {
+fn the_name_list_prints_as_json_and_an_unknown_call_is_a_refusal() -> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
         "list" => no_calls(),
-        "statistics" => Answer::Body(fixture_body("rtpengine-statistics-12.5.1.bencode")),
+        "statistics" => Answer::Body(statistics.clone()),
         "query" => unknown_call(),
         _ => Answer::Silent,
-    });
+    })?;
     let mut run = Run::start(
         &relay,
         &["--json", "--relay-stats-list", "--relay-compare", CALL_ID],
-    );
+    )?;
     assert!(
         run.wait_stdout("\"names\"", 1),
         "the name list must print as JSON:\n{}",
@@ -385,10 +396,10 @@ fn the_name_list_prints_as_json_and_an_unknown_call_is_a_refusal() {
         .stdout
         .lines()
         .find(|l| l.contains("\"names\""))
-        .expect("the names document");
-    let v: serde_json::Value = serde_json::from_str(line).expect("one JSON document per line");
+        .ok_or("the names document")?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
     assert_eq!(v["relay"], format!("rtpengine at {}", relay.addr));
-    let names = v["names"].as_array().expect("names is a list");
+    let names = v["names"].as_array().ok_or("names is a list")?;
     assert!(
         names
             .iter()
@@ -402,18 +413,20 @@ fn the_name_list_prints_as_json_and_an_unknown_call_is_a_refusal() {
         "{}",
         done.dump()
     );
+    Ok(())
 }
 
 /// `--relay-stats-call` prints that call's counters, labeled with the call.
 #[test]
-fn a_per_call_ask_prints_that_calls_counters() {
-    let relay = FakeRelay::start(|verb, _| match verb {
+fn a_per_call_ask_prints_that_calls_counters() -> Result<(), TestError> {
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
         "list" => no_calls(),
-        "query" => Answer::Body(fixture_body("rtpengine-query-12.5.1.bencode")),
+        "query" => Answer::Body(query.clone()),
         _ => Answer::Silent,
-    });
+    })?;
     let label = format!("rtpengine at {}, call {CALL_ID}", relay.addr);
-    let mut run = Run::start(&relay, &["--relay-stats-call", CALL_ID]);
+    let mut run = Run::start(&relay, &["--relay-stats-call", CALL_ID])?;
     assert!(
         run.wait_stdout(&format!("Relay statistics ({label}, asked "), 1),
         "{}",
@@ -426,17 +439,18 @@ fn a_per_call_ask_prints_that_calls_counters() {
     );
     let done = run.finish();
     assert_eq!(done.code, Some(0), "{}", done.dump());
+    Ok(())
 }
 
 /// A per-call ask the relay refuses prints no table, only the refusal.
 #[test]
-fn a_refused_per_call_ask_prints_the_relays_reason_and_no_table() {
+fn a_refused_per_call_ask_prints_the_relays_reason_and_no_table() -> Result<(), TestError> {
     let relay = FakeRelay::start(|verb, _| match verb {
         "list" => no_calls(),
         "query" => unknown_call(),
         _ => Answer::Silent,
-    });
-    let mut run = Run::start(&relay, &["--relay-stats-call", CALL_ID]);
+    })?;
+    let mut run = Run::start(&relay, &["--relay-stats-call", CALL_ID])?;
     assert!(
         run.wait_stderr(&format!(
             "refused the statistics request for call {CALL_ID}: Unknown call-id"
@@ -451,18 +465,19 @@ fn a_refused_per_call_ask_prints_the_relays_reason_and_no_table() {
         "a refusal is never tiered into counter rows:\n{}",
         done.dump()
     );
+    Ok(())
 }
 
 /// A reply carrying somebody else's cookie is discarded and called suspect,
 /// never read as statistics.
 #[test]
-fn a_reply_to_another_transaction_is_reported_suspect() {
+fn a_reply_to_another_transaction_is_reported_suspect() -> Result<(), TestError> {
     let relay = FakeRelay::start(|verb, _| match verb {
         "list" => no_calls(),
         "statistics" => Answer::Raw(b"sipnab-somebodyelse d6:result2:oke".to_vec()),
         _ => Answer::Silent,
-    });
-    let mut run = Run::start(&relay, &["--relay-stats"]);
+    })?;
+    let mut run = Run::start(&relay, &["--relay-stats"])?;
     assert!(
         run.wait_stderr("the reply was discarded and not read (suspect)"),
         "{}",
@@ -471,17 +486,18 @@ fn a_reply_to_another_transaction_is_reported_suspect() {
     let done = run.finish();
     assert_eq!(done.code, Some(0), "{}", done.dump());
     assert!(!done.stdout.contains("Relay statistics"), "{}", done.dump());
+    Ok(())
 }
 
 /// A relay that never answers is reported as asked-and-silent -- by the
 /// one-shot ask, by the poller, and by the comparison, which still states
 /// what sipnab measured.
 #[test]
-fn a_silent_relay_is_reported_as_unanswered_by_every_form() {
+fn a_silent_relay_is_reported_as_unanswered_by_every_form() -> Result<(), TestError> {
     let relay = FakeRelay::start(|verb, _| match verb {
         "list" => no_calls(),
         _ => Answer::Silent,
-    });
+    })?;
     let mut run = Run::start(
         &relay,
         &[
@@ -491,7 +507,7 @@ fn a_silent_relay_is_reported_as_unanswered_by_every_form() {
             "--relay-compare",
             CALL_ID,
         ],
-    );
+    )?;
     assert!(
         run.wait_stderr("did not answer the statistics request"),
         "{}",
@@ -511,12 +527,13 @@ fn a_silent_relay_is_reported_as_unanswered_by_every_form() {
         "{}",
         done.dump()
     );
+    Ok(())
 }
 
 /// A cumulative counter that goes down between two polls is flagged as a
 /// probable relay restart, and each reading still prints.
 #[test]
-fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() {
+fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() -> Result<(), TestError> {
     let relay = FakeRelay::start(|verb, nth| match verb {
         "list" => no_calls(),
         "statistics" => {
@@ -528,8 +545,8 @@ fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() {
             )
         }
         _ => Answer::Silent,
-    });
-    let mut run = Run::start(&relay, &["--relay-stats-interval", "1"]);
+    })?;
+    let mut run = Run::start(&relay, &["--relay-stats-interval", "1"])?;
     assert!(
         run.wait_stderr("stepped backwards 5 -> 3 between polls"),
         "{}",
@@ -542,6 +559,7 @@ fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() {
         "both readings print; the suspect one is not dropped:\n{}",
         done.dump()
     );
+    Ok(())
 }
 
 /// A relay address that is not an address and port asks nothing -- and the
@@ -553,7 +571,7 @@ fn a_counter_that_steps_backwards_between_polls_is_flagged_suspect() {
 /// because it "reads a file" and to capture live instead -- a fix it had
 /// already made. The refusal has to name the address, like its siblings do.
 #[test]
-fn an_unparseable_relay_address_asks_nothing_and_every_form_says_so() {
+fn an_unparseable_relay_address_asks_nothing_and_every_form_says_so() -> Result<(), TestError> {
     let mut run = Run::start_with_control(
         "relay-without-a-port",
         &[
@@ -563,7 +581,7 @@ fn an_unparseable_relay_address_asks_nothing_and_every_form_says_so() {
             "--relay-compare",
             CALL_ID,
         ],
-    );
+    )?;
     assert!(
         run.wait_stderr("nothing is polled"),
         "{}",
@@ -592,4 +610,5 @@ fn an_unparseable_relay_address_asks_nothing_and_every_form_says_so() {
         "this run is live; blaming a file sends the operator nowhere:\n{}",
         done.dump()
     );
+    Ok(())
 }

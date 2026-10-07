@@ -12,34 +12,33 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
-use mcp::McpSession;
+use mcp::{McpSession, TestError};
 
 fn fixture(name: &str) -> String {
     format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"))
 }
 
-fn text(msg: &serde_json::Value) -> String {
-    msg["result"]["content"][0]["text"]
+fn text(msg: &serde_json::Value) -> Result<String, TestError> {
+    Ok(msg["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text payload: {msg}"))
-        .to_string()
+        .ok_or_else(|| format!("no text payload: {msg}"))?
+        .to_string())
 }
 
 #[test]
-fn the_mermaid_ladder_notes_offsets_and_post_dial_delay() {
-    let mut session = McpSession::start_or_panic(&fixture("sip_call.pcap"), &["--no-config"]);
+fn the_mermaid_ladder_notes_offsets_and_post_dial_delay() -> Result<(), TestError> {
+    let mut session = McpSession::start(&fixture("sip_call.pcap"), &["--no-config"])?;
     let list: serde_json::Value = serde_json::from_str(&text(
-        &session.call_or_panic("list_dialogs", serde_json::json!({})),
-    ))
-    .expect("list_dialogs JSON");
+        &session.call("list_dialogs", serde_json::json!({}))?,
+    )?)?;
     let call_id = list["dialogs"][0]["call_id"]
         .as_str()
-        .expect("one dialog")
+        .ok_or("one dialog")?
         .to_string();
-    let diagram = text(&session.call_or_panic(
+    let diagram = text(&session.call(
         "render_ladder",
         serde_json::json!({ "call_id": call_id, "format": "mermaid" }),
-    ));
+    )?)?;
     assert!(diagram.contains("sequenceDiagram"), "{diagram}");
     assert!(
         diagram.contains("Note right of"),
@@ -53,4 +52,5 @@ fn the_mermaid_ladder_notes_offsets_and_post_dial_delay() {
         diagram.contains("+0.500s \u{b7} PDD 500ms"),
         "the 180 must carry its offset and the post-dial delay:\n{diagram}"
     );
+    Ok(())
 }

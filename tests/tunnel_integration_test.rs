@@ -20,6 +20,8 @@ use sipnab::capture::parse::{parse_packet, peek_host_pair};
 use sipnab::net::TransportProto;
 use sipnab::sip::method::SipMethod;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Pcap link type for Ethernet II (DLT_EN10MB).
 const EN10MB: i32 = 1;
 
@@ -118,23 +120,25 @@ fn invite_packet() -> Vec<u8> {
     invite_frame()[14..].to_vec()
 }
 
-fn packet(data: Vec<u8>) -> Packet {
+fn packet(data: Vec<u8>) -> Result<Packet, TestError> {
     let len = data.len();
-    Packet::new(
-        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+    Ok(Packet::new(
+        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid timestamp")?,
         data,
         len,
         len,
         None,
         EN10MB,
-    )
+    ))
 }
 
 /// Parse a frame all the way to a SIP message and assert it is the INVITE,
 /// carried between the endpoints the *inner* headers name.
 #[track_caller]
-fn assert_invite_through(what: &str, frame: Vec<u8>) {
-    let parsed = parse_packet(&packet(frame)).unwrap_or_else(|e| panic!("{what}: {e:?}"));
+fn assert_invite_through(what: &str, frame: Vec<u8>) -> Result<(), TestError> {
+    let parsed = parse_packet(&packet(frame)?).map_err(|e| format!("{what}: {e:?}"))?;
     assert_eq!(parsed.src_addr.to_string(), "10.0.0.1", "{what}: source");
     assert_eq!(parsed.dst_addr.to_string(), "10.0.0.2", "{what}: dest");
     assert_eq!(parsed.src_port, 5060, "{what}: source port");
@@ -149,7 +153,7 @@ fn assert_invite_through(what: &str, frame: Vec<u8>) {
         parsed.dst_port,
         TransportProto::Udp,
     )
-    .unwrap_or_else(|e| panic!("{what}: not SIP: {e:?}"));
+    .map_err(|e| format!("{what}: not SIP: {e:?}"))?;
 
     assert!(msg.is_request, "{what}: should be a request");
     assert_eq!(msg.method, Some(SipMethod::Invite), "{what}: method");
@@ -158,55 +162,60 @@ fn assert_invite_through(what: &str, frame: Vec<u8>) {
         Some("tunneled-call-1@example.com"),
         "{what}: Call-ID"
     );
+    Ok(())
 }
 
 /// MPLS is the carrier core, and a capture taken on a labeled segment is
 /// often the only place the problem is visible.
 #[test]
-fn mpls_labeled_invite_reaches_the_sip_parser() {
+fn mpls_labeled_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     assert_invite_through(
         "MPLS",
         splice(&invite_frame(), 0x8847, &mpls_label(16_000, true)),
-    );
+    )?;
+    Ok(())
 }
 
 /// MPLS-in-IP (RFC 4023), IP protocol 137.
 #[test]
-fn mpls_in_ip_invite_reaches_the_sip_parser() {
+fn mpls_in_ip_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let mut stack = mpls_label(16_000, true).to_vec();
     stack.extend_from_slice(&invite_packet());
     assert_invite_through(
         "MPLS-in-IP",
         eth(&ipv4(&stack, 137, [192, 0, 2, 1], [192, 0, 2, 2]), 0x0800),
-    );
+    )?;
+    Ok(())
 }
 
 /// NSH (RFC 8300) — the service-chain header a firewall or SBC sits behind.
 #[test]
-fn nsh_encapsulated_invite_reaches_the_sip_parser() {
+fn nsh_encapsulated_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let mut nsh = vec![0x00, 0x06, 0x01, 0x01]; // Ver 0, Length 6, MD Type 1, IPv4
     nsh.extend_from_slice(&[0x00, 0x00, 0x00, 0xFF]); // SPI / SI
     nsh.extend_from_slice(&[0u8; 16]); // fixed context headers
-    assert_invite_through("NSH", splice(&invite_frame(), 0x894F, &nsh));
+    assert_invite_through("NSH", splice(&invite_frame(), 0x894F, &nsh))?;
+    Ok(())
 }
 
 /// A Provider Backbone Bridge I-TAG (IEEE Std 802.1Q-2014 §9.7) carries a
 /// whole customer frame, addresses and all.
 #[test]
-fn pbb_encapsulated_invite_reaches_the_sip_parser() {
+fn pbb_encapsulated_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let mut f = vec![0xCC; 6]; // B-DA
     f.extend_from_slice(&[0xDD; 6]); // B-SA
     f.extend_from_slice(&0x88E7u16.to_be_bytes());
     f.push(0x00); // flags: Res2 clear
     f.extend_from_slice(&[0x00, 0x00, 0x64]); // I-SID 100
     f.extend_from_slice(&invite_frame());
-    assert_invite_through("PBB I-TAG", f);
+    assert_invite_through("PBB I-TAG", f)?;
+    Ok(())
 }
 
 /// MACsec with E and C clear is integrity-only: the User Data is plaintext,
 /// and throwing it away would lose a call that is legible in the capture.
 #[test]
-fn macsec_integrity_only_invite_reaches_the_sip_parser() {
+fn macsec_integrity_only_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let base = invite_frame();
     let mut f = base[0..12].to_vec();
     f.extend_from_slice(&0x88E5u16.to_be_bytes());
@@ -214,49 +223,53 @@ fn macsec_integrity_only_invite_reaches_the_sip_parser() {
     f.push(0x00); // SL
     f.extend_from_slice(&1u32.to_be_bytes()); // PN
     f.extend_from_slice(&base[12..]);
-    assert_invite_through("MACsec", f);
+    assert_invite_through("MACsec", f)?;
+    Ok(())
 }
 
 /// VXLAN (RFC 7348) — the data-center fabric.
 #[test]
-fn vxlan_encapsulated_invite_reaches_the_sip_parser() {
+fn vxlan_encapsulated_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let mut vx = vxlan_header().to_vec();
     vx.extend_from_slice(&invite_frame());
     assert_invite_through(
         "VXLAN",
         eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 32_768, 4789, &vx),
-    );
+    )?;
+    Ok(())
 }
 
 /// GTP-U (3GPP TS 29.281) — VoLTE/VoNR signaling on S1-U, S5/S8 or N3.
 #[test]
-fn gtpu_encapsulated_invite_reaches_the_sip_parser() {
+fn gtpu_encapsulated_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let inner = invite_packet();
     let mut gtp = gtpu_header(inner.len());
     gtp.extend_from_slice(&inner);
     assert_invite_through(
         "GTP-U",
         eth_ipv4_udp([192, 0, 2, 1], [192, 0, 2, 2], 2152, 2152, &gtp),
-    );
+    )?;
+    Ok(())
 }
 
 /// GRE with Protocol Type 0x6558, Transparent Ethernet Bridging (RFC 7637
 /// §3.2).
 #[test]
-fn gre_teb_encapsulated_invite_reaches_the_sip_parser() {
+fn gre_teb_encapsulated_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     let mut gre = vec![0x00, 0x00]; // no optional fields
     gre.extend_from_slice(&0x6558u16.to_be_bytes());
     gre.extend_from_slice(&invite_frame());
     assert_invite_through(
         "GRE-TEB",
         eth(&ipv4(&gre, 47, [192, 0, 2, 1], [192, 0, 2, 2]), 0x0800),
-    );
+    )?;
+    Ok(())
 }
 
 /// AH authenticates without encrypting (RFC 4302 §1), so the datagram it
 /// protects is in the clear and reachable.
 #[test]
-fn ah_protected_invite_reaches_the_sip_parser() {
+fn ah_protected_invite_reaches_the_sip_parser() -> Result<(), TestError> {
     // 24-octet AH: 12 fixed octets plus a 96-bit ICV. Payload Len is in
     // 4-octet units minus 2, so it reads 4.
     let mut ah = vec![4u8, 4, 0x00, 0x00]; // Next Header 4 (IPv4), Payload Len 4
@@ -267,14 +280,15 @@ fn ah_protected_invite_reaches_the_sip_parser() {
     assert_invite_through(
         "AH tunnel mode",
         eth(&ipv4(&ah, 51, [192, 0, 2, 1], [192, 0, 2, 2]), 0x0800),
-    );
+    )?;
+    Ok(())
 }
 
 /// Attacker-controlled nesting terminates. Six encapsulations of four
 /// different kinds share one budget, so alternating them buys no extra depth,
 /// and the frame is refused rather than walked.
 #[test]
-fn over_nested_frame_is_refused_not_walked() {
+fn over_nested_frame_is_refused_not_walked() -> Result<(), TestError> {
     // MACsec → MPLS → GTP-U → IP-in-IP → IP-in-IP → the INVITE: six layers
     // against a limit of five.
     let mut inner = invite_packet();
@@ -292,18 +306,21 @@ fn over_nested_frame_is_refused_not_walked() {
     f.extend_from_slice(&1u32.to_be_bytes()); // PN
     f.extend_from_slice(&base[12..]);
 
-    let err = parse_packet(&packet(f)).expect_err("an over-nested frame must be refused");
+    let err = parse_packet(&packet(f)?)
+        .err()
+        .ok_or("an over-nested frame must be refused")?;
     assert!(
         matches!(err, CaptureError::EncapTooDeep { limit: 5, .. }),
         "expected the shared depth limit, got {err:?}"
     );
+    Ok(())
 }
 
 /// An encrypted MACsec frame is named, not silently dropped and not turned
 /// into a flow. "MACsec-encrypted frame" is something an operator can act on;
 /// a frame that merely vanished is not.
 #[test]
-fn encrypted_macsec_is_named_rather_than_invented() {
+fn encrypted_macsec_is_named_rather_than_invented() -> Result<(), TestError> {
     let base = invite_frame();
     let mut f = base[0..12].to_vec();
     f.extend_from_slice(&0x88E5u16.to_be_bytes());
@@ -312,21 +329,24 @@ fn encrypted_macsec_is_named_rather_than_invented() {
     f.extend_from_slice(&1u32.to_be_bytes()); // PN
     f.extend_from_slice(&base[12..]);
 
-    let err = parse_packet(&packet(f)).expect_err("encrypted MACsec carries no readable flow");
+    let err = parse_packet(&packet(f)?)
+        .err()
+        .ok_or("encrypted MACsec carries no readable flow")?;
     assert!(
         matches!(err, CaptureError::NotIp { what } if what.contains("MACsec")),
         "the refusal must name MACsec, got {err:?}"
     );
+    Ok(())
 }
 
 /// `--cores` shards on the outer host pair for network- and transport-layer
 /// tunnels, and on the inner one for link-layer encapsulation. Both halves
 /// are deliberate: see `peek_host_pair`.
 #[test]
-fn core_sharding_follows_link_layer_and_stops_at_udp_tunnels() {
+fn core_sharding_follows_link_layer_and_stops_at_udp_tunnels() -> Result<(), TestError> {
     let mpls = splice(&invite_frame(), 0x8847, &mpls_label(16_000, true));
-    let p = packet(mpls);
-    let parsed = parse_packet(&p).expect("MPLS");
+    let p = packet(mpls)?;
+    let parsed = parse_packet(&p).map_err(|e| format!("MPLS: {e:?}"))?;
     assert_eq!(
         peek_host_pair(&p),
         Some((parsed.src_addr, parsed.dst_addr)),
@@ -342,14 +362,15 @@ fn core_sharding_follows_link_layer_and_stops_at_udp_tunnels() {
         32_768,
         4789,
         &vx,
-    ));
-    let parsed = parse_packet(&p).expect("VXLAN");
+    ))?;
+    let parsed = parse_packet(&p).map_err(|e| format!("VXLAN: {e:?}"))?;
     assert_eq!(parsed.src_addr.to_string(), "10.0.0.1");
-    let (src, dst) = peek_host_pair(&p).expect("a shard key");
+    let (src, dst) = peek_host_pair(&p).ok_or("a shard key")?;
     assert_eq!(
         (src.to_string(), dst.to_string()),
         ("192.0.2.1".to_string(), "192.0.2.2".to_string()),
         "a tunnel header appears only in the first fragment, so the peek must \
          key on the tunnel endpoints"
     );
+    Ok(())
 }

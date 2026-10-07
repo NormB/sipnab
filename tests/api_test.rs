@@ -18,10 +18,12 @@ mod support;
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
 
-use server::{ApiServer, run_and_capture_stderr_or_panic};
-use support::schema::{assert_valid, load_validator_or_panic};
+use server::{ApiServer, run_and_capture_stderr};
+use support::schema::{assert_valid, load_validator};
 
 include!("support/timeout.rs");
+
+use server::TestError;
 
 /// The Call-ID of the single dialog in the default `sip_call.pcap` fixture,
 /// used to address per-dialog endpoints. Its host part, like the caller's
@@ -32,11 +34,12 @@ const CALL_ID: &str = "test-call-1@192.0.2.1";
 
 /// `GET /health` returns 200 with the literal body `ok`.
 #[test]
-fn health_returns_ok() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/health");
+fn health_returns_ok() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/health")?;
     assert_eq!(resp.status, 200, "/health status");
     assert_eq!(resp.body.trim(), "ok");
+    Ok(())
 }
 
 /// `GET /v1/capabilities` reports the shipped binary's compiled feature set and
@@ -44,14 +47,14 @@ fn health_returns_ok() {
 /// could have predicted (PAR3). Driven against the real binary, so the `api`
 /// feature it reports is the one that actually served the request.
 #[test]
-fn capabilities_reports_features_and_opt_ins() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/capabilities");
+fn capabilities_reports_features_and_opt_ins() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/capabilities")?;
     assert_eq!(resp.status, 200, "/v1/capabilities status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
-    let features = body["features"].as_array().expect("features array");
+    let features = body["features"].as_array().ok_or("features array")?;
     assert!(
         features.iter().any(|f| f == "api"),
         "the api feature is on in the binary that served this route"
@@ -59,6 +62,7 @@ fn capabilities_reports_features_and_opt_ins() {
     // A server spawned without --api-allow-relay-query reports the opt-in off,
     // which is a different fact from the feature being absent.
     assert_eq!(body["runtime"]["api_allow_relay_query"], false);
+    Ok(())
 }
 
 /// `GET /v1/dialogs/{id}/correlated` answers over the shipped binary with the
@@ -66,25 +70,26 @@ fn capabilities_reports_features_and_opt_ins() {
 /// call in the fixture stands alone, so the leg list is empty and total_matched
 /// is zero — the point is the shape and the 200, not a match.
 #[test]
-fn correlated_answers_with_the_versioned_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{CALL_ID}/correlated"));
+fn correlated_answers_with_the_versioned_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/correlated"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/correlated status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["source_call_id"], CALL_ID);
     assert!(body["legs"].is_array(), "legs is an array");
     assert!(body["total_matched"].is_number(), "total_matched present");
+    Ok(())
 }
 
 /// `GET /v1/dialogs/{id}/tree` answers over the shipped binary with the tree
 /// envelope (PAR3). The single call in the fixture is its own root and only leg.
 #[test]
-fn tree_answers_with_the_versioned_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{CALL_ID}/tree"));
+fn tree_answers_with_the_versioned_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/tree"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/tree status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["root_call_id"], CALL_ID);
     assert!(body["legs"].is_array(), "legs is an array");
@@ -92,33 +97,36 @@ fn tree_answers_with_the_versioned_envelope() {
         body["total_legs"].as_u64().unwrap_or(0) >= 1,
         "the root is always a leg"
     );
+    Ok(())
 }
 
 /// `GET /v1/aggregate` answers over the shipped binary with the buckets
 /// envelope (PAR3). The single call groups into one bucket by state.
 #[test]
-fn aggregate_answers_with_the_buckets_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/aggregate?by=state");
+fn aggregate_answers_with_the_buckets_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/aggregate?by=state")?;
     assert_eq!(resp.status, 200, "/v1/aggregate status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["group_by"], "state");
     assert!(body["buckets"].is_array(), "buckets is an array");
     assert!(body["total_matched"].is_number(), "total_matched present");
+    Ok(())
 }
 
 /// `GET /v1/timeline` answers over the shipped binary with the buckets envelope
 /// (PAR3).
 #[test]
-fn timeline_answers_with_the_buckets_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/timeline");
+fn timeline_answers_with_the_buckets_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/timeline")?;
     assert_eq!(resp.status, 200, "/v1/timeline status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert!(body["buckets"].is_array(), "buckets is an array");
     assert!(body["bucket_seconds"].is_number(), "bucket_seconds present");
+    Ok(())
 }
 
 /// `GET /v1/dialogs/compare` answers over the shipped binary with the
@@ -126,51 +134,53 @@ fn timeline_answers_with_the_buckets_envelope() {
 /// `differences` is empty — the point is the shape, the 200, and that the diff
 /// ran over the socket.
 #[test]
-fn compare_answers_over_the_socket() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/compare?a={CALL_ID}&b={CALL_ID}"));
+fn compare_answers_over_the_socket() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get(&format!("/v1/dialogs/compare?a={CALL_ID}&b={CALL_ID}"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/compare status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["a"]["call_id"], CALL_ID);
     assert_eq!(body["b"]["call_id"], CALL_ID);
     assert!(
         body["differences"]
             .as_array()
-            .expect("differences is an array")
+            .ok_or("differences is an array")?
             .is_empty(),
         "a call equals itself, so nothing differs"
     );
+    Ok(())
 }
 
 /// `GET /v1/dialogs/tail` answers over the shipped binary with the change-page
 /// envelope (PAR3). The fixture's one dialog comes back with a cursor to resume
 /// from, and that cursor carries no `+` — it rides in a URL query.
 #[test]
-fn tail_answers_with_the_change_page_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/dialogs/tail");
+fn tail_answers_with_the_change_page_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/dialogs/tail")?;
     assert_eq!(resp.status, 200, "/v1/dialogs/tail status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert!(body["dialogs"].is_array(), "dialogs is an array");
     assert_eq!(body["returned"], 1);
-    let cursor = body["next_cursor"].as_str().expect("a resume cursor");
+    let cursor = body["next_cursor"].as_str().ok_or("a resume cursor")?;
     assert!(
         !cursor.contains('+'),
         "the cursor rides in a URL query, where `+` decodes to a space: {cursor}"
     );
+    Ok(())
 }
 
 /// `GET /v1/dialogs/rates` answers over the shipped binary with the carrier-
 /// metrics envelope (PAR3): a group per dimension value, each figure's unit,
 /// and the group's population beside it.
 #[test]
-fn rates_answer_with_the_metrics_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/dialogs/rates?by=method");
+fn rates_answer_with_the_metrics_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/dialogs/rates?by=method")?;
     assert_eq!(resp.status, 200, "/v1/dialogs/rates status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["group_by"], "method");
     assert!(body["groups"].is_array(), "groups is an array");
@@ -182,17 +192,18 @@ fn rates_answer_with_the_metrics_envelope() {
         body["groups"][0]["population"]["dialogs"].is_number(),
         "each group publishes the population its figures were computed over"
     );
+    Ok(())
 }
 
 /// `GET /v1/talkers` answers over the shipped binary with the ranking envelope
 /// (PAR3): a row per participant with dialog and message counts, and
 /// `distinct_talkers` counting every one.
 #[test]
-fn talkers_answer_with_the_ranking_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/talkers?by=ip");
+fn talkers_answer_with_the_ranking_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/talkers?by=ip")?;
     assert_eq!(resp.status, 200, "/v1/talkers status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["by"], "ip");
     assert!(body["talkers"].is_array(), "talkers is an array");
@@ -205,6 +216,7 @@ fn talkers_answer_with_the_ranking_envelope() {
         body["talkers"][0]["dialogs"].is_number(),
         "each talker carries its dialog count"
     );
+    Ok(())
 }
 
 /// `GET /v1/endpoints` answers over the shipped binary with the describe
@@ -212,17 +224,17 @@ fn talkers_answer_with_the_ranking_envelope() {
 /// rows, the call and registration facets, and a page of recent dialogs. The
 /// fixture's caller `192.0.2.1` sent the one dialog, so it is a real endpoint.
 #[test]
-fn endpoints_answer_with_the_describe_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/endpoints?ip=192.0.2.1");
+fn endpoints_answer_with_the_describe_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/endpoints?ip=192.0.2.1")?;
     assert_eq!(resp.status, 200, "/v1/endpoints status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["endpoint_kind"], "ip");
     assert_eq!(body["endpoint"], "192.0.2.1");
     assert!(body["dialogs"].is_number(), "dialog count present");
     assert!(
-        body["messages_sent"].as_u64().expect("messages_sent") >= 1,
+        body["messages_sent"].as_u64().ok_or("messages_sent")? >= 1,
         "the caller sent at least the INVITE"
     );
     assert!(body["user_agents"].is_array(), "banner rows is an array");
@@ -235,6 +247,7 @@ fn endpoints_answer_with_the_describe_envelope() {
         body["recent_dialogs"].is_array(),
         "recent dialogs is an array"
     );
+    Ok(())
 }
 
 /// `GET /v1/security/findings` answers over the shipped binary with the
@@ -242,11 +255,11 @@ fn endpoints_answer_with_the_describe_envelope() {
 /// `detection_armed: false` and a note — the distinction a SOC dashboard needs,
 /// which a bare empty array cannot draw.
 #[test]
-fn security_findings_answer_with_the_armed_state_distinction() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/security/findings");
+fn security_findings_answer_with_the_armed_state_distinction() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/security/findings")?;
     assert_eq!(resp.status, 200, "/v1/security/findings status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert!(body["findings"].is_array(), "findings is an array");
     assert!(body["total_matched"].is_number(), "total_matched present");
@@ -260,24 +273,25 @@ fn security_findings_answer_with_the_armed_state_distinction() {
             .is_some_and(|n| n.contains("nothing was watching")),
         "an unarmed server explains its empty list"
     );
+    Ok(())
 }
 
 /// With `--kill-scanner`, the shipping binary arms the scanner detector, and the
 /// REST route reflects that end-to-end: `detection_armed` is true and
 /// `armed_kinds` names the scanner. Proves the CLI flag reaches the API state.
 #[test]
-fn security_findings_reflects_an_armed_detector() {
-    let srv = ApiServer::spawn_or_panic(&["--kill-scanner"]);
-    let resp = srv.get_or_panic("/v1/security/findings");
+fn security_findings_reflects_an_armed_detector() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--kill-scanner"])?;
+    let resp = srv.get("/v1/security/findings")?;
     assert_eq!(resp.status, 200, "/v1/security/findings status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(
         body["detection_armed"], true,
         "--kill-scanner arms the scanner detector"
     );
     let armed: Vec<&str> = body["armed_kinds"]
         .as_array()
-        .expect("armed_kinds array")
+        .ok_or("armed_kinds array")?
         .iter()
         .filter_map(|k| k.as_str())
         .collect();
@@ -286,6 +300,7 @@ fn security_findings_reflects_an_armed_detector() {
         "the armed scanner detector is named: {armed:?}"
     );
     assert!(body["note"].is_null(), "an armed server attaches no note");
+    Ok(())
 }
 
 /// A `--reg-flood` run over a capture that holds REGISTERs and no answer to
@@ -293,8 +308,8 @@ fn security_findings_reflects_an_armed_detector() {
 /// the shipped binary: the route a SOC dashboard polls says the detector could
 /// not see, instead of an empty list that reads as a quiet registrar.
 #[test]
-fn security_findings_reports_what_reg_flood_could_not_establish() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn security_findings_reports_what_reg_flood_could_not_establish() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("oneway.pcap");
     let frames: Vec<(Vec<u8>, u64)> = (0..3)
         .map(|i| {
@@ -313,8 +328,8 @@ fn security_findings_reports_what_reg_flood_could_not_establish() {
             (frame, i as u64 * 10_000)
         })
         .collect();
-    pcap_build::write_pcap_at_or_panic(&path, &frames, 1);
-    let srv = ApiServer::spawn_with_pcap_or_panic(path.to_str().expect("utf-8"), &["--reg-flood"]);
+    pcap_build::write_pcap_at(&path, &frames, 1)?;
+    let srv = ApiServer::spawn_with_pcap(path.to_str().ok_or("utf-8")?, &["--reg-flood"])?;
 
     // The gap is filed when the input ends, which races the first request, so
     // poll for it inside a bounded wait. The periodic refresh a LIVE capture
@@ -322,9 +337,9 @@ fn security_findings_reports_what_reg_flood_could_not_establish() {
     // final word anyway; `outcome_gap(false)` is unit-tested in reg_flood.rs.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let body = loop {
-        let resp = srv.get_or_panic("/v1/security/findings?kinds=reg_flood");
+        let resp = srv.get("/v1/security/findings?kinds=reg_flood")?;
         assert_eq!(resp.status, 200, "/v1/security/findings status");
-        let body = resp.json_or_panic();
+        let body = resp.json()?;
         if body["observation_gaps"]
             .as_array()
             .is_some_and(|g| !g.is_empty())
@@ -346,6 +361,7 @@ fn security_findings_reports_what_reg_flood_could_not_establish() {
         body["findings"].as_array().is_some_and(Vec::is_empty),
         "the gap is advisory and files no finding: {body}"
     );
+    Ok(())
 }
 
 /// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV/// `GET /v1/dialogs/{call_id}/audio` answers over the shipped binary with a WAV
@@ -353,16 +369,14 @@ fn security_findings_reports_what_reg_flood_could_not_establish() {
 /// `audio/wav` bytes that begin with the RIFF/WAVE magic and carry the embedded
 /// provenance note — the same bytes the file export and the vCon inliner make.
 #[test]
-fn audio_answers_with_a_wav_over_the_shipping_binary() {
-    let srv = ApiServer::spawn_with_pcap_or_panic(
-        "tests/pcap-samples/sip-rtp-g711.pcap",
-        &["--retain-audio"],
-    );
-    let dialogs = srv.get_or_panic("/v1/dialogs").json_or_panic();
+fn audio_answers_with_a_wav_over_the_shipping_binary() -> Result<(), TestError> {
+    let srv =
+        ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &["--retain-audio"])?;
+    let dialogs = srv.get("/v1/dialogs")?.json()?;
     let call_id = dialogs["dialogs"][0]["call_id"]
         .as_str()
-        .expect("the fixture must produce a dialog, or this test proves nothing");
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{call_id}/audio"));
+        .ok_or("the fixture must produce a dialog, or this test proves nothing")?;
+    let resp = srv.get(&format!("/v1/dialogs/{call_id}/audio"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/audio status");
     assert_eq!(
         resp.content_type.as_deref(),
@@ -377,20 +391,20 @@ fn audio_answers_with_a_wav_over_the_shipping_binary() {
         resp.body.contains("sipnab-capture"),
         "the provenance note is embedded in the file, not only in a header"
     );
+    Ok(())
 }
 
 /// `GET /v1/captures/compare` answers over the shipped binary with the diff
 /// envelope (PAR3): with `--api-file-root` set, two real fixtures diff by state,
 /// each side naming its own file and each bucket carrying a signed delta.
 #[test]
-fn captures_compare_diffs_two_files_over_the_shipping_binary() {
+fn captures_compare_diffs_two_files_over_the_shipping_binary() -> Result<(), TestError> {
     let root = format!("{}/tests/pcap-samples", env!("CARGO_MANIFEST_DIR"));
-    let srv = ApiServer::spawn_or_panic(&["--api-file-root", &root]);
-    let resp = srv.get_or_panic(
-        "/v1/captures/compare?a=b2bua-asterisk.pcapng&b=sip-rtp-g711.pcap&dimensions=state",
-    );
+    let srv = ApiServer::spawn(&["--api-file-root", &root])?;
+    let resp = srv
+        .get("/v1/captures/compare?a=b2bua-asterisk.pcapng&b=sip-rtp-g711.pcap&dimensions=state")?;
     assert_eq!(resp.status, 200, "/v1/captures/compare status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["a"]["filename"], "b2bua-asterisk.pcapng");
     assert_eq!(body["b"]["filename"], "sip-rtp-g711.pcap");
@@ -399,18 +413,20 @@ fn captures_compare_diffs_two_files_over_the_shipping_binary() {
         body["dimensions"][0]["buckets"].is_array(),
         "each dimension carries its ranked buckets"
     );
+    Ok(())
 }
 
 /// Without `--api-file-root`, the shipping binary answers 503 — capture
 /// comparison is a file-reading capability that is off by default.
 #[test]
-fn captures_compare_without_a_file_root_is_503() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/captures/compare?a=a.pcap&b=b.pcap");
+fn captures_compare_without_a_file_root_is_503() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/captures/compare?a=a.pcap&b=b.pcap")?;
     assert_eq!(
         resp.status, 503,
         "the capability is off until --api-file-root is set"
     );
+    Ok(())
 }
 
 /// `GET /v1/relay/holdings` answers over the shipping binary (ST5, query_relay):
@@ -418,34 +434,36 @@ fn captures_compare_without_a_file_root_is_503() {
 /// the route is served and gated like the other relay routes rather than
 /// transmitting.
 #[test]
-fn relay_holdings_answers_over_the_shipping_binary() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let list = srv.get_or_panic("/v1/relay/holdings");
+fn relay_holdings_answers_over_the_shipping_binary() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let list = srv.get("/v1/relay/holdings")?;
     assert_eq!(list.status, 200, "/v1/relay/holdings status");
-    let list_body = list.json_or_panic();
+    let list_body = list.json()?;
     assert_eq!(
         list_body["outcome"], "not_configured",
         "no relay was configured, so the route classifies rather than transmits"
     );
     assert_eq!(list_body["responsibility"], "invocation");
 
-    let per_call = srv.get_or_panic("/v1/relay/holdings/abc123@203.0.113.9");
+    let per_call = srv.get("/v1/relay/holdings/abc123@203.0.113.9")?;
     assert_eq!(per_call.status, 200, "/v1/relay/holdings/{{id}} status");
-    assert_eq!(per_call.json_or_panic()["outcome"], "not_configured");
+    assert_eq!(per_call.json()?["outcome"], "not_configured");
+    Ok(())
 }
 
 /// `GET /v1/dialogs/{id}/lint` answers over the shipped binary with the findings
 /// envelope (PAR3).
 #[test]
-fn lint_answers_with_the_findings_envelope() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{CALL_ID}/lint"));
+fn lint_answers_with_the_findings_envelope() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/lint"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/{{id}}/lint status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["call_id"], CALL_ID);
     assert!(body["findings"].is_array(), "findings is an array");
     assert!(body["finding_count"].is_number(), "finding_count present");
+    Ok(())
 }
 
 /// `POST /v1/vcon/validate` answers over the shipped binary with the verdict
@@ -456,37 +474,39 @@ fn lint_answers_with_the_findings_envelope() {
 /// this test would fail in the no-vcon feature combos CI runs.
 #[cfg(feature = "vcon")]
 #[test]
-fn vcon_validate_answers_over_the_socket() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.post_json_or_panic("/v1/vcon/validate", "{}");
+fn vcon_validate_answers_over_the_socket() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.post_json("/v1/vcon/validate", "{}")?;
     assert_eq!(resp.status, 200, "/v1/vcon/validate status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 1);
     assert_eq!(body["verdict"], "invalid");
     assert!(body["errors"].is_array(), "errors is an array");
+    Ok(())
 }
 
 /// The server accepts `--api-max-conn` (the in-flight-request cap) and still
 /// serves — keeps the flag under test coverage.
 #[test]
-fn api_max_conn_flag_accepted_and_serves() {
-    let srv = ApiServer::spawn_or_panic(&["--api-max-conn", "8"]);
-    let resp = srv.get_or_panic("/health");
+fn api_max_conn_flag_accepted_and_serves() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-max-conn", "8"])?;
+    let resp = srv.get("/health")?;
     assert_eq!(
         resp.status, 200,
         "server started with --api-max-conn should serve /health"
     );
     assert_eq!(resp.body.trim(), "ok");
+    Ok(())
 }
 
 /// `GET /v1/dialogs` returns the versioned list wrapper (schema_version/total/
 /// offset/limit) and each summary validates against `dialog.schema.json`.
 #[test]
-fn list_dialogs_wrapper_and_summaries_validate() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/dialogs");
+fn list_dialogs_wrapper_and_summaries_validate() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/dialogs")?;
     assert_eq!(resp.status, 200, "/v1/dialogs status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
 
     // List wrapper shape.
     assert_eq!(body["schema_version"], 1);
@@ -494,37 +514,40 @@ fn list_dialogs_wrapper_and_summaries_validate() {
     assert!(body.get("offset").is_some() && body.get("limit").is_some());
 
     // Each dialog summary validates against the T1.3 dialog schema.
-    let dialog_schema = load_validator_or_panic("dialog.schema.json");
-    let dialogs = body["dialogs"].as_array().expect("dialogs array");
+    let dialog_schema = load_validator("dialog.schema.json")?;
+    let dialogs = body["dialogs"].as_array().ok_or("dialogs array")?;
     assert_eq!(dialogs.len(), 1, "fixture has one dialog");
     for (i, d) in dialogs.iter().enumerate() {
         assert_valid(&dialog_schema, d, &format!("dialog summary {i}"));
     }
+    Ok(())
 }
 
 /// Both `GET /v1/dialogs/{id}` and `/v1/dialogs/{id}/report` return 200 and
 /// validate against `call_report.schema.json`.
 #[test]
-fn get_dialog_and_report_validate_call_report_schema() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let cr = load_validator_or_panic("call_report.schema.json");
+fn get_dialog_and_report_validate_call_report_schema() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let cr = load_validator("call_report.schema.json")?;
 
     for path in [
         format!("/v1/dialogs/{CALL_ID}"),
         format!("/v1/dialogs/{CALL_ID}/report"),
     ] {
-        let resp = srv.get_or_panic(&path);
+        let resp = srv.get(&path)?;
         assert_eq!(resp.status, 200, "{path} status");
-        assert_valid(&cr, &resp.json_or_panic(), &path);
+        assert_valid(&cr, &resp.json()?, &path);
     }
+    Ok(())
 }
 
 /// Requesting a Call-ID that is not in the store returns 404.
 #[test]
-fn unknown_dialog_returns_404() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/dialogs/does-not-exist@nowhere");
+fn unknown_dialog_returns_404() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/dialogs/does-not-exist@nowhere")?;
     assert_eq!(resp.status, 404, "unknown dialog must 404");
+    Ok(())
 }
 
 /// A recorded call's SIPREC metadata reaches the REST surface.
@@ -535,12 +558,11 @@ fn unknown_dialog_returns_404() {
 /// carrying a field the CLI JSON has, it is because someone forked that
 /// projection, and this is the test that says so.
 #[test]
-fn a_recorded_dialog_carries_its_siprec_metadata_over_http() {
-    let srv =
-        ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
-    let resp = srv.get_or_panic("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31");
+fn a_recorded_dialog_carries_its_siprec_metadata_over_http() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[])?;
+    let resp = srv.get("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31")?;
     assert_eq!(resp.status, 200, "body: {}", resp.body);
-    let v: serde_json::Value = serde_json::from_str(&resp.body).expect("valid JSON");
+    let v: serde_json::Value = serde_json::from_str(&resp.body)?;
     let sr = &v["siprec"];
     assert_eq!(sr["session_id"], "4f1c0a2e", "body: {}", resp.body);
     assert_eq!(sr["mode"], "complete");
@@ -548,6 +570,7 @@ fn a_recorded_dialog_carries_its_siprec_metadata_over_http() {
         sr["streams"][0]["participant_id"], "9b2d1f00",
         "stream ownership must survive the HTTP projection: {sr}"
     );
+    Ok(())
 }
 
 /// The per-dialog report carries the recording metadata too.
@@ -557,16 +580,16 @@ fn a_recorded_dialog_carries_its_siprec_metadata_over_http() {
 /// field that reached one and not the other would be found by whoever needed
 /// it least.
 #[test]
-fn the_dialog_report_endpoint_carries_siprec() {
-    let srv =
-        ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
-    let resp = srv.get_or_panic("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31/report");
+fn the_dialog_report_endpoint_carries_siprec() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[])?;
+    let resp = srv.get("/v1/dialogs/4f1c0a2e-siprec@172.28.0.31/report")?;
     assert_eq!(resp.status, 200, "body: {}", resp.body);
     assert!(
         resp.body.contains("4f1c0a2e"),
         "the report must name the recording session: {}",
         resp.body
     );
+    Ok(())
 }
 
 /// The recorded dialog is listed like any other over HTTP.
@@ -576,30 +599,31 @@ fn the_dialog_report_endpoint_carries_siprec() {
 /// of object, and an operator filtering the list must not have to know that a
 /// recorded call needs asking for differently.
 #[test]
-fn a_recorded_dialog_is_listed_like_any_other_over_http() {
-    let srv =
-        ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/siprec-opensips-invite.pcap", &[]);
-    let resp = srv.get_or_panic("/v1/dialogs");
+fn a_recorded_dialog_is_listed_like_any_other_over_http() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/siprec-opensips-invite.pcap", &[])?;
+    let resp = srv.get("/v1/dialogs")?;
     assert_eq!(resp.status, 200, "body: {}", resp.body);
     assert!(
         resp.body.contains("4f1c0a2e-siprec@172.28.0.31"),
         "the recording dialog must appear in the ordinary listing: {}",
         resp.body
     );
+    Ok(())
 }
 
 /// A call with no SIPREC omits the key over HTTP too.
 #[test]
-fn an_ordinary_dialog_omits_siprec_over_http() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{CALL_ID}"));
+fn an_ordinary_dialog_omits_siprec_over_http() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}"))?;
     assert_eq!(resp.status, 200, "body: {}", resp.body);
-    let v: serde_json::Value = serde_json::from_str(&resp.body).expect("valid JSON");
+    let v: serde_json::Value = serde_json::from_str(&resp.body)?;
     assert!(
         v.get("siprec").is_none(),
         "an unrecorded call must omit the key, not send null: {}",
         resp.body
     );
+    Ok(())
 }
 
 /// `GET /v1/dialogs/{call_id}/vcon` is served by the binary that ships, and an
@@ -619,12 +643,12 @@ fn an_ordinary_dialog_omits_siprec_over_http() {
 /// would read as a recording of the call.
 #[cfg(feature = "vcon")]
 #[test]
-fn vcon_route_is_served_by_the_shipping_binary() {
-    let srv = ApiServer::spawn_or_panic(&[]);
+fn vcon_route_is_served_by_the_shipping_binary() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
 
-    let resp = srv.get_or_panic(&format!("/v1/dialogs/{CALL_ID}/vcon"));
+    let resp = srv.get(&format!("/v1/dialogs/{CALL_ID}/vcon"))?;
     assert_eq!(resp.status, 200, "/v1/dialogs/{CALL_ID}/vcon status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert!(
         body.is_object(),
         "the container must arrive as an object, not a stringified blob: {body}"
@@ -644,12 +668,12 @@ fn vcon_route_is_served_by_the_shipping_binary() {
     let analysis_body: serde_json::Value = serde_json::from_str(
         body["analysis"][0]["body"]
             .as_str()
-            .unwrap_or_else(|| panic!("an analysis body must be a string: {body}")),
+            .ok_or_else(|| format!("an analysis body must be a string: {body}"))?,
     )
-    .unwrap_or_else(|e| panic!("the analysis body must parse: {e}: {body}"));
+    .map_err(|e| format!("the analysis body must parse: {e}: {body}"))?;
     let note = analysis_body["capture_completeness"]["note"]
         .as_str()
-        .unwrap_or_else(|| panic!("no completeness note: {body}"));
+        .ok_or_else(|| format!("no completeness note: {body}"))?;
     // NOT "SIGNALING ONLY". This door attempts media like the CLI and MCP
     // doors since 0.5.125, so the caveat reports what this run MEASURED about
     // media instead of a fixed claim that the container carries none. The two
@@ -668,12 +692,13 @@ fn vcon_route_is_served_by_the_shipping_binary() {
          the conversation: {note}"
     );
 
-    let unknown = srv.get_or_panic("/v1/dialogs/does-not-exist@nowhere/vcon");
+    let unknown = srv.get("/v1/dialogs/does-not-exist@nowhere/vcon")?;
     assert_eq!(
         unknown.status, 404,
         "an unknown Call-ID must 404 here as it does on every other per-call \
          route, rather than return an empty container"
     );
+    Ok(())
 }
 
 /// The persistence gate is reachable on the shipping binary, and a run with no
@@ -684,12 +709,12 @@ fn vcon_route_is_served_by_the_shipping_binary() {
 /// and this route is the one an operator reaches for when they want recording
 /// to stop, so "the route exists" is part of the promise.
 #[test]
-fn the_persistence_gate_answers_on_the_shipping_binary() {
-    let srv = ApiServer::spawn_or_panic(&[]);
+fn the_persistence_gate_answers_on_the_shipping_binary() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
 
-    let resp = srv.get_or_panic("/v1/persistence");
+    let resp = srv.get("/v1/persistence")?;
     assert_eq!(resp.status, 200, "/v1/persistence status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(
         body["authorized"], false,
         "this run carries no persistence flags: {body}"
@@ -698,6 +723,7 @@ fn the_persistence_gate_answers_on_the_shipping_binary() {
         body["enabled"], false,
         "so nothing is being written: {body}"
     );
+    Ok(())
 }
 
 /// Enabling persistence over REST on a run the command line never authorized
@@ -709,12 +735,12 @@ fn the_persistence_gate_answers_on_the_shipping_binary() {
 /// against an in-process gate, because the ceiling is computed in one place
 /// during startup and this is the only test that runs that code.
 #[test]
-fn rest_cannot_enable_persistence_the_command_line_never_authorized() {
-    let srv = ApiServer::spawn_or_panic(&[]);
+fn rest_cannot_enable_persistence_the_command_line_never_authorized() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
 
-    let resp = srv.post_json_or_panic("/v1/persistence", r#"{"enabled":true}"#);
+    let resp = srv.post_json("/v1/persistence", r#"{"enabled":true}"#)?;
     assert_eq!(resp.status, 200, "/v1/persistence POST status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(
         body["enabled"], false,
         "a REST caller enabled content on a run started without the flags: {body}"
@@ -725,10 +751,11 @@ fn rest_cannot_enable_persistence_the_command_line_never_authorized() {
     );
 
     assert_eq!(
-        srv.get_or_panic("/v1/persistence").json_or_panic(),
+        srv.get("/v1/persistence")?.json()?,
         body,
         "the next read must agree with what the POST reported"
     );
+    Ok(())
 }
 
 /// A run started WITH a persistence flag reports authority, and can be closed.
@@ -741,16 +768,16 @@ fn rest_cannot_enable_persistence_the_command_line_never_authorized() {
 // startup (VCON-NOFEAT-1), so this run exists only where they do.
 #[cfg(feature = "vcon")]
 #[test]
-fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let srv = ApiServer::spawn_or_panic(&[
+fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let srv = ApiServer::spawn(&[
         "--export-vcon-when",
         "response_code >= 200",
         "--export-vcon-dir",
-        dir.path().to_str().expect("utf-8 temp path"),
-    ]);
+        dir.path().to_str().ok_or("utf-8 temp path")?,
+    ])?;
 
-    let body = srv.get_or_panic("/v1/persistence").json_or_panic();
+    let body = srv.get("/v1/persistence")?.json()?;
     assert_eq!(
         body["authorized"], true,
         "--export-vcon-when authorizes content: {body}"
@@ -758,13 +785,14 @@ fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
     assert_eq!(body["enabled"], true, "and it starts open: {body}");
 
     let closed = srv
-        .post_json_or_panic("/v1/persistence", r#"{"enabled":false}"#)
-        .json_or_panic();
+        .post_json("/v1/persistence", r#"{"enabled":false}"#)?
+        .json()?;
     assert_eq!(closed["enabled"], false, "the close landed: {closed}");
     assert_eq!(
         closed["authorized"], true,
         "closing does not erase the authority it was closed against: {closed}"
     );
+    Ok(())
 }
 
 /// A body the server cannot read is refused, and moves nothing.
@@ -778,35 +806,36 @@ fn a_run_started_with_export_flags_reports_authority_and_can_be_closed() {
 // startup (VCON-NOFEAT-1), so this run exists only where they do.
 #[cfg(feature = "vcon")]
 #[test]
-fn a_malformed_persistence_body_is_refused_by_the_shipping_binary() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let srv = ApiServer::spawn_or_panic(&[
+fn a_malformed_persistence_body_is_refused_by_the_shipping_binary() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let srv = ApiServer::spawn(&[
         "--export-vcon-when",
         "response_code >= 200",
         "--export-vcon-dir",
-        dir.path().to_str().expect("utf-8 temp path"),
-    ]);
+        dir.path().to_str().ok_or("utf-8 temp path")?,
+    ])?;
 
     assert_eq!(
-        srv.post_json_or_panic("/v1/persistence", r#"{"enabled":false}"#)
-            .json_or_panic()["enabled"],
+        srv.post_json("/v1/persistence", r#"{"enabled":false}"#)?
+            .json()?["enabled"],
         false,
         "the fixture starts from a closed gate"
     );
 
     for body in ["[true]", "{}", "not json", r#"{"enabled":"true"}"#] {
-        let resp = srv.post_json_or_panic("/v1/persistence", body);
+        let resp = srv.post_json("/v1/persistence", body)?;
         assert_eq!(
             resp.status, 400,
             "body {body:?} was accepted: {}",
             resp.body
         );
         assert_eq!(
-            srv.get_or_panic("/v1/persistence").json_or_panic()["enabled"],
+            srv.get("/v1/persistence")?.json()?["enabled"],
             false,
             "body {body:?} reopened a closed gate"
         );
     }
+    Ok(())
 }
 
 /// `GET /v1/stats` returns 200 with schema_version 2, correct dialog counts
@@ -817,11 +846,11 @@ fn a_malformed_persistence_body_is_refused_by_the_shipping_binary() {
 /// than a value. The two are proved to be different computations in
 /// `sip::dialog_store::tests::active_call_count_excludes_setup_and_subscriptions`.
 #[test]
-fn stats_returns_structured_json() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/stats");
+fn stats_returns_structured_json() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/stats")?;
     assert_eq!(resp.status, 200, "/v1/stats status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 2);
     assert_eq!(body["dialogs"]["total"], 1);
     assert_eq!(body["dialogs"]["completed"], 1);
@@ -830,6 +859,7 @@ fn stats_returns_structured_json() {
         "the concurrent-call figure must be its own key: {body}"
     );
     assert!(body["timing"].is_object(), "stats has a timing block");
+    Ok(())
 }
 
 /// `/v1/report` answers for the whole capture, through a real server.
@@ -844,12 +874,12 @@ fn stats_returns_structured_json() {
 /// every other route in this file — a handler can be correct and still not be
 /// wired into the binary that ships.
 #[test]
-fn capture_report_answers_for_the_whole_capture() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/report");
+fn capture_report_answers_for_the_whole_capture() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/report")?;
     assert_eq!(resp.status, 200, "/v1/report status");
 
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert!(
         body.is_object(),
         "the report must be an object a client reads fields out of, not a \
@@ -869,6 +899,7 @@ fn capture_report_answers_for_the_whole_capture() {
         body["dialogs_examined"], 1,
         "the report must describe the capture it was built from: {body}"
     );
+    Ok(())
 }
 
 /// `/v1/stats` carries the capture-quality block on every response, with the
@@ -880,9 +911,9 @@ fn capture_report_answers_for_the_whole_capture() {
 /// dialog and stream totals off a run that had dropped part of the wire with
 /// nothing in the payload to say so.
 #[test]
-fn stats_reports_capture_quality() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let body = srv.get_or_panic("/v1/stats").json_or_panic();
+fn stats_reports_capture_quality() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let body = srv.get("/v1/stats")?.json()?;
 
     let q = &body["capture_quality"];
     assert!(
@@ -908,19 +939,20 @@ fn stats_reports_capture_quality() {
         "nothing was observed wrong on a file replay, so degraded must be \
          false rather than absent: {q}"
     );
+    Ok(())
 }
 
 /// With an RTP fixture loaded, `/v1/streams` summaries carry all expected keys
 /// and the `/v1/streams/{ssrc}` detail validates against `stream.schema.json`.
 #[test]
-fn streams_endpoints_validate_against_stream_schema() {
+fn streams_endpoints_validate_against_stream_schema() -> Result<(), TestError> {
     // sip_call.pcap has no RTP; use an RTP fixture so streams are non-empty.
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[])?;
 
     // List: wrapper + non-empty summary items (summary shape carries `mos`).
-    let resp = srv.get_or_panic("/v1/streams");
+    let resp = srv.get("/v1/streams")?;
     assert_eq!(resp.status, 200, "/v1/streams status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
     assert_eq!(body["schema_version"], 2);
     // Present at zero on every response, not only on the ones that held
     // something back: a key that shows up only when a filter bites is a key no
@@ -929,11 +961,11 @@ fn streams_endpoints_validate_against_stream_schema() {
         body["ungrounded_excluded"], 0,
         "an unfiltered list bounded nothing, so it held nothing back: {body}"
     );
-    let streams = body["streams"].as_array().expect("streams array");
+    let streams = body["streams"].as_array().ok_or("streams array")?;
     assert!(!streams.is_empty(), "RTP fixture must yield streams");
     let ssrc = streams[0]["ssrc"]
         .as_str()
-        .expect("ssrc string")
+        .ok_or("ssrc string")?
         .to_string();
     for s in streams {
         for k in [
@@ -969,10 +1001,11 @@ fn streams_endpoints_validate_against_stream_schema() {
     );
 
     // Detail: the full StreamJson validates against the T1.3 stream schema.
-    let stream_schema = load_validator_or_panic("stream.schema.json");
-    let resp = srv.get_or_panic(&format!("/v1/streams/{ssrc}"));
+    let stream_schema = load_validator("stream.schema.json")?;
+    let resp = srv.get(&format!("/v1/streams/{ssrc}"))?;
     assert_eq!(resp.status, 200, "/v1/streams/{{ssrc}} status");
-    assert_valid(&stream_schema, &resp.json_or_panic(), "stream detail");
+    assert_valid(&stream_schema, &resp.json()?, "stream detail");
+    Ok(())
 }
 
 // ── auth (T3.3) ──────────────────────────────────────────────────────────
@@ -980,35 +1013,34 @@ fn streams_endpoints_validate_against_stream_schema() {
 /// With `--api-key` set, the correct Bearer token gets 200 while a missing
 /// token, wrong token, Basic scheme, and prefix-less raw key each get 401.
 #[test]
-fn auth_accepts_correct_bearer_and_rejects_everything_else() {
-    let srv = ApiServer::spawn_or_panic(&["--api-key", "s3cret-key"]);
+fn auth_accepts_correct_bearer_and_rejects_everything_else() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "s3cret-key"])?;
 
     // Correct token → 200.
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", "s3cret-key").status,
+        srv.get_bearer("/v1/dialogs", "s3cret-key")?.status,
         200,
         "correct bearer must be accepted"
     );
 
     // Negative cases (auth bypass = critical): each must be 401.
-    assert_eq!(srv.get_or_panic("/v1/dialogs").status, 401, "missing token");
+    assert_eq!(srv.get("/v1/dialogs")?.status, 401, "missing token");
     assert_eq!(
-        srv.get_bearer_or_panic("/v1/dialogs", "wrong-key").status,
+        srv.get_bearer("/v1/dialogs", "wrong-key")?.status,
         401,
         "wrong token"
     );
     assert_eq!(
-        srv.get_with_auth_or_panic("/v1/dialogs", "Basic czNjcmV0")
-            .status,
+        srv.get_with_auth("/v1/dialogs", "Basic czNjcmV0")?.status,
         401,
         "non-Bearer scheme"
     );
     assert_eq!(
-        srv.get_with_auth_or_panic("/v1/dialogs", "s3cret-key")
-            .status,
+        srv.get_with_auth("/v1/dialogs", "s3cret-key")?.status,
         401,
         "raw key without Bearer prefix"
     );
+    Ok(())
 }
 
 /// The per-IP rate limiter rejects once a source IP exceeds its request budget:
@@ -1017,24 +1049,29 @@ fn auth_accepts_correct_bearer_and_rejects_everything_else() {
 /// FAILS if the limiter is broken — with it removed every request would 200 and
 /// no rejection would ever appear.
 #[test]
-fn rate_limiter_rejects_when_per_ip_budget_exhausted() {
+fn rate_limiter_rejects_when_per_ip_budget_exhausted() -> Result<(), TestError> {
     // `/v1/dialogs` runs the auth+rate-limit guard even when auth is
     // unconfigured, so a same-IP burst is charged against the per-IP budget
     // (RateLimiter::new(100), a one-second window). Fire a tight burst and stop
     // at the first rejection — which lands just past the cap (~request 101),
     // well inside the one-second window, keeping the test deterministic. The
     // limiter rejects with 503 SERVICE_UNAVAILABLE (not 429).
-    let srv = ApiServer::spawn_or_panic(&[]);
+    let srv = ApiServer::spawn(&[])?;
     let mut served = false;
     let mut rejected = false;
     for _ in 0..250 {
-        match srv.get_or_panic("/v1/dialogs").status {
+        match srv.get("/v1/dialogs")?.status {
             200 => served = true,
             503 => {
                 rejected = true;
                 break;
             }
-            other => panic!("unexpected status {other} from /v1/dialogs during rate-limit burst"),
+            other => {
+                return Err(format!(
+                    "unexpected status {other} from /v1/dialogs during rate-limit burst"
+                )
+                .into());
+            }
         }
     }
     assert!(
@@ -1045,12 +1082,13 @@ fn rate_limiter_rejects_when_per_ip_budget_exhausted() {
         rejected,
         "the per-IP rate limiter must reject with 503 once the 100 rps budget is exhausted"
     );
+    Ok(())
 }
 
 /// A CA and a server certificate it issued, from the helper every listener's
 /// TLS tests share (`support/tls_pki.rs`).
-fn test_pki() -> tls_pki::TestPki {
-    tls_pki::test_pki_or_panic("api")
+fn test_pki() -> Result<tls_pki::TestPki, TestError> {
+    tls_pki::test_pki("api")
 }
 
 /// The CLI arguments that turn on the API's HTTPS with `pki`'s files.
@@ -1071,37 +1109,38 @@ fn https_get(
 /// With `--api-tls-cert` and `--api-tls-key` the REST API serves HTTPS: a
 /// client trusting the issuing CA gets `/health` with a 200 and its body.
 #[test]
-fn tls_flags_serve_https() {
-    let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
-    let (status, body) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS /health");
+fn tls_flags_serve_https() -> Result<(), TestError> {
+    let pki = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
+    let (status, body) = https_get(&srv.addr, "/health", &pki.ca)?;
     assert_eq!(status, 200, "/health over HTTPS");
     assert_eq!(body.trim(), "ok");
+    Ok(())
 }
 
 /// The peer address still reaches the handlers over TLS: `/v1/dialogs`
 /// extracts `ConnectInfo<SocketAddr>` for its rate limiter and answers 500
 /// ("Missing request extension") when the listener does not supply it.
 #[test]
-fn tls_keeps_the_peer_address_for_guarded_routes() {
-    let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
-    let (status, body) = https_get(&srv.addr, "/v1/dialogs", &pki.ca).expect("HTTPS /v1/dialogs");
+fn tls_keeps_the_peer_address_for_guarded_routes() -> Result<(), TestError> {
+    let pki = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
+    let (status, body) = https_get(&srv.addr, "/v1/dialogs", &pki.ca)?;
     assert_eq!(status, 200, "/v1/dialogs over HTTPS: {body}");
     assert!(body.contains("\"total\""), "a dialog listing: {body}");
+    Ok(())
 }
 
 /// A plain-HTTP request to the TLS port is not served: whatever comes back,
 /// it is not an HTTP 200.
 #[test]
-fn plain_http_to_the_tls_port_is_not_served() {
+fn plain_http_to_the_tls_port_is_not_served() -> Result<(), TestError> {
     use std::io::{Read, Write};
-    let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
-    let mut sock = std::net::TcpStream::connect(&srv.addr).expect("connect");
+    let pki = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
+    let mut sock = std::net::TcpStream::connect(&srv.addr)?;
     sock.set_read_timeout(Some(test_timeout(10))).ok();
-    sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-        .expect("write");
+    sock.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")?;
     let mut raw = Vec::new();
     let _ = sock.read_to_end(&mut raw);
     let text = String::from_utf8_lossy(&raw);
@@ -1109,44 +1148,48 @@ fn plain_http_to_the_tls_port_is_not_served() {
         !text.starts_with("HTTP/1.1 200") && !text.starts_with("HTTP/1.0 200"),
         "plain HTTP must not be answered on the TLS port: {text}"
     );
+    Ok(())
 }
 
 /// A client that does not trust the server's certificate fails the
 /// handshake rather than being served.
 #[test]
-fn a_client_not_trusting_the_certificate_fails_the_handshake() {
-    let pki = test_pki();
-    let other = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
+fn a_client_not_trusting_the_certificate_fails_the_handshake() -> Result<(), TestError> {
+    let pki = test_pki()?;
+    let other = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
     let err = https_get(&srv.addr, "/health", &other.ca)
-        .expect_err("a client trusting another CA must not complete the handshake");
+        .err()
+        .ok_or("a client trusting another CA must not complete the handshake")?;
     assert!(
         err.contains("certificate") || err.contains("UnknownIssuer"),
         "the failure must be the certificate check: {err}"
     );
+    Ok(())
 }
 
 /// One client's failed handshake does not stop the server: after an
 /// untrusting client, a plain-HTTP client and a client sending garbage, a
 /// trusting client is still served.
 #[test]
-fn a_failed_handshake_does_not_stop_the_server() {
+fn a_failed_handshake_does_not_stop_the_server() -> Result<(), TestError> {
     use std::io::{Read, Write};
-    let pki = test_pki();
-    let other = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
+    let pki = test_pki()?;
+    let other = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
     assert!(https_get(&srv.addr, "/health", &other.ca).is_err());
     for garbage in [
         &b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"[..],
         &[0x16, 0x03, 0x01, 0xff, 0xff, 0, 0, 0][..],
     ] {
-        let mut s = std::net::TcpStream::connect(&srv.addr).expect("connect");
+        let mut s = std::net::TcpStream::connect(&srv.addr)?;
         s.set_read_timeout(Some(test_timeout(10))).ok();
         let _ = s.write_all(garbage);
         let _ = s.read_to_end(&mut Vec::new());
     }
-    let (status, _) = https_get(&srv.addr, "/health", &pki.ca).expect("server still serving");
+    let (status, _) = https_get(&srv.addr, "/health", &pki.ca)?;
     assert_eq!(status, 200);
+    Ok(())
 }
 
 /// A client that connects and never speaks does not hold up anyone else's
@@ -1155,18 +1198,19 @@ fn a_failed_handshake_does_not_stop_the_server() {
 /// inside the 10 s handshake timeout the silent peer would otherwise hold
 /// the listener for.
 #[test]
-fn a_silent_client_does_not_block_other_handshakes() {
-    let pki = test_pki();
-    let srv = ApiServer::spawn_unsettled_or_panic(&api_args(&pki));
-    let _silent = std::net::TcpStream::connect(&srv.addr).expect("silent connect");
+fn a_silent_client_does_not_block_other_handshakes() -> Result<(), TestError> {
+    let pki = test_pki()?;
+    let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
+    let _silent = std::net::TcpStream::connect(&srv.addr)?;
     let started = std::time::Instant::now();
-    let (status, _) = https_get(&srv.addr, "/health", &pki.ca).expect("HTTPS behind a silent peer");
+    let (status, _) = https_get(&srv.addr, "/health", &pki.ca)?;
     assert_eq!(status, 200);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(2),
         "served after {:?}: the silent peer held the accept loop",
         started.elapsed()
     );
+    Ok(())
 }
 
 /// A non-loopback bind warns about plain HTTP, and does not once TLS is on.
@@ -1174,9 +1218,9 @@ fn a_silent_client_does_not_block_other_handshakes() {
 /// Both halves: without the first, a warning deleted outright would pass the
 /// second.
 #[test]
-fn the_non_loopback_warning_fires_only_without_tls() {
-    let pki = test_pki();
-    let plain = ApiServer::spawn_unsettled_on_or_panic("0.0.0.0:0", &["--api-key", "k"]);
+fn the_non_loopback_warning_fires_only_without_tls() -> Result<(), TestError> {
+    let pki = test_pki()?;
+    let plain = ApiServer::spawn_unsettled_on("0.0.0.0:0", &["--api-key", "k"])?;
     assert!(
         plain.startup_log.contains("without TLS"),
         "a plain non-loopback bind must warn:\n{}",
@@ -1184,14 +1228,15 @@ fn the_non_loopback_warning_fires_only_without_tls() {
     );
     let mut args = vec!["--api-key", "k"];
     args.extend(api_args(&pki));
-    let tls = ApiServer::spawn_unsettled_on_or_panic("0.0.0.0:0", &args);
+    let tls = ApiServer::spawn_unsettled_on("0.0.0.0:0", &args)?;
     assert!(
         !tls.startup_log.contains("without TLS"),
         "a TLS bind must not warn about plain HTTP:\n{}",
         tls.startup_log
     );
-    let (status, _) = https_get(&tls.addr, "/health", &pki.ca).expect("HTTPS on 0.0.0.0");
+    let (status, _) = https_get(&tls.addr, "/health", &pki.ca)?;
     assert_eq!(status, 200);
+    Ok(())
 }
 
 /// A bad TLS configuration stops the run before the API serves, with an
@@ -1199,15 +1244,15 @@ fn the_non_loopback_warning_fires_only_without_tls() {
 /// `src/output/api.rs`; this is the end-to-end proof that the error reaches
 /// the operator and the port is never opened.
 #[test]
-fn a_missing_tls_file_fails_fast_naming_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_missing_tls_file_fails_fast_naming_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("no-such-cert.pem");
     let missing = missing.to_string_lossy();
-    let pki = test_pki();
-    let logs = run_and_capture_stderr_or_panic(
+    let pki = test_pki()?;
+    let logs = run_and_capture_stderr(
         &["--api-tls-cert", &missing, "--api-tls-key", &pki.key],
         test_timeout(3),
-    );
+    )?;
     assert!(
         logs.contains(missing.as_ref()),
         "the error must name {missing}, got:\n{logs}"
@@ -1216,19 +1261,20 @@ fn a_missing_tls_file_fails_fast_naming_it() {
         !logs.contains("REST API listening on"),
         "a bad TLS file must prevent the API from serving:\n{logs}"
     );
+    Ok(())
 }
 
 /// Only one of the two TLS flags stops the run before the API serves, with
 /// an error naming the file that was given and the flag that was not —
 /// rather than serving plain HTTP on a port the operator meant for HTTPS.
 #[test]
-fn one_tls_flag_alone_fails_fast_naming_it() {
-    let pki = test_pki();
+fn one_tls_flag_alone_fails_fast_naming_it() -> Result<(), TestError> {
+    let pki = test_pki()?;
     for (given, missing) in [
         (["--api-tls-cert", pki.cert.as_str()], "--api-tls-key"),
         (["--api-tls-key", pki.key.as_str()], "--api-tls-cert"),
     ] {
-        let logs = run_and_capture_stderr_or_panic(&given, test_timeout(3));
+        let logs = run_and_capture_stderr(&given, test_timeout(3))?;
         assert!(
             logs.contains(given[1]) && logs.contains(missing),
             "{} alone must be refused naming {} and {missing}, got:\n{logs}",
@@ -1241,17 +1287,19 @@ fn one_tls_flag_alone_fails_fast_naming_it() {
             given[0]
         );
     }
+    Ok(())
 }
 
 /// `GET /metrics` returns 200 and contains the `sipnab_dialogs_total` counter
 /// TYPE line, proving the Prometheus exposition endpoint serves.
 #[test]
-fn metrics_endpoint_serves_prometheus_text() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/metrics");
+fn metrics_endpoint_serves_prometheus_text() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/metrics")?;
     assert_eq!(resp.status, 200, "/metrics status");
     // Detailed Prometheus parsing lives in T3.4; here just prove it serves.
     assert!(resp.body.contains("# TYPE sipnab_dialogs_total counter"));
+    Ok(())
 }
 
 /// `GET /v1/dialogs` reports what its `total` is made of, split by the method
@@ -1269,13 +1317,13 @@ fn metrics_endpoint_serves_prometheus_text() {
 /// distinguish a correct implementation from one that emits the first row it
 /// sees.
 #[test]
-fn dialog_list_says_what_its_total_is_made_of() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
-    let body = srv.get_or_panic("/v1/dialogs").json_or_panic();
+fn dialog_list_says_what_its_total_is_made_of() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
+    let body = srv.get("/v1/dialogs")?.json()?;
 
     let rows = body["by_method"]
         .as_array()
-        .unwrap_or_else(|| panic!("by_method must be an array, got: {}", body["by_method"]));
+        .ok_or_else(|| format!("by_method must be an array, got: {}", body["by_method"]))?;
     assert!(
         !rows.is_empty(),
         "a capture with dialogs must report at least one method"
@@ -1284,28 +1332,32 @@ fn dialog_list_says_what_its_total_is_made_of() {
     // The breakdown covers the FILTERED set, which is what `total` counts —
     // not the page. Summing to `returned` instead would make the field agree
     // with itself while describing a different population.
-    let summed: u64 = rows.iter().map(|r| r["count"].as_u64().unwrap()).sum();
+    let summed: u64 = rows
+        .iter()
+        .map(|r| r["count"].as_u64().ok_or("a by_method row has no count"))
+        .sum::<Result<u64, _>>()?;
     assert_eq!(
         summed,
-        body["total"].as_u64().unwrap(),
+        body["total"]
+            .as_u64()
+            .ok_or("body[\"total\"].as_u64() was None")?,
         "by_method must account for every dialog in total, got {rows:?}"
     );
 
     // Descending count, then method name, so the dominant class is first and
     // two runs over the same capture cannot disagree about the order.
-    let mut expected = rows.clone();
-    expected.sort_by(|a, b| {
-        b["count"]
-            .as_u64()
-            .unwrap()
-            .cmp(&a["count"].as_u64().unwrap())
-            .then_with(|| {
-                a["method"]
-                    .as_str()
-                    .unwrap()
-                    .cmp(b["method"].as_str().unwrap())
-            })
-    });
+    let mut keyed = rows
+        .iter()
+        .map(|r| {
+            let count = r["count"].as_u64().ok_or("a by_method row has no count")?;
+            let method = r["method"]
+                .as_str()
+                .ok_or("a by_method row has no method")?;
+            Ok::<_, TestError>((std::cmp::Reverse(count), method.to_owned(), r.clone()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    let expected: Vec<serde_json::Value> = keyed.into_iter().map(|(_, _, r)| r).collect();
     assert_eq!(rows, &expected, "by_method must be ordered, got {rows:?}");
 
     // More than one method, or the ordering assertion above is vacuous.
@@ -1314,6 +1366,7 @@ fn dialog_list_says_what_its_total_is_made_of() {
         "fixture must hold more than one opening method for this test to \
          discriminate, got {rows:?}"
     );
+    Ok(())
 }
 
 /// `by_method` follows the `state` filter rather than describing the store.
@@ -1322,38 +1375,37 @@ fn dialog_list_says_what_its_total_is_made_of() {
 /// exercised that: the one existing test asks for the unfiltered list, where a
 /// breakdown of the store and a breakdown of the filter are the same answer.
 #[test]
-fn dialog_list_by_method_follows_the_state_filter() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
-    let all = srv.get_or_panic("/v1/dialogs?limit=1000").json_or_panic();
+fn dialog_list_by_method_follows_the_state_filter() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
+    let all = srv.get("/v1/dialogs?limit=1000")?.json()?;
     let state = all["dialogs"][0]["state"]
         .as_str()
-        .expect("the fixture must produce a dialog")
+        .ok_or("the fixture must produce a dialog")?
         .to_string();
 
-    let filtered = srv
-        .get_or_panic(&format!("/v1/dialogs?state={state}"))
-        .json_or_panic();
-    let f_total = filtered["total"].as_u64().expect("total");
+    let filtered = srv.get(&format!("/v1/dialogs?state={state}"))?.json()?;
+    let f_total = filtered["total"].as_u64().ok_or("total")?;
     assert!(
         f_total >= 1,
         "the state taken from a real row must match it"
     );
     assert!(
-        f_total < all["total"].as_u64().expect("total"),
+        f_total < all["total"].as_u64().ok_or("total")?,
         "the fixture must hold more than one state, or this proves nothing"
     );
 
     let summed: u64 = filtered["by_method"]
         .as_array()
-        .expect("by_method")
+        .ok_or("by_method")?
         .iter()
-        .map(|r| r["count"].as_u64().expect("count"))
-        .sum();
+        .map(|r| r["count"].as_u64().ok_or("a by_method row has no count"))
+        .sum::<Result<u64, _>>()?;
     assert_eq!(
         summed, f_total,
         "by_method must describe the filtered set: {}",
         filtered["by_method"]
     );
+    Ok(())
 }
 
 /// `by_method` follows the `from` regex filter too.
@@ -1362,21 +1414,19 @@ fn dialog_list_by_method_follows_the_state_filter() {
 /// a string compare and a compiled regex — and a breakdown wired to only one
 /// of them would still pass the test above.
 #[test]
-fn dialog_list_by_method_follows_the_from_filter() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
-    let all = srv.get_or_panic("/v1/dialogs?limit=1000").json_or_panic();
+fn dialog_list_by_method_follows_the_from_filter() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
+    let all = srv.get("/v1/dialogs?limit=1000")?.json()?;
     let from = all["dialogs"]
         .as_array()
-        .expect("rows")
+        .ok_or("rows")?
         .iter()
         .find_map(|d| d["from_user"].as_str())
-        .expect("some dialog carries a From user")
+        .ok_or("some dialog carries a From user")?
         .to_string();
 
-    let filtered = srv
-        .get_or_panic(&format!("/v1/dialogs?from=^{from}$"))
-        .json_or_panic();
-    let f_total = filtered["total"].as_u64().expect("total");
+    let filtered = srv.get(&format!("/v1/dialogs?from=^{from}$"))?.json()?;
+    let f_total = filtered["total"].as_u64().ok_or("total")?;
     assert!(
         f_total >= 1,
         "an anchored match on a real From user must match"
@@ -1384,11 +1434,12 @@ fn dialog_list_by_method_follows_the_from_filter() {
 
     let summed: u64 = filtered["by_method"]
         .as_array()
-        .expect("by_method")
+        .ok_or("by_method")?
         .iter()
-        .map(|r| r["count"].as_u64().expect("count"))
-        .sum();
+        .map(|r| r["count"].as_u64().ok_or("a by_method row has no count"))
+        .sum::<Result<u64, _>>()?;
     assert_eq!(summed, f_total, "got {}", filtered["by_method"]);
+    Ok(())
 }
 
 /// The page bounds do not touch `by_method`.
@@ -1399,18 +1450,18 @@ fn dialog_list_by_method_follows_the_from_filter() {
 /// operator would read the composition of a page and believe it was the
 /// composition of the capture.
 #[test]
-fn dialog_list_by_method_ignores_the_page_bounds() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
-    let whole = srv.get_or_panic("/v1/dialogs?limit=1000").json_or_panic();
-    let one_row = srv.get_or_panic("/v1/dialogs?limit=1").json_or_panic();
+fn dialog_list_by_method_ignores_the_page_bounds() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
+    let whole = srv.get("/v1/dialogs?limit=1000")?.json()?;
+    let one_row = srv.get("/v1/dialogs?limit=1")?.json()?;
 
     assert_eq!(
-        one_row["dialogs"].as_array().expect("rows").len(),
+        one_row["dialogs"].as_array().ok_or("rows")?.len(),
         1,
         "the page really is bounded"
     );
     assert!(
-        whole["dialogs"].as_array().expect("rows").len() > 1,
+        whole["dialogs"].as_array().ok_or("rows")?.len() > 1,
         "and the unbounded page really is bigger, or this proves nothing"
     );
     assert_eq!(
@@ -1418,6 +1469,7 @@ fn dialog_list_by_method_ignores_the_page_bounds() {
         "by_method describes the filtered set, not the page"
     );
     assert_eq!(one_row["total"], whole["total"]);
+    Ok(())
 }
 
 /// A filter matching nothing gives an empty breakdown, not the whole store.
@@ -1427,11 +1479,11 @@ fn dialog_list_by_method_ignores_the_page_bounds() {
 /// with the store's composition beside a `total` of zero — two fields
 /// contradicting each other in the same response.
 #[test]
-fn dialog_list_by_method_is_empty_when_nothing_matches() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
+fn dialog_list_by_method_is_empty_when_nothing_matches() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
     let none = srv
-        .get_or_panic("/v1/dialogs?from=^definitely-no-such-user$")
-        .json_or_panic();
+        .get("/v1/dialogs?from=^definitely-no-such-user$")?
+        .json()?;
 
     assert_eq!(
         none["total"].as_u64(),
@@ -1444,6 +1496,7 @@ fn dialog_list_by_method_is_empty_when_nothing_matches() {
         "an empty result set has an empty breakdown, got {}",
         none["by_method"]
     );
+    Ok(())
 }
 
 /// Each method appears once, and no row claims zero.
@@ -1453,15 +1506,15 @@ fn dialog_list_by_method_is_empty_when_nothing_matches() {
 /// assertions above cannot see it. This is the shape check they need beside
 /// them.
 #[test]
-fn dialog_list_by_method_has_one_row_per_method() {
-    let srv = ApiServer::spawn_with_pcap_or_panic("tests/pcap-samples/b2bua-asterisk.pcapng", &[]);
-    let body = srv.get_or_panic("/v1/dialogs?limit=1000").json_or_panic();
-    let rows = body["by_method"].as_array().expect("by_method");
+fn dialog_list_by_method_has_one_row_per_method() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/b2bua-asterisk.pcapng", &[])?;
+    let body = srv.get("/v1/dialogs?limit=1000")?.json()?;
+    let rows = body["by_method"].as_array().ok_or("by_method")?;
 
     let mut names: Vec<&str> = rows
         .iter()
-        .map(|r| r["method"].as_str().expect("method is a string"))
-        .collect();
+        .map(|r| r["method"].as_str().ok_or("a by_method row has no method"))
+        .collect::<Result<_, _>>()?;
     let before = names.len();
     names.sort_unstable();
     names.dedup();
@@ -1474,6 +1527,7 @@ fn dialog_list_by_method_has_one_row_per_method() {
         rows.iter().all(|r| r["count"].as_u64().unwrap_or(0) >= 1),
         "a bucket with nothing in it must not be reported: {rows:?}"
     );
+    Ok(())
 }
 
 // Reads `/proc`, which exists on Linux and nowhere else. Guarded rather than
@@ -1487,25 +1541,25 @@ fn dialog_list_by_method_has_one_row_per_method() {
 /// off by default, so on most deployments those numbers exist in-process and
 /// nothing can read them. This route answers without one.
 #[test]
-fn runtime_reports_the_process_and_the_host() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/runtime");
+fn runtime_reports_the_process_and_the_host() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/runtime")?;
     assert_eq!(resp.status, 200, "/v1/runtime status");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
 
     assert_eq!(body["schema_version"], 1);
     assert!(
         body["process"]["rss_bytes"]
             .as_u64()
-            .expect("Linux exposes VmRSS")
+            .ok_or("Linux exposes VmRSS")?
             > 0,
         "a running process holds memory"
     );
-    assert!(body["process"]["threads"].as_u64().expect("Threads") >= 1);
+    assert!(body["process"]["threads"].as_u64().ok_or("Threads")? >= 1);
     assert!(
         body["host"]["memory_total_bytes"]
             .as_u64()
-            .expect("MemTotal")
+            .ok_or("MemTotal")?
             > 0
     );
     assert!(
@@ -1513,6 +1567,7 @@ fn runtime_reports_the_process_and_the_host() {
         "the denominator names itself: {}",
         body["host"]["basis"]
     );
+    Ok(())
 }
 
 /// Occupancy is reported against the cap, not as a bare count.
@@ -1521,21 +1576,22 @@ fn runtime_reports_the_process_and_the_host() {
 /// operator who cannot see occupancy learns about eviction by noticing that
 /// calls have gone missing.
 #[test]
-fn runtime_reports_occupancy_against_the_caps() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let body = srv.get_or_panic("/v1/runtime").json_or_panic();
+fn runtime_reports_occupancy_against_the_caps() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let body = srv.get("/v1/runtime")?.json()?;
 
     for store in ["dialogs", "streams"] {
-        let cap = body[store]["capacity"].as_u64().expect("a cap");
-        let used = body[store]["used"].as_u64().expect("a count");
+        let cap = body[store]["capacity"].as_u64().ok_or("a cap")?;
+        let used = body[store]["used"].as_u64().ok_or("a count")?;
         assert!(cap > 0, "{store} must report the cap it evicts against");
         assert!(used <= cap, "{store}: {used} held against a cap of {cap}");
-        let pct = body[store]["pct"].as_f64().expect("a percentage");
+        let pct = body[store]["pct"].as_f64().ok_or("a percentage")?;
         assert!(
             (0.0..=100.0).contains(&pct),
             "{store} pct {pct} out of range"
         );
     }
+    Ok(())
 }
 
 // Reads `/proc`, which exists on Linux and nowhere else. Guarded rather than
@@ -1548,21 +1604,22 @@ fn runtime_reports_occupancy_against_the_caps() {
 /// A capture that is itself the reason a proxy started dropping calls is the
 /// worst failure this tool can have, and it used to be invisible.
 #[test]
-fn runtime_states_whether_sipnab_is_load_bearing() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let body = srv.get_or_panic("/v1/runtime").json_or_panic();
+fn runtime_states_whether_sipnab_is_load_bearing() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let body = srv.get("/v1/runtime")?.json()?;
 
     assert!(
         body["impact"]["significant"].is_boolean(),
         "the verdict is present: {}",
         body["impact"]
     );
-    let note = body["impact"]["note"].as_str().expect("a note");
+    let note = body["impact"]["note"].as_str().ok_or("a note")?;
     assert!(
         note.contains("threshold"),
         "the note states the threshold so a reader can disagree with the \
          setting rather than the finding: {note}"
     );
+    Ok(())
 }
 
 /// Off Linux, the route answers with absence rather than with zeros.
@@ -1573,11 +1630,11 @@ fn runtime_states_whether_sipnab_is_load_bearing() {
 /// than "not measurable here" and a false one.
 #[cfg(not(target_os = "linux"))]
 #[test]
-fn off_linux_runtime_reports_absence_rather_than_zero() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/runtime");
+fn off_linux_runtime_reports_absence_rather_than_zero() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/runtime")?;
     assert_eq!(resp.status, 200, "the route still answers");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
 
     assert_eq!(body["schema_version"], 1);
     for absent in [
@@ -1611,8 +1668,14 @@ fn off_linux_runtime_reports_absence_rather_than_zero() {
 
     // The platform-independent half still answers, which is what makes this a
     // degraded reply rather than a broken route.
-    assert!(body["dialogs"]["capacity"].as_u64().expect("a cap") > 0);
+    assert!(
+        body["dialogs"]["capacity"]
+            .as_u64()
+            .ok_or("body[\"dialogs\"][\"capacity\"] is not a number")?
+            > 0
+    );
     assert!(body["capture_packets_total"].is_u64());
+    Ok(())
 }
 
 /// A requested window is sampled and the window actually used is reported.
@@ -1622,21 +1685,21 @@ fn off_linux_runtime_reports_absence_rather_than_zero() {
 /// are OPTIONS" answers the question they have. It has to be reachable from
 /// REST and not only from MCP, or the two surfaces answer different questions.
 #[test]
-fn runtime_samples_a_rate_when_a_window_is_requested() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/runtime?sample_seconds=1");
+fn runtime_samples_a_rate_when_a_window_is_requested() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/runtime?sample_seconds=1")?;
     assert_eq!(resp.status, 200, "a one-second window is inside the cap");
-    let body = resp.json_or_panic();
+    let body = resp.json()?;
 
     let rates = &body["rates"];
     assert!(!rates.is_null(), "a window was requested: {body}");
     assert!(
-        rates["window_seconds"].as_u64().expect("the window used") >= 1,
+        rates["window_seconds"].as_u64().ok_or("the window used")? >= 1,
         "the window that was applied is reported, not the one requested: \
          {rates}"
     );
     assert!(
-        rates["packets_per_second"].as_f64().expect("a rate") >= 0.0,
+        rates["packets_per_second"].as_f64().ok_or("a rate")? >= 0.0,
         "a rate is never negative: {rates}"
     );
     assert!(
@@ -1644,6 +1707,7 @@ fn runtime_samples_a_rate_when_a_window_is_requested() {
         "the breakdown is the point — an undifferentiated total describes the \
          keepalive plane rather than the calls: {rates}"
     );
+    Ok(())
 }
 
 /// A zero window is refused rather than answered with zero deltas.
@@ -1652,15 +1716,16 @@ fn runtime_samples_a_rate_when_a_window_is_requested() {
 /// an empty window hands back a number the caller cannot tell from silence.
 /// The refusal is the same one MCP gives, from the same function.
 #[test]
-fn runtime_refuses_a_zero_sample_window() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/runtime?sample_seconds=0");
+fn runtime_refuses_a_zero_sample_window() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/runtime?sample_seconds=0")?;
     assert_eq!(resp.status, 400, "a zero window is refused: {}", resp.body);
     assert!(
         resp.body.contains("at least 1"),
         "the refusal says what to send instead: {}",
         resp.body
     );
+    Ok(())
 }
 
 /// A window that is not a number is refused, not read as no window at all.
@@ -1669,14 +1734,15 @@ fn runtime_refuses_a_zero_sample_window() {
 /// counters and no `rates` key — indistinguishable from a caller who never
 /// asked, which is the failure mode this route exists to avoid.
 #[test]
-fn runtime_refuses_a_sample_window_that_is_not_a_number() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let resp = srv.get_or_panic("/v1/runtime?sample_seconds=soon");
+fn runtime_refuses_a_sample_window_that_is_not_a_number() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let resp = srv.get("/v1/runtime?sample_seconds=soon")?;
     assert_eq!(
         resp.status, 400,
         "an unparseable window is an error, not an absent one: {}",
         resp.body
     );
+    Ok(())
 }
 
 /// Rates are absent unless asked for, and the counters are cumulative.
@@ -1684,9 +1750,9 @@ fn runtime_refuses_a_sample_window_that_is_not_a_number() {
 /// Measuring a rate costs a wait, so it is opt-in over MCP. The REST route
 /// answers with the cumulative counters, and they must be present.
 #[test]
-fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let body = srv.get_or_panic("/v1/runtime").json_or_panic();
+fn runtime_reports_cumulative_counters_without_a_sampling_wait() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let body = srv.get("/v1/runtime")?.json()?;
 
     assert!(body["capture_packets_total"].is_u64(), "a cumulative total");
     // Present because `start_servers` hands this process's capture meter to
@@ -1709,6 +1775,7 @@ fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
         body.get("rates").is_none() || body["rates"].is_null(),
         "no sampling window was requested, so no rate is claimed"
     );
+    Ok(())
 }
 
 // ── Host allowlist: DNS rebinding (CWE-352) ─────────────────────────────
@@ -1721,13 +1788,13 @@ fn runtime_reports_cumulative_counters_without_a_sampling_wait() {
 /// for a read and for the state-changing persistence switch, and says which
 /// host and which flag.
 #[test]
-fn a_rebound_host_is_refused_by_a_keyless_loopback_api() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let evil = format!("evil.example:{}", srv.port_or_panic());
+fn a_rebound_host_is_refused_by_a_keyless_loopback_api() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let evil = format!("evil.example:{}", srv.port()?);
     for resp in [
-        srv.get_as_host_or_panic("/v1/dialogs", &evil),
-        srv.get_as_host_or_panic("/v1/dialogs", "evil.example"),
-        srv.post_json_as_host_or_panic("/v1/persistence", r#"{"enabled":false}"#, &evil),
+        srv.get_as_host("/v1/dialogs", &evil)?,
+        srv.get_as_host("/v1/dialogs", "evil.example")?,
+        srv.post_json_as_host("/v1/persistence", r#"{"enabled":false}"#, &evil)?,
     ] {
         assert_eq!(resp.status, 403, "a rebound Host was served: {}", resp.body);
         assert!(
@@ -1741,75 +1808,71 @@ fn a_rebound_host_is_refused_by_a_keyless_loopback_api() {
             resp.body
         );
     }
+    Ok(())
 }
 
 /// The loopback names a local client really sends are served, with a port
 /// and without.
 #[test]
-fn loopback_hosts_are_served() {
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let port = srv.port_or_panic();
+fn loopback_hosts_are_served() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    let port = srv.port()?;
     for host in [
         format!("127.0.0.1:{port}"),
         format!("localhost:{port}"),
         format!("[::1]:{port}"),
         "localhost".to_string(),
     ] {
-        let resp = srv.get_as_host_or_panic("/v1/dialogs", &host);
+        let resp = srv.get_as_host("/v1/dialogs", &host)?;
         assert_eq!(resp.status, 200, "Host {host}: {}", resp.body);
     }
+    Ok(())
 }
 
 /// `--api-allowed-host` adds a name (a reverse proxy's public one) and
 /// leaves every other name refused.
 #[test]
-fn api_allowed_host_adds_a_name() {
-    let srv = ApiServer::spawn_or_panic(&["--api-allowed-host", "proxy.example"]);
-    let resp = srv.get_as_host_or_panic("/v1/dialogs", "proxy.example");
+fn api_allowed_host_adds_a_name() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-allowed-host", "proxy.example"])?;
+    let resp = srv.get_as_host("/v1/dialogs", "proxy.example")?;
     assert_eq!(resp.status, 200, "the added name: {}", resp.body);
-    let resp = srv.get_as_host_or_panic("/v1/dialogs", "evil.example");
+    let resp = srv.get_as_host("/v1/dialogs", "evil.example")?;
     assert_eq!(resp.status, 403, "another name: {}", resp.body);
+    Ok(())
 }
 
 /// `[api] allowed_hosts` in the config file adds a name the way the flag
 /// does.
 #[test]
-fn the_allowed_hosts_config_key_adds_a_name() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_allowed_hosts_config_key_adds_a_name() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let cfg = dir.path().join("sipnab.toml");
-    std::fs::write(&cfg, "[api]\nallowed_hosts = [\"cfg.example\"]\n").expect("config");
-    let srv = ApiServer::spawn_or_panic(&["--config", cfg.to_str().expect("utf-8 path")]);
-    assert_eq!(
-        srv.get_as_host_or_panic("/v1/dialogs", "cfg.example")
-            .status,
-        200
-    );
-    assert_eq!(
-        srv.get_as_host_or_panic("/v1/dialogs", "evil.example")
-            .status,
-        403
-    );
+    std::fs::write(&cfg, "[api]\nallowed_hosts = [\"cfg.example\"]\n")?;
+    let srv = ApiServer::spawn(&["--config", cfg.to_str().ok_or("utf-8 path")?])?;
+    assert_eq!(srv.get_as_host("/v1/dialogs", "cfg.example")?.status, 200);
+    assert_eq!(srv.get_as_host("/v1/dialogs", "evil.example")?.status, 403);
+    Ok(())
 }
 
 /// `--api-allowed-host '*'` turns the check off.
 #[test]
-fn api_allowed_host_star_disables_the_check() {
-    let srv = ApiServer::spawn_or_panic(&["--api-allowed-host", "*"]);
-    let resp = srv.get_as_host_or_panic("/v1/dialogs", "evil.example");
+fn api_allowed_host_star_disables_the_check() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-allowed-host", "*"])?;
+    let resp = srv.get_as_host("/v1/dialogs", "evil.example")?;
     assert_eq!(resp.status, 200, "with '*': {}", resp.body);
+    Ok(())
 }
 
 /// An HTTP/1.0 request with no `Host` header is refused with 400, as the
 /// MCP transport refuses it: the server cannot tell which name it was
 /// reached by.
 #[test]
-fn a_request_without_a_host_is_a_bad_request() {
+fn a_request_without_a_host_is_a_bad_request() -> Result<(), TestError> {
     use std::io::{Read, Write};
-    let srv = ApiServer::spawn_or_panic(&[]);
-    let mut sock = std::net::TcpStream::connect(&srv.addr).expect("connect");
+    let srv = ApiServer::spawn(&[])?;
+    let mut sock = std::net::TcpStream::connect(&srv.addr)?;
     sock.set_read_timeout(Some(test_timeout(10))).ok();
-    sock.write_all(b"GET /v1/dialogs HTTP/1.0\r\n\r\n")
-        .expect("write");
+    sock.write_all(b"GET /v1/dialogs HTTP/1.0\r\n\r\n")?;
     let mut raw = Vec::new();
     let _ = sock.read_to_end(&mut raw);
     let text = String::from_utf8_lossy(&raw);
@@ -1817,6 +1880,7 @@ fn a_request_without_a_host_is_a_bad_request() {
         text.starts_with("HTTP/1.0 400") || text.starts_with("HTTP/1.1 400"),
         "no Host must be a 400: {text}"
     );
+    Ok(())
 }
 
 /// A refused request changes nothing: the persistence switch a rebound page
@@ -1825,25 +1889,26 @@ fn a_request_without_a_host_is_a_bad_request() {
 // gate start open and a close have something to change.
 #[cfg(feature = "vcon")]
 #[test]
-fn a_refused_request_does_not_flip_persistence() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let srv = ApiServer::spawn_or_panic(&[
+fn a_refused_request_does_not_flip_persistence() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let srv = ApiServer::spawn(&[
         "--export-vcon-when",
         "response_code >= 200",
         "--export-vcon-dir",
-        dir.path().to_str().expect("utf-8 temp path"),
-    ]);
+        dir.path().to_str().ok_or("utf-8 temp path")?,
+    ])?;
     assert_eq!(
-        srv.get_or_panic("/v1/persistence").json_or_panic()["enabled"],
+        srv.get("/v1/persistence")?.json()?["enabled"],
         true,
         "the fixture starts open"
     );
-    let evil = format!("evil.example:{}", srv.port_or_panic());
-    let resp = srv.post_json_as_host_or_panic("/v1/persistence", r#"{"enabled":false}"#, &evil);
+    let evil = format!("evil.example:{}", srv.port()?);
+    let resp = srv.post_json_as_host("/v1/persistence", r#"{"enabled":false}"#, &evil)?;
     assert_eq!(resp.status, 403, "{}", resp.body);
     assert_eq!(
-        srv.get_or_panic("/v1/persistence").json_or_panic()["enabled"],
+        srv.get("/v1/persistence")?.json()?["enabled"],
         true,
         "a refused request closed the gate"
     );
+    Ok(())
 }

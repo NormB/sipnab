@@ -10,6 +10,8 @@
 //! (same key the server is started with). Mirrors `tests/mcp_http_test.rs`.
 #![cfg(all(unix, feature = "mcp-http"))]
 
+use mcp::TestError;
+
 #[path = "support/mcp.rs"]
 mod mcp;
 
@@ -18,9 +20,7 @@ use std::net::TcpStream;
 use std::process::Command;
 use std::time::Duration;
 
-use mcp::{
-    initialize_status_or_panic, shutdown, spawn_http_loopback_or_panic as spawn_http_or_panic,
-};
+use mcp::{initialize_status, shutdown, spawn_http_loopback as spawn_http};
 
 /// A long, deterministic signing key shared between the spawned server and
 /// in-test minting.
@@ -36,9 +36,9 @@ fn now() -> i64 {
 
 /// A token minted with the server's signing key gets 200 on `initialize`; a missing token gets 401.
 #[test]
-fn valid_signed_token_initialize_succeeds() {
+fn valid_signed_token_initialize_succeeds() -> Result<(), TestError> {
     let (child, addr) =
-        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http(&["--mcp-signing-key", SIGNING_KEY])?.ok_or("server should start")?;
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id",
@@ -47,24 +47,21 @@ fn valid_signed_token_initialize_succeeds() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some(&token)),
+        initialize_status(&addr, Some(&token))?,
         200,
         "valid token should be 200"
     );
     // Missing token → 401.
-    assert_eq!(
-        initialize_status_or_panic(&addr, None),
-        401,
-        "missing token → 401"
-    );
+    assert_eq!(initialize_status(&addr, None)?, 401, "missing token → 401");
     shutdown(child);
+    Ok(())
 }
 
 /// A correctly-signed token whose `exp` is already past gets 401.
 #[test]
-fn expired_signed_token_is_rejected() {
+fn expired_signed_token_is_rejected() -> Result<(), TestError> {
     let (child, addr) =
-        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http(&["--mcp-signing-key", SIGNING_KEY])?.ok_or("server should start")?;
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id",
@@ -73,18 +70,19 @@ fn expired_signed_token_is_rejected() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some(&token)),
+        initialize_status(&addr, Some(&token))?,
         401,
         "expired token should be 401"
     );
     shutdown(child);
+    Ok(())
 }
 
 /// A token minted under a different signing key gets 401.
 #[test]
-fn forged_wrong_key_token_is_rejected() {
+fn forged_wrong_key_token_is_rejected() -> Result<(), TestError> {
     let (child, addr) =
-        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http(&["--mcp-signing-key", SIGNING_KEY])?.ok_or("server should start")?;
     let token = sipnab::auth::mint(
         b"a-different-key",
         "id",
@@ -93,27 +91,28 @@ fn forged_wrong_key_token_is_rejected() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some(&token)),
+        initialize_status(&addr, Some(&token))?,
         401,
         "forged token should be 401"
     );
     shutdown(child);
+    Ok(())
 }
 
 /// With `--mcp-revoked-file`, a denylisted token id gets 401 while a fresh id gets 200.
 #[test]
-fn revoked_id_is_rejected_via_denylist_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn revoked_id_is_rejected_via_denylist_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let revoked_path = dir.path().join("revoked.txt");
-    std::fs::write(&revoked_path, "revoked-mcp-jti\n").expect("write denylist");
+    std::fs::write(&revoked_path, "revoked-mcp-jti\n")?;
 
-    let (child, addr) = spawn_http_or_panic(&[
+    let (child, addr) = spawn_http(&[
         "--mcp-signing-key",
         SIGNING_KEY,
         "--mcp-revoked-file",
-        revoked_path.to_str().unwrap(),
-    ])
-    .expect("server should start");
+        revoked_path.to_str().ok_or("revoked_path is not UTF-8")?,
+    ])?
+    .ok_or("server should start")?;
 
     let revoked = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
@@ -123,7 +122,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some(&revoked)),
+        initialize_status(&addr, Some(&revoked))?,
         401,
         "revoked id should be 401"
     );
@@ -136,20 +135,20 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some(&fresh)),
+        initialize_status(&addr, Some(&fresh))?,
         200,
         "non-revoked id should be 200"
     );
     shutdown(child);
+    Ok(())
 }
 
 /// With two `--mcp-signing-key` flags, tokens minted under either key get 200.
 #[test]
-fn rotation_accepts_tokens_from_either_key() {
+fn rotation_accepts_tokens_from_either_key() -> Result<(), TestError> {
     let key2 = "second-mcp-rotation-key-abcdef0123";
-    let (child, addr) =
-        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY, "--mcp-signing-key", key2])
-            .expect("server should start");
+    let (child, addr) = spawn_http(&["--mcp-signing-key", SIGNING_KEY, "--mcp-signing-key", key2])?
+        .ok_or("server should start")?;
     let t1 = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id1",
@@ -164,40 +163,34 @@ fn rotation_accepts_tokens_from_either_key() {
         sipnab::auth::AUDIENCE_MCP,
         sipnab::auth::SCOPE_FULL,
     );
-    assert_eq!(
-        initialize_status_or_panic(&addr, Some(&t1)),
-        200,
-        "key1 token"
-    );
-    assert_eq!(
-        initialize_status_or_panic(&addr, Some(&t2)),
-        200,
-        "key2 token"
-    );
+    assert_eq!(initialize_status(&addr, Some(&t1))?, 200, "key1 token");
+    assert_eq!(initialize_status(&addr, Some(&t2))?, 200, "key2 token");
     shutdown(child);
+    Ok(())
 }
 
 /// The legacy static `--mcp-token` path: correct secret 200, wrong secret 401.
 #[test]
-fn static_mcp_token_backward_compat() {
+fn static_mcp_token_backward_compat() -> Result<(), TestError> {
     let (child, addr) =
-        spawn_http_or_panic(&["--mcp-token", "legacy-mcp-secret"]).expect("server should start");
+        spawn_http(&["--mcp-token", "legacy-mcp-secret"])?.ok_or("server should start")?;
     assert_eq!(
-        initialize_status_or_panic(&addr, Some("legacy-mcp-secret")),
+        initialize_status(&addr, Some("legacy-mcp-secret"))?,
         200,
         "correct static token → 200"
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some("wrong-secret")),
+        initialize_status(&addr, Some("wrong-secret"))?,
         401,
         "wrong static token → 401"
     );
     shutdown(child);
+    Ok(())
 }
 
 /// `--mint-token --mcp-signing-key` prints an `s1.` token that verifies under the same key via the library `TokenVerifier`.
 #[test]
-fn mint_token_cli_mode_produces_verifiable_token() {
+fn mint_token_cli_mode_produces_verifiable_token() -> Result<(), TestError> {
     // Drive the --mint-token CLI mode and verify the printed token under the
     // same key via the library verifier.
     let binary = env!("CARGO_BIN_EXE_sipnab");
@@ -211,13 +204,9 @@ fn mint_token_cli_mode_produces_verifiable_token() {
             "--mcp-token-ttl",
             "3600",
         ])
-        .output()
-        .expect("run --mint-token");
+        .output()?;
     assert!(out.status.success(), "mint-token should exit 0");
-    let token = String::from_utf8(out.stdout)
-        .expect("utf8")
-        .trim()
-        .to_string();
+    let token = String::from_utf8(out.stdout)?.trim().to_string();
     assert!(token.starts_with("s2."), "minted token: {token}");
 
     // Minted from --mcp-signing-key, so it is bound to the mcp audience.
@@ -230,57 +219,64 @@ fn mint_token_cli_mode_produces_verifiable_token() {
         verifier.verify(&token, now(), sipnab::auth::SCOPE_FULL),
         "CLI-minted token should verify under same key"
     );
+    Ok(())
 }
 
 // M6 burn-down: --mcp-token-file (static token loaded from a file).
 /// A trimmed static token loaded from `--mcp-token-file` gets 200; wrong or missing tokens get 401.
 #[test]
-fn static_mcp_token_file_backward_compat() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn static_mcp_token_file_backward_compat() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("mcp.token");
-    std::fs::write(&path, "file-static-mcp-secret\n").expect("write token file");
+    std::fs::write(&path, "file-static-mcp-secret\n")?;
 
-    let (child, addr) = spawn_http_or_panic(&["--mcp-token-file", path.to_str().unwrap()])
-        .expect("server should start");
+    let (child, addr) = spawn_http(&[
+        "--mcp-token-file",
+        path.to_str().ok_or("path is not UTF-8")?,
+    ])?
+    .ok_or("server should start")?;
     // The file's token (trimmed) authenticates; wrong/missing → 401.
     assert_eq!(
-        initialize_status_or_panic(&addr, Some("file-static-mcp-secret")),
+        initialize_status(&addr, Some("file-static-mcp-secret"))?,
         200,
         "token from --mcp-token-file → 200"
     );
     assert_eq!(
-        initialize_status_or_panic(&addr, Some("wrong")),
+        initialize_status(&addr, Some("wrong"))?,
         401,
         "wrong token → 401"
     );
-    assert_eq!(
-        initialize_status_or_panic(&addr, None),
-        401,
-        "missing token → 401"
-    );
+    assert_eq!(initialize_status(&addr, None)?, 401, "missing token → 401");
     shutdown(child);
+    Ok(())
 }
 
 /// POST `initialize` with an explicit `Host` header (to exercise the DNS-rebind
 /// allowlist), connecting to `addr` regardless of the header value.
-fn initialize_status_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> u16 {
-    initialize_with_host(addr, host_header, bearer).0
+fn initialize_status_with_host(
+    addr: &str,
+    host_header: &str,
+    bearer: Option<&str>,
+) -> Result<u16, TestError> {
+    Ok(initialize_with_host(addr, host_header, bearer)?.0)
 }
 
 /// [`initialize_status_with_host`], returning the body too.
-fn initialize_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> (u16, String) {
-    let (host, port_str) = addr.rsplit_once(':').expect("host:port");
-    let port: u16 = port_str.parse().expect("port");
+fn initialize_with_host(
+    addr: &str,
+    host_header: &str,
+    bearer: Option<&str>,
+) -> Result<(u16, String), TestError> {
+    let (host, port_str) = addr.rsplit_once(':').ok_or("host:port")?;
+    let port: u16 = port_str.parse()?;
     let body = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                    "clientInfo": {"name": "test", "version": "0"}}
     });
-    let body_str = serde_json::to_string(&body).unwrap();
-    let mut stream = TcpStream::connect((host, port)).expect("connect");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout");
+    let body_str = serde_json::to_string(&body)?;
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     let mut req = format!(
         "POST /mcp HTTP/1.1\r\n\
          Host: {host_header}\r\n\
@@ -295,9 +291,9 @@ fn initialize_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> 
     }
     req.push_str("\r\n");
     req.push_str(&body_str);
-    stream.write_all(req.as_bytes()).expect("write");
+    stream.write_all(req.as_bytes())?;
     let mut resp = Vec::new();
-    stream.read_to_end(&mut resp).expect("read");
+    stream.read_to_end(&mut resp)?;
     let text = String::from_utf8_lossy(&resp);
     let status = text
         .lines()
@@ -309,20 +305,20 @@ fn initialize_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> 
         .split_once("\r\n\r\n")
         .map(|(_, b)| b.to_string())
         .unwrap_or_default();
-    (status, body)
+    Ok((status, body))
 }
 
 // M6 burn-down: --mcp-allowed-host extends rmcp's Host-header allowlist.
 /// `--mcp-allowed-host custom.example` makes that Host header pass DNS-rebind protection (200) while an unlisted Host is rejected.
 #[test]
-fn mcp_allowed_host_controls_host_header() {
-    let (child, addr) = spawn_http_or_panic(&[
+fn mcp_allowed_host_controls_host_header() -> Result<(), TestError> {
+    let (child, addr) = spawn_http(&[
         "--mcp-signing-key",
         SIGNING_KEY,
         "--mcp-allowed-host",
         "custom.example",
-    ])
-    .expect("server should start");
+    ])?
+    .ok_or("server should start")?;
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "host-test",
@@ -333,13 +329,13 @@ fn mcp_allowed_host_controls_host_header() {
 
     // The configured Host is accepted (and auth passes) → 200.
     assert_eq!(
-        initialize_status_with_host(&addr, "custom.example", Some(&token)),
+        initialize_status_with_host(&addr, "custom.example", Some(&token))?,
         200,
         "Host added via --mcp-allowed-host must be accepted"
     );
     // A Host that is neither loopback nor allow-listed is rejected with 403,
     // naming the host and the flag that would list it.
-    let (status, body) = initialize_with_host(&addr, "blocked.invalid", Some(&token));
+    let (status, body) = initialize_with_host(&addr, "blocked.invalid", Some(&token))?;
     assert_eq!(
         status, 403,
         "a non-allowlisted Host must be rejected by DNS-rebind protection: {body}"
@@ -351,9 +347,10 @@ fn mcp_allowed_host_controls_host_header() {
     // Without a token too: the Host check runs before authentication, so a
     // rebound page learns nothing about the credential it lacks.
     assert_eq!(
-        initialize_status_with_host(&addr, "blocked.invalid", None),
+        initialize_status_with_host(&addr, "blocked.invalid", None)?,
         403,
         "a rebound Host is refused before authentication"
     );
     shutdown(child);
+    Ok(())
 }

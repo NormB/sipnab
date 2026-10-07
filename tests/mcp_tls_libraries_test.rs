@@ -12,6 +12,10 @@
 
 use sipnab::mcp::server::{TlsLibraryEntry, build_tls_libraries_response, tls_libraries_response};
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A reachable entry, for the branches that need one.
 fn reachable(flavor: &str, symbol: &str, inode: u64) -> TlsLibraryEntry {
     TlsLibraryEntry {
@@ -28,7 +32,7 @@ fn reachable(flavor: &str, symbol: &str, inode: u64) -> TlsLibraryEntry {
 /// two opposite things, and only `privileged` separates them — so the prose an
 /// agent relays has to separate them too.
 #[test]
-fn an_empty_list_reads_differently_depending_on_privilege() {
+fn an_empty_list_reads_differently_depending_on_privilege() -> Result<(), TestError> {
     let unprivileged = build_tls_libraries_response(true, false, Vec::new());
     assert!(
         unprivileged.summary.contains("unprivileged")
@@ -50,11 +54,12 @@ fn an_empty_list_reads_differently_depending_on_privilege() {
         unprivileged.summary, as_root.summary,
         "the same sentence for both is exactly the failure this guards"
     );
+    Ok(())
 }
 
 /// A partial capture must never be described as a whole one.
 #[test]
-fn an_unreachable_library_is_stated_in_the_prose_not_only_in_a_count() {
+fn an_unreachable_library_is_stated_in_the_prose_not_only_in_a_count() -> Result<(), TestError> {
     let mut hidden = reachable("wolfSSL", "wolfSSL_write", 99);
     hidden.probe_path = None;
     let r = build_tls_libraries_response(
@@ -69,11 +74,12 @@ fn an_unreachable_library_is_stated_in_the_prose_not_only_in_a_count() {
          the agent relays, not only in a field it may not read: {}",
         r.summary
     );
+    Ok(())
 }
 
 /// With everything reachable there is no missing-traffic caveat to make.
 #[test]
-fn a_complete_capture_is_not_hedged() {
+fn a_complete_capture_is_not_hedged() -> Result<(), TestError> {
     let r = build_tls_libraries_response(true, true, vec![reachable("OpenSSL", "SSL_write", 1)]);
     assert_eq!(r.unreachable_count, 0);
     assert!(r.summary.contains("1 of 1 TLS library"), "{}", r.summary);
@@ -82,23 +88,25 @@ fn a_complete_capture_is_not_hedged() {
         "nothing is missing, so nothing should suggest it is: {}",
         r.summary
     );
+    Ok(())
 }
 
 /// Live call: whatever this machine has, the invariants hold.
 #[test]
-fn the_live_response_is_well_formed() {
+fn the_live_response_is_well_formed() -> Result<(), TestError> {
     let r = tls_libraries_response();
     assert_eq!(r.schema_version, 1);
     assert!(
         !r.summary.is_empty(),
         "a caller relays the summary; an empty one loses the caveat entirely"
     );
+    Ok(())
 }
 
 /// A library that is in use but cannot be probed is a gap in the capture, and
 /// the count must agree with the entries rather than being reported separately.
 #[test]
-fn the_unreachable_count_matches_the_entries_it_summarizes() {
+fn the_unreachable_count_matches_the_entries_it_summarizes() -> Result<(), TestError> {
     let r = tls_libraries_response();
     let actual = r
         .libraries
@@ -117,12 +125,13 @@ fn the_unreachable_count_matches_the_entries_it_summarizes() {
             r.summary
         );
     }
+    Ok(())
 }
 
 /// Every entry must carry the symbol its flavor exports. A wrong pairing here
 /// would have an agent report a probe target that cannot resolve.
 #[test]
-fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() {
+fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() -> Result<(), TestError> {
     let r = tls_libraries_response();
     // A `for` over an empty vec asserts nothing and reports `ok`, and off Linux
     // the vec is ALWAYS empty -- `tls_libraries_response()` scans `/proc/*/maps`
@@ -142,14 +151,18 @@ fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() {
              reports supported=false and there is nothing to pair. Enforced \
              on Linux."
         );
-        return;
+        return Ok(());
     }
     let mut checked = 0usize;
     for lib in r.libraries {
         let expected = match lib.flavor.as_str() {
             "OpenSSL" => "SSL_write",
             "wolfSSL" => "wolfSSL_write",
-            other => panic!("unexpected flavor {other}: sipnab probes only these two"),
+            other => {
+                return Err(
+                    format!("unexpected flavor {other}: sipnab probes only these two").into(),
+                );
+            }
         };
         assert_eq!(lib.symbol, expected, "for {}", lib.path);
         assert!(!lib.path.is_empty());
@@ -164,11 +177,12 @@ fn every_entry_pairs_its_flavor_with_the_symbol_that_flavor_exports() {
     // else happens to be running. Printing it is the difference between "found
     // none" and "looked at none".
     eprintln!("checked {checked} mapped TLS librar(y/ies)");
+    Ok(())
 }
 
 /// Off Linux, or without `native`, the answer is "cannot", not "none found".
 #[test]
-fn an_unsupported_build_says_so_rather_than_reporting_nothing() {
+fn an_unsupported_build_says_so_rather_than_reporting_nothing() -> Result<(), TestError> {
     let r = tls_libraries_response();
     if !r.supported {
         assert!(r.libraries.is_empty());
@@ -178,12 +192,13 @@ fn an_unsupported_build_says_so_rather_than_reporting_nothing() {
             r.summary
         );
     }
+    Ok(())
 }
 
 /// The identity field exists because the path is not unique. If an entry ever
 /// carried inode 0 the agent would have no way to tell two libraries apart.
 #[test]
-fn every_entry_carries_the_inode_that_identifies_it() {
+fn every_entry_carries_the_inode_that_identifies_it() -> Result<(), TestError> {
     let r = tls_libraries_response();
     // Same vacuity as the flavor/symbol pairing above: zero entries off Linux,
     // so the loop asserted nothing and the test reported `ok`.
@@ -192,7 +207,7 @@ fn every_entry_carries_the_inode_that_identifies_it() {
             "not checked here: /proc/*/maps is Linux-only, so there are no \
              entries to carry an inode. Enforced on Linux."
         );
-        return;
+        return Ok(());
     }
     let mut checked = 0usize;
     for lib in r.libraries {
@@ -204,4 +219,5 @@ fn every_entry_carries_the_inode_that_identifies_it() {
         checked += 1;
     }
     eprintln!("checked {checked} inode(s)");
+    Ok(())
 }

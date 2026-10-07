@@ -30,33 +30,34 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn workflows() -> Vec<(String, String)> {
+fn workflows() -> Result<Vec<(String, String)>, TestError> {
     let dir = repo().join(".github/workflows");
-    let mut out: Vec<(String, String)> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
-        .map(|e| e.expect("dir entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "yml" || x == "yaml"))
-        .map(|p: PathBuf| {
-            let name = p
-                .file_name()
-                .expect("file name")
-                .to_string_lossy()
-                .into_owned();
-            let body =
-                std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-            (name, body)
-        })
-        .collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let p: PathBuf = e.map_err(|e| format!("dir entry: {e}"))?.path();
+        if !p.extension().is_some_and(|x| x == "yml" || x == "yaml") {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .ok_or("file name")?
+            .to_string_lossy()
+            .into_owned();
+        let body = std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?;
+        out.push((name, body));
+    }
     out.sort();
     assert!(
         !out.is_empty(),
         "no workflow files found -- this suite would pass vacuously"
     );
-    out
+    Ok(out)
 }
 
 /// Split a workflow into YAML list items. A step's `env:` block and its `run:`
@@ -80,11 +81,11 @@ fn steps(body: &str) -> Vec<String> {
 
 /// Every step that downloads a release artifact must verify it before use.
 #[test]
-fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() {
+fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() -> Result<(), TestError> {
     let mut checked = 0usize;
     let mut unchecked: Vec<String> = Vec::new();
 
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         for step in steps(&body) {
             if !step.contains("releases/download/") {
                 continue;
@@ -117,6 +118,7 @@ fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() {
          style package), found {checked}. Fewer means the scan stopped seeing them, not \
          that the risk went away"
     );
+    Ok(())
 }
 
 /// The Google style package is named in two places: `Packages =` in `.vale.ini`,
@@ -125,33 +127,35 @@ fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() {
 /// against a different rule set than a contributor's machine does, and the
 /// checksum guards a package nobody else is using.
 #[test]
-fn the_vale_package_url_is_the_same_in_the_config_and_the_workflow() {
-    let ini = std::fs::read_to_string(repo().join(".vale.ini")).expect("read .vale.ini");
+fn the_vale_package_url_is_the_same_in_the_config_and_the_workflow() -> Result<(), TestError> {
+    let ini = std::fs::read_to_string(repo().join(".vale.ini"))
+        .map_err(|e| format!("read .vale.ini: {e}"))?;
     let from_ini = ini
         .lines()
         .find_map(|l| l.strip_prefix("Packages ="))
         .map(str::trim)
-        .expect("`Packages =` not found in .vale.ini");
+        .ok_or("`Packages =` not found in .vale.ini")?;
 
     let quality = std::fs::read_to_string(repo().join(".github/workflows/quality.yml"))
-        .expect("read quality.yml");
+        .map_err(|e| format!("read quality.yml: {e}"))?;
     let from_workflow = quality
         .lines()
         .find_map(|l| l.trim().strip_prefix("VALE_GOOGLE_URL:"))
         .map(|v| v.trim().trim_matches(['\'', '"']).to_string())
-        .expect("VALE_GOOGLE_URL not found in quality.yml");
+        .ok_or("VALE_GOOGLE_URL not found in quality.yml")?;
 
     assert_eq!(
         from_ini, from_workflow,
         "the Vale package URL in .vale.ini and quality.yml disagree; the checksummed \
          download and the one `vale sync` performs are not the same package"
     );
+    Ok(())
 }
 
 /// A pinned hash has to be a whole SHA-256, not a prefix or a placeholder.
 #[test]
-fn every_pinned_checksum_is_a_full_sha256() {
-    for (name, body) in workflows() {
+fn every_pinned_checksum_is_a_full_sha256() -> Result<(), TestError> {
+    for (name, body) in workflows()? {
         for line in body.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -175,6 +179,7 @@ fn every_pinned_checksum_is_a_full_sha256() {
             );
         }
     }
+    Ok(())
 }
 
 /// `pip install pytest==8.4.2` is the movable-label problem again: PyPI serves
@@ -185,9 +190,9 @@ fn every_pinned_checksum_is_a_full_sha256() {
 /// file, dependency included, whose SHA-256 the requirements file does not
 /// list. Scorecard runs only in CI; this is the local copy of its rule.
 #[test]
-fn every_pip_install_requires_hashes() {
+fn every_pip_install_requires_hashes() -> Result<(), TestError> {
     let mut installs = 0;
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         for (i, line) in body.lines().enumerate() {
             let cmd = line.trim();
             if cmd.starts_with('#') || !cmd.contains("pip install") && !cmd.contains("pip3 install")
@@ -205,9 +210,9 @@ fn every_pip_install_requires_hashes() {
                 .iter()
                 .position(|w| *w == "-r")
                 .and_then(|p| words.get(p + 1))
-                .unwrap_or_else(|| panic!("{at}: `{cmd}` names no -r requirements file"));
+                .ok_or_else(|| format!("{at}: `{cmd}` names no -r requirements file"))?;
             let text = std::fs::read_to_string(repo().join(req))
-                .unwrap_or_else(|e| panic!("{at}: read {req}: {e}"));
+                .map_err(|e| format!("{at}: read {req}: {e}"))?;
             // pip's own format: `name==version \` then `--hash=sha256:...` lines.
             let mut packages = 0;
             for entry in text.split('\n').filter(|l| {
@@ -242,15 +247,16 @@ fn every_pip_install_requires_hashes() {
         "no pip install found in any workflow: either the matcher broke, or the \
          last one was removed and this test should go with it"
     );
+    Ok(())
 }
 
 /// Zola is installed by two different workflows. Both must agree on version and
 /// hash, or one of them is quietly building the site with a different binary.
 #[test]
-fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() {
+fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() -> Result<(), TestError> {
     let mut seen: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
 
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         for line in body.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -299,6 +305,7 @@ fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() {
         seen.keys().any(|k| k.ends_with("_SHA256")),
         "no *_SHA256 pins found at all -- the checks above would hold vacuously"
     );
+    Ok(())
 }
 
 /// Every job in every workflow bounds how long it may run.
@@ -335,11 +342,11 @@ fn a_tool_installed_by_more_than_one_workflow_is_pinned_identically() {
 /// The values are not policed — only their presence. Sizing is a judgement call
 /// against observed durations; having no bound at all is not.
 #[test]
-fn every_workflow_job_bounds_its_runtime() {
+fn every_workflow_job_bounds_its_runtime() -> Result<(), TestError> {
     let mut missing: Vec<String> = Vec::new();
     let mut checked = 0usize;
 
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         // Only the `jobs:` mapping. `on:`, `env:`, `permissions:` and
         // `concurrency:` also carry two-space keys, and none of them is a job.
         let mut in_jobs = false;
@@ -398,6 +405,7 @@ fn every_workflow_job_bounds_its_runtime() {
          having one is not.",
         missing.join("\n  ")
     );
+    Ok(())
 }
 
 /// A job that declares its own `permissions:` must grant everything its steps
@@ -440,7 +448,7 @@ fn every_workflow_job_bounds_its_runtime() {
 /// here as granting nothing, failing loudly; that is the wanted outcome, since
 /// the blanket form is what Scorecard marks down.
 #[test]
-fn a_job_permissions_block_grants_what_its_steps_need() {
+fn a_job_permissions_block_grants_what_its_steps_need() -> Result<(), TestError> {
     // (marker in a `uses:` line, permission that marker requires, level)
     const NEEDS: &[(&str, &str, &str)] = &[
         ("upload-sarif", "security-events", "write"),
@@ -488,7 +496,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
 
     let mut tally = Tally::default();
 
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         let mut wf_perms: Vec<(String, String)> = Vec::new();
         let mut in_wf_perms = false;
         let mut in_jobs = false;
@@ -629,6 +637,7 @@ fn a_job_permissions_block_grants_what_its_steps_need() {
          which fork PRs produce for unrelated reasons.",
         tally.gaps.join("\n  ")
     );
+    Ok(())
 }
 
 /// The `path:` entries of one `actions/upload-artifact` step: the inline value,
@@ -666,10 +675,10 @@ fn upload_paths(step: &str) -> Vec<String> {
 /// shifting element did not exist, and the defect had to be re-measured from
 /// scratch.
 #[test]
-fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() {
+fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() -> Result<(), TestError> {
     let mut uploads = 0usize;
     let mut offenders: Vec<String> = Vec::new();
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         for step in steps(&body) {
             if !step.contains("uses: actions/upload-artifact@") {
                 continue;
@@ -709,6 +718,7 @@ fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() {
          everything under it:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// CodeQL's analyze step uploads the database it built by default, and to
@@ -721,10 +731,10 @@ fn an_artifact_upload_of_a_hidden_path_opts_into_hidden_files() {
 /// `upload-database` check returns before either `bundleDb` call in
 /// `src/database-upload.ts`.
 #[test]
-fn codeql_analyze_does_not_bundle_a_database_nobody_reads() {
+fn codeql_analyze_does_not_bundle_a_database_nobody_reads() -> Result<(), TestError> {
     let mut checked = 0usize;
     let mut uploading: Vec<String> = Vec::new();
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         for step in steps(&body) {
             if !step.contains("github/codeql-action/analyze@") {
                 continue;
@@ -746,6 +756,7 @@ fn codeql_analyze_does_not_bundle_a_database_nobody_reads() {
          set `upload-database: false`:\n{}",
         uploading.join("\n")
     );
+    Ok(())
 }
 
 /// OpenSSF Baseline AC-04.02: a job gets only the permissions it needs.
@@ -757,9 +768,9 @@ fn codeql_analyze_does_not_bundle_a_database_nobody_reads() {
 /// Write scopes belong on the job that needs them; the workflow level may
 /// only read.
 #[test]
-fn no_workflow_level_permissions_block_grants_a_write_scope() {
+fn no_workflow_level_permissions_block_grants_a_write_scope() -> Result<(), TestError> {
     let mut offenders = Vec::new();
-    for (name, body) in workflows() {
+    for (name, body) in workflows()? {
         let mut inside = false;
         for line in body.lines() {
             if line.starts_with("permissions:") {
@@ -784,4 +795,5 @@ fn no_workflow_level_permissions_block_grants_a_write_scope() {
          each write scope into the job that uses it:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }

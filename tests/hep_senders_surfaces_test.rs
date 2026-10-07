@@ -35,12 +35,14 @@ use sipnab::output::persistence::PersistenceGate;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The bearer key the REST side authenticates with.
 const KEY: &str = "hep-senders-parity-key";
 
 /// A roster with a live sender, a silent one and a refused address, on a
 /// clock frozen forty seconds after the last packet.
-fn roster() -> HepRoster {
+fn roster() -> Result<HepRoster, TestError> {
     let t = std::time::Instant::now();
     let wall = chrono::DateTime::parse_from_rfc3339("2026-09-21T12:00:00Z")
         .map(|w| w.with_timezone(&chrono::Utc))
@@ -52,28 +54,33 @@ fn roster() -> HepRoster {
         t,
         wall,
     );
-    let admit = |state: &mut RosterState, id: u32, peer: &str, at: std::time::Instant| {
-        let peer: IpAddr = peer.parse().expect("literal");
+    let admit = |state: &mut RosterState,
+                 id: u32,
+                 peer: &str,
+                 at: std::time::Instant|
+     -> Result<(), TestError> {
+        let peer: IpAddr = peer.parse()?;
         state.admitted(Some(id), peer, &hep_source_label(Some(id), peer), at);
+        Ok(())
     };
-    admit(&mut state, 7, "192.0.2.7", t);
+    admit(&mut state, 7, "192.0.2.7", t)?;
     admit(
         &mut state,
         9,
         "192.0.2.9",
         t + std::time::Duration::from_secs(35),
-    );
+    )?;
     admit(
         &mut state,
         7,
         "192.0.2.7",
         t + std::time::Duration::from_millis(1500),
-    );
-    let bad: IpAddr = "203.0.113.66".parse().expect("literal");
+    )?;
+    let bad: IpAddr = "203.0.113.66".parse()?;
     state.refused(HepRefusal::AuthMismatch, bad, t);
     state.refused(HepRefusal::Allowlist, bad, t);
     let frozen = t + std::time::Duration::from_secs(40);
-    HepRoster::with_clock(state, Arc::new(move || frozen))
+    Ok(HepRoster::with_clock(state, Arc::new(move || frozen)))
 }
 
 /// A REST state whose capture meter carries `meter`, like a live `-L` run's.
@@ -107,29 +114,26 @@ fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
 }
 
 /// The REST body for `uri`.
-async fn rest_body(state: ApiState, uri: &str) -> String {
+async fn rest_body(state: ApiState, uri: &str) -> Result<String, TestError> {
     let mut req = Request::builder()
         .uri(uri)
         .header("Authorization", format!("Bearer {KEY}"))
-        .body(Body::empty())
-        .expect("build request");
+        .body(Body::empty())?;
     req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
         IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
         40000,
     )));
-    let resp = build_router(state).oneshot(req).await.expect("oneshot");
+    let resp = build_router(state).oneshot(req).await?;
     assert_eq!(resp.status(), 200, "the route must answer");
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .expect("collect body")
-        .to_bytes();
-    String::from_utf8(bytes.to_vec()).expect("utf-8")
+    let bytes = resp.into_body().collect().await?.to_bytes();
+    Ok(String::from_utf8(bytes.to_vec())?)
 }
 
 /// The MCP tool's JSON text for `limit`.
-async fn mcp_text(meter: sipnab::capture::channel::CaptureMeter, limit: Option<u32>) -> String {
+async fn mcp_text(
+    meter: sipnab::capture::channel::CaptureMeter,
+    limit: Option<u32>,
+) -> Result<String, TestError> {
     let srv = SipnabMcp::new(
         Arc::new(RwLock::new(DialogStore::new(100, false))),
         Arc::new(RwLock::new(StreamStore::new(100))),
@@ -138,31 +142,31 @@ async fn mcp_text(meter: sipnab::capture::channel::CaptureMeter, limit: Option<u
     let result = srv
         .hep_senders(Parameters(HepSendersParams { limit }))
         .await
-        .expect("the tool answers");
-    result
+        .map_err(|e| format!("the tool answers: {e:?}"))?;
+    Ok(result
         .content
         .iter()
         .find_map(|c| c.as_text())
         .map(|t| t.text.clone())
-        .expect("a JSON block")
+        .ok_or("a JSON block")?)
 }
 
 /// **REST and MCP return byte-identical JSON for one roster**, with and
 /// without a row limit.
 #[tokio::test]
-async fn rest_and_mcp_return_the_same_bytes_for_one_roster() {
+async fn rest_and_mcp_return_the_same_bytes_for_one_roster() -> Result<(), TestError> {
     let (_tx, rx) = sipnab::capture::channel::packet_channel(8);
     let meter = rx.meter();
-    assert!(meter.attach_hep_roster(roster()), "a fresh meter");
+    assert!(meter.attach_hep_roster(roster()?), "a fresh meter");
 
-    let rest = rest_body(rest_state(meter.clone()), "/v1/hep/senders").await;
-    let mcp = mcp_text(meter.clone(), None).await;
+    let rest = rest_body(rest_state(meter.clone()), "/v1/hep/senders").await?;
+    let mcp = mcp_text(meter.clone(), None).await?;
     assert_eq!(
         rest, mcp,
         "one roster, two doors, two answers:\n REST {rest}\n MCP  {mcp}"
     );
     // The comparison proved something only if the roster is not empty.
-    let parsed: serde_json::Value = serde_json::from_str(&rest).expect("json");
+    let parsed: serde_json::Value = serde_json::from_str(&rest)?;
     assert_eq!(
         parsed["senders"].as_array().map(Vec::len),
         Some(2),
@@ -171,25 +175,25 @@ async fn rest_and_mcp_return_the_same_bytes_for_one_roster() {
     assert_eq!(parsed["senders"][0]["silent"], true, "{parsed}");
     assert_eq!(parsed["refused_sources"][0]["packets"], 2, "{parsed}");
 
-    let rest_one = rest_body(rest_state(meter.clone()), "/v1/hep/senders?limit=1").await;
-    let mcp_one = mcp_text(meter, Some(1)).await;
+    let rest_one = rest_body(rest_state(meter.clone()), "/v1/hep/senders?limit=1").await?;
+    let mcp_one = mcp_text(meter, Some(1)).await?;
     assert_eq!(rest_one, mcp_one, "the same limit gives the same bytes");
+    Ok(())
 }
 
 /// **`GET /v1/runtime` and `runtime_stats` report the same `hep_export`** for
 /// one exporter — they share one collector — and neither carries the key on
 /// a run with no exporter.
 #[tokio::test]
-async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
+async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() -> Result<(), TestError> {
     use sipnab::capture::hep_export::{ExportFailure, HepExportCounters};
     use sipnab::mcp::server::RuntimeStatsParams;
 
     async fn both(
         meter: sipnab::capture::channel::CaptureMeter,
-    ) -> (serde_json::Value, serde_json::Value) {
+    ) -> Result<(serde_json::Value, serde_json::Value), TestError> {
         let rest: serde_json::Value =
-            serde_json::from_str(&rest_body(rest_state(meter.clone()), "/v1/runtime").await)
-                .expect("json");
+            serde_json::from_str(&rest_body(rest_state(meter.clone()), "/v1/runtime").await?)?;
         let srv = SipnabMcp::new(
             Arc::new(RwLock::new(DialogStore::new(100, false))),
             Arc::new(RwLock::new(StreamStore::new(100))),
@@ -203,14 +207,14 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
                 rmcp::handler::server::tool::Extension(sipnab::mcp::progress::Progress::silent()),
             )
             .await
-            .expect("the tool answers");
+            .map_err(|e| format!("the tool answers: {e:?}"))?;
         let text = result
             .content
             .iter()
             .find_map(|c| c.as_text())
             .map(|t| t.text.clone())
-            .expect("a JSON block");
-        (rest, serde_json::from_str(&text).expect("json"))
+            .ok_or("a JSON block")?;
+        Ok((rest, serde_json::from_str(&text)?))
     }
 
     let counters = HepExportCounters::new("tcp");
@@ -225,7 +229,7 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
     let meter = rx.meter();
     assert!(meter.attach_hep_export(counters), "a fresh meter");
 
-    let (rest, mcp) = both(meter).await;
+    let (rest, mcp) = both(meter).await?;
     assert_eq!(
         rest["hep_export"], mcp["hep_export"],
         "one collector, one answer"
@@ -242,7 +246,7 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
     assert_eq!(export["reconnects"], 1);
 
     let (_tx2, rx2) = sipnab::capture::channel::packet_channel(8);
-    let (rest, mcp) = both(rx2.meter()).await;
+    let (rest, mcp) = both(rx2.meter()).await?;
     assert!(
         rest.get("hep_export").is_none(),
         "no exporter, no key: {rest}"
@@ -251,4 +255,5 @@ async fn rest_runtime_and_mcp_runtime_stats_agree_on_the_exporter() {
         mcp.get("hep_export").is_none(),
         "no exporter, no key: {mcp}"
     );
+    Ok(())
 }

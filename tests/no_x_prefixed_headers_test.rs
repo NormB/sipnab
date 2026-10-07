@@ -34,6 +34,8 @@
 
 use std::path::PathBuf;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -128,7 +130,7 @@ fn sending_sources() -> Vec<PathBuf> {
 
 /// The fixture shapes: what the matcher must see, and what it must not.
 #[test]
-fn the_matcher_reads_both_shapes_and_honors_the_exception() {
+fn the_matcher_reads_both_shapes_and_honors_the_exception() -> Result<(), TestError> {
     let rust = r#"
         Ok((StatusCode::OK, [("content-type", "audio/wav".to_string()),
             ("x-sipnab-audio-partial", flag.to_string())], body))
@@ -156,11 +158,12 @@ fn the_matcher_reads_both_shapes_and_honors_the_exception() {
     // Prose about a header a capture carries is not a header sipnab sends;
     // it is not quoted as a bare name, so it does not match.
     assert!(x_prefixed_sent_names("// reads X-Asterisk-HangupCause from the capture").is_empty());
+    Ok(())
 }
 
 /// Nothing this project sends carries an `X-` name.
 #[test]
-fn sipnab_sends_no_x_prefixed_header() {
+fn sipnab_sends_no_x_prefixed_header() -> Result<(), TestError> {
     let mut offenders: Vec<String> = Vec::new();
     for path in sending_sources() {
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -186,12 +189,13 @@ fn sipnab_sends_no_x_prefixed_header() {
          with the reason:\n  {}",
         offenders.join("\n  ")
     );
+    Ok(())
 }
 
 /// The headers a CAPTURE carries are read by name, prefix and all, and this
 /// gate must never push anyone to stop reading them (RFC 6648 section 2).
 #[test]
-fn headers_read_from_captures_are_out_of_scope() {
+fn headers_read_from_captures_are_out_of_scope() -> Result<(), TestError> {
     let scanned = sending_sources();
     assert!(
         !scanned
@@ -200,10 +204,10 @@ fn headers_read_from_captures_are_out_of_scope() {
         "src/sip/ names the headers sipnab READS; scanning it would read \
          RFC 6648 backwards"
     );
-    let termination = std::fs::read_to_string(repo().join("src/sip/termination.rs"))
-        .expect("src/sip/termination.rs is in the tree");
+    let termination = std::fs::read_to_string(repo().join("src/sip/termination.rs"))?;
     assert!(
         termination.contains("X-Asterisk-HangupCause"),
         "sipnab must keep understanding the vendor headers real captures carry"
     );
+    Ok(())
 }

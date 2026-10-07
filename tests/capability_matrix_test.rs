@@ -25,13 +25,17 @@ use std::path::{Path, PathBuf};
 
 use clap::CommandFactory;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
-fn inventory_doc() -> String {
+fn inventory_doc() -> Result<String, TestError> {
     let p = root().join("docs/design/surface-capability-inventory.md");
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Items the inventory doc lists under `## <title> (...)`, read from its
@@ -73,10 +77,10 @@ fn cli_flags() -> BTreeSet<String> {
 }
 
 /// The `View` enum's variants -- the TUI's top-level surface.
-fn tui_views() -> BTreeSet<String> {
-    let src = std::fs::read_to_string(root().join("src/tui/state.rs")).expect("read state.rs");
-    let start = src.find("pub enum View {").expect("View enum") + "pub enum View {".len();
-    let body = &src[start..src[start..].find("\n}").expect("enum close") + start];
+fn tui_views() -> Result<BTreeSet<String>, TestError> {
+    let src = std::fs::read_to_string(root().join("src/tui/state.rs"))?;
+    let start = src.find("pub enum View {").ok_or("View enum")? + "pub enum View {".len();
+    let body = &src[start..src[start..].find("\n}").ok_or("enum close")? + start];
     let mut out = BTreeSet::new();
     for line in body.lines() {
         let t = line.trim_start();
@@ -88,12 +92,12 @@ fn tui_views() -> BTreeSet<String> {
             out.insert(ident);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every route axum registers, read from `src/output/api.rs` (`.route("...")`).
-fn rest_routes() -> BTreeSet<String> {
-    let api = std::fs::read_to_string(root().join("src/output/api.rs")).expect("read api.rs");
+fn rest_routes() -> Result<BTreeSet<String>, TestError> {
+    let api = std::fs::read_to_string(root().join("src/output/api.rs"))?;
     let mut out = BTreeSet::new();
     for (i, _) in api.match_indices(".route(") {
         let rest = &api[i + ".route(".len()..];
@@ -105,15 +109,15 @@ fn rest_routes() -> BTreeSet<String> {
         };
         out.insert(rest[open + 1..open + 1 + close].to_string());
     }
-    out
+    Ok(out)
 }
 
 /// Every MCP tool, read from `#[tool(name = "...")]` across `src/mcp/`.
-fn mcp_tools() -> BTreeSet<String> {
+fn mcp_tools() -> Result<BTreeSet<String>, TestError> {
     let mut out = BTreeSet::new();
     let mut stack = vec![root().join("src/mcp")];
     while let Some(d) = stack.pop() {
-        for entry in std::fs::read_dir(&d).expect("read src/mcp").flatten() {
+        for entry in std::fs::read_dir(&d)?.flatten() {
             let path = entry.path();
             if path.is_dir() {
                 stack.push(path);
@@ -146,13 +150,18 @@ fn mcp_tools() -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// A surface whose re-derived set differs from the inventory doc means the doc
 /// has stopped describing the program. Reported per surface, set-not-count.
-fn assert_surface(name: &str, title_prefix: &str, derived: &BTreeSet<String>, floor: usize) {
-    let doc = inventory_doc();
+fn assert_surface(
+    name: &str,
+    title_prefix: &str,
+    derived: &BTreeSet<String>,
+    floor: usize,
+) -> Result<(), TestError> {
+    let doc = inventory_doc()?;
     let listed = doc_section(&doc, title_prefix);
 
     assert!(
@@ -176,26 +185,31 @@ fn assert_surface(name: &str, title_prefix: &str, derived: &BTreeSet<String>, fl
         stale.len(),
         stale.join(", "),
     );
+    Ok(())
 }
 
 #[test]
-fn the_inventory_lists_every_cli_flag() {
-    assert_surface("CLI", "CLI flags", &cli_flags(), 100);
+fn the_inventory_lists_every_cli_flag() -> Result<(), TestError> {
+    assert_surface("CLI", "CLI flags", &cli_flags(), 100)?;
+    Ok(())
 }
 
 #[test]
-fn the_inventory_lists_every_tui_view() {
-    assert_surface("TUI", "TUI views", &tui_views(), 10);
+fn the_inventory_lists_every_tui_view() -> Result<(), TestError> {
+    assert_surface("TUI", "TUI views", &tui_views()?, 10)?;
+    Ok(())
 }
 
 #[test]
-fn the_inventory_lists_every_rest_route() {
-    assert_surface("REST", "REST routes", &rest_routes(), 10);
+fn the_inventory_lists_every_rest_route() -> Result<(), TestError> {
+    assert_surface("REST", "REST routes", &rest_routes()?, 10)?;
+    Ok(())
 }
 
 #[test]
-fn the_inventory_lists_every_mcp_tool() {
-    assert_surface("MCP", "MCP tools", &mcp_tools(), 40);
+fn the_inventory_lists_every_mcp_tool() -> Result<(), TestError> {
+    assert_surface("MCP", "MCP tools", &mcp_tools()?, 40)?;
+    Ok(())
 }
 
 /// Every way the inventory's printed numbers disagree with its own lists:
@@ -252,7 +266,7 @@ fn printed_counts_disagree(doc: &str) -> Vec<String> {
 }
 
 #[test]
-fn printed_counts_are_checked_against_the_lists_they_count() {
+fn printed_counts_are_checked_against_the_lists_they_count() -> Result<(), TestError> {
     let agreeing = "Totals: CLI 2, MCP 1.\n\n## CLI flags (2)\n\n- `--a`\n- `--b`\n\n## MCP tools (1)\n\n- `t`\n";
     assert_eq!(printed_counts_disagree(agreeing), Vec::<String>::new());
 
@@ -267,11 +281,12 @@ fn printed_counts_are_checked_against_the_lists_they_count() {
         printed_counts_disagree(&stale_total),
         vec!["Totals says CLI 3; its section lists Some(2)".to_string()]
     );
+    Ok(())
 }
 
 #[test]
-fn the_inventory_s_printed_counts_match_its_lists() {
-    let wrong = printed_counts_disagree(&inventory_doc());
+fn the_inventory_s_printed_counts_match_its_lists() -> Result<(), TestError> {
+    let wrong = printed_counts_disagree(&inventory_doc()?);
     assert!(
         wrong.is_empty(),
         "docs/design/surface-capability-inventory.md prints counts its own lists \
@@ -279,4 +294,5 @@ fn the_inventory_s_printed_counts_match_its_lists() {
          cargo build --features full && python3 scripts/capability-matrix.py --write",
         wrong.join("\n  ")
     );
+    Ok(())
 }

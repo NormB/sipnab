@@ -15,9 +15,11 @@
 
 use std::path::Path;
 
-fn mod_rs() -> String {
+type TestError = Box<dyn std::error::Error>;
+
+fn mod_rs() -> Result<String, TestError> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/security/mod.rs");
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()))?)
 }
 
 /// The line directly above `pub mod NAME;`, trimmed, or `None` at the top.
@@ -28,31 +30,34 @@ fn line_above(src: &str, decl: &str) -> Option<String> {
 }
 
 #[test]
-fn destination_is_unconditional_so_a_bare_machine_has_it() {
-    let above = line_above(&mod_rs(), "pub mod destination;").expect("declared");
+fn destination_is_unconditional_so_a_bare_machine_has_it() -> Result<(), TestError> {
+    let above = line_above(&mod_rs()?, "pub mod destination;").ok_or("declared")?;
     assert!(
         !above.starts_with("#["),
         "`pub mod destination;` sits under `{above}`: an attribute there gates a \
          pure module out of the wasm build, and probably stole it from the line below"
     );
+    Ok(())
 }
 
 #[test]
-fn detectors_keeps_its_native_gate() {
-    let above = line_above(&mod_rs(), "pub mod detectors;").expect("declared");
+fn detectors_keeps_its_native_gate() -> Result<(), TestError> {
+    let above = line_above(&mod_rs()?, "pub mod detectors;").ok_or("declared")?;
     assert_eq!(
         above, "#[cfg(feature = \"native\")]",
         "`detectors` reaches `crate::output`, which the wasm build does not compile"
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the reader sees the attribute when one is there.
 #[test]
-fn the_line_reader_reports_the_attribute_above_a_declaration() {
+fn the_line_reader_reports_the_attribute_above_a_declaration() -> Result<(), TestError> {
     let src = "pub mod a;\n#[cfg(feature = \"x\")]\npub mod b;\n";
     assert_eq!(
         line_above(src, "pub mod b;").as_deref(),
         Some("#[cfg(feature = \"x\")]")
     );
     assert_eq!(line_above(src, "pub mod a;"), None, "top of file");
+    Ok(())
 }

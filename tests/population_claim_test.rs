@@ -64,6 +64,7 @@
 
 use std::path::{Path, PathBuf};
 
+use mcp::TestError;
 use serde_json::{Value, json};
 
 #[path = "support/mcp.rs"]
@@ -728,7 +729,7 @@ fn sweep(src: [u8; 4], tag: &str, probes: usize) -> Vec<Vec<u8>> {
 /// that names its endpoint; a 1 ms-per-frame capture cannot express that gap
 /// at all, and without it the relay-asserted stream is simply attributed and
 /// there is no orphan to find.
-fn write_population_capture(path: &Path) {
+fn write_population_capture(path: &Path) -> Result<(), TestError> {
     let mut timed: Vec<(Vec<u8>, u64)> = Vec::new();
     let mut at = 0u64;
     let mut push = |frames: Vec<Vec<u8>>, at: &mut u64| {
@@ -810,11 +811,12 @@ fn write_population_capture(path: &Path) {
         );
     }
 
-    pcap_build::write_pcap_at_or_panic(path, &timed, 1);
+    pcap_build::write_pcap_at(path, &timed, 1)?;
+    Ok(())
 }
 
 /// A smaller capture, so `compare_captures` has a baseline to diff against.
-fn write_baseline_capture(path: &Path) {
+fn write_baseline_capture(path: &Path) -> Result<(), TestError> {
     let mut frames: Vec<Vec<u8>> = Vec::new();
     for n in 0..5 {
         frames.extend(pcap_build::sip_call_frames(
@@ -824,20 +826,21 @@ fn write_baseline_capture(path: &Path) {
             &format!("bcallee{n}"),
         ));
     }
-    pcap_build::write_pcap_or_panic(path, &frames);
+    pcap_build::write_pcap(path, &frames)?;
+    Ok(())
 }
 
 // ── the enumeration, derived from the source ────────────────────────────
 
 /// Every `.rs` file under `src/mcp`, cut to its production half.
-fn mcp_sources() -> Vec<(PathBuf, String)> {
+fn mcp_sources() -> Result<Vec<(PathBuf, String)>, TestError> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
     let mut out = Vec::new();
     for dir in [root.clone(), root.join("tools")] {
-        for entry in std::fs::read_dir(&dir).expect("read src/mcp").flatten() {
+        for entry in std::fs::read_dir(&dir)?.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "rs") {
-                let text = std::fs::read_to_string(&path).expect("read a source file");
+                let text = std::fs::read_to_string(&path)?;
                 let production = source_scan::production_source(&text).to_string();
                 out.push((path, production));
             }
@@ -849,7 +852,7 @@ fn mcp_sources() -> Vec<(PathBuf, String)> {
          wrong place",
         out.len()
     );
-    out
+    Ok(out)
 }
 
 /// The identifier `text` starts with.
@@ -920,8 +923,8 @@ fn page_size_params_structs(
 /// destructures — the same cut the `capture_derived_tools` helper in
 /// `tests/mcp_completeness_test.rs`
 /// makes for the same reason.
-fn page_size_tools() -> Vec<(String, String)> {
-    let sources = mcp_sources();
+fn page_size_tools() -> Result<Vec<(String, String)>, TestError> {
+    let sources = mcp_sources()?;
     let params = page_size_param_names(&sources);
     assert!(
         params.len() >= MIN_PAGE_SIZE_PARAMS,
@@ -961,27 +964,32 @@ fn page_size_tools() -> Vec<(String, String)> {
         }
     }
     found.sort();
-    found
+    Ok(found)
 }
 
 // ── driving the wire ────────────────────────────────────────────────────
 
 /// The probe's arguments with the page size set to `page`.
-fn args_at(probe: &PageProbe, param: &str, page: u32) -> Value {
+fn args_at(probe: &PageProbe, param: &str, page: u32) -> Result<Value, TestError> {
     let text = probe
         .args
         .replace("{ROOT}", ROOT_CALL_ID)
         .replace("{POPULATION}", POPULATION_CAPTURE)
         .replace("{BASELINE}", BASELINE_CAPTURE);
     let mut args: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("{}: probe arguments are not JSON: {e}", probe.tool));
+        .map_err(|e| format!("{}: probe arguments are not JSON: {e}", probe.tool))?;
     args[param] = json!(page);
-    args
+    Ok(args)
 }
 
 /// Call `probe.tool` at `page` rows and return the parsed payload.
-fn answer_at(session: &mut McpSession, probe: &PageProbe, param: &str, page: u32) -> Value {
-    let reply = session.call_or_panic(probe.tool, args_at(probe, param, page));
+fn answer_at(
+    session: &mut McpSession,
+    probe: &PageProbe,
+    param: &str,
+    page: u32,
+) -> Result<Value, TestError> {
+    let reply = session.call(probe.tool, args_at(probe, param, page)?)?;
     assert_ne!(
         reply["result"]["isError"],
         json!(true),
@@ -995,9 +1003,9 @@ fn answer_at(session: &mut McpSession, probe: &PageProbe, param: &str, page: u32
     );
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("{}: no text content block in {reply}", probe.tool));
-    serde_json::from_str(text)
-        .unwrap_or_else(|e| panic!("{}: payload is not JSON: {e}\n{text}", probe.tool))
+        .ok_or_else(|| format!("{}: no text content block in {reply}", probe.tool))?;
+    Ok(serde_json::from_str(text)
+        .map_err(|e| format!("{}: payload is not JSON: {e}\n{text}", probe.tool))?)
 }
 
 /// Compare the parts of a nested page's elements that describe the capture.
@@ -1010,19 +1018,19 @@ fn compare_nested_elements(
     small: &[Value],
     large: &[Value],
     param: &str,
-) -> usize {
+) -> Result<usize, TestError> {
     let mut compared = 0usize;
     for (index, (small_el, large_el)) in small.iter().zip(large).enumerate() {
         let inner = |el: &Value, page: u32| {
-            el[nested.rows].as_array().map(Vec::len).unwrap_or_else(|| {
-                panic!(
+            el[nested.rows].as_array().map(Vec::len).ok_or_else(|| {
+                format!(
                     "{}: element {index} has no `{}` array at {param}={page}: {el}",
                     probe.tool, nested.rows
                 )
             })
         };
-        let small_len = inner(small_el, SMALL_PAGE);
-        let large_len = inner(large_el, LARGE_PAGE);
+        let small_len = inner(small_el, SMALL_PAGE)?;
+        let large_len = inner(large_el, LARGE_PAGE)?;
         assert!(
             small_len < large_len,
             "{}: element {index} returned {small_len} row(s) at \
@@ -1034,7 +1042,7 @@ fn compare_nested_elements(
 
         let mut keys: Vec<&String> = small_el
             .as_object()
-            .unwrap_or_else(|| panic!("{}: element {index} is not an object", probe.tool))
+            .ok_or_else(|| format!("{}: element {index} is not an object", probe.tool))?
             .keys()
             .collect();
         for key in large_el.as_object().into_iter().flat_map(|o| o.keys()) {
@@ -1059,7 +1067,7 @@ fn compare_nested_elements(
             );
         }
     }
-    compared
+    Ok(compared)
 }
 
 /// The `(rows returned, the object that has to disclose the cut)` pairs one
@@ -1097,36 +1105,36 @@ fn discloses_a_cut(subject: &Value, rows: usize) -> bool {
 ///
 /// The directory is returned because dropping it deletes the capture out from
 /// under the running server.
-fn loaded_session() -> (tempfile::TempDir, McpSession) {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn loaded_session() -> Result<(tempfile::TempDir, McpSession), TestError> {
+    let dir = tempfile::tempdir()?;
     let capture = dir.path().join(POPULATION_CAPTURE);
-    write_population_capture(&capture);
-    write_baseline_capture(&dir.path().join(BASELINE_CAPTURE));
+    write_population_capture(&capture)?;
+    write_baseline_capture(&dir.path().join(BASELINE_CAPTURE))?;
 
     let root = dir.path().to_string_lossy().into_owned();
-    let session = McpSession::start_or_panic(
-        capture.to_str().expect("utf-8 capture path"),
+    let session = McpSession::start(
+        capture.to_str().ok_or("utf-8 capture path")?,
         // `--kill-scanner` arms the one detector this fixture trips, so
         // `security_findings` has a population rather than an empty list that
         // would make its comparison vacuous. `--mcp-file-root` is what lets
         // `compare_captures` reach the two files.
         &["--kill-scanner", "--mcp-file-root", &root],
-    );
-    (dir, session)
+    )?;
+    Ok((dir, session))
 }
 
 /// The page-size parameter derived for `tool`.
-fn param_for(derived: &[(String, String)], tool: &str) -> String {
-    derived
+fn param_for(derived: &[(String, String)], tool: &str) -> Result<String, TestError> {
+    Ok(derived
         .iter()
         .find(|(t, _)| t == tool)
         .map(|(_, p)| p.clone())
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "{tool} is probed here and no page-size parameter was derived \
                  for it from src/mcp"
             )
-        })
+        })?)
 }
 
 // ── the derivation is real, and the table matches it ────────────────────
@@ -1138,8 +1146,8 @@ fn param_for(derived: &[(String, String)], tool: &str) -> String {
 /// tool nobody is comparing, which is how this gate would go stale the day one
 /// is added.
 #[test]
-fn the_page_size_surface_is_derived_and_fully_probed() {
-    let derived = page_size_tools();
+fn the_page_size_surface_is_derived_and_fully_probed() -> Result<(), TestError> {
+    let derived = page_size_tools()?;
     assert!(
         derived.len() >= MIN_PAGE_SIZE_TOOLS,
         "only {} page-size tool(s) derived from src/mcp: {derived:?}. A \
@@ -1171,13 +1179,14 @@ fn the_page_size_surface_is_derived_and_fully_probed() {
         "these are probed here and the source no longer gives them a page-size \
          parameter: {stale:?}"
     );
+    Ok(())
 }
 
 /// Every probed tool is a tool the server really registers.
 #[test]
-fn every_probed_tool_is_registered() {
-    let (_dir, mut session) = loaded_session();
-    let registered = session.list_tools_or_panic();
+fn every_probed_tool_is_registered() -> Result<(), TestError> {
+    let (_dir, mut session) = loaded_session()?;
+    let registered = session.list_tools()?;
     assert!(
         registered.len() >= 40,
         "only {} tools registered; tools/list stopped answering",
@@ -1190,6 +1199,7 @@ fn every_probed_tool_is_registered() {
             probe.tool
         );
     }
+    Ok(())
 }
 
 // ── the class ───────────────────────────────────────────────────────────
@@ -1200,31 +1210,31 @@ fn every_probed_tool_is_registered() {
 /// property is the same property: the rows are the caller's business and the
 /// population is not.
 #[test]
-fn a_page_size_never_moves_a_capture_wide_claim() {
-    let derived = page_size_tools();
-    let (_dir, mut session) = loaded_session();
+fn a_page_size_never_moves_a_capture_wide_claim() -> Result<(), TestError> {
+    let derived = page_size_tools()?;
+    let (_dir, mut session) = loaded_session()?;
 
     let mut compared = 0usize;
     for probe in PROBES {
-        let param = param_for(&derived, probe.tool);
-        let small = answer_at(&mut session, probe, &param, SMALL_PAGE);
-        let large = answer_at(&mut session, probe, &param, LARGE_PAGE);
+        let param = param_for(&derived, probe.tool)?;
+        let small = answer_at(&mut session, probe, &param, SMALL_PAGE)?;
+        let large = answer_at(&mut session, probe, &param, LARGE_PAGE)?;
 
         // The precondition, asserted rather than assumed. Without it a fixture
         // that ran out of rows would make both calls return the same page and
         // this comparison would pass having compared a document to itself.
-        let small_page = small.get(probe.page).unwrap_or_else(|| {
-            panic!(
+        let small_page = small.get(probe.page).ok_or_else(|| {
+            format!(
                 "{}: no `{}` in the answer at {param}={SMALL_PAGE}: {small}",
                 probe.tool, probe.page
             )
-        });
-        let large_page = large.get(probe.page).unwrap_or_else(|| {
-            panic!(
+        })?;
+        let large_page = large.get(probe.page).ok_or_else(|| {
+            format!(
                 "{}: no `{}` in the answer at {param}={LARGE_PAGE}: {large}",
                 probe.tool, probe.page
             )
-        });
+        })?;
         assert_ne!(
             small_page, large_page,
             "{}: {param}={SMALL_PAGE} returned the same `{}` as \
@@ -1234,10 +1244,11 @@ fn a_page_size_never_moves_a_capture_wide_claim() {
         );
         let (Some(small_rows), Some(large_rows)) = (small_page.as_array(), large_page.as_array())
         else {
-            panic!(
+            return Err(format!(
                 "{}: `{}` is not an array at both page sizes",
                 probe.tool, probe.page
             )
+            .into());
         };
         let mut nested_compared = 0usize;
         match probe.nested {
@@ -1262,13 +1273,13 @@ fn a_page_size_never_moves_a_capture_wide_claim() {
                     nested.note
                 );
                 nested_compared =
-                    compare_nested_elements(probe, nested, small_rows, large_rows, &param);
+                    compare_nested_elements(probe, nested, small_rows, large_rows, &param)?;
             }
         }
 
         let mut keys: Vec<&String> = small
             .as_object()
-            .unwrap_or_else(|| panic!("{}: the answer is not an object", probe.tool))
+            .ok_or_else(|| format!("{}: the answer is not an object", probe.tool))?
             .keys()
             .collect();
         for key in large.as_object().into_iter().flat_map(|o| o.keys()) {
@@ -1317,6 +1328,7 @@ fn a_page_size_never_moves_a_capture_wide_claim() {
          checking almost nothing",
         PROBES.len()
     );
+    Ok(())
 }
 
 /// Every named exception is a real one: it only moves on a page that says it
@@ -1327,14 +1339,14 @@ fn a_page_size_never_moves_a_capture_wide_claim() {
 /// disclosure that rows were withheld — otherwise a caller cannot tell a short
 /// page from a small population, and the excuse is doing the defect's work.
 #[test]
-fn a_page_that_withheld_rows_says_so() {
-    let derived = page_size_tools();
-    let (_dir, mut session) = loaded_session();
+fn a_page_that_withheld_rows_says_so() -> Result<(), TestError> {
+    let derived = page_size_tools()?;
+    let (_dir, mut session) = loaded_session()?;
 
     let mut checked = 0usize;
     for probe in PROBES {
-        let param = param_for(&derived, probe.tool);
-        let small = answer_at(&mut session, probe, &param, SMALL_PAGE);
+        let param = param_for(&derived, probe.tool)?;
+        let small = answer_at(&mut session, probe, &param, SMALL_PAGE)?;
         let subjects = disclosure_subjects(probe, &small);
         assert!(
             !subjects.is_empty(),
@@ -1360,6 +1372,7 @@ fn a_page_that_withheld_rows_says_so() {
          probes; every probe has to offer at least one",
         PROBES.len()
     );
+    Ok(())
 }
 
 // ── the pin for the instance ────────────────────────────────────────────
@@ -1373,15 +1386,13 @@ fn a_page_that_withheld_rows_says_so() {
 /// placement, because a fixture whose relay orphan happens to sort first would
 /// pass against the buggy accumulator and say nothing.
 #[test]
-fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
-    let (_dir, mut session) = loaded_session();
+fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() -> Result<(), TestError> {
+    let (_dir, mut session) = loaded_session()?;
 
-    let whole = mcp::ok_payload_or_panic(
-        &session.call_or_panic("reconcile_orphans", json!({"limit": LARGE_PAGE})),
-    );
+    let whole = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": LARGE_PAGE}))?)?;
     let orphans = whole["orphans"]
         .as_array()
-        .unwrap_or_else(|| panic!("no orphans array: {whole}"));
+        .ok_or_else(|| format!("no orphans array: {whole}"))?;
     assert!(
         orphans.len() >= MIN_ORPHANS,
         "the fixture holds only {} orphan(s); with fewer than {MIN_ORPHANS} \
@@ -1397,13 +1408,13 @@ fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
     let relay_at = orphans
         .iter()
         .position(|o| o["reason"] == json!(RELAY_ASSERTED))
-        .unwrap_or_else(|| {
-            panic!(
+        .ok_or_else(|| {
+            format!(
                 "no orphan is `{RELAY_ASSERTED}`, so the fixture never got a \
                  relay assertion into the store and this pin would pass \
                  against the defect: {whole}"
             )
-        });
+        })?;
     assert!(
         relay_at >= SMALL_PAGE as usize,
         "the relay-asserted orphan is at index {relay_at}, which is ON the \
@@ -1411,12 +1422,10 @@ fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
          and this test would prove nothing."
     );
 
-    let page = mcp::ok_payload_or_panic(
-        &session.call_or_panic("reconcile_orphans", json!({"limit": SMALL_PAGE})),
-    );
+    let page = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": SMALL_PAGE}))?)?;
     let rows = page["orphans"]
         .as_array()
-        .unwrap_or_else(|| panic!("no orphans array: {page}"));
+        .ok_or_else(|| format!("no orphans array: {page}"))?;
     assert_eq!(
         rows.len(),
         SMALL_PAGE as usize,
@@ -1446,6 +1455,7 @@ fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
         "the count of orphans is a fact about the capture, not about the \
          page: {page}"
     );
+    Ok(())
 }
 
 /// A fix that always says `true` is no fix. A capture nobody asked about must
@@ -1456,8 +1466,8 @@ fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
 /// other way, and it would read as a relay having answered for a capture where
 /// none was ever consulted.
 #[test]
-fn reconcile_orphans_does_not_invent_a_consultation() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn reconcile_orphans_does_not_invent_a_consultation() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let capture = dir.path().join("no-relay.pcap");
 
     // The same orphan media, and no control message naming any of it.
@@ -1479,13 +1489,11 @@ fn reconcile_orphans_does_not_invent_a_consultation() {
             at += 1_000;
         }
     }
-    pcap_build::write_pcap_at_or_panic(&capture, &timed, 1);
+    pcap_build::write_pcap_at(&capture, &timed, 1)?;
 
-    let mut session = McpSession::start_or_panic(capture.to_str().expect("utf-8 path"), &[]);
+    let mut session = McpSession::start(capture.to_str().ok_or("utf-8 path")?, &[])?;
     for page in [SMALL_PAGE, LARGE_PAGE] {
-        let answer = mcp::ok_payload_or_panic(
-            &session.call_or_panic("reconcile_orphans", json!({"limit": page})),
-        );
+        let answer = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": page}))?)?;
         assert!(
             answer["total_orphans"].as_u64().unwrap_or_default() >= MIN_ORPHANS as u64,
             "this capture is nothing but orphans and the tool found none: {answer}"
@@ -1497,4 +1505,5 @@ fn reconcile_orphans_does_not_invent_a_consultation() {
              would dress an unanswered question as an answered one: {answer}"
         );
     }
+    Ok(())
 }

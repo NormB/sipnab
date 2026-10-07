@@ -26,6 +26,10 @@ use sipnab::output::vcon::{
 };
 use sipnab::sip::dialog_store::DialogStore;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Path to a checked-in capture fixture.
 fn fixture(name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(format!(
@@ -42,7 +46,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// The STORE is returned rather than the dialog: `SipDialog` is deliberately
 /// not `Clone` (it owns every retained message), so a borrow is the only way
 /// out of the store that does not copy a ladder.
-fn capture_of(capture: &str) -> (DialogStore, String) {
+fn capture_of(capture: &str) -> Result<(DialogStore, String), TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -74,16 +78,16 @@ fn capture_of(capture: &str) -> (DialogStore, String) {
         .iter()
         .next()
         .map(|d| d.call_id.clone())
-        .expect("the fixture carries at least one dialog");
-    (store, call_id)
+        .ok_or("the fixture carries at least one dialog")?;
+    Ok((store, call_id))
 }
 
 /// A dialog off a real capture exports a container with every part Phase 1
 /// promises, reachable entirely through the public API.
 #[test]
-fn a_real_capture_exports_a_complete_signaling_only_container() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn a_real_capture_exports_a_complete_signaling_only_container() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts {
         frames_read: 42,
         ..CaptureFacts::default()
@@ -99,8 +103,11 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
         },
     );
 
-    let json = vcon.to_json().expect("a container serializes");
-    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let json = vcon
+        .to_json()
+        .map_err(|e| format!("a container serializes: {e}"))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("valid JSON: {e}"))?;
 
     assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
     // `CC` rides beside `sip-signaling` because `Party.role` is a CC-extension
@@ -113,7 +120,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     // Parties: the observed two, then the observer. A `name` may appear, and
     // `validation: "none"` is what keeps it readable as what a header said
     // rather than as an identity anyone established.
-    let parties = v["parties"].as_array().expect("parties");
+    let parties = v["parties"].as_array().ok_or("parties")?;
     assert_eq!(parties.len(), 3);
     for party in parties {
         assert_eq!(party["validation"], "none");
@@ -135,7 +142,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     assert_eq!(v["dialog"][0]["sip_call_id"], dialog.call_id);
 
     // Both attachments, both attributed to the observer.
-    let attachments = v["attachments"].as_array().expect("attachments");
+    let attachments = v["attachments"].as_array().ok_or("attachments")?;
     assert_eq!(attachments.len(), 2);
     for attachment in attachments {
         assert_eq!(attachment["party"], 2);
@@ -143,7 +150,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     assert_eq!(attachments[0]["purpose"], MESSAGE_TRACE_PURPOSE);
     assert_eq!(attachments[1]["purpose"], COMPLETENESS_PURPOSE);
     assert_eq!(
-        body_of(&attachments[0])["messages"]
+        body_of(&attachments[0])?["messages"]
             .as_array()
             .map(Vec::len)
             .unwrap_or_default(),
@@ -154,8 +161,8 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     // One report, carrying the caveat the attachment carries.
     assert_eq!(v["analysis"].as_array().map(Vec::len), Some(1));
     assert_eq!(
-        body_of(&v["analysis"][0])["capture_completeness"],
-        body_of(&attachments[1]),
+        body_of(&v["analysis"][0])?["capture_completeness"],
+        body_of(&attachments[1])?,
         "the two completeness surfaces describe one capture and must agree"
     );
 
@@ -177,7 +184,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
     // dialog so a store can find the container by an identifier an operator
     // has, and it must carry no verdict about the call -- those belong on the
     // two completeness surfaces asserted above.
-    let subject = v["subject"].as_str().expect("a subject is present");
+    let subject = v["subject"].as_str().ok_or("a subject is present")?;
     assert!(
         subject.contains(&dialog.call_id),
         "the subject must identify the dialog it stands for: {subject:?}"
@@ -189,6 +196,7 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
              completeness surfaces: {subject:?}"
         );
     }
+    Ok(())
 }
 
 /// Two exports of one dialog from one capture agree on the uuid, and a
@@ -198,9 +206,9 @@ fn a_real_capture_exports_a_complete_signaling_only_container() {
 /// consumer deduplicating on `uuid` depends on, and the unit test proves it
 /// only for a hand-built fixture whose `created_at` is a literal.
 #[test]
-fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let export = |capture_id: &str| {
         export_dialog(
@@ -222,6 +230,7 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
         export("a-different-capture.pcap"),
         "one dialog observed in two captures must not share an identifier"
     );
+    Ok(())
 }
 
 /// A `json`-encoded body, parsed.
@@ -230,9 +239,9 @@ fn re_exporting_one_dialog_from_one_capture_keeps_its_identifier() {
 /// than indexing a `Value` that is not an object. The conserver's own model
 /// says the same in a comment: a caller handing it a dict gets it JSON-encoded
 /// before anything else touches the attachment.
-fn body_of(node: &serde_json::Value) -> serde_json::Value {
+fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
     let text = node["body"]
         .as_str()
-        .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
+        .ok_or_else(|| format!("a json body must be a string: {node}"))?;
+    Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
 }

@@ -53,6 +53,10 @@ use sipnab::rtp::parser::RtpHeader;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// The Call-ID the proxy assigned. One call, three hosts.
 const CALL_ID: &str = "fanout-1@proxy.example";
 /// The relay the proxy steered this call to. Its address appears in the SDP.
@@ -161,7 +165,12 @@ fn media(dst: Ipv4Addr, dst_port: u16, ssrc: u32) -> (ParsedPacket, RtpHeader) {
 }
 
 /// Feed the proxy's node the INVITE, the way the capture path would.
-fn proxy_sees_the_invite(node: &Node, call_id: &str, relay: Ipv4Addr, port: u16) {
+fn proxy_sees_the_invite(
+    node: &Node,
+    call_id: &str,
+    relay: Ipv4Addr,
+    port: u16,
+) -> Result<(), TestError> {
     let pp = packet(invite_with_sdp(call_id, relay, port), 5060, relay, 5060);
     let msg = sipnab::sip::parser::parse_sip(
         &pp.payload,
@@ -172,8 +181,9 @@ fn proxy_sees_the_invite(node: &Node, call_id: &str, relay: Ipv4Addr, port: u16)
         pp.dst_port,
         pp.transport,
     )
-    .expect("the fixture must parse as SIP, or this test proves nothing");
+    .map_err(|e| format!("the fixture must parse as SIP, or this test proves nothing: {e}"))?;
     node.dialogs.write().process_message(msg);
+    Ok(())
 }
 
 /// Register a relay-allocated endpoint and then land media on it.
@@ -233,9 +243,9 @@ fn relay_media(port: u16) -> sipnab::sip::sdp::SdpMedia {
 /// A proxy that appeared to hold streams would send an operator looking for
 /// audio on a host that only ever saw SDP.
 #[test]
-fn the_proxy_node_holds_the_signaling_and_no_media() {
+fn the_proxy_node_holds_the_signaling_and_no_media() -> Result<(), TestError> {
     let proxy = Node::new();
-    proxy_sees_the_invite(&proxy, CALL_ID, RELAY_A, RELAY_A_PORT);
+    proxy_sees_the_invite(&proxy, CALL_ID, RELAY_A, RELAY_A_PORT)?;
 
     assert!(
         proxy.holds_dialog(CALL_ID),
@@ -247,6 +257,7 @@ fn the_proxy_node_holds_the_signaling_and_no_media() {
         "the proxy is not in the media path -- reporting streams here would \
          send an operator looking for audio on a host that only saw SDP"
     );
+    Ok(())
 }
 
 /// Exactly one relay claims the call, and the other says so.
@@ -256,7 +267,7 @@ fn the_proxy_node_holds_the_signaling_and_no_media() {
 /// if neither did, the media would be unattributable on every host and the
 /// call would look like it had none.
 #[test]
-fn exactly_one_relay_holds_the_call_and_the_other_does_not() {
+fn exactly_one_relay_holds_the_call_and_the_other_does_not() -> Result<(), TestError> {
     let relay_a = Node::new();
     let relay_b = Node::new();
 
@@ -292,6 +303,7 @@ fn exactly_one_relay_holds_the_call_and_the_other_does_not() {
         "relay B must be carrying its own traffic, or the assertion above \
          passes for the wrong reason"
     );
+    Ok(())
 }
 
 /// The proxy's SDP names the relay to ask, so nine hosts stay unqueried.
@@ -301,12 +313,12 @@ fn exactly_one_relay_holds_the_call_and_the_other_does_not() {
 /// one host that can have the media, because the `c=` line IS the rtpengine
 /// the proxy steered the call to.
 #[test]
-fn the_proxy_sdp_names_which_relay_to_ask() {
+fn the_proxy_sdp_names_which_relay_to_ask() -> Result<(), TestError> {
     let proxy = Node::new();
-    proxy_sees_the_invite(&proxy, CALL_ID, RELAY_A, RELAY_A_PORT);
+    proxy_sees_the_invite(&proxy, CALL_ID, RELAY_A, RELAY_A_PORT)?;
 
     let ds = proxy.dialogs.read();
-    let dialog = ds.get(CALL_ID).expect("the proxy holds the dialog");
+    let dialog = ds.get(CALL_ID).ok_or("the proxy holds the dialog")?;
     let streams: Vec<&sipnab::rtp::stream::RtpStream> = Vec::new();
     let diagnosis = sipnab::rtp::diagnosis::MediaDiagnosis::default();
     let json = sipnab::output::json::dialog_to_json(
@@ -315,7 +327,8 @@ fn the_proxy_sdp_names_which_relay_to_ask() {
         &diagnosis,
         sipnab::rtp::quality::MosDelay::unknown(),
     );
-    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    let v: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("valid JSON: {e}"))?;
 
     let first = &v["sdp_timeline"][0];
     assert_eq!(
@@ -334,4 +347,5 @@ fn the_proxy_sdp_names_which_relay_to_ask() {
         RELAY_B.to_string(),
         "the routing key must name the relay that has the call, not any relay"
     );
+    Ok(())
 }

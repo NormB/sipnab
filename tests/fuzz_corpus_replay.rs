@@ -138,6 +138,8 @@ fn sdp_seeds() -> Vec<Vec<u8>> {
 mod fuzz;
 use fuzz::Rng;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Mutate a seed by flipping/overwriting/truncating bytes — deterministic.
 ///
 /// Argument order matches `smoke_fuzz_test.rs`'s `mutate` on purpose. The two
@@ -182,17 +184,18 @@ fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
 /// Validates the validator: `ran_without_panic` reports a deliberately
 /// panicking closure as `Err` and a clean closure as `Ok`.
 #[test]
-fn harness_actually_catches_a_panic() {
+fn harness_actually_catches_a_panic() -> Result<(), TestError> {
     // validate the validator: a panicking closure MUST be reported as a failure.
     assert!(ran_without_panic("boom", || panic!("deliberate")).is_err());
     // and a clean closure must pass.
     assert!(ran_without_panic("ok", || {}).is_ok());
+    Ok(())
 }
 
 /// None of the four parsers (SIP/RTP/RTCP on every SIP seed, SDP on the SDP
 /// seeds) panics on the fixed adversarial seed set.
 #[test]
-fn parsers_never_panic_on_adversarial_seeds() {
+fn parsers_never_panic_on_adversarial_seeds() -> Result<(), TestError> {
     let mut failures = Vec::new();
     for (i, seed) in adversarial_seeds().iter().enumerate() {
         let s = seed.clone();
@@ -221,12 +224,13 @@ fn parsers_never_panic_on_adversarial_seeds() {
         }
     }
     assert!(failures.is_empty(), "parsers panicked on: {failures:?}");
+    Ok(())
 }
 
 /// ~20k deterministic xorshift mutations (5000 rounds × 4 parsers) of the seed
 /// set never panic; fails fast on the first crashing input class.
 #[test]
-fn parsers_never_panic_on_mutation_sweep() {
+fn parsers_never_panic_on_mutation_sweep() -> Result<(), TestError> {
     // ~20k deterministic mutations across all four parsers from the seed set.
     let mut rng = Rng::new(0x9E3779B97F4A7C15);
     let seeds: Vec<Vec<u8>> = adversarial_seeds().into_iter().chain(sdp_seeds()).collect();
@@ -264,4 +268,5 @@ fn parsers_never_panic_on_mutation_sweep() {
         failures.is_empty(),
         "mutation sweep crashed on: {failures:?}"
     );
+    Ok(())
 }

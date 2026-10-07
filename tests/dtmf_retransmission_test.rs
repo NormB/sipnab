@@ -17,8 +17,12 @@
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap_or_panic};
+use pcap_build::{udp_frame, write_pcap};
 use std::process::Command;
+
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
 
 /// An RTP packet carrying an RFC 4733 telephone-event payload.
 ///
@@ -37,26 +41,25 @@ fn telephone_event(seq: u16, rtp_ts: u32, event: u8, end: bool, duration: u16) -
 }
 
 /// Count the DTMF lines sipnab traces for a capture.
-fn dtmf_lines(frames: &[Vec<u8>]) -> usize {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn dtmf_lines(frames: &[Vec<u8>]) -> Result<usize, TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("dtmf.pcap");
-    write_pcap_or_panic(&pcap, frames);
+    write_pcap(&pcap, frames)?;
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-t", "-I"])
         .arg(&pcap)
-        .output()
-        .expect("sipnab runs");
+        .output()?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    text.lines().filter(|l| l.contains("DTMF digit")).count()
+    Ok(text.lines().filter(|l| l.contains("DTMF digit")).count())
 }
 
 /// Three retransmissions of one end packet report one keypress.
 #[test]
-fn one_keypress_sent_three_times_is_reported_once() {
+fn one_keypress_sent_three_times_is_reported_once() -> Result<(), TestError> {
     // 20 ms updates, then the end packet three times per §2.5.1.4 — identical
     // SSRC, RTP timestamp and event code, exactly as the RFC requires.
     let mut frames = Vec::new();
@@ -66,7 +69,7 @@ fn one_keypress_sent_three_times_is_reported_once() {
             [192, 0, 2, 2],
             40000,
             40002,
-            &telephone_event(u16::try_from(i).expect("fits"), 160_000, 7, false, *dur),
+            &telephone_event(u16::try_from(i)?, 160_000, 7, false, *dur),
         ));
     }
     for i in 3..6u16 {
@@ -80,10 +83,11 @@ fn one_keypress_sent_three_times_is_reported_once() {
     }
 
     assert_eq!(
-        dtmf_lines(&frames),
+        dtmf_lines(&frames)?,
         1,
         "RFC 4733 2.5.1.4 sends the end packet three times; that is one keypress"
     );
+    Ok(())
 }
 
 /// Two genuinely different keypresses are still two.
@@ -92,7 +96,7 @@ fn one_keypress_sent_three_times_is_reported_once() {
 /// real digits would silently lose dialed input, which is worse than
 /// over-counting it.
 #[test]
-fn two_keypresses_are_still_two() {
+fn two_keypresses_are_still_two() -> Result<(), TestError> {
     let mut frames = Vec::new();
     for (i, (ts, ev)) in [(160_000u32, 7u8), (176_000, 1)].iter().enumerate() {
         // Each digit's end packet, sent three times as the RFC requires.
@@ -102,10 +106,11 @@ fn two_keypresses_are_still_two() {
                 [192, 0, 2, 2],
                 40000,
                 40002,
-                &telephone_event(u16::try_from(i).expect("fits") * 3 + r, *ts, *ev, true, 640),
+                &telephone_event(u16::try_from(i)? * 3 + r, *ts, *ev, true, 640),
             ));
         }
     }
 
-    assert_eq!(dtmf_lines(&frames), 2, "two digits pressed, two reported");
+    assert_eq!(dtmf_lines(&frames)?, 2, "two digits pressed, two reported");
+    Ok(())
 }

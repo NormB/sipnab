@@ -27,6 +27,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Ignored tests that no CI runner can execute, with the reason.
 ///
 /// Each entry is `(file, test name, why no CI step runs it)`. An entry that
@@ -172,21 +174,18 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 /// Every workflow's `--ignored` targets, read off the real files.
-fn tree_ci_targets() -> Vec<String> {
+fn tree_ci_targets() -> Result<Vec<String>, TestError> {
     let mut targets = Vec::new();
     let dir = repo().join(".github/workflows");
-    for entry in std::fs::read_dir(&dir)
-        .expect("read .github/workflows")
-        .flatten()
-    {
-        let text = std::fs::read_to_string(entry.path()).expect("read workflow");
+    for entry in std::fs::read_dir(&dir)?.flatten() {
+        let text = std::fs::read_to_string(entry.path())?;
         targets.extend(ci_ignored_targets(&text));
     }
-    targets
+    Ok(targets)
 }
 
 #[test]
-fn the_scanner_reads_reasons_and_test_names() {
+fn the_scanner_reads_reasons_and_test_names() -> Result<(), TestError> {
     let src = "#[test]\n#[ignore = \"needs tmux\"]\nfn one() {}\n\n#[test]\n#[ignore] // slow\npub fn two() {}\n";
     assert_eq!(
         ignores_in(src),
@@ -203,45 +202,51 @@ fn the_scanner_reads_reasons_and_test_names() {
             },
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn an_empty_reason_is_no_reason() {
+fn an_empty_reason_is_no_reason() -> Result<(), TestError> {
     let src = "#[ignore = \"  \"]\nfn blank() {}\n";
     assert_eq!(ignores_in(src)[0].reason, None);
+    Ok(())
 }
 
 #[test]
-fn a_mention_in_a_string_or_comment_is_not_an_attribute() {
+fn a_mention_in_a_string_or_comment_is_not_an_attribute() -> Result<(), TestError> {
     let src = "let s = \"#[ignore]\";\n// #[ignore] is how\n/// `#[ignore]`d child\nfn f() {}\n";
     assert!(ignores_in(src).is_empty());
+    Ok(())
 }
 
 #[test]
-fn ci_targets_come_only_from_ignored_invocations() {
+fn ci_targets_come_only_from_ignored_invocations() -> Result<(), TestError> {
     let wf = "      run: |\n          cargo test --features tui --test tui_e2e_test -- --ignored\n          cargo test --test plain_test\n          cargo test --test inc_test -- --include-ignored\n";
     assert_eq!(ci_ignored_targets(wf), vec!["tui_e2e_test", "inc_test"]);
+    Ok(())
 }
 
 #[test]
-fn a_bare_ignore_is_refused_even_when_ci_runs_it() {
+fn a_bare_ignore_is_refused_even_when_ci_runs_it() -> Result<(), TestError> {
     let src = "#[ignore]\nfn e2e() {}\n";
     let ig = &ignores_in(src)[0];
     let v = violation("tests/e2e_test.rs", src, ig, &["e2e_test".into()], &[]);
     assert!(v.is_some_and(|m| m.contains("bare")));
+    Ok(())
 }
 
 #[test]
-fn an_ignore_nothing_runs_is_refused() {
+fn an_ignore_nothing_runs_is_refused() -> Result<(), TestError> {
     let src = "#[ignore = \"needs root\"]\nfn orphan() {}\n";
     let ig = &ignores_in(src)[0];
     assert!(violation("tests/x_test.rs", src, ig, &["other_test".into()], &[]).is_some());
     // A `src/` unit test is not covered by a `--test` target of the same stem.
     assert!(violation("src/x_test.rs", src, ig, &["x_test".into()], &[]).is_some());
+    Ok(())
 }
 
 #[test]
-fn each_runner_clears_a_reasoned_ignore() {
+fn each_runner_clears_a_reasoned_ignore() -> Result<(), TestError> {
     let src = "#[ignore = \"child\"]\nfn role() {}\n";
     let ig = &ignores_in(src)[0];
     assert_eq!(
@@ -260,12 +265,13 @@ fn each_runner_clears_a_reasoned_ignore() {
     );
     let spawner = format!("{src}run(\"role\");\ncmd.args([\"--exact\", \"--ignored\"]);\n");
     assert_eq!(violation("tests/a_test.rs", &spawner, ig, &[], &[]), None);
+    Ok(())
 }
 
 #[test]
-fn every_ignore_in_the_tree_has_a_reason_and_a_runner() {
+fn every_ignore_in_the_tree_has_a_reason_and_a_runner() -> Result<(), TestError> {
     let root = repo();
-    let ci = tree_ci_targets();
+    let ci = tree_ci_targets()?;
     let mut files = Vec::new();
     rust_files(&root.join("src"), &mut files);
     rust_files(&root.join("tests"), &mut files);
@@ -275,10 +281,9 @@ fn every_ignore_in_the_tree_has_a_reason_and_a_runner() {
     let mut problems = Vec::new();
     let mut ignored_tests = Vec::new();
     for path in &files {
-        let src = std::fs::read_to_string(path).expect("read source");
+        let src = std::fs::read_to_string(path)?;
         let rel = path
-            .strip_prefix(&root)
-            .expect("under the repo")
+            .strip_prefix(&root)?
             .to_string_lossy()
             .replace('\\', "/");
         for ig in ignores_in(&src) {
@@ -313,4 +318,5 @@ fn every_ignore_in_the_tree_has_a_reason_and_a_runner() {
         problems.len(),
         problems.join("\n")
     );
+    Ok(())
 }

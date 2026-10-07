@@ -45,8 +45,7 @@ mod tui_state {
     // the two suites can't drift. File-specific higher-level builders stay
     // below.
     use super::fixtures::{
-        base_ts_or_panic, build_sip, endpoint_a, endpoint_b, make_invite_or_panic,
-        make_response_or_panic,
+        TestError, base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response,
     };
 
     /// Build an `App` preloaded with three INVITE dialogs: `call-1@test`
@@ -55,65 +54,68 @@ mod tui_state {
     ///
     /// # Returns
     /// The `App` with all six messages already processed into its dialog store.
-    fn app_with_three_dialogs() -> App {
-        let t0 = base_ts_or_panic();
+    fn app_with_three_dialogs() -> Result<App, TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
             // Dialog 1: Completed
-            make_invite_or_panic("call-1@test", "1001", "1002", t0),
-            make_response_or_panic(
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_response(
                 "call-1@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(2),
-            ),
+            )?,
             // Dialog 2: Failed
-            make_invite_or_panic("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_response_or_panic(
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5))?,
+            make_response(
                 "call-2@test",
                 503,
                 "Service Unavailable",
                 "INVITE",
                 t0 + TimeDelta::seconds(6),
-            ),
+            )?,
             // Dialog 3: Active (InCall)
-            make_invite_or_panic("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_response_or_panic(
+            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10))?,
+            make_response(
                 "call-3@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(12),
-            ),
+            )?,
         ];
-        App::with_processed_messages(messages)
+        Ok(App::with_processed_messages(messages))
     }
 
     // ── State machine tests ───────────────────────────────────────────
 
     /// A fresh app starts in the `CallList` view.
     #[test]
-    fn initial_view_is_call_list() {
+    fn initial_view_is_call_list() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Tab from the call list switches to the `StreamList` view.
     #[test]
-    fn tab_switches_to_stream_list() {
+    fn tab_switches_to_stream_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         assert_eq!(*app.current_view(), View::StreamList);
+        Ok(())
     }
 
     /// A second Tab from the stream list returns to the call list.
     #[test]
-    fn tab_toggles_back_to_call_list() {
+    fn tab_toggles_back_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         assert_eq!(*app.current_view(), View::StreamList);
         app.handle_key(KeyCode::Tab);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Press a key that should reach the quit path, then answer the
@@ -139,34 +141,37 @@ mod tui_state {
 
     /// Pressing `q` reaches the quit path.
     #[test]
-    fn q_sets_should_quit() {
+    fn q_sets_should_quit() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(!app.should_quit());
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     /// F1 opens the Help view.
     #[test]
-    fn f1_opens_help() {
+    fn f1_opens_help() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// Esc closes Help and returns to the call list.
     #[test]
-    fn esc_from_help_returns_to_call_list() {
+    fn esc_from_help_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1)); // open help
         assert_eq!(*app.current_view(), View::Help);
         app.handle_key(KeyCode::Esc); // close help
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Enter on a populated call list opens `CallFlow` for the selected dialog.
     #[test]
-    fn enter_on_dialog_opens_call_flow() {
-        let mut app = app_with_three_dialogs();
+    fn enter_on_dialog_opens_call_flow() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(*app.current_view(), View::CallList);
         app.handle_key(KeyCode::Enter);
         assert!(
@@ -174,53 +179,58 @@ mod tui_state {
             "expected CallFlow, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     /// Esc from the call flow returns to the call list.
     #[test]
-    fn esc_from_call_flow_returns_to_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn esc_from_call_flow_returns_to_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Enter); // call flow
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Enter with no dialogs is a no-op: the view stays on the call list.
     #[test]
-    fn enter_on_empty_list_stays_in_call_list() {
+    fn enter_on_empty_list_stays_in_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Enter);
         // No dialogs, so Enter does nothing
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// F7 opens the filter popup while the underlying view stays `CallList`.
     #[test]
-    fn f7_opens_filter_popup() {
+    fn f7_opens_filter_popup() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
         // Underlying view is still CallList
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Esc in the filter popup cancels without applying: all 3 dialogs stay visible.
     #[test]
-    fn filter_esc_cancels_without_applying() {
-        let mut app = app_with_three_dialogs();
+    fn filter_esc_cancels_without_applying() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(7)); // open filter popup
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
         app.handle_key(KeyCode::Esc); // cancel
         assert_eq!(app.active_popup(), None);
         assert_eq!(*app.current_view(), View::CallList);
         assert_eq!(app.visible_dialog_count(), 3); // no filter applied
+        Ok(())
     }
 
     /// Typing "1003" into the From field and applying narrows the list to 1 dialog.
     #[test]
-    fn filter_applied_narrows_visible_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn filter_applied_narrows_visible_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
 
         // Open filter, type "1003" into SIP From field, apply
@@ -232,12 +242,13 @@ mod tui_state {
 
         assert_eq!(*app.current_view(), View::CallList);
         assert_eq!(app.visible_dialog_count(), 1); // only dialog with From=1003
+        Ok(())
     }
 
     /// F9 clears an applied filter, restoring all 3 dialogs.
     #[test]
-    fn f9_clears_filter() {
-        let mut app = app_with_three_dialogs();
+    fn f9_clears_filter() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
 
         // Apply filter
         app.handle_key(KeyCode::F(7));
@@ -250,31 +261,34 @@ mod tui_state {
         // F9 clears
         app.handle_key(KeyCode::F(9));
         assert_eq!(app.visible_dialog_count(), 3);
+        Ok(())
     }
 
     /// `s` opens the Statistics view.
     #[test]
-    fn s_opens_statistics_view() {
+    fn s_opens_statistics_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
+        Ok(())
     }
 
     /// Esc closes Statistics back to the call list.
     #[test]
-    fn esc_from_statistics_returns_to_call_list() {
+    fn esc_from_statistics_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// `S` (shifted) opens the relay-statistics view for the relay's globals
     /// (ST8, C1) -- lower-case `s` asks what the capture saw, upper-case asks
     /// what the relay says.
     #[test]
-    fn shift_s_opens_relay_stats_view() {
+    fn shift_s_opens_relay_stats_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         assert_eq!(
@@ -284,12 +298,13 @@ mod tui_state {
                 mode: RelayStatsMode::Counters,
             }
         );
+        Ok(())
     }
 
     /// `s` and `S` open DIFFERENT views: the capture's statistics versus the
     /// relay's. The pairing only helps if the two do not collide.
     #[test]
-    fn lower_s_and_shift_s_open_different_views() {
+    fn lower_s_and_shift_s_open_different_views() -> Result<(), TestError> {
         let mut lower = App::new_test();
         lower.handle_key(KeyCode::Char('s'));
         assert_eq!(*lower.current_view(), View::Statistics);
@@ -297,33 +312,36 @@ mod tui_state {
         let mut upper = App::new_test();
         upper.handle_key(KeyCode::Char('S'));
         assert!(matches!(*upper.current_view(), View::RelayStats { .. }));
+        Ok(())
     }
 
     /// Esc closes the relay-statistics view back to the call list.
     #[test]
-    fn esc_from_relay_stats_returns_to_call_list() {
+    fn esc_from_relay_stats_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         assert!(matches!(*app.current_view(), View::RelayStats { .. }));
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// `S` within the view closes it too, pairing with the `S` that opened it.
     #[test]
-    fn shift_s_within_relay_stats_closes_it() {
+    fn shift_s_within_relay_stats_closes_it() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         assert!(matches!(*app.current_view(), View::RelayStats { .. }));
         app.handle_key(KeyCode::Char('S'));
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// `?` inside the relay-stats view toggles the names mode (C3) rather than
     /// opening the global help overlay -- the view owns the key there. Pressed
     /// again it returns to the counters.
     #[test]
-    fn question_toggles_names_in_relay_stats_not_help() {
+    fn question_toggles_names_in_relay_stats_not_help() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         app.handle_key(KeyCode::Char('?'));
@@ -344,13 +362,14 @@ mod tui_state {
             },
             "? again returns to the counters"
         );
+        Ok(())
     }
 
     /// `H` inside the relay-stats view toggles the holdings mode (ST8) — the
     /// Call-IDs the relay is holding — and, pressed again, returns to the
     /// counters. Holdings is a global set, so it needs no call scope.
     #[test]
-    fn h_toggles_holdings_in_relay_stats() {
+    fn h_toggles_holdings_in_relay_stats() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         app.handle_key(KeyCode::Char('H'));
@@ -371,12 +390,13 @@ mod tui_state {
             },
             "H again returns to the counters"
         );
+        Ok(())
     }
 
     /// `x` opens the TFPS-observe view on the banned-sources facet, and `d`/`b`
     /// switch the facet without leaving the view.
     #[test]
-    fn x_opens_tfps_observe_and_bd_switch_facets() {
+    fn x_opens_tfps_observe_and_bd_switch_facets() -> Result<(), TestError> {
         use sipnab::tui::tfps_observe::TfpsMode;
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('x'));
@@ -403,11 +423,12 @@ mod tui_state {
             },
             "b switches back to the banned sources"
         );
+        Ok(())
     }
 
     /// `a` opens the security-findings view from the call list.
     #[test]
-    fn a_opens_security_findings() {
+    fn a_opens_security_findings() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('a'));
         assert_eq!(
@@ -415,22 +436,24 @@ mod tui_state {
             View::SecurityFindings,
             "a opens the security-findings view"
         );
+        Ok(())
     }
 
     /// `?` still opens Help from an ordinary view -- the relay-stats exception
     /// does not leak.
     #[test]
-    fn question_still_opens_help_from_the_call_list() {
+    fn question_still_opens_help_from_the_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('?'));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// `K` in a GLOBAL relay-stats view is a no-op: there is no call to compare,
     /// so the mode stays on the counters rather than entering a comparison it
     /// cannot answer.
     #[test]
-    fn k_compare_is_a_noop_in_the_global_relay_stats_view() {
+    fn k_compare_is_a_noop_in_the_global_relay_stats_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         app.handle_key(KeyCode::Char('K'));
@@ -442,22 +465,24 @@ mod tui_state {
             },
             "K needs a call; global view stays on counters"
         );
+        Ok(())
     }
 
     /// Esc leaves the stream list for the call list.
     #[test]
-    fn esc_from_stream_list_returns_to_call_list() {
+    fn esc_from_stream_list_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab); // switch to stream list
         assert_eq!(*app.current_view(), View::StreamList);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Enter inside the call flow opens `RawMessage` for the selected message.
     #[test]
-    fn call_flow_enter_opens_raw_message() {
-        let mut app = app_with_three_dialogs();
+    fn call_flow_enter_opens_raw_message() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Enter); // call flow for dialog 1
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         app.handle_key(KeyCode::Enter); // raw message at scroll 0
@@ -466,37 +491,40 @@ mod tui_state {
             "expected RawMessage, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     /// Esc from a raw message opened via the call flow returns to the call flow.
     #[test]
-    fn esc_from_raw_message_returns_to_call_flow() {
-        let mut app = app_with_three_dialogs();
+    fn esc_from_raw_message_returns_to_call_flow() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Enter); // call flow
         app.handle_key(KeyCode::Enter); // raw message
         assert!(matches!(app.current_view(), View::RawMessage { .. }));
         app.handle_key(KeyCode::Esc); // back to call flow
         assert!(matches!(app.current_view(), View::CallFlow(_)));
+        Ok(())
     }
 
     /// `q` quits from the stream list and from the call flow alike.
     #[test]
-    fn q_quits_from_any_view() {
+    fn q_quits_from_any_view() -> Result<(), TestError> {
         // From stream list
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         quit_via(&mut app, KeyCode::Char('q'));
 
         // From call flow
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Enter);
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     /// Filter text like "[invalid" is a literal substring: no error, zero matches.
     #[test]
-    fn regex_metachars_in_filter_are_literal_text() {
-        let mut app = app_with_three_dialogs();
+    fn regex_metachars_in_filter_are_literal_text() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(7)); // open filter
         // Filter fields are literal substrings, never regexes: "[invalid"
         // must not error — it simply matches no From user here.
@@ -507,13 +535,14 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
         assert_eq!(app.status_error(), None, "literal text must not error");
         assert_eq!(app.visible_dialog_count(), 0);
+        Ok(())
     }
 
     /// F9 clears filter and dialog state; re-applying empty filter fields
     /// afterwards is a no-op that keeps all 3 dialogs visible.
     #[test]
-    fn empty_filter_clears_active_filter() {
-        let mut app = app_with_three_dialogs();
+    fn empty_filter_clears_active_filter() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
 
         // Apply a valid filter via SIP From field
         app.handle_key(KeyCode::F(7));
@@ -533,6 +562,7 @@ mod tui_state {
         // Submit empty fields to clear (no-op since already cleared)
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 3);
+        Ok(())
     }
 
     // ── SIP method checkbox set/unset scenarios ──────────────────────────
@@ -543,42 +573,45 @@ mod tui_state {
 
     /// Applying the popup untouched (all methods checked) shows every dialog (regression: it used to show none).
     #[test]
-    fn filter_default_open_apply_shows_all_messages() {
+    fn filter_default_open_apply_shows_all_messages() -> Result<(), TestError> {
         // SIP messages are checked by default → applying with nothing changed
         // shows every dialog (the reported bug was the opposite).
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(7));
         app.handle_key(KeyCode::Enter); // apply with all methods still checked
         assert_eq!(app.active_popup(), None);
         assert_eq!(app.visible_dialog_count(), 3);
+        Ok(())
     }
 
     /// With every method checkbox unchecked, no dialogs are shown.
     #[test]
-    fn filter_uncheck_all_methods_shows_nothing() {
-        let mut app = app_with_three_dialogs();
+    fn filter_uncheck_all_methods_shows_nothing() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.apply_method_filter_for_test([false; 10]);
         assert_eq!(
             app.visible_dialog_count(),
             0,
             "no methods selected → show nothing"
         );
+        Ok(())
     }
 
     /// With only INVITE checked, all three INVITE fixtures remain visible.
     #[test]
-    fn filter_only_invite_checked_shows_invite_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn filter_only_invite_checked_shows_invite_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         let mut methods = [false; 10];
         methods[INVITE_IDX] = true; // only INVITE
         app.apply_method_filter_for_test(methods);
         assert_eq!(app.visible_dialog_count(), 3, "all fixtures are INVITE");
+        Ok(())
     }
 
     /// With every method except INVITE checked, all INVITE fixtures disappear.
     #[test]
-    fn filter_uncheck_invite_hides_invite_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn filter_uncheck_invite_hides_invite_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         let mut methods = [true; 10];
         methods[INVITE_IDX] = false; // everything except INVITE
         app.apply_method_filter_for_test(methods);
@@ -587,12 +620,13 @@ mod tui_state {
             0,
             "INVITE excluded → none of the fixtures match"
         );
+        Ok(())
     }
 
     /// Re-checking all methods after an uncheck-all restores every dialog.
     #[test]
-    fn filter_recheck_all_after_unchecking_shows_all_again() {
-        let mut app = app_with_three_dialogs();
+    fn filter_recheck_all_after_unchecking_shows_all_again() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.apply_method_filter_for_test([false; 10]);
         assert_eq!(app.visible_dialog_count(), 0);
         app.apply_method_filter_for_test([true; 10]);
@@ -601,6 +635,7 @@ mod tui_state {
             3,
             "re-checking all methods shows everything"
         );
+        Ok(())
     }
 
     // ── "All" master checkbox (enable/disable every method at once) ─────
@@ -623,10 +658,10 @@ mod tui_state {
 
     /// The "All" master checkbox toggles every method off then back on; applying then shows all dialogs.
     #[test]
-    fn filter_all_checkbox_disables_then_enables_every_method() {
+    fn filter_all_checkbox_disables_then_enables_every_method() -> Result<(), TestError> {
         // Focus order: the text fields, the "All" master checkbox, then the
         // ten method checkboxes.
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(7));
         for _ in 0..all_focus() {
             app.handle_key(KeyCode::Tab);
@@ -642,11 +677,12 @@ mod tui_state {
         // Applying with everything re-checked shows every dialog.
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 3);
+        Ok(())
     }
 
     /// From a mixed checkbox state, toggling "All" enables every method first.
     #[test]
-    fn filter_all_checkbox_from_mixed_state_enables_all_first() {
+    fn filter_all_checkbox_from_mixed_state_enables_all_first() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         // Uncheck INVITE for a mixed state.
@@ -669,16 +705,17 @@ mod tui_state {
             methods, [true; 10],
             "from a mixed state, All enables everything first"
         );
+        Ok(())
     }
 
     /// The rendered filter popup contains the "All" master checkbox label.
     #[test]
-    fn filter_all_checkbox_is_rendered_in_popup() {
+    fn filter_all_checkbox_is_rendered_in_popup() -> Result<(), TestError> {
         let backend = ratatui::backend::TestBackend::new(80, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut terminal = ratatui::Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
@@ -691,15 +728,16 @@ mod tui_state {
             text.contains("All"),
             "the popup must render the All master checkbox; popup text:\n{text}"
         );
+        Ok(())
     }
 
     /// Via the real key path (F7, 8 Tabs, Space, Enter), unchecking INVITE hides the INVITE dialogs.
     #[test]
-    fn filter_space_toggles_method_via_keys() {
+    fn filter_space_toggles_method_via_keys() -> Result<(), TestError> {
         // Drive the real key path: F7, move focus to the INVITE checkbox, Space
         // to uncheck it, Enter to apply. With INVITE unchecked the INVITE
         // fixtures must disappear.
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(7));
         // Focus starts on text field 0. Tab advances one element at a time:
         // the text fields, the All checkbox, then the method checkboxes.
@@ -713,11 +751,12 @@ mod tui_state {
             0,
             "unchecking INVITE hid the INVITE dialogs"
         );
+        Ok(())
     }
 
     /// Seven Tabs land on right-column checkbox OPTIONS (focus 7) and Space toggles it off.
     #[test]
-    fn filter_right_column_reachable_by_tab_and_toggle() {
+    fn filter_right_column_reachable_by_tab_and_toggle() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         for _ in 0..checkbox_focus(1) {
@@ -735,20 +774,21 @@ mod tui_state {
             !methods[1],
             "Space should toggle OPTIONS (index 1) off; methods={methods:?}"
         );
+        Ok(())
     }
 
     /// A focused right-column checkbox (OPTIONS) renders bold in the popup.
     #[test]
-    fn filter_right_column_focus_renders_bold() {
+    fn filter_right_column_focus_renders_bold() -> Result<(), TestError> {
         use ratatui::style::Modifier;
         let backend = ratatui::backend::TestBackend::new(80, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut terminal = ratatui::Terminal::new(backend)?;
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         for _ in 0..checkbox_focus(1) {
             app.handle_key(KeyCode::Tab); // focus checkbox 1 (OPTIONS, right column)
         }
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         // Collect the text of all BOLD cells (the focus highlight is bold+selected).
         let buf = terminal.backend().buffer();
         let mut bold = String::new();
@@ -764,11 +804,12 @@ mod tui_state {
             bold.contains("OPTIONS"),
             "focused right-column checkbox OPTIONS should render bold; bold cells were: {bold:?}"
         );
+        Ok(())
     }
 
     /// Down from the bottom of the left checkbox column enters the right column instead of skipping to the buttons.
     #[test]
-    fn filter_down_arrow_reaches_second_column() {
+    fn filter_down_arrow_reaches_second_column() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         // Into the checkbox grid: checkbox 0 (REGISTER), just past the All
@@ -794,11 +835,12 @@ mod tui_state {
             checkbox_focus(1),
             "Down from the bottom of column 1 must reach column 2 (OPTIONS)"
         );
+        Ok(())
     }
 
     /// Right arrow moves focus from REGISTER (left column) into OPTIONS (right column).
     #[test]
-    fn filter_right_arrow_reaches_second_column() {
+    fn filter_right_arrow_reaches_second_column() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         // Tab into the checkbox grid: checkbox 0 (REGISTER).
@@ -815,23 +857,25 @@ mod tui_state {
         );
         app.handle_key(KeyCode::Char(' '));
         assert!(!app.filter_focus_and_methods_for_test().1[1]);
+        Ok(())
     }
 
     /// F9 clears a no-methods filter and restores all dialogs.
     #[test]
-    fn filter_f9_clears_method_filter_to_show_all() {
-        let mut app = app_with_three_dialogs();
+    fn filter_f9_clears_method_filter_to_show_all() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.apply_method_filter_for_test([false; 10]);
         assert_eq!(app.visible_dialog_count(), 0);
         app.handle_key(KeyCode::F(9)); // clear filter
         assert_eq!(app.visible_dialog_count(), 3, "F9 clear restores show-all");
+        Ok(())
     }
 
     // ── Filter dialog checkbox grid navigation ─────────────────────────
 
     /// Down walks the checkbox grid row by row: left column, then right column, then the buttons.
     #[test]
-    fn filter_checkbox_down_moves_by_row() {
+    fn filter_checkbox_down_moves_by_row() -> Result<(), TestError> {
         // Layout: 2 columns, 5 rows. idx 0=REGISTER, 1=OPTIONS, 2=INVITE, ...
         // The text fields, then All, then the ten method checkboxes, then the
         // buttons; checkbox_focus(k) names method k's focus index.
@@ -874,11 +918,12 @@ mod tui_state {
         // Down from the bottom of the RIGHT column -> buttons.
         app.handle_key(KeyCode::Down);
         assert_eq!(app.filter_dialog.focused_field(), buttons_focus()); // Filter button
+        Ok(())
     }
 
     /// Right/Left move between the two checkbox columns; Right at the right edge is a no-op.
     #[test]
-    fn filter_checkbox_right_moves_by_column() {
+    fn filter_checkbox_right_moves_by_column() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         for _ in 0..checkbox_focus(0) {
@@ -897,11 +942,12 @@ mod tui_state {
         // Left should go back to REGISTER (idx 0)
         app.handle_key(KeyCode::Left);
         assert_eq!(app.filter_dialog.focused_field(), checkbox_focus(0)); // REGISTER
+        Ok(())
     }
 
     /// Up walks a method row up, then to the All checkbox, then to the last text field.
     #[test]
-    fn filter_checkbox_up_moves_by_row() {
+    fn filter_checkbox_up_moves_by_row() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
         // Navigate to INVITE (idx 2): tab to the grid, then down once
@@ -922,80 +968,87 @@ mod tui_state {
         // Up from All -> the last text field (Before)
         app.handle_key(KeyCode::Up);
         assert_eq!(app.filter_dialog.focused_field(), all_focus() - 1); // Before time field
+        Ok(())
     }
 
     // ── F5 / Ctrl-L — Clear calls ─────────────────────────────────────
 
     /// F5 with nothing check-selected clears every dialog.
     #[test]
-    fn f5_clears_all_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn f5_clears_all_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key(KeyCode::F(5));
         assert_eq!(app.visible_dialog_count(), 0);
+        Ok(())
     }
 
     /// Ctrl-L clears every dialog, same as F5.
     #[test]
-    fn ctrl_l_clears_all_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn ctrl_l_clears_all_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key_with_modifiers(KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
         assert_eq!(app.visible_dialog_count(), 0);
+        Ok(())
     }
 
     /// With one row check-selected, F5 clears only that dialog, leaving 2.
     #[test]
-    fn f5_clears_only_selected_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn f5_clears_only_selected_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
         // Select first dialog (row 0)
         app.handle_key(KeyCode::Char(' ')); // toggle select row 0
         // Clear selected only
         app.handle_key(KeyCode::F(5));
         assert_eq!(app.visible_dialog_count(), 2);
+        Ok(())
     }
 
     // ── F6 / r — Raw message view ─────────────────────────────────────
 
     /// F6 from the call list jumps straight to the `RawMessage` view.
     #[test]
-    fn f6_opens_raw_message_view() {
-        let mut app = app_with_three_dialogs();
+    fn f6_opens_raw_message_view() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(6));
         assert!(
             matches!(app.current_view(), View::RawMessage { .. }),
             "expected RawMessage, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     /// `r` from the call list opens the `RawMessage` view.
     #[test]
-    fn r_opens_raw_message_view() {
-        let mut app = app_with_three_dialogs();
+    fn r_opens_raw_message_view() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('r'));
         assert!(
             matches!(app.current_view(), View::RawMessage { .. }),
             "expected RawMessage, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     // ── F10 / t — Column selector ─────────────────────────────────────
 
     /// F10 opens the call-list column selector.
     #[test]
-    fn f10_opens_column_selector() {
+    fn f10_opens_column_selector() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(!app.call_list_state().column_selector_open);
         app.handle_key(KeyCode::F(10));
         assert!(app.call_list_state().column_selector_open);
+        Ok(())
     }
 
     /// `t` cycles the timestamp mode DeltaPrev, DeltaFirst, Scaled, Absolute, back to DeltaPrev.
     #[test]
-    fn t_cycles_timestamp_mode() {
+    fn t_cycles_timestamp_mode() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
         app.handle_key(KeyCode::Char('t'));
@@ -1006,30 +1059,33 @@ mod tui_state {
         assert_eq!(app.timestamp_mode(), TimestampMode::Absolute);
         app.handle_key(KeyCode::Char('t'));
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
+        Ok(())
     }
 
     /// Enter closes the column selector.
     #[test]
-    fn column_selector_enter_closes() {
+    fn column_selector_enter_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10)); // open
         assert!(app.call_list_state().column_selector_open);
         app.handle_key(KeyCode::Enter); // close
         assert!(!app.call_list_state().column_selector_open);
+        Ok(())
     }
 
     /// Esc closes the column selector.
     #[test]
-    fn column_selector_esc_closes() {
+    fn column_selector_esc_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10));
         app.handle_key(KeyCode::Esc);
         assert!(!app.call_list_state().column_selector_open);
+        Ok(())
     }
 
     /// Space in the column selector toggles the focused column's visibility both ways.
     #[test]
-    fn column_selector_space_toggles_visibility() {
+    fn column_selector_space_toggles_visibility() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10)); // open column selector
         // All columns visible by default
@@ -1038,13 +1094,14 @@ mod tui_state {
         assert!(!app.call_list_state().visible_columns[0]);
         app.handle_key(KeyCode::Char(' ')); // toggle back
         assert!(app.call_list_state().visible_columns[0]);
+        Ok(())
     }
 
     // ── Sort column cycling ───────────────────────────────────────────
 
     /// `>` and `<` cycle the sort column forward and backward (Index, Method, From).
     #[test]
-    fn angle_brackets_cycle_sort_column() {
+    fn angle_brackets_cycle_sort_column() -> Result<(), TestError> {
         use sipnab::tui::call_list::SortColumn;
         let mut app = App::new_test();
         assert_eq!(app.call_list_state().sort_column(), SortColumn::Index);
@@ -1060,53 +1117,57 @@ mod tui_state {
 
         app.handle_key(KeyCode::Char('<')); // prev -> Index
         assert_eq!(app.call_list_state().sort_column(), SortColumn::Index);
+        Ok(())
     }
 
     // ── Z — Reverse sort ──────────────────────────────────────────────
 
     /// `Z` toggles the sort direction between ascending and descending.
     #[test]
-    fn z_reverses_sort_direction() {
+    fn z_reverses_sort_direction() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(app.call_list_state().sort_ascending());
         app.handle_key(KeyCode::Char('Z'));
         assert!(!app.call_list_state().sort_ascending());
         app.handle_key(KeyCode::Char('Z'));
         assert!(app.call_list_state().sort_ascending());
+        Ok(())
     }
 
     // ── A — Toggle autoscroll ─────────────────────────────────────────
 
     /// `A` toggles the call-list autoscroll flag off and back on.
     #[test]
-    fn a_toggles_autoscroll() {
+    fn a_toggles_autoscroll() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(app.call_list_state().autoscroll);
         app.handle_key(KeyCode::Char('A'));
         assert!(!app.call_list_state().autoscroll);
         app.handle_key(KeyCode::Char('A'));
         assert!(app.call_list_state().autoscroll);
+        Ok(())
     }
 
     // ── p — Pause/resume ──────────────────────────────────────────────
 
     /// `p` toggles capture pause on and off.
     #[test]
-    fn p_toggles_paused() {
+    fn p_toggles_paused() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert!(!app.paused());
         app.handle_key(KeyCode::Char('p'));
         assert!(app.paused());
         app.handle_key(KeyCode::Char('p'));
         assert!(!app.paused());
+        Ok(())
     }
 
     // ── i/I — Clear with filter ───────────────────────────────────────
 
     /// With a filter active, `i` deletes the non-matching dialogs, keeping only the 1 match.
     #[test]
-    fn i_clears_non_matching_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn i_clears_non_matching_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
 
         // Apply filter via SIP From field: match only dialog with From=1003
@@ -1124,12 +1185,13 @@ mod tui_state {
         app.handle_key(KeyCode::F(9)); // F9 clears filter
         // Only the matching dialog should remain
         assert_eq!(app.visible_dialog_count(), 1);
+        Ok(())
     }
 
     /// With a filter active, `I` deletes the matching dialog, keeping the other 2.
     #[test]
-    fn i_uppercase_clears_matching_dialogs() {
-        let mut app = app_with_three_dialogs();
+    fn i_uppercase_clears_matching_dialogs() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
 
         // Apply filter via SIP From field: match dialog with From=1003
@@ -1146,46 +1208,49 @@ mod tui_state {
         // Clear filter to see all remaining
         app.handle_key(KeyCode::F(9)); // F9 clears filter
         assert_eq!(app.visible_dialog_count(), 2);
+        Ok(())
     }
 
     /// `i` without an active filter changes nothing.
     #[test]
-    fn i_without_filter_does_nothing() {
-        let mut app = app_with_three_dialogs();
+    fn i_without_filter_does_nothing() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key(KeyCode::Char('i'));
         assert_eq!(app.visible_dialog_count(), 3); // no change
+        Ok(())
     }
 
     /// `I` without an active filter changes nothing.
     #[test]
-    fn i_uppercase_without_filter_does_nothing() {
-        let mut app = app_with_three_dialogs();
+    fn i_uppercase_without_filter_does_nothing() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key(KeyCode::Char('I'));
         assert_eq!(app.visible_dialog_count(), 3); // no change
+        Ok(())
     }
 
     /// Create an app with the call flow view open on dialog 1.
     ///
     /// # Returns
     /// The three-dialog fixture app with the call flow view active.
-    fn app_with_call_flow_open() -> App {
-        let mut app = app_with_three_dialogs();
+    fn app_with_call_flow_open() -> Result<App, TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Enter); // open call flow for first dialog
         assert!(matches!(app.current_view(), View::CallFlow(_)));
-        app
+        Ok(app)
     }
 
     /// `S` from within a call's flow view opens the relay-statistics view scoped
     /// to THAT call (ST8, C2) -- where `S` from the call list asks the relay's
     /// globals (C1).
     #[test]
-    fn shift_s_from_call_flow_opens_per_call_relay_stats() {
-        let mut app = app_with_call_flow_open();
+    fn shift_s_from_call_flow_opens_per_call_relay_stats() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         let call_id = match app.current_view() {
             View::CallFlow(cid) => cid.clone(),
-            other => panic!("expected call flow, got {other:?}"),
+            other => return Err(format!("expected call flow, got {other:?}").into()),
         };
         app.handle_key(KeyCode::Char('S'));
         assert_eq!(
@@ -1196,16 +1261,17 @@ mod tui_state {
             },
             "S from a call's flow scopes the relay-stats view to that call"
         );
+        Ok(())
     }
 
     /// `K` in a PER-CALL relay-stats view enters the comparison (C4), and toggles
     /// back to the counters -- the call is what makes the comparison answerable.
     #[test]
-    fn k_toggles_compare_in_a_per_call_relay_stats_view() {
-        let mut app = app_with_call_flow_open();
+    fn k_toggles_compare_in_a_per_call_relay_stats_view() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         let call_id = match app.current_view() {
             View::CallFlow(cid) => cid.clone(),
-            other => panic!("expected call flow, got {other:?}"),
+            other => return Err(format!("expected call flow, got {other:?}").into()),
         };
         app.handle_key(KeyCode::Char('S'));
         app.handle_key(KeyCode::Char('K'));
@@ -1226,30 +1292,31 @@ mod tui_state {
             },
             "K again returns to the counters"
         );
+        Ok(())
     }
 
     /// Create an app with the raw message view open.
     ///
     /// # Returns
     /// The fixture app viewing the raw bytes of dialog 1's first message.
-    fn app_in_raw_message() -> App {
-        let mut app = app_with_call_flow_open();
+    fn app_in_raw_message() -> Result<App, TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Enter); // open raw message from call flow
         assert!(matches!(app.current_view(), View::RawMessage { .. }));
-        app
+        Ok(app)
     }
 
     /// Create an app in the message diff view.
     ///
     /// # Returns
     /// The fixture app with the diff of dialog 1's messages 0 and 1 open.
-    fn app_in_message_diff() -> App {
-        let mut app = app_with_call_flow_open();
+    fn app_in_message_diff() -> Result<App, TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // select first message
         app.handle_key(KeyCode::Down); // move to second
         app.handle_key(KeyCode::Char(' ')); // open diff
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
-        app
+        Ok(app)
     }
 
     // ── Call list: selection must resolve against the DISPLAYED list ──
@@ -1258,8 +1325,8 @@ mod tui_state {
     // With a search narrowing the list to one row, Enter must open that row.
     /// With search narrowed to one row, a single Enter commits the query and opens that row (`call-2@test`).
     #[test]
-    fn enter_after_search_opens_the_call_the_user_sees() {
-        let mut app = app_with_three_dialogs();
+    fn enter_after_search_opens_the_call_the_user_sees() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
@@ -1272,16 +1339,17 @@ mod tui_state {
                 cid, "call-2@test",
                 "the single searched row is call-2 (from user 1003)"
             ),
-            v => panic!("expected CallFlow, got {v:?}"),
+            v => return Err(format!("expected CallFlow, got {v:?}").into()),
         }
+        Ok(())
     }
 
     // With a search active, Down must not walk the selection past the
     // visible rows.
     /// With one searched row visible, repeated Down keeps the selection clamped at 0.
     #[test]
-    fn navigation_clamps_to_searched_rows() {
-        let mut app = app_with_three_dialogs();
+    fn navigation_clamps_to_searched_rows() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
@@ -1295,14 +1363,15 @@ mod tui_state {
             0,
             "one visible row -> selection stays at 0"
         );
+        Ok(())
     }
 
     // After reversing the sort, the top row is the LAST dialog; Enter must
     // open that one.
     /// After `Z` reverses the sort, Enter opens the new top row (`call-3@test`), not the old index.
     #[test]
-    fn enter_after_sort_reversal_opens_the_top_displayed_row() {
-        let mut app = app_with_three_dialogs();
+    fn enter_after_sort_reversal_opens_the_top_displayed_row() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('Z')); // reverse sort direction
         app.handle_key(KeyCode::Enter);
         match app.current_view() {
@@ -1310,8 +1379,9 @@ mod tui_state {
                 cid, "call-3@test",
                 "reversed sort puts call-3 on top; Enter must open it"
             ),
-            v => panic!("expected CallFlow, got {v:?}"),
+            v => return Err(format!("expected CallFlow, got {v:?}").into()),
         }
+        Ok(())
     }
 
     // Multi-select checkmarks must stick to the CALL, not the row position:
@@ -1319,8 +1389,8 @@ mod tui_state {
     // remove call-1 — not whatever now sits at the old row index.
     /// A selection checkmark follows the call across a sort reversal: F5 clears checked call-1, not the new row-0 occupant.
     #[test]
-    fn multi_select_survives_reordering() {
-        let mut app = app_with_three_dialogs();
+    fn multi_select_survives_reordering() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char(' ')); // check row 0 = call-1
         app.handle_key(KeyCode::Char('Z')); // reverse sort: call-3 now on top
         app.handle_key(KeyCode::F(5)); // clear the checked calls
@@ -1334,6 +1404,7 @@ mod tui_state {
             store.get("call-3@test").is_some(),
             "call-3 was never checked; reordering must not transfer the mark"
         );
+        Ok(())
     }
 
     // Esc from a raw message opened DIRECTLY from the call list (F6) must
@@ -1341,12 +1412,13 @@ mod tui_state {
     // never opened.
     /// Esc from a raw message opened via F6 returns to the call list, not to an unvisited call flow.
     #[test]
-    fn esc_from_raw_message_opened_from_call_list_returns_to_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn esc_from_raw_message_opened_from_call_list_returns_to_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(6));
         assert!(matches!(app.current_view(), View::RawMessage { .. }));
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Filter dialog: user text is matched literally ──────────────────
@@ -1356,7 +1428,11 @@ mod tui_state {
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_invite_from_user(call_id: &str, from_user: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_from_user(
+        call_id: &str,
+        from_user: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1368,7 +1444,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -1376,8 +1452,7 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse INVITE")
+        )?)
     }
 
     /// Open the filter popup, type `text` into the From field, apply.
@@ -1398,11 +1473,11 @@ mod tui_state {
     // "a+b" is a user name, not a regex.
     /// Filter text "a+b" matches only the literal `a+b` user (a regex would also match "aab"), with no error.
     #[test]
-    fn filter_text_with_regex_metachars_matches_literally() {
-        let t0 = base_ts_or_panic();
+    fn filter_text_with_regex_metachars_matches_literally() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let mut app = App::with_processed_messages(vec![
-            make_invite_from_user("plus@test", "a+b", t0),
-            make_invite_from_user("plain@test", "aab", t0 + TimeDelta::seconds(1)),
+            make_invite_from_user("plus@test", "a+b", t0)?,
+            make_invite_from_user("plain@test", "aab", t0 + TimeDelta::seconds(1))?,
         ]);
         apply_from_filter(&mut app, "a+b");
         assert_eq!(
@@ -1421,8 +1496,9 @@ mod tui_state {
                 cid, "plus@test",
                 "the literal a+b dialog must be the surviving row"
             ),
-            v => panic!("expected CallFlow, got {v:?}"),
+            v => return Err(format!("expected CallFlow, got {v:?}").into()),
         }
+        Ok(())
     }
 
     // Adversarial input: unbalanced parens, quotes, backslashes must never
@@ -1430,11 +1506,11 @@ mod tui_state {
     // nothing here.
     /// Unbalanced parens/brackets/quotes/backslashes in a filter never error; they just match nothing.
     #[test]
-    fn filter_adversarial_text_never_errors() {
-        let t0 = base_ts_or_panic();
+    fn filter_adversarial_text_never_errors() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         for adversarial in ["(", "[[", "a\\", "it's", "\"", "*?"] {
             let mut app =
-                App::with_processed_messages(vec![make_invite_from_user("adv@test", "1001", t0)]);
+                App::with_processed_messages(vec![make_invite_from_user("adv@test", "1001", t0)?]);
             apply_from_filter(&mut app, adversarial);
             assert_eq!(
                 app.status_error(),
@@ -1443,17 +1519,18 @@ mod tui_state {
             );
             assert_eq!(app.visible_dialog_count(), 0, "input {adversarial:?}");
         }
+        Ok(())
     }
 
     // The Payload field must actually filter: it matches against the raw
     // message content of the dialog.
     /// The Payload filter field matches raw message content (a User-Agent string), narrowing to 1 dialog.
     #[test]
-    fn payload_filter_matches_message_content() {
-        let t0 = base_ts_or_panic();
+    fn payload_filter_matches_message_content() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let mut app = App::with_processed_messages(vec![
-            make_invite_from_user("ua@test", "1001", t0),
-            make_invite_or_panic("plain@test", "1002", "1003", t0 + TimeDelta::seconds(1)),
+            make_invite_from_user("ua@test", "1001", t0)?,
+            make_invite("plain@test", "1002", "1003", t0 + TimeDelta::seconds(1))?,
         ]);
         // Focus the Payload field (index 4) and type a string only present
         // in the first dialog's User-Agent header.
@@ -1471,13 +1548,14 @@ mod tui_state {
             1,
             "payload filter must narrow to the dialog containing the text"
         );
+        Ok(())
     }
 
     // Reopening search must allow refining the existing query, not wipe it.
     /// Reopening search with `/` keeps the committed query for refinement instead of wiping it.
     #[test]
-    fn search_query_preserved_on_reopen() {
-        let mut app = app_with_three_dialogs();
+    fn search_query_preserved_on_reopen() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
@@ -1490,6 +1568,7 @@ mod tui_state {
             "1003",
             "reopening search must keep the query for editing"
         );
+        Ok(())
     }
 
     // ── Scroll clamping: no view may strand past its content ──────────
@@ -1499,8 +1578,12 @@ mod tui_state {
     /// # Arguments
     /// * `app` - App whose `render` is invoked.
     /// * `term` - In-memory terminal receiving the frame.
-    fn draw(app: &mut App, term: &mut ratatui::Terminal<ratatui::backend::TestBackend>) {
-        term.draw(|f| app.render(f)).unwrap();
+    fn draw(
+        app: &mut App,
+        term: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) -> Result<(), TestError> {
+        term.draw(|f| app.render(f))?;
+        Ok(())
     }
 
     /// Build an 80x10 in-memory terminal, small enough to force overflow
@@ -1508,22 +1591,24 @@ mod tui_state {
     ///
     /// # Returns
     /// A ratatui `Terminal` over a `TestBackend`.
-    fn small_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
-        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap()
+    fn small_terminal() -> Result<ratatui::Terminal<ratatui::backend::TestBackend>, TestError> {
+        Ok(ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+            80, 10,
+        ))?)
     }
 
     // Raw message view: scrolling far past the end must clamp to the content
     // (so a single Up immediately moves the view back).
     /// Raw view: 50 Downs and End both clamp near the ~8-line message, and one Up immediately moves back.
     #[test]
-    fn raw_message_overscroll_clamps_and_recovers() {
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
+    fn raw_message_overscroll_clamps_and_recovers() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
         app.handle_key(KeyCode::F(6)); // raw view from call list
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         for _ in 0..50 {
             app.handle_key(KeyCode::Down);
-            draw(&mut app, &mut term);
+            draw(&mut app, &mut term)?;
         }
         let stranded = app.raw_msg_scroll();
         assert!(
@@ -1532,68 +1617,71 @@ mod tui_state {
         );
         // End must also land clamped, and Up must move immediately.
         app.handle_key(KeyCode::End);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         let at_end = app.raw_msg_scroll();
         assert!(at_end < 30, "End must clamp, got {at_end}");
         app.handle_key(KeyCode::Up);
         assert_eq!(app.raw_msg_scroll(), at_end.saturating_sub(1));
+        Ok(())
     }
 
     // Combined (transaction/dialog) detail: End claimed to clamp but never
     // did — u16::MAX scroll rendered a blank screen.
     /// Combined detail: End clamps to content height instead of stranding at `u16::MAX` on a blank screen (regression).
     #[test]
-    fn combined_detail_end_is_clamped_not_blank() {
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
+    fn combined_detail_end_is_clamped_not_blank() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
         app.handle_key(KeyCode::Enter); // call flow
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         app.handle_key(KeyCode::Char('A')); // whole-dialog combined detail
         assert!(matches!(app.current_view(), View::CombinedDetail { .. }));
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         app.handle_key(KeyCode::End);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert!(
             app.raw_msg_scroll() < 60,
             "End must clamp to content height, got {}",
             app.raw_msg_scroll()
         );
+        Ok(())
     }
 
     // Call flow ladder: PageDown must not push the scroll past the ladder.
     /// Repeated PageDown clamps the ladder scroll on a 2-message call flow.
     #[test]
-    fn call_flow_pagedown_clamps_to_ladder() {
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
+    fn call_flow_pagedown_clamps_to_ladder() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
         app.handle_key(KeyCode::Enter);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         for _ in 0..5 {
             app.handle_key(KeyCode::PageDown);
-            draw(&mut app, &mut term);
+            draw(&mut app, &mut term)?;
         }
         assert!(
             app.call_flow_scroll() < 10,
             "2-message ladder: scroll must clamp, got {}",
             app.call_flow_scroll()
         );
+        Ok(())
     }
 
     // Statistics view must scroll: content taller than the pane was simply
     // cut off with no way to see the bottom.
     /// Statistics scrolls with Down, clamps at End, and Home returns to 0.
     #[test]
-    fn statistics_view_scrolls_and_clamps() {
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
+    fn statistics_view_scrolls_and_clamps() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         app.handle_key(KeyCode::Down);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_eq!(app.stats_scroll(), 1, "Down must scroll the statistics");
         app.handle_key(KeyCode::End);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert!(
             app.stats_scroll() < 200,
             "End must clamp to content, got {}",
@@ -1601,38 +1689,40 @@ mod tui_state {
         );
         app.handle_key(KeyCode::Home);
         assert_eq!(app.stats_scroll(), 0);
+        Ok(())
     }
 
     // Message diff must scroll: long messages were truncated with no
     // navigation at all.
     /// Message diff scrolls with Down, clamps at End, and Home returns to 0.
     #[test]
-    fn message_diff_scrolls_and_clamps() {
-        let mut app = app_in_message_diff();
-        let mut term = small_terminal();
-        draw(&mut app, &mut term);
+    fn message_diff_scrolls_and_clamps() -> Result<(), TestError> {
+        let mut app = app_in_message_diff()?;
+        let mut term = small_terminal()?;
+        draw(&mut app, &mut term)?;
         app.handle_key(KeyCode::Down);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_eq!(app.diff_scroll(), 1, "Down must scroll the diff");
         app.handle_key(KeyCode::End);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert!(
             app.diff_scroll() < 100,
             "End must clamp to content, got {}",
             app.diff_scroll()
         );
         app.handle_key(KeyCode::PageUp);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         app.handle_key(KeyCode::Home);
         assert_eq!(app.diff_scroll(), 0);
+        Ok(())
     }
 
     // ── Keymap rebinds must apply in EVERY view ────────────────────────
 
     /// Rebinding quit to `x` applies in the diff view; the unbound `q` no longer quits.
     #[test]
-    fn diff_view_respects_quit_rebind() {
-        let mut app = app_in_message_diff();
+    fn diff_view_respects_quit_rebind() -> Result<(), TestError> {
+        let mut app = app_in_message_diff()?;
         app.keymap.quit = KeyCode::Char('x');
         app.handle_key(KeyCode::Char('q'));
         assert!(!app.should_quit(), "unbound 'q' must no longer quit");
@@ -1642,52 +1732,57 @@ mod tui_state {
             "and must not even raise the question"
         );
         quit_via(&mut app, KeyCode::Char('x'));
+        Ok(())
     }
 
     /// Rebinding help to F12 applies in the combined detail view.
     #[test]
-    fn combined_detail_respects_help_rebind() {
-        let mut app = app_with_call_flow_open();
+    fn combined_detail_respects_help_rebind() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('A'));
         assert!(matches!(app.current_view(), View::CombinedDetail { .. }));
         app.keymap.help = KeyCode::F(12);
         app.handle_key(KeyCode::F(12));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     // A key the user rebinds to an action must win over the built-in global
     // fallbacks ('v' version, 'n' name-mode cycle).
     /// A user rebind (`n` mapped to quit) wins over the built-in global fallback (name-mode cycle).
     #[test]
-    fn keymap_rebind_beats_global_fallback_keys() {
-        let mut app = app_with_three_dialogs();
+    fn keymap_rebind_beats_global_fallback_keys() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.keymap.quit = KeyCode::Char('n');
         quit_via(&mut app, KeyCode::Char('n'));
+        Ok(())
     }
 
     // ── Mouse wheel ────────────────────────────────────────────────────
 
     /// Mouse wheel moves the call-list selection down twice and back up once.
     #[test]
-    fn mouse_wheel_scrolls_call_list() {
+    fn mouse_wheel_scrolls_call_list() -> Result<(), TestError> {
         use crossterm::event::MouseEventKind;
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_mouse_kind(MouseEventKind::ScrollDown);
         app.handle_mouse_kind(MouseEventKind::ScrollDown);
         assert_eq!(app.call_list_state().selected(), 2);
         app.handle_mouse_kind(MouseEventKind::ScrollUp);
         assert_eq!(app.call_list_state().selected(), 1);
+        Ok(())
     }
 
     /// Mouse wheel scrolls the Help view.
     #[test]
-    fn mouse_wheel_scrolls_help_view() {
+    fn mouse_wheel_scrolls_help_view() -> Result<(), TestError> {
         use crossterm::event::MouseEventKind;
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
         app.handle_mouse_kind(MouseEventKind::ScrollDown);
         assert!(app.help_scroll() > 0, "wheel must scroll the help view");
+        Ok(())
     }
 
     /// The call timeline is a single-screen, single-call view with no
@@ -1695,9 +1790,9 @@ mod tui_state {
     /// a no-op there. This pins the static contract — wheeling neither
     /// panics nor leaves the timeline view.
     #[test]
-    fn mouse_wheel_is_noop_on_timeline() {
+    fn mouse_wheel_is_noop_on_timeline() -> Result<(), TestError> {
         use crossterm::event::MouseEventKind;
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         assert!(
             matches!(app.current_view(), View::CallTimeline(_)),
@@ -1711,14 +1806,15 @@ mod tui_state {
             before,
             "wheel must not change the static timeline view"
         );
+        Ok(())
     }
 
     /// Navigation keys on the timeline are intentionally inert: the view is
     /// static, so arrows/paging/Enter do nothing and only Esc closes back to
     /// the call list.
     #[test]
-    fn navigation_keys_are_inert_on_timeline() {
-        let mut app = app_with_three_dialogs();
+    fn navigation_keys_are_inert_on_timeline() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         let before = app.current_view().clone();
         for code in [
@@ -1738,13 +1834,14 @@ mod tui_state {
         }
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // Left/Right in call flow silently did nothing with the split pane off.
     /// Left with the split pane off shows a status hint mentioning `R` instead of silently doing nothing.
     #[test]
-    fn call_flow_left_right_hint_when_split_off() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_left_right_hint_when_split_off() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('R')); // split off
         assert!(!app.raw_preview());
         app.handle_key(KeyCode::Left);
@@ -1753,6 +1850,7 @@ mod tui_state {
             hint.contains('R'),
             "Left with split off must hint how to enable the split, got {hint:?}"
         );
+        Ok(())
     }
 
     // ── Settings must actually do something ────────────────────────────
@@ -1762,97 +1860,96 @@ mod tui_state {
     // With the selection elsewhere, or the toggle OFF, nothing moves.
     /// With autoscroll on and the selection on the last row, a newly arriving dialog pulls the selection to the new bottom.
     #[test]
-    fn autoscroll_follows_new_dialogs_when_at_bottom() {
-        let t0 = base_ts_or_panic();
-        let mut app = App::with_processed_messages(vec![make_invite_or_panic(
-            "as-1@test",
-            "1001",
-            "1002",
-            t0,
-        )]);
-        let mut term = small_terminal();
-        draw(&mut app, &mut term);
+    fn autoscroll_follows_new_dialogs_when_at_bottom() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let mut app =
+            App::with_processed_messages(vec![make_invite("as-1@test", "1001", "1002", t0)?]);
+        let mut term = small_terminal()?;
+        draw(&mut app, &mut term)?;
         assert_eq!(app.call_list_state().selected(), 0);
-        app.dialog_store_ref()
-            .write()
-            .process_message(make_invite_or_panic(
-                "as-2@test",
-                "1003",
-                "1004",
-                t0 + TimeDelta::seconds(1),
-            ));
+        app.dialog_store_ref().write().process_message(make_invite(
+            "as-2@test",
+            "1003",
+            "1004",
+            t0 + TimeDelta::seconds(1),
+        )?);
         // Sticky-bottom follows at the churn-floor cadence (≤300 ms), not
         // per tick; elapse the floor as real time would between refreshes.
         app.elapse_churn_floors_for_test();
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_eq!(
             app.call_list_state().selected(),
             1,
             "autoscroll must follow the newest dialog"
         );
+        Ok(())
     }
 
     /// A new dialog does not move a selection that is not sitting on the bottom row.
     #[test]
-    fn autoscroll_does_not_yank_selection_away() {
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
-        draw(&mut app, &mut term);
+    fn autoscroll_does_not_yank_selection_away() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
+        draw(&mut app, &mut term)?;
         // User is inspecting row 0, not the bottom.
         assert_eq!(app.call_list_state().selected(), 0);
-        app.dialog_store_ref()
-            .write()
-            .process_message(make_invite_or_panic(
-                "as-4@test",
-                "1007",
-                "1008",
-                base_ts_or_panic() + TimeDelta::seconds(20),
-            ));
-        draw(&mut app, &mut term);
+        app.dialog_store_ref().write().process_message(make_invite(
+            "as-4@test",
+            "1007",
+            "1008",
+            base_ts()? + TimeDelta::seconds(20),
+        )?);
+        draw(&mut app, &mut term)?;
         assert_eq!(
             app.call_list_state().selected(),
             0,
             "selection away from the bottom must not be yanked"
         );
+        Ok(())
     }
 
     // Syntax highlight toggle: OFF must render the raw message plain.
     /// Toggling syntax highlight off with `s` renders the raw message with zero bold cells.
     #[test]
-    fn syntax_highlight_toggle_takes_effect() {
+    fn syntax_highlight_toggle_takes_effect() -> Result<(), TestError> {
         use ratatui::style::Modifier;
-        let mut app = app_with_three_dialogs();
-        let mut term = small_terminal();
+        let mut app = app_with_three_dialogs()?;
+        let mut term = small_terminal()?;
         app.handle_key(KeyCode::F(6)); // raw view
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         // Count only inside the message block (skip the app status bar and
         // the block border, which carry their own styling).
-        let bold_cells = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
-            let buf = t.backend().buffer();
-            let mut n = 0;
-            for y in 4..buf.area.height.saturating_sub(1) {
-                for x in 1..buf.area.width.saturating_sub(1) {
-                    if buf
-                        .cell((x, y))
-                        .unwrap()
-                        .style()
-                        .add_modifier
-                        .contains(Modifier::BOLD)
-                    {
-                        n += 1;
+        let bold_cells =
+            |t: &ratatui::Terminal<ratatui::backend::TestBackend>| -> Result<usize, TestError> {
+                let buf = t.backend().buffer();
+                let mut n = 0;
+                for y in 4..buf.area.height.saturating_sub(1) {
+                    for x in 1..buf.area.width.saturating_sub(1) {
+                        if buf
+                            .cell((x, y))
+                            .ok_or("buf.cell((x,y)) is None")?
+                            .style()
+                            .add_modifier
+                            .contains(Modifier::BOLD)
+                        {
+                            n += 1;
+                        }
                     }
                 }
-            }
-            n
-        };
-        assert!(bold_cells(&term) > 0, "highlighting ON renders styled text");
+                Ok(n)
+            };
+        assert!(
+            bold_cells(&term)? > 0,
+            "highlighting ON renders styled text"
+        );
         app.handle_key(KeyCode::Char('s')); // toggle OFF
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_eq!(
-            bold_cells(&term),
+            bold_cells(&term)?,
             0,
             "highlighting OFF must render the message plain"
         );
+        Ok(())
     }
 
     // ── Call flow with folded retransmissions: index mapping ──────────
@@ -1862,7 +1959,7 @@ mod tui_state {
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_options(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn make_options(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         // No Via header → retransmission detection falls back to CSeq
         // identity, so a repeated CSeq is flagged as a retransmission.
         let raw = build_sip(
@@ -1875,7 +1972,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -1883,8 +1980,7 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse OPTIONS")
+        )?)
     }
 
     /// Call flow open on a dialog whose ladder folds two retransmissions:
@@ -1895,21 +1991,22 @@ mod tui_state {
     ///
     /// # Returns
     /// The app (call flow open) and the 120x40 terminal it was rendered into.
-    fn app_with_folded_flow() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
-        let t0 = base_ts_or_panic();
+    fn app_with_folded_flow()
+    -> Result<(App, ratatui::Terminal<ratatui::backend::TestBackend>), TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
-            make_options("fold@test", 1, t0),
-            make_options("fold@test", 1, t0 + TimeDelta::milliseconds(500)),
-            make_options("fold@test", 2, t0 + TimeDelta::seconds(30)),
-            make_options("fold@test", 2, t0 + TimeDelta::seconds(31)),
+            make_options("fold@test", 1, t0)?,
+            make_options("fold@test", 1, t0 + TimeDelta::milliseconds(500))?,
+            make_options("fold@test", 2, t0 + TimeDelta::seconds(30))?,
+            make_options("fold@test", 2, t0 + TimeDelta::seconds(31))?,
         ];
         let mut app = App::with_processed_messages(messages);
         app.handle_key(KeyCode::Enter);
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         let backend = ratatui::backend::TestBackend::new(120, 40);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.render(f)).unwrap();
-        (app, terminal)
+        let mut terminal = ratatui::Terminal::new(backend)?;
+        terminal.draw(|f| app.render(f))?;
+        Ok((app, terminal))
     }
 
     // Enter must open the raw view of the message the user SEES selected.
@@ -1917,10 +2014,10 @@ mod tui_state {
     // two retransmissions are folded away.
     /// In a folded ladder, Enter on visible row 1 opens raw message index 2 (OPT#2), not the folded retransmission.
     #[test]
-    fn flow_enter_opens_the_message_the_user_sees() {
-        let (mut app, mut terminal) = app_with_folded_flow();
+    fn flow_enter_opens_the_message_the_user_sees() -> Result<(), TestError> {
+        let (mut app, mut terminal) = app_with_folded_flow()?;
         app.handle_key(KeyCode::Down); // visible row 1 = OPT#2
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         app.handle_key(KeyCode::Enter);
         match app.current_view() {
             View::RawMessage { message_index, .. } => {
@@ -1929,24 +2026,25 @@ mod tui_state {
                     "visible row 1 is raw message 2 (OPT#2), not the folded retx"
                 );
             }
-            v => panic!("expected RawMessage, got {v:?}"),
+            v => return Err(format!("expected RawMessage, got {v:?}").into()),
         }
+        Ok(())
     }
 
     // 'e' on a fold header must expand THAT header's retransmissions, even
     // when earlier folds make the visible index differ from the raw index.
     /// `e` on the second fold header expands that header's own retransmission (raw index 3) despite earlier folds shifting indices.
     #[test]
-    fn flow_expand_on_second_fold_header_reveals_its_retransmissions() {
-        let (mut app, mut terminal) = app_with_folded_flow();
+    fn flow_expand_on_second_fold_header_reveals_its_retransmissions() -> Result<(), TestError> {
+        let (mut app, mut terminal) = app_with_folded_flow()?;
         app.handle_key(KeyCode::Down); // visible row 1 = OPT#2 fold header (raw 2)
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         app.handle_key(KeyCode::Char('e'));
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         // Expanded: OPT#1(+1 retx), OPT#2, retx#2 → 3 visible rows, so the
         // row after the header is the revealed retransmission (raw 3).
         app.handle_key(KeyCode::Down);
-        terminal.draw(|f| app.render(f)).unwrap();
+        terminal.draw(|f| app.render(f))?;
         app.handle_key(KeyCode::Enter);
         match app.current_view() {
             View::RawMessage { message_index, .. } => {
@@ -1955,80 +2053,87 @@ mod tui_state {
                     "row below the expanded header must be its retransmission (raw 3)"
                 );
             }
-            v => panic!("expected RawMessage, got {v:?}"),
+            v => return Err(format!("expected RawMessage, got {v:?}").into()),
         }
+        Ok(())
     }
 
     // Down at the end of the folded ladder must stop at the last VISIBLE row
     // (folded rows are not navigable positions).
     /// Down past the end of a folded ladder clamps to the last visible row (1), not the raw message count (3).
     #[test]
-    fn flow_selection_clamps_to_visible_rows_not_raw_count() {
-        let (mut app, mut terminal) = app_with_folded_flow();
+    fn flow_selection_clamps_to_visible_rows_not_raw_count() -> Result<(), TestError> {
+        let (mut app, mut terminal) = app_with_folded_flow()?;
         for _ in 0..10 {
             app.handle_key(KeyCode::Down);
-            terminal.draw(|f| app.render(f)).unwrap();
+            terminal.draw(|f| app.render(f))?;
         }
         assert_eq!(
             app.selected_msg_index(),
             1,
             "only 2 visible rows exist; selection must clamp to index 1"
         );
+        Ok(())
     }
 
     // ── Call list: additional keys ───────────────────────────────────
 
     /// Home returns the call-list selection to row 0.
     #[test]
-    fn home_moves_to_top() {
-        let mut app = app_with_three_dialogs();
+    fn home_moves_to_top() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.call_list_state().selected(), 2);
         app.handle_key(KeyCode::Home);
         assert_eq!(app.call_list_state().selected(), 0);
+        Ok(())
     }
 
     /// `/` enters search mode with an empty query.
     #[test]
-    fn slash_activates_search_mode() {
-        let mut app = app_with_three_dialogs();
+    fn slash_activates_search_mode() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         assert!(app.search_active());
         assert_eq!(app.search_query(), "");
+        Ok(())
     }
 
     /// F3 also enters search mode.
     #[test]
-    fn f3_activates_search_mode() {
-        let mut app = app_with_three_dialogs();
+    fn f3_activates_search_mode() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(3));
         assert!(app.search_active());
+        Ok(())
     }
 
     /// F4 (extended flow) on an empty list does nothing.
     #[test]
-    fn f4_on_empty_list_stays_in_call_list() {
+    fn f4_on_empty_list_stays_in_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(4));
         // No dialogs, so F4 does nothing
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// F8 opens the settings popup from the call list.
     #[test]
-    fn f8_opens_settings_popup_from_call_list() {
+    fn f8_opens_settings_popup_from_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(8));
         assert_eq!(app.active_popup(), Some(&Popup::SettingsDialog));
+        Ok(())
     }
 
     // ── Search mode ──────────────────────────────────────────────────
 
     /// Esc in search mode cancels and clears the typed query.
     #[test]
-    fn search_esc_cancels_and_clears() {
-        let mut app = app_with_three_dialogs();
+    fn search_esc_cancels_and_clears() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         for c in "test".chars() {
             app.handle_key(KeyCode::Char(c));
@@ -2037,12 +2142,13 @@ mod tui_state {
         app.handle_key(KeyCode::Esc);
         assert!(!app.search_active());
         assert_eq!(app.search_query(), "");
+        Ok(())
     }
 
     /// Enter commits the search query; it is retained for highlighting after search mode exits.
     #[test]
-    fn search_enter_commits_query() {
-        let mut app = app_with_three_dialogs();
+    fn search_enter_commits_query() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         for c in "hello".chars() {
             app.handle_key(KeyCode::Char(c));
@@ -2050,11 +2156,12 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(!app.search_active());
         assert_eq!(app.search_query(), "hello"); // retained for highlighting
+        Ok(())
     }
 
     /// Backspace removes the last character from the search query.
     #[test]
-    fn search_backspace_removes_last_char() {
+    fn search_backspace_removes_last_char() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('/'));
         for c in "abc".chars() {
@@ -2062,108 +2169,120 @@ mod tui_state {
         }
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.search_query(), "ab");
+        Ok(())
     }
 
     /// Typed characters append to the search query while search stays active.
     #[test]
-    fn search_char_appends() {
+    fn search_char_appends() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('/'));
         app.handle_key(KeyCode::Char('x'));
         app.handle_key(KeyCode::Char('y'));
         assert_eq!(app.search_query(), "xy");
         assert!(app.search_active());
+        Ok(())
     }
 
     /// Backspace with an empty query is a no-op and search stays active.
     #[test]
-    fn search_backspace_on_empty_is_noop() {
+    fn search_backspace_on_empty_is_noop() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('/'));
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.search_query(), "");
         assert!(app.search_active());
+        Ok(())
     }
 
     // ── Call flow: navigation ────────────────────────────────────────
 
     /// `q` quits from the call flow.
     #[test]
-    fn call_flow_q_quits() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_q_quits() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     /// Esc from the call flow returns to the call list.
     #[test]
-    fn call_flow_esc_returns_to_call_list() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_esc_returns_to_call_list() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Down advances the selected message index from 0 to 1.
     #[test]
-    fn call_flow_down_increments_selected_msg() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_down_increments_selected_msg() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert_eq!(app.selected_msg_index(), 0);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.selected_msg_index(), 1);
+        Ok(())
     }
 
     /// Up at the first message keeps the selection at 0.
     #[test]
-    fn call_flow_up_at_top_stays() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_up_at_top_stays() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Up);
         assert_eq!(app.selected_msg_index(), 0);
+        Ok(())
     }
 
     /// Up after Down returns the selection to 0.
     #[test]
-    fn call_flow_up_decrements() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_up_decrements() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Up);
         assert_eq!(app.selected_msg_index(), 0);
+        Ok(())
     }
 
     /// `j` moves the message selection down.
     #[test]
-    fn call_flow_j_increments() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_j_increments() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('j'));
         assert_eq!(app.selected_msg_index(), 1);
+        Ok(())
     }
 
     /// `k` moves the message selection back up.
     #[test]
-    fn call_flow_k_decrements() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_k_decrements() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('j'));
         app.handle_key(KeyCode::Char('k'));
         assert_eq!(app.selected_msg_index(), 0);
+        Ok(())
     }
 
     /// Moving to another message resets the detail-pane scroll to 0.
     #[test]
-    fn call_flow_down_resets_detail_scroll() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_down_resets_detail_scroll() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         // Scroll the detail panel, then navigate to next message — scroll resets
         app.handle_key(KeyCode::Char(']'));
         app.handle_key(KeyCode::Char(']'));
         assert!(app.detail_scroll() > 0);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     /// PageDown clamps to the last message (index 1) of a 2-message dialog.
     #[test]
-    fn call_flow_page_down() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_page_down() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::PageDown);
         // Dialog 1 has 2 messages; PageDown advances by 20 but clamps to max (1)
         assert_eq!(app.selected_msg_index(), 1);
+        Ok(())
     }
 
     /// PageUp after PageDown moves the selection back toward the top.
@@ -2174,8 +2293,8 @@ mod tui_state {
     /// is a no-op — the old `< after_down || after_down == 0` form passed
     /// vacuously whenever PageDown happened not to move.
     #[test]
-    fn call_flow_page_up_after_page_down() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_page_up_after_page_down() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::PageDown);
         let after_down = app.selected_msg_index();
         assert_eq!(
@@ -2188,45 +2307,49 @@ mod tui_state {
             0,
             "PageUp must return to the first message"
         );
+        Ok(())
     }
 
     /// Home selects the first message and resets the ladder scroll.
     #[test]
-    fn call_flow_home_goes_to_first() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_home_goes_to_first() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Home);
         assert_eq!(app.selected_msg_index(), 0);
         assert_eq!(app.call_flow_scroll(), 0);
+        Ok(())
     }
 
     /// End selects the last message (index 1 of 2).
     #[test]
-    fn call_flow_end_goes_to_last() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_end_goes_to_last() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::End);
         // Dialog 1 has INVITE + 200 = 2 msgs, so last = 1
         assert_eq!(app.selected_msg_index(), 1);
+        Ok(())
     }
 
     /// Enter opens the `RawMessage` view at the currently selected message index.
     #[test]
-    fn call_flow_enter_opens_raw_at_selected() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_enter_opens_raw_at_selected() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Down); // select msg 1
         app.handle_key(KeyCode::Enter);
         match app.current_view() {
             View::RawMessage { message_index, .. } => assert_eq!(*message_index, 1),
-            other => panic!("Expected RawMessage, got {:?}", other),
+            other => return Err(format!("Expected RawMessage, got {:?}", other).into()),
         }
+        Ok(())
     }
 
     // ── Call flow: display modes ─────────────────────────────────────
 
     /// `d` cycles the SDP display None, Summary, Full, back to None.
     #[test]
-    fn call_flow_d_cycles_sdp_display() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_d_cycles_sdp_display() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::None);
         app.handle_key(KeyCode::Char('d'));
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::Summary);
@@ -2234,20 +2357,22 @@ mod tui_state {
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::Full);
         app.handle_key(KeyCode::Char('d'));
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::None);
+        Ok(())
     }
 
     /// `t` in the call flow advances the timestamp mode (DeltaPrev to DeltaFirst).
     #[test]
-    fn call_flow_t_cycles_timestamp() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_t_cycles_timestamp() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('t'));
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaFirst);
+        Ok(())
     }
 
     /// `c` cycles the color mode Method, CallId, CSeq, back to Method.
     #[test]
-    fn call_flow_c_cycles_color() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_c_cycles_color() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert_eq!(app.color_mode(), ColorMode::Method);
         app.handle_key(KeyCode::Char('c'));
         assert_eq!(app.color_mode(), ColorMode::CallId);
@@ -2255,190 +2380,209 @@ mod tui_state {
         assert_eq!(app.color_mode(), ColorMode::CSeq);
         app.handle_key(KeyCode::Char('c'));
         assert_eq!(app.color_mode(), ColorMode::Method);
+        Ok(())
     }
 
     // ── Call flow: split controls ────────────────────────────────────
 
     /// `R` toggles the raw-preview split pane off and back on (default on).
     #[test]
-    fn call_flow_r_toggles_raw_preview() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_r_toggles_raw_preview() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert!(app.raw_preview()); // default true
         app.handle_key(KeyCode::Char('R'));
         assert!(!app.raw_preview());
         app.handle_key(KeyCode::Char('R'));
         assert!(app.raw_preview());
+        Ok(())
     }
 
     /// `+` grows the detail split width by 5 percentage points.
     #[test]
-    fn call_flow_plus_increases_pct() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_plus_increases_pct() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Char('+'));
         assert_eq!(app.raw_preview_pct(), before + 5);
+        Ok(())
     }
 
     /// `-` shrinks the detail split width by 5 percentage points.
     #[test]
-    fn call_flow_minus_decreases_pct() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_minus_decreases_pct() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Char('-'));
         assert_eq!(app.raw_preview_pct(), before - 5);
+        Ok(())
     }
 
     /// Repeated `+` clamps the split at 80 percent.
     #[test]
-    fn call_flow_plus_clamps_at_max() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_plus_clamps_at_max() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         for _ in 0..20 {
             app.handle_key(KeyCode::Char('+'));
         }
         assert!(app.raw_preview_pct() <= 80);
+        Ok(())
     }
 
     /// Repeated `-` clamps the split at 10 percent.
     #[test]
-    fn call_flow_minus_clamps_at_min() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_minus_clamps_at_min() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         for _ in 0..20 {
             app.handle_key(KeyCode::Char('-'));
         }
         assert!(app.raw_preview_pct() >= 10);
+        Ok(())
     }
 
     /// `]` and `[` scroll the detail pane down and back up.
     #[test]
-    fn call_flow_bracket_scrolls_detail() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_bracket_scrolls_detail() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(']'));
         assert_eq!(app.detail_scroll(), 1);
         app.handle_key(KeyCode::Char('['));
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     /// `[` at detail scroll 0 is a no-op.
     #[test]
-    fn call_flow_bracket_up_at_zero_stays() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_bracket_up_at_zero_stays() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('['));
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     // ── Call flow: toggles ───────────────────────────────────────────
 
     /// F4 toggles extended flow on and off.
     #[test]
-    fn call_flow_f4_toggles_extended_flow() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f4_toggles_extended_flow() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert!(!app.extended_flow());
         app.handle_key(KeyCode::F(4));
         assert!(app.extended_flow());
         app.handle_key(KeyCode::F(4));
         assert!(!app.extended_flow());
+        Ok(())
     }
 
     /// `x` enables extended flow.
     #[test]
-    fn call_flow_x_toggles_extended_flow() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_x_toggles_extended_flow() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('x'));
         assert!(app.extended_flow());
+        Ok(())
     }
 
     /// F6 toggles RTP display in the ladder on and off.
     #[test]
-    fn call_flow_f6_toggles_rtp_in_flow() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f6_toggles_rtp_in_flow() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert!(!app.show_rtp_in_flow());
         app.handle_key(KeyCode::F(6));
         assert!(app.show_rtp_in_flow());
         app.handle_key(KeyCode::F(6));
         assert!(!app.show_rtp_in_flow());
+        Ok(())
     }
 
     // ── Call flow: diff / compare ────────────────────────────────────
 
     /// Space marks the current message as the diff anchor.
     #[test]
-    fn call_flow_space_sets_diff_selected() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_space_sets_diff_selected() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert_eq!(app.diff_selected_msg(), None);
         app.handle_key(KeyCode::Char(' '));
         assert_eq!(app.diff_selected_msg(), Some(0));
+        Ok(())
     }
 
     /// Space on a second, different message opens the `MessageDiff` view.
     #[test]
-    fn call_flow_space_second_opens_diff() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_space_second_opens_diff() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // select msg 0
         app.handle_key(KeyCode::Down); // move to msg 1
         app.handle_key(KeyCode::Char(' ')); // open diff
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
+        Ok(())
     }
 
     /// Space twice on the same message opens no diff; the anchor stays set.
     #[test]
-    fn call_flow_space_same_msg_no_diff() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_space_same_msg_no_diff() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // select msg 0
         app.handle_key(KeyCode::Char(' ')); // same msg — no diff opened
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         assert_eq!(app.diff_selected_msg(), Some(0)); // still set
+        Ok(())
     }
 
     /// F5 clears the diff anchor.
     #[test]
-    fn call_flow_f5_resets_compare() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f5_resets_compare() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // set diff
         assert!(app.diff_selected_msg().is_some());
         app.handle_key(KeyCode::F(5));
         assert_eq!(app.diff_selected_msg(), None);
+        Ok(())
     }
 
     /// Esc clears the diff anchor and leaves the call flow for the call list.
     #[test]
-    fn call_flow_esc_clears_diff() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_esc_clears_diff() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(' ')); // set diff
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.diff_selected_msg(), None);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Call flow: popups and navigation ─────────────────────────────
 
     /// F1 opens Help from the call flow.
     #[test]
-    fn call_flow_f1_opens_help() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f1_opens_help() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// F2 opens the save popup from the call flow.
     #[test]
-    fn call_flow_f2_opens_save() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f2_opens_save() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
+        Ok(())
     }
 
     /// F7 opens the filter popup from the call flow.
     #[test]
-    fn call_flow_f7_opens_filter() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f7_opens_filter() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::F(7));
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
+        Ok(())
     }
 
     /// F9 inside the call flow clears the active filter (visible count grows back).
     #[test]
-    fn call_flow_f9_clears_filter() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_f9_clears_filter() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         // First apply a filter from the call list
         app.handle_key(KeyCode::Esc); // back to call list
         app.handle_key(KeyCode::F(7));
@@ -2464,242 +2608,268 @@ mod tui_state {
             3,
             "F9 must clear the filter and restore all dialogs"
         );
+        Ok(())
     }
 
     // ── Raw message: navigation ──────────────────────────────────────
 
     /// `q` quits from the raw message view.
     #[test]
-    fn raw_msg_q_quits() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_q_quits() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     /// Esc from the raw view returns to the call flow it was opened from.
     #[test]
-    fn raw_msg_esc_returns_to_call_flow() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_esc_returns_to_call_flow() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Esc);
         assert!(matches!(app.current_view(), View::CallFlow(_)));
+        Ok(())
     }
 
     /// Down scrolls the raw view by one line.
     #[test]
-    fn raw_msg_down_scrolls() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_down_scrolls() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Down);
         assert_eq!(app.raw_msg_scroll(), 1);
+        Ok(())
     }
 
     /// Up scrolls the raw view back to 0.
     #[test]
-    fn raw_msg_up_scrolls_back() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_up_scrolls_back() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Up);
         assert_eq!(app.raw_msg_scroll(), 0);
+        Ok(())
     }
 
     /// `j` scrolls the raw view down.
     #[test]
-    fn raw_msg_j_scrolls() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_j_scrolls() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Char('j'));
         assert_eq!(app.raw_msg_scroll(), 1);
+        Ok(())
     }
 
     /// `k` scrolls the raw view back up.
     #[test]
-    fn raw_msg_k_scrolls_back() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_k_scrolls_back() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Char('j'));
         app.handle_key(KeyCode::Char('k'));
         assert_eq!(app.raw_msg_scroll(), 0);
+        Ok(())
     }
 
     /// PageDown scrolls the raw view by 20 lines.
     #[test]
-    fn raw_msg_page_down() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_page_down() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::PageDown);
         assert_eq!(app.raw_msg_scroll(), 20);
+        Ok(())
     }
 
     /// PageUp undoes a PageDown, back to 0.
     #[test]
-    fn raw_msg_page_up_after_page_down() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_page_up_after_page_down() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::PageDown);
         app.handle_key(KeyCode::PageUp);
         assert_eq!(app.raw_msg_scroll(), 0);
+        Ok(())
     }
 
     /// Home resets the raw-view scroll to 0.
     #[test]
-    fn raw_msg_home_resets_scroll() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_home_resets_scroll() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Home);
         assert_eq!(app.raw_msg_scroll(), 0);
+        Ok(())
     }
 
     // ── Raw message: modes ───────────────────────────────────────────
 
     /// `/` activates search from the raw view.
     #[test]
-    fn raw_msg_slash_activates_search() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_slash_activates_search() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Char('/'));
         assert!(app.search_active());
+        Ok(())
     }
 
     /// `s` toggles syntax highlighting off and back on.
     #[test]
-    fn raw_msg_s_toggles_syntax_highlight() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_s_toggles_syntax_highlight() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         let before = app.syntax_highlight();
         app.handle_key(KeyCode::Char('s'));
         assert_ne!(app.syntax_highlight(), before);
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(app.syntax_highlight(), before);
+        Ok(())
     }
 
     /// `c` advances the color mode (Method to CallId) from the raw view.
     #[test]
-    fn raw_msg_c_cycles_color_mode() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_c_cycles_color_mode() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::Char('c'));
         assert_eq!(app.color_mode(), ColorMode::CallId);
+        Ok(())
     }
 
     /// F1 opens Help from the raw view.
     #[test]
-    fn raw_msg_f1_opens_help() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_f1_opens_help() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// F2 opens the save popup from the raw view.
     #[test]
-    fn raw_msg_f2_opens_save() {
-        let mut app = app_in_raw_message();
+    fn raw_msg_f2_opens_save() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
+        Ok(())
     }
 
     // ── Message diff ─────────────────────────────────────────────────
 
     /// `q` quits from the diff view.
     #[test]
-    fn message_diff_q_quits() {
-        let mut app = app_in_message_diff();
+    fn message_diff_q_quits() -> Result<(), TestError> {
+        let mut app = app_in_message_diff()?;
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     /// Esc from the diff returns to the call flow.
     #[test]
-    fn message_diff_esc_returns_to_call_flow() {
-        let mut app = app_in_message_diff();
+    fn message_diff_esc_returns_to_call_flow() -> Result<(), TestError> {
+        let mut app = app_in_message_diff()?;
         app.handle_key(KeyCode::Esc);
         assert!(matches!(app.current_view(), View::CallFlow(_)));
+        Ok(())
     }
 
     /// F1 opens Help from the diff view.
     #[test]
-    fn message_diff_f1_opens_help() {
-        let mut app = app_in_message_diff();
+    fn message_diff_f1_opens_help() -> Result<(), TestError> {
+        let mut app = app_in_message_diff()?;
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     // ── Stream list: additional keys ─────────────────────────────────
 
     /// `/` activates search in the stream list.
     #[test]
-    fn stream_list_slash_activates_search() {
+    fn stream_list_slash_activates_search() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab); // go to stream list
         app.handle_key(KeyCode::Char('/'));
         assert!(app.search_active());
+        Ok(())
     }
 
     /// F1 opens Help from the stream list.
     #[test]
-    fn stream_list_f1_opens_help() {
+    fn stream_list_f1_opens_help() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// F7 opens the filter popup from the stream list.
     #[test]
-    fn stream_list_f7_opens_filter() {
+    fn stream_list_f7_opens_filter() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::F(7));
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
+        Ok(())
     }
 
     // ── Help view ────────────────────────────────────────────────────
 
     /// F1 while Help is open closes it back to the call list.
     #[test]
-    fn help_f1_returns_to_call_list() {
+    fn help_f1_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1)); // open help
         app.handle_key(KeyCode::F(1)); // close help
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// `q` closes Help back to the call list (it does not quit the app).
     #[test]
-    fn help_q_returns_to_call_list() {
+    fn help_q_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         app.handle_key(KeyCode::Char('q'));
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Statistics view ──────────────────────────────────────────────
 
     /// `q` closes Statistics back to the call list (it does not quit).
     #[test]
-    fn statistics_q_returns_to_call_list() {
+    fn statistics_q_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
         app.handle_key(KeyCode::Char('q'));
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// A second `s` closes Statistics.
     #[test]
-    fn statistics_s_returns_to_call_list() {
+    fn statistics_s_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Save popup ───────────────────────────────────────────────────
 
     /// Esc closes the save popup.
     #[test]
-    fn save_popup_esc_closes() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_esc_closes() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.active_popup(), None);
+        Ok(())
     }
 
     /// Tab cycles through all 12 save formats in order and wraps back to Pcap.
     #[test]
-    fn save_popup_tab_cycles_format() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_tab_cycles_format() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.save_format(), SaveFormat::Pcap);
         app.handle_key(KeyCode::Tab);
@@ -2727,12 +2897,13 @@ mod tui_state {
         // Wraps back to Pcap
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.save_format(), SaveFormat::Pcap);
+        Ok(())
     }
 
     /// BackTab cycles formats in reverse (Pcap, Notes, RtpJson, SippXml).
     #[test]
-    fn save_popup_backtab_reverse_cycles() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_backtab_reverse_cycles() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         // From Pcap, BackTab goes to Notes (the last format), then RtpJson.
         app.handle_key(KeyCode::BackTab);
@@ -2742,12 +2913,13 @@ mod tui_state {
         // And one more BackTab goes to SippXml
         app.handle_key(KeyCode::BackTab);
         assert_eq!(app.save_format(), SaveFormat::SippXml);
+        Ok(())
     }
 
     /// Cycling the format rewrites the path extension (.pcapng, then .txt).
     #[test]
-    fn save_popup_tab_updates_extension() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_tab_updates_extension() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Tab);
@@ -2762,663 +2934,730 @@ mod tui_state {
             "got: {}",
             app.save_path()
         );
+        Ok(())
     }
 
     /// Backspace deletes one character from the save path.
     #[test]
-    fn save_popup_backspace_removes_char() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_backspace_removes_char() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         let before_len = app.save_path().len();
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.save_path().len(), before_len - 1);
+        Ok(())
     }
 
     /// Left moves the save-path cursor one position back.
     #[test]
-    fn save_popup_left_moves_cursor() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_left_moves_cursor() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         let end = app.save_cursor();
         app.handle_key(KeyCode::Left);
         assert_eq!(app.save_cursor(), end - 1);
+        Ok(())
     }
 
     /// Right with the cursor already at the end of the path is a no-op.
     #[test]
-    fn save_popup_right_at_end_is_noop() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_right_at_end_is_noop() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         let end = app.save_cursor();
         app.handle_key(KeyCode::Right);
         assert_eq!(app.save_cursor(), end); // already at end
+        Ok(())
     }
 
     /// Home moves the save-path cursor to position 0.
     #[test]
-    fn save_popup_home_moves_cursor_to_start() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_home_moves_cursor_to_start() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Home);
         assert_eq!(app.save_cursor(), 0);
+        Ok(())
     }
 
     /// End moves the cursor to the end of the path.
     #[test]
-    fn save_popup_end_moves_cursor_to_end() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_end_moves_cursor_to_end() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Home);
         app.handle_key(KeyCode::End);
         assert_eq!(app.save_cursor(), app.save_path().len());
+        Ok(())
     }
 
     /// A typed character inserts at the cursor position.
     #[test]
-    fn save_popup_char_inserts() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_char_inserts() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Home);
         app.handle_key(KeyCode::Char('X'));
         assert!(app.save_path().starts_with('X'));
+        Ok(())
     }
 
     /// Enter performs the save, closes the popup, and reports a status
     /// message. Writes into a tempdir that is removed when the test ends, so
     /// nothing leaks into `/tmp`.
     #[test]
-    fn save_popup_enter_closes() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn save_popup_enter_closes() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("sipnab_test_save.pcap");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().expect("utf-8 tempdir path"));
+        app.set_save_path(path.to_str().ok_or("utf-8 tempdir path")?);
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.active_popup(), None);
         assert!(app.status_error().is_some()); // save result message
+        Ok(())
     }
 
     // ── Column selector: navigation ──────────────────────────────────
 
     /// Down moves the column-selector cursor from 0 to 1.
     #[test]
-    fn column_selector_down_moves_cursor() {
+    fn column_selector_down_moves_cursor() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10));
         assert_eq!(app.call_list_state().column_selector_cursor, 0);
         app.handle_key(KeyCode::Down);
         assert_eq!(app.call_list_state().column_selector_cursor, 1);
+        Ok(())
     }
 
     /// Up at the top of the column selector stays at 0.
     #[test]
-    fn column_selector_up_at_top_stays() {
+    fn column_selector_up_at_top_stays() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10));
         app.handle_key(KeyCode::Up);
         assert_eq!(app.call_list_state().column_selector_cursor, 0);
+        Ok(())
     }
 
     // ── Global shortcuts ─────────────────────────────────────────────
 
     /// Ctrl-C quits from the call list.
     #[test]
-    fn ctrl_c_quits_from_call_list() {
+    fn ctrl_c_quits_from_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     /// Ctrl-C quits from the call flow.
     #[test]
-    fn ctrl_c_quits_from_call_flow() {
-        let mut app = app_with_call_flow_open();
+    fn ctrl_c_quits_from_call_flow() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     /// Ctrl-C quits from the raw message view.
     #[test]
-    fn ctrl_c_quits_from_raw_message() {
-        let mut app = app_in_raw_message();
+    fn ctrl_c_quits_from_raw_message() -> Result<(), TestError> {
+        let mut app = app_in_raw_message()?;
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     /// Ctrl-C quits even while Help is open.
     #[test]
-    fn ctrl_c_quits_from_help() {
+    fn ctrl_c_quits_from_help() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     /// Ctrl-C quits from the Statistics view.
     #[test]
-    fn ctrl_c_quits_from_statistics() {
+    fn ctrl_c_quits_from_statistics() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     /// Ctrl-C quits even with the save popup open.
     #[test]
-    fn ctrl_c_quits_from_save_popup() {
-        let mut app = app_with_three_dialogs();
+    fn ctrl_c_quits_from_save_popup() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
         app.handle_key_with_modifiers(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert!(app.should_quit());
+        Ok(())
     }
 
     // ── Call list: more navigation ───────────────────────────────────
 
     /// End selects the last call-list row.
     #[test]
-    fn end_moves_to_bottom() {
-        let mut app = app_with_three_dialogs();
+    fn end_moves_to_bottom() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::End);
         assert_eq!(app.call_list_state().selected(), 2);
+        Ok(())
     }
 
     /// PageDown clamps to the last row of a 3-row list.
     #[test]
-    fn page_down_on_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn page_down_on_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::PageDown);
         // PageDown moves by 20, clamped to last (2)
         assert_eq!(app.call_list_state().selected(), 2);
+        Ok(())
     }
 
     /// PageUp from the bottom returns to row 0.
     #[test]
-    fn page_up_on_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn page_up_on_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::End);
         app.handle_key(KeyCode::PageUp);
         assert_eq!(app.call_list_state().selected(), 0);
+        Ok(())
     }
 
     /// Down past the last row clamps at the bottom.
     #[test]
-    fn down_at_bottom_stays() {
-        let mut app = app_with_three_dialogs();
+    fn down_at_bottom_stays() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Down); // past end
         assert_eq!(app.call_list_state().selected(), 2);
+        Ok(())
     }
 
     /// Up at row 0 stays at 0.
     #[test]
-    fn up_at_top_stays() {
-        let mut app = app_with_three_dialogs();
+    fn up_at_top_stays() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Up);
         assert_eq!(app.call_list_state().selected(), 0);
+        Ok(())
     }
 
     /// `j` moves the call-list selection down.
     #[test]
-    fn j_moves_down_in_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn j_moves_down_in_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('j'));
         assert_eq!(app.call_list_state().selected(), 1);
+        Ok(())
     }
 
     /// `k` moves the call-list selection back up.
     #[test]
-    fn k_moves_up_in_call_list() {
-        let mut app = app_with_three_dialogs();
+    fn k_moves_up_in_call_list() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('j'));
         app.handle_key(KeyCode::Char('k'));
         assert_eq!(app.call_list_state().selected(), 0);
+        Ok(())
     }
 
     /// F1 opens Help from the call list.
     #[test]
-    fn call_list_f1_opens_help() {
+    fn call_list_f1_opens_help() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
+        Ok(())
     }
 
     /// F2 opens the save popup from the call list.
     #[test]
-    fn call_list_f2_opens_save() {
-        let mut app = app_with_three_dialogs();
+    fn call_list_f2_opens_save() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
+        Ok(())
     }
 
     // ── Stream list: more navigation ─────────────────────────────────
 
     /// Esc leaves the stream list for the call list.
     #[test]
-    fn stream_list_esc_returns_to_call_list() {
+    fn stream_list_esc_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         assert_eq!(*app.current_view(), View::StreamList);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// Tab toggles from the stream list back to the call list.
     #[test]
-    fn stream_list_tab_returns_to_call_list() {
+    fn stream_list_tab_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab); // go to stream list
         app.handle_key(KeyCode::Tab); // toggle back
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     /// `q` quits from the stream list.
     #[test]
-    fn stream_list_q_quits() {
+    fn stream_list_q_quits() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Tab);
         quit_via(&mut app, KeyCode::Char('q'));
+        Ok(())
     }
 
     // ── Help: Esc closes ─────────────────────────────────────────────
 
     /// Esc closes Help back to the call list.
     #[test]
-    fn help_esc_returns_to_call_list() {
+    fn help_esc_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(1));
         assert_eq!(*app.current_view(), View::Help);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Statistics: Esc closes ───────────────────────────────────────
 
     /// Esc closes Statistics back to the call list.
     #[test]
-    fn statistics_esc_returns_to_call_list() {
+    fn statistics_esc_returns_to_call_list() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('s'));
         assert_eq!(*app.current_view(), View::Statistics);
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::CallList);
+        Ok(())
     }
 
     // ── Popup intercepts keys ────────────────────────────────────────
 
     /// With the save popup open, `q` is typed into the path instead of quitting.
     #[test]
-    fn popup_intercepts_normal_keys() {
-        let mut app = app_with_three_dialogs();
+    fn popup_intercepts_normal_keys() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2)); // open save popup
         // 'q' should be consumed by save popup (inserts char), not quit
         app.handle_key(KeyCode::Char('q'));
         assert!(!app.should_quit());
         assert!(app.save_path().contains('q'));
+        Ok(())
     }
 
     /// In search mode, `q` goes into the query instead of quitting.
     #[test]
-    fn search_mode_intercepts_normal_keys() {
-        let mut app = app_with_three_dialogs();
+    fn search_mode_intercepts_normal_keys() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::Char('/'));
         assert!(app.search_active());
         // 'q' should go into search query, not quit
         app.handle_key(KeyCode::Char('q'));
         assert!(!app.should_quit());
         assert_eq!(app.search_query(), "q");
+        Ok(())
     }
 
     // ── Call flow: Right key resizes split ────────────────────────────
 
     /// Right pushes the split right: the detail percentage shrinks by 5.
     #[test]
-    fn call_flow_right_decreases_pct() {
+    fn call_flow_right_decreases_pct() -> Result<(), TestError> {
         // Right = push split right = ladder wider = detail pct decreases
-        let mut app = app_with_call_flow_open();
+        let mut app = app_with_call_flow_open()?;
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Right);
         assert_eq!(app.raw_preview_pct(), before - 5);
+        Ok(())
     }
 
     /// Left pushes the split left: the detail percentage grows by 5.
     #[test]
-    fn call_flow_left_increases_pct() {
+    fn call_flow_left_increases_pct() -> Result<(), TestError> {
         // Left = push split left = detail wider = detail pct increases
-        let mut app = app_with_call_flow_open();
+        let mut app = app_with_call_flow_open()?;
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Left);
         assert_eq!(app.raw_preview_pct(), before + 5);
+        Ok(())
     }
 
     // ── Call flow: End resets detail_scroll ───────────────────────────
 
     /// End resets the detail-pane scroll to 0.
     #[test]
-    fn call_flow_end_resets_detail_scroll() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_end_resets_detail_scroll() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(']'));
         assert!(app.detail_scroll() > 0);
         app.handle_key(KeyCode::End);
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     /// Home resets the detail-pane scroll to 0.
     #[test]
-    fn call_flow_home_resets_detail_scroll() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_home_resets_detail_scroll() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(']'));
         assert!(app.detail_scroll() > 0);
         app.handle_key(KeyCode::Home);
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     /// PageUp resets the detail-pane scroll to 0.
     #[test]
-    fn call_flow_page_up_resets_detail_scroll() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_page_up_resets_detail_scroll() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(']'));
         assert!(app.detail_scroll() > 0);
         app.handle_key(KeyCode::PageUp);
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     /// PageDown resets the detail-pane scroll to 0.
     #[test]
-    fn call_flow_page_down_resets_detail_scroll() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_page_down_resets_detail_scroll() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char(']'));
         assert!(app.detail_scroll() > 0);
         app.handle_key(KeyCode::PageDown);
         assert_eq!(app.detail_scroll(), 0);
+        Ok(())
     }
 
     // ── Call flow: raw_preview off disables resize ───────────────────
 
     /// `+` does not resize the split while the raw preview is off.
     #[test]
-    fn call_flow_plus_noop_when_preview_off() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_plus_noop_when_preview_off() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('R')); // turn off raw preview
         assert!(!app.raw_preview());
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Char('+'));
         assert_eq!(app.raw_preview_pct(), before); // unchanged
+        Ok(())
     }
 
     /// `-` does not resize the split while the raw preview is off.
     #[test]
-    fn call_flow_minus_noop_when_preview_off() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_minus_noop_when_preview_off() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('R'));
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Char('-'));
         assert_eq!(app.raw_preview_pct(), before);
+        Ok(())
     }
 
     // ── Column selector: j/k alternatives ────────────────────────────
 
     /// `j` moves the column-selector cursor down.
     #[test]
-    fn column_selector_j_moves_down() {
+    fn column_selector_j_moves_down() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10));
         app.handle_key(KeyCode::Char('j'));
         assert_eq!(app.call_list_state().column_selector_cursor, 1);
+        Ok(())
     }
 
     /// `k` moves the column-selector cursor back up.
     #[test]
-    fn column_selector_k_moves_up() {
+    fn column_selector_k_moves_up() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(10));
         app.handle_key(KeyCode::Char('j'));
         app.handle_key(KeyCode::Char('k'));
         assert_eq!(app.call_list_state().column_selector_cursor, 0);
+        Ok(())
     }
 
     // ── Save popup: backspace at 0 is noop ───────────────────────────
 
     /// Backspace with the cursor at 0 leaves the path unchanged.
     #[test]
-    fn save_popup_backspace_at_zero_is_noop() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_backspace_at_zero_is_noop() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Home); // cursor to 0
         let before = app.save_path().to_string();
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.save_path(), before);
+        Ok(())
     }
 
     /// Left at cursor 0 is a no-op.
     #[test]
-    fn save_popup_left_at_zero_is_noop() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_left_at_zero_is_noop() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Home);
         app.handle_key(KeyCode::Left);
         assert_eq!(app.save_cursor(), 0);
+        Ok(())
     }
 
     /// Left then Right returns the cursor to its original position.
     #[test]
-    fn save_popup_right_then_left_round_trips() {
-        let mut app = app_with_three_dialogs();
+    fn save_popup_right_then_left_round_trips() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         let end = app.save_cursor();
         app.handle_key(KeyCode::Left);
         app.handle_key(KeyCode::Right);
         assert_eq!(app.save_cursor(), end);
+        Ok(())
     }
 
     // ── Default state assertions ─────────────────────────────────────
 
     /// The SDP display mode defaults to None.
     #[test]
-    fn default_sdp_display_mode_is_none() {
+    fn default_sdp_display_mode_is_none() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::None);
+        Ok(())
     }
 
     /// The color mode defaults to Method.
     #[test]
-    fn default_color_mode_is_method() {
+    fn default_color_mode_is_method() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(app.color_mode(), ColorMode::Method);
+        Ok(())
     }
 
     /// The raw-preview split defaults to on.
     #[test]
-    fn default_raw_preview_is_true() {
+    fn default_raw_preview_is_true() -> Result<(), TestError> {
         let app = App::new_test();
         assert!(app.raw_preview());
+        Ok(())
     }
 
     /// The detail split defaults to 40 percent.
     #[test]
-    fn default_raw_preview_pct_is_40() {
+    fn default_raw_preview_pct_is_40() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(app.raw_preview_pct(), 40);
+        Ok(())
     }
 
     /// Syntax highlighting defaults to on.
     #[test]
-    fn default_syntax_highlight_is_true() {
+    fn default_syntax_highlight_is_true() -> Result<(), TestError> {
         let app = App::new_test();
         assert!(app.syntax_highlight());
+        Ok(())
     }
 
     /// The save format defaults to Pcap.
     #[test]
-    fn default_save_format_is_pcap() {
+    fn default_save_format_is_pcap() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(app.save_format(), SaveFormat::Pcap);
+        Ok(())
     }
 
     /// Extended flow defaults to off.
     #[test]
-    fn default_extended_flow_is_false() {
+    fn default_extended_flow_is_false() -> Result<(), TestError> {
         let app = App::new_test();
         assert!(!app.extended_flow());
+        Ok(())
     }
 
     /// RTP-in-flow display defaults to off.
     #[test]
-    fn default_show_rtp_in_flow_is_false() {
+    fn default_show_rtp_in_flow_is_false() -> Result<(), TestError> {
         let app = App::new_test();
         assert!(!app.show_rtp_in_flow());
+        Ok(())
     }
 
     /// No diff anchor is set by default.
     #[test]
-    fn default_diff_selected_is_none() {
+    fn default_diff_selected_is_none() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(app.diff_selected_msg(), None);
+        Ok(())
     }
 
     /// Capture starts unpaused.
     #[test]
-    fn default_paused_is_false() {
+    fn default_paused_is_false() -> Result<(), TestError> {
         let app = App::new_test();
         assert!(!app.paused());
+        Ok(())
     }
 
     // ── Step 2 & 3: F4 extended flow and F8 settings popup ──────────
 
     /// F4 from the call list opens the call flow with extended mode already on.
     #[test]
-    fn f4_opens_extended_call_flow() {
-        let mut app = app_with_three_dialogs();
+    fn f4_opens_extended_call_flow() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(4));
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         assert!(app.extended_flow());
+        Ok(())
     }
 
     /// F8 opens the settings popup.
     #[test]
-    fn f8_opens_settings_popup() {
+    fn f8_opens_settings_popup() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(8));
         assert!(app.active_popup().is_some());
+        Ok(())
     }
 
     /// Esc closes the settings popup.
     #[test]
-    fn settings_popup_esc_closes() {
+    fn settings_popup_esc_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(8));
         assert!(app.active_popup().is_some());
         app.handle_key(KeyCode::Esc);
         assert!(app.active_popup().is_none());
+        Ok(())
     }
 
     /// Enter on settings item 0 cycles the color mode.
     #[test]
-    fn settings_popup_enter_toggles_color_mode() {
+    fn settings_popup_enter_toggles_color_mode() -> Result<(), TestError> {
         let mut app = App::new_test();
         let initial = app.color_mode();
         app.handle_key(KeyCode::F(8));
         app.handle_key(KeyCode::Enter); // Toggle item 0 = color mode
         assert_ne!(app.color_mode(), initial);
+        Ok(())
     }
 
     /// Down then Enter toggles the second settings item (timestamp mode).
     #[test]
-    fn settings_popup_navigate_and_toggle() {
+    fn settings_popup_navigate_and_toggle() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(8));
         app.handle_key(KeyCode::Down); // Move to timestamp mode (item 1)
         let initial_ts = app.timestamp_mode();
         app.handle_key(KeyCode::Enter); // Toggle timestamp mode
         assert_ne!(app.timestamp_mode(), initial_ts);
+        Ok(())
     }
 
     // ── Mark + Delta (Feature 1) ──────────────────────────────────
 
     /// `m` sets the mark at the selected message and reports "Mark set".
     #[test]
-    fn call_flow_m_sets_mark() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_m_sets_mark() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert_eq!(app.mark_index(), None);
         app.handle_key(KeyCode::Char('m'));
         assert_eq!(app.mark_index(), Some(0));
         assert_eq!(app.status_error(), Some("Mark set"));
+        Ok(())
     }
 
     /// `M` clears the mark and reports "Mark cleared".
     #[test]
-    fn call_flow_m_uppercase_clears_mark() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_m_uppercase_clears_mark() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('m')); // set mark
         assert_eq!(app.mark_index(), Some(0));
         app.handle_key(KeyCode::Char('M')); // clear mark
         assert_eq!(app.mark_index(), None);
         assert_eq!(app.status_error(), Some("Mark cleared"));
+        Ok(())
     }
 
     /// The mark is placed at the message selected when `m` is pressed (index 1 after Down).
     #[test]
-    fn call_flow_mark_follows_selected() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_mark_follows_selected() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Down); // select msg 1
         app.handle_key(KeyCode::Char('m')); // mark at msg 1
         assert_eq!(app.mark_index(), Some(1));
+        Ok(())
     }
 
     // ── Fold expand toggle (Feature 3) ──────────────────────────────
 
     /// `e` expands and re-collapses the fold at the selected index.
     #[test]
-    fn call_flow_e_toggles_fold_expand() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_e_toggles_fold_expand() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         assert!(app.fold_expanded().is_empty());
         app.handle_key(KeyCode::Char('e')); // expand fold at index 0
         assert!(app.fold_expanded().contains(&0));
         app.handle_key(KeyCode::Char('e')); // collapse fold at index 0
         assert!(!app.fold_expanded().contains(&0));
+        Ok(())
     }
 
     /// Folds expanded at two different indices are tracked independently.
     #[test]
-    fn call_flow_e_at_different_indices() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_e_at_different_indices() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('e')); // expand at 0
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char('e')); // expand at 1
         assert!(app.fold_expanded().contains(&0));
         assert!(app.fold_expanded().contains(&1));
+        Ok(())
     }
 
     // ── File Open popup ─────────────────────────────────────────────
 
     /// `O` opens the file-open dialog.
     #[test]
-    fn file_open_o_opens_popup() {
+    fn file_open_o_opens_popup() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('O'));
         assert_eq!(app.active_popup(), Some(&Popup::FileOpenDialog));
+        Ok(())
     }
 
     /// Esc closes the file-open dialog.
     #[test]
-    fn file_open_esc_closes() {
+    fn file_open_esc_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('O'));
         assert!(app.active_popup().is_some());
         app.handle_key(KeyCode::Esc);
         assert!(app.active_popup().is_none());
+        Ok(())
     }
 
     /// Helper: open the file dialog and switch to manual-path mode with an
@@ -3433,7 +3672,7 @@ mod tui_state {
 
     /// Typed characters append to the manual path and advance the cursor.
     #[test]
-    fn file_open_char_appends() {
+    fn file_open_char_appends() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('/'));
@@ -3442,11 +3681,12 @@ mod tui_state {
         app.handle_key(KeyCode::Char('p'));
         assert_eq!(app.open_path(), "/tmp");
         assert_eq!(app.open_cursor(), 4);
+        Ok(())
     }
 
     /// Backspace removes the last typed path character.
     #[test]
-    fn file_open_backspace() {
+    fn file_open_backspace() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
@@ -3454,11 +3694,12 @@ mod tui_state {
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.open_path(), "a");
         assert_eq!(app.open_cursor(), 1);
+        Ok(())
     }
 
     /// Left/Right move the path cursor without editing the text.
     #[test]
-    fn file_open_left_right_cursor() {
+    fn file_open_left_right_cursor() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
@@ -3469,11 +3710,12 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 1);
         app.handle_key(KeyCode::Right);
         assert_eq!(app.open_cursor(), 2);
+        Ok(())
     }
 
     /// Home and End jump the path cursor to the start and end.
     #[test]
-    fn file_open_home_end() {
+    fn file_open_home_end() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
@@ -3482,22 +3724,24 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 0);
         app.handle_key(KeyCode::End);
         assert_eq!(app.open_cursor(), 2);
+        Ok(())
     }
 
     /// Enter on an empty path closes the dialog with an error status.
     #[test]
-    fn file_open_enter_empty_path_closes() {
+    fn file_open_enter_empty_path_closes() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Enter);
         // Should close popup with error message
         assert!(app.active_popup().is_none());
         assert!(app.status_error().is_some());
+        Ok(())
     }
 
     /// Enter on a nonexistent path closes the dialog and reports not-found/failure.
     #[test]
-    fn file_open_enter_nonexistent_file() {
+    fn file_open_enter_nonexistent_file() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
         for c in "/nonexistent/file.pcap".chars() {
@@ -3505,16 +3749,17 @@ mod tui_state {
         }
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
-        let err = app.status_error().unwrap();
+        let err = app.status_error().ok_or("app.status_error() is None")?;
         assert!(
             err.contains("not found") || err.contains("Failed"),
             "unexpected error: {err}"
         );
+        Ok(())
     }
 
     /// Entering a real pcap path loads dialogs from it (silently skipped when the sample is absent).
     #[test]
-    fn file_open_enter_valid_pcap_loads() {
+    fn file_open_enter_valid_pcap_loads() -> Result<(), TestError> {
         // Use one of the test pcap files (path relative to CARGO_MANIFEST_DIR)
         let pcap_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -3540,11 +3785,12 @@ mod tui_state {
             app.visible_dialog_count() > 0,
             "Expected dialogs to be loaded from pcap"
         );
+        Ok(())
     }
 
     /// An RTP-only pcap yields 0 dialogs, populates streams, and auto-switches to the stream list.
     #[test]
-    fn file_open_rtp_only_pcap_populates_streams_and_switches_view() {
+    fn file_open_rtp_only_pcap_populates_streams_and_switches_view() -> Result<(), TestError> {
         // RTP-only pcap (no SIP) — exercises the RTP ingestion path in
         // `load_pcap_file` and the auto-switch to the stream list.
         let pcap_path = concat!(
@@ -3574,12 +3820,13 @@ mod tui_state {
             "should auto-switch to stream list when SIP=0 and RTP>0, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     /// Opening a pcap replaces the existing dialogs and reports a "Loaded" status.
     #[test]
-    fn file_open_clears_existing_data() {
-        let mut app = app_with_three_dialogs();
+    fn file_open_clears_existing_data() -> Result<(), TestError> {
+        let mut app = app_with_three_dialogs()?;
         assert_eq!(app.visible_dialog_count(), 3);
 
         let pcap_path = concat!(
@@ -3598,8 +3845,9 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
 
         // Original 3 dialogs should be gone, replaced by pcap content
-        let status = app.status_error().unwrap();
+        let status = app.status_error().ok_or("app.status_error() is None")?;
         assert!(status.contains("Loaded"), "unexpected status: {status}");
+        Ok(())
     }
 
     /// Browser mode should list symlinked directories as directories, not
@@ -3607,11 +3855,11 @@ mod tui_state {
     /// symlinks with `is_dir() == false` on Linux, so the picker must
     /// follow symlinks before classifying the entry.
     #[test]
-    fn file_open_browser_shows_symlinked_directories() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+    fn file_open_browser_shows_symlinked_directories() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir()?;
         let real = tmp.path().join("realdir");
-        std::fs::create_dir(&real).unwrap();
-        std::os::unix::fs::symlink(&real, tmp.path().join("linkdir")).unwrap();
+        std::fs::create_dir(&real)?;
+        std::os::unix::fs::symlink(&real, tmp.path().join("linkdir"))?;
 
         let mut app = App::new_test();
         app.set_open_dir_for_test(tmp.path().to_path_buf());
@@ -3626,13 +3874,14 @@ mod tui_state {
             names.iter().any(|n| n == "linkdir"),
             "symlinked directory should be listed: {names:?}"
         );
+        Ok(())
     }
 
     /// Browser mode end-to-end: from the crate root, filter+Enter into
     /// `tests/`, then into `tests/pcap-samples/`, and verify the sample
     /// pcap files appear in the listing.
     #[test]
-    fn file_open_browser_navigates_to_pcap_samples() {
+    fn file_open_browser_navigates_to_pcap_samples() -> Result<(), TestError> {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let samples = manifest_dir.join("tests/pcap-samples");
         // Assert, do not skip. `if !is_dir { return }` made this test report
@@ -3679,13 +3928,14 @@ mod tui_state {
             "expected sip-rtp-g711.pcap in listing: {names:?}"
         );
         assert_eq!(app.active_popup(), Some(&Popup::FileOpenDialog));
+        Ok(())
     }
 
     // ── Save format labels (all 11) ─────────────────────────────────
 
     /// Each of the 11 save formats reports its expected UI label.
     #[test]
-    fn save_popup_format_labels() {
+    fn save_popup_format_labels() -> Result<(), TestError> {
         assert_eq!(SaveFormat::Pcap.label(), "PCAP");
         assert_eq!(SaveFormat::PcapNg.label(), "PCAP-NG");
         assert_eq!(SaveFormat::Txt.label(), "TXT");
@@ -3697,11 +3947,12 @@ mod tui_state {
         assert_eq!(SaveFormat::Wav.label(), "WAV");
         assert_eq!(SaveFormat::SippXml.label(), "SIPp");
         assert_eq!(SaveFormat::RtpJson.label(), "RTP JSON");
+        Ok(())
     }
 
     /// Each save format maps to its expected file extension.
     #[test]
-    fn save_popup_format_extensions() {
+    fn save_popup_format_extensions() -> Result<(), TestError> {
         assert_eq!(SaveFormat::Pcap.extension(), "pcap");
         assert_eq!(SaveFormat::PcapNg.extension(), "pcapng");
         assert_eq!(SaveFormat::Txt.extension(), "txt");
@@ -3713,11 +3964,12 @@ mod tui_state {
         assert_eq!(SaveFormat::Wav.extension(), "wav");
         assert_eq!(SaveFormat::SippXml.extension(), "xml");
         assert_eq!(SaveFormat::RtpJson.extension(), "rtp.json");
+        Ok(())
     }
 
     /// Each save format reports its expected category grouping.
     #[test]
-    fn save_popup_format_categories() {
+    fn save_popup_format_categories() -> Result<(), TestError> {
         assert_eq!(SaveFormat::Pcap.category(), "Packet capture");
         assert_eq!(SaveFormat::PcapNg.category(), "Packet capture");
         assert_eq!(SaveFormat::Txt.category(), "SIP-specific");
@@ -3729,38 +3981,44 @@ mod tui_state {
         assert_eq!(SaveFormat::Wav.category(), "RTP/media");
         assert_eq!(SaveFormat::SippXml.category(), "SIP-specific");
         assert_eq!(SaveFormat::RtpJson.category(), "RTP/media");
+        Ok(())
     }
 
     // ── Mark + delta additional tests ────────────────────────────────
 
     /// After marking message 0 and moving to 1, mark and selection point at different messages.
     #[test]
-    fn call_flow_mark_delta_different_messages() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_mark_delta_different_messages() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('m')); // set mark at 0
         assert_eq!(app.mark_index(), Some(0));
         app.handle_key(KeyCode::Down); // move to msg 1
         assert_eq!(app.selected_msg_index(), 1);
         // Mark stays at 0, selected at 1 — they differ
-        assert_ne!(app.mark_index().unwrap(), app.selected_msg_index());
+        assert_ne!(
+            app.mark_index().ok_or("app.mark_index() is None")?,
+            app.selected_msg_index()
+        );
+        Ok(())
     }
 
     // ── Fold expansion additional tests ──────────────────────────────
 
     /// No folds are expanded when the call flow opens.
     #[test]
-    fn call_flow_fold_starts_empty() {
-        let app = app_with_call_flow_open();
+    fn call_flow_fold_starts_empty() -> Result<(), TestError> {
+        let app = app_with_call_flow_open()?;
         assert!(
             app.fold_expanded().is_empty(),
             "fold_expanded should start empty"
         );
+        Ok(())
     }
 
     /// Toggling the same fold twice returns the expanded set to empty.
     #[test]
-    fn call_flow_fold_multiple_toggles() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_fold_multiple_toggles() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         // Toggle fold at index 0 on
         app.handle_key(KeyCode::Char('e'));
         assert!(app.fold_expanded().contains(&0));
@@ -3768,6 +4026,7 @@ mod tui_state {
         app.handle_key(KeyCode::Char('e'));
         assert!(!app.fold_expanded().contains(&0));
         assert!(app.fold_expanded().is_empty());
+        Ok(())
     }
 
     // ── Swimlane selection default ───────────────────────────────────
@@ -3782,23 +4041,23 @@ mod tui_state {
     /// as the default state, so a broken default (or broken Selected/Related
     /// assignment) now fails here.
     #[test]
-    fn default_selection_state_is_normal() {
+    fn default_selection_state_is_normal() -> Result<(), TestError> {
         use sipnab::tui::call_flow::prepare::prepare_messages;
         use sipnab::tui::call_flow::{FlowDisplayOptions, SelectionState};
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let t0 = base_ts_or_panic();
+        let t0 = base_ts()?;
         // A two-message dialog on one leg: INVITE A->B, then 200 OK B->A.
         let messages = vec![
-            make_invite_or_panic("sel-state@test", "1001", "1002", t0),
-            make_response_or_panic(
+            make_invite("sel-state@test", "1001", "1002", t0)?,
+            make_response(
                 "sel-state@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(1),
-            ),
+            )?,
         ];
         let theme = Theme::default();
         let resolver = sipnab::names::NameResolver::new();
@@ -3842,14 +4101,15 @@ mod tui_state {
             SelectionState::Related,
             "the same-leg peer must be marked Related, not Normal"
         );
+        Ok(())
     }
 
     // ── Mermaid export key (E) ───────────────────────────────────────
 
     /// `E` exports a Mermaid sequence diagram and reports a clipboard/Mermaid status message.
     #[test]
-    fn call_flow_e_uppercase_export_mermaid() {
-        let mut app = app_with_call_flow_open();
+    fn call_flow_e_uppercase_export_mermaid() -> Result<(), TestError> {
+        let mut app = app_with_call_flow_open()?;
         app.handle_key(KeyCode::Char('E'));
         // Should set a status message about clipboard or Mermaid
         let status = app.status_error();
@@ -3857,7 +4117,7 @@ mod tui_state {
             status.is_some(),
             "Expected status message after Mermaid export"
         );
-        let msg = status.unwrap();
+        let msg = status.ok_or("status is None")?;
         // The status may be the synchronous "Copying … to clipboard…" or,
         // if the detached clipboard worker has already reported back through
         // the async drain, its outcome ("Copied N bytes (OSC 52)" /
@@ -3872,18 +4132,19 @@ mod tui_state {
                 || lower.contains("copied"),
             "Expected a clipboard/Mermaid export status: {msg}"
         );
+        Ok(())
     }
 
     // ── New save format file save tests ──────────────────────────────
 
     /// Saving as JSON writes a file containing `call_id` fields (in a tempdir).
     #[test]
-    fn save_json_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_json_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.json");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to JSON: Pcap -> PcapNg -> Txt -> Json = 3 tabs
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::Tab);
@@ -3892,21 +4153,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "JSON file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("call_id"),
             "JSON should contain call_id field"
         );
+        Ok(())
     }
 
     /// Saving as NDJSON writes a file containing `call_id` fields (in a tempdir).
     #[test]
-    fn save_ndjson_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_ndjson_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.ndjson");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Ndjson: Pcap -> PcapNg -> Txt -> Json -> Ndjson = 4 tabs
         for _ in 0..4 {
             app.handle_key(KeyCode::Tab);
@@ -3915,21 +4177,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "NDJSON file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("call_id"),
             "NDJSON should contain call_id field"
         );
+        Ok(())
     }
 
     /// Saving as CSV writes a file whose content includes a `call_id` header (in a tempdir).
     #[test]
-    fn save_csv_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_csv_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.csv");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Csv: 5 tabs
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
@@ -3938,22 +4201,23 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "CSV file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         // CSV should have a header row
         assert!(
             content.contains("call_id") || content.contains("Call-ID"),
             "CSV should contain a header with call_id"
         );
+        Ok(())
     }
 
     /// Saving as HTML writes a file with html/mermaid content (in a tempdir).
     #[test]
-    fn save_html_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_html_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.html");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Html: 6 tabs
         for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
@@ -3962,21 +4226,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "HTML file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("mermaid") || content.contains("html") || content.contains("HTML"),
             "HTML should contain mermaid or html content"
         );
+        Ok(())
     }
 
     /// Saving as Markdown writes a file with a heading or Call reference (in a tempdir).
     #[test]
-    fn save_markdown_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_markdown_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.md");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Markdown: 7 tabs
         for _ in 0..7 {
             app.handle_key(KeyCode::Tab);
@@ -3985,21 +4250,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "Markdown file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains('#') || content.contains("Call"),
             "Markdown should contain heading or Call reference"
         );
+        Ok(())
     }
 
     /// WAV export with no RTP streams reports a "No RTP streams" error instead of writing a file.
     #[test]
-    fn save_wav_without_rtp_streams_shows_error() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_wav_without_rtp_streams_shows_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.wav");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Wav: 8 tabs
         for _ in 0..8 {
             app.handle_key(KeyCode::Tab);
@@ -4008,21 +4274,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         // WAV export with no RTP streams should produce an informative error
-        let status = app.status_error().unwrap();
+        let status = app.status_error().ok_or("app.status_error() is None")?;
         assert!(
             status.contains("No RTP streams"),
             "Expected no-RTP-streams message, got: {status}"
         );
+        Ok(())
     }
 
     /// Saving as SIPp XML writes a scenario file (in a tempdir).
     #[test]
-    fn save_sipp_xml_creates_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_sipp_xml_creates_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.xml");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to SippXml: 9 tabs
         for _ in 0..9 {
             app.handle_key(KeyCode::Tab);
@@ -4031,21 +4298,22 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         assert!(path.exists(), "SIPp XML file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("scenario") || content.contains("sipp") || content.contains("xml"),
             "SIPp XML should contain scenario content"
         );
+        Ok(())
     }
 
     /// RTP-JSON export with no streams reports a no-streams message instead of writing a file.
     #[test]
-    fn save_rtp_json_no_streams_shows_message() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_rtp_json_no_streams_shows_message() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.rtp.json");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to RtpJson: 10 tabs
         for _ in 0..10 {
             app.handle_key(KeyCode::Tab);
@@ -4054,46 +4322,48 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
         // With no RTP streams, save returns a message instead of creating file
-        let status = app.status_error().unwrap();
+        let status = app.status_error().ok_or("app.status_error() is None")?;
         assert!(
             status.contains("No RTP streams") || status.contains("rtp"),
             "Expected no-streams message, got: {status}"
         );
+        Ok(())
     }
 
     // ── Save format correctness tests ──────────────────────────────────
 
     /// TXT export contains per-message headers, separators, and raw SIP text.
     #[test]
-    fn save_txt_format_correct() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_txt_format_correct() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.txt");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Txt: Pcap -> PcapNg -> Txt = 2 tabs
         app.handle_key(KeyCode::Tab);
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.save_format(), SaveFormat::Txt);
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "Txt file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("# Message"),
             "Txt should have message headers"
         );
         assert!(content.contains("---"), "Txt should have separators");
         assert!(content.contains("SIP/2.0"), "Txt should contain raw SIP");
+        Ok(())
     }
 
     /// CSV export's first line carries `call_id` and `method` columns, followed by data rows.
     #[test]
-    fn save_csv_has_correct_header() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_csv_has_correct_header() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.csv");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Csv: 5 tabs
         for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
@@ -4101,8 +4371,11 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::Csv);
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "CSV file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
-        let first_line = content.lines().next().unwrap();
+        let content = std::fs::read_to_string(&path)?;
+        let first_line = content
+            .lines()
+            .next()
+            .ok_or("content.lines().next() is None")?;
         assert!(
             first_line.contains("call_id"),
             "CSV header should contain call_id"
@@ -4116,16 +4389,17 @@ mod tui_state {
             content.lines().count() >= 2,
             "CSV should have header + data rows"
         );
+        Ok(())
     }
 
     /// Markdown export has summary/dialog headings and table pipes.
     #[test]
-    fn save_markdown_has_headings() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_markdown_has_headings() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.md");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to Markdown: 7 tabs
         for _ in 0..7 {
             app.handle_key(KeyCode::Tab);
@@ -4133,25 +4407,26 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::Markdown);
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "Markdown file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("# Call Summary") || content.contains("## Dialog"),
             "MD should have headings"
         );
         assert!(content.contains("|"), "MD should have table pipes");
+        Ok(())
     }
 
     /// SIPp export from the call flow contains scenario open/close tags and send/recv elements.
     #[test]
-    fn save_sipp_xml_has_scenario_tags() {
-        let dir = tempfile::tempdir().unwrap();
+    fn save_sipp_xml_has_scenario_tags() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.xml");
-        let mut app = app_with_three_dialogs();
+        let mut app = app_with_three_dialogs()?;
         // Open call flow first since SIPp exports current dialog
         app.handle_key(KeyCode::Enter);
         assert!(matches!(app.current_view(), View::CallFlow(_)));
         app.handle_key(KeyCode::F(2));
-        app.set_save_path(path.to_str().unwrap());
+        app.set_save_path(path.to_str().ok_or("path.to_str() is None")?);
         // Cycle to SippXml: 9 tabs
         for _ in 0..9 {
             app.handle_key(KeyCode::Tab);
@@ -4159,7 +4434,7 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::SippXml);
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "SIPp XML file should exist");
-        let content = std::fs::read_to_string(&path).unwrap();
+        let content = std::fs::read_to_string(&path)?;
         assert!(
             content.contains("<scenario"),
             "SIPp should have <scenario> tag"
@@ -4172,18 +4447,19 @@ mod tui_state {
             content.contains("<send>") || content.contains("<recv"),
             "SIPp should have send/recv"
         );
+        Ok(())
     }
 
     // ── 3-participant prepare_messages test ──────────────────────────
 
     /// `prepare_messages` with 3 distinct endpoints yields 3 participants and messages spanning all 3 columns.
     #[test]
-    fn prepare_messages_three_participants() {
+    fn prepare_messages_three_participants() -> Result<(), TestError> {
         use sipnab::tui::call_flow::prepare::prepare_messages;
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let t0 = base_ts_or_panic();
+        let t0 = base_ts()?;
         let la = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let lb = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let lc = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
@@ -4200,7 +4476,7 @@ mod tui_state {
                     "Content-Length: 0",
                 ],
             );
-            parse_sip(&raw, t0, la, lb, 5060, 5060, TransportProto::Udp).unwrap()
+            parse_sip(&raw, t0, la, lb, 5060, 5060, TransportProto::Udp)?
         };
         let msg2 = {
             let raw = build_sip(
@@ -4221,8 +4497,7 @@ mod tui_state {
                 5060,
                 5060,
                 TransportProto::Udp,
-            )
-            .unwrap()
+            )?
         };
         let msg3 = {
             let raw = build_sip(
@@ -4243,8 +4518,7 @@ mod tui_state {
                 5060,
                 5060,
                 TransportProto::Udp,
-            )
-            .unwrap()
+            )?
         };
         let msg4 = {
             let raw = build_sip(
@@ -4265,8 +4539,7 @@ mod tui_state {
                 5060,
                 5060,
                 TransportProto::Udp,
-            )
-            .unwrap()
+            )?
         };
 
         let messages = vec![msg1, msg2, msg3, msg4];
@@ -4308,13 +4581,14 @@ mod tui_state {
             3,
             "all 3 participant columns should be used"
         );
+        Ok(())
     }
 
     // ── Settings popup timestamp mode cycle with Scaled ──────────────
 
     /// The settings popup cycles the timestamp mode through all four values, including Scaled.
     #[test]
-    fn settings_popup_timestamp_cycles_through_scaled() {
+    fn settings_popup_timestamp_cycles_through_scaled() -> Result<(), TestError> {
         let mut app = App::new_test();
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
         app.handle_key(KeyCode::F(8)); // open settings
@@ -4327,6 +4601,7 @@ mod tui_state {
         assert_eq!(app.timestamp_mode(), TimestampMode::Absolute);
         app.handle_key(KeyCode::Enter); // Absolute -> DeltaPrev
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
+        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -4357,7 +4632,7 @@ mod tui_state {
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_invite_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_sdp(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let sdp = "v=0\r\n\
                    o=- 123 456 IN IP4 10.0.0.1\r\n\
                    s=-\r\n\
@@ -4377,7 +4652,7 @@ mod tui_state {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -4385,15 +4660,14 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Parse a `100 Trying` provisional response for the given Call-ID.
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_100_trying(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_100_trying(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 100 Trying",
             &[
@@ -4404,7 +4678,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_b(),
@@ -4412,15 +4686,14 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Parse a `180 Ringing` provisional response (with a To tag).
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_180_ringing(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_180_ringing(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 180 Ringing",
             &[
@@ -4431,7 +4704,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_b(),
@@ -4439,15 +4712,14 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Parse a `200 OK` carrying a PCMU SDP answer (audio port 30000).
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_200_ok_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_200_ok_with_sdp(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let sdp = "v=0\r\n\
                    o=- 789 101 IN IP4 10.0.0.2\r\n\
                    s=-\r\n\
@@ -4467,7 +4739,7 @@ mod tui_state {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_b(),
@@ -4475,15 +4747,14 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Parse the ACK that completes the INVITE transaction.
     ///
     /// # Returns
     /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_ack(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_ack(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "ACK sip:1002@10.0.0.2 SIP/2.0",
             &[
@@ -4494,7 +4765,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -4502,26 +4773,25 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .unwrap()
+        )?)
     }
 
     /// Build a full INVITE dialog: INVITE(SDP) -> 100 -> 180 -> 200 OK(SDP) -> ACK
     ///
     /// # Returns
     /// The five parsed messages in capture order, timestamped from `base_ts`.
-    fn make_full_dialog_messages(call_id: &str) -> Vec<SipMessage> {
-        let t0 = base_ts_or_panic();
-        vec![
-            make_invite_sdp(call_id, t0),
-            make_100_trying(call_id, t0 + TimeDelta::milliseconds(50)),
-            make_180_ringing(call_id, t0 + TimeDelta::milliseconds(500)),
-            make_200_ok_with_sdp(call_id, t0 + TimeDelta::seconds(2)),
+    fn make_full_dialog_messages(call_id: &str) -> Result<Vec<SipMessage>, TestError> {
+        let t0 = base_ts()?;
+        Ok(vec![
+            make_invite_sdp(call_id, t0)?,
+            make_100_trying(call_id, t0 + TimeDelta::milliseconds(50))?,
+            make_180_ringing(call_id, t0 + TimeDelta::milliseconds(500))?,
+            make_200_ok_with_sdp(call_id, t0 + TimeDelta::seconds(2))?,
             make_ack(
                 call_id,
                 t0 + TimeDelta::seconds(2) + TimeDelta::milliseconds(10),
-            ),
-        ]
+            )?,
+        ])
     }
 
     /// Build an `App` whose stream store holds one PCMU stream, fed from five
@@ -4529,7 +4799,7 @@ mod tui_state {
     ///
     /// Shared by the stream-detail navigation tests below, which previously
     /// copy-pasted this 40-line feed block and only differed in the SSRC.
-    fn app_with_one_rtp_stream(ssrc: u32) -> App {
+    fn app_with_one_rtp_stream(ssrc: u32) -> Result<App, TestError> {
         use sipnab::capture::parse::ParsedPacket;
         use sipnab::rtp::parser::parse_rtp_header;
         use sipnab::rtp::stream_store::StreamStore;
@@ -4554,7 +4824,9 @@ mod tui_state {
                     frame_bytes: None,
                     frame: None,
                     timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
-                        .unwrap(),
+                        .ok_or(
+                            "chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0) is None",
+                        )?,
                     src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20000,
@@ -4571,25 +4843,25 @@ mod tui_state {
                     input_origin: sipnab::capture::parse::InputOrigin::Wire,
                     hep: None,
                 };
-                let rtp = parse_rtp_header(&parsed.payload).unwrap();
+                let rtp = parse_rtp_header(&parsed.payload)?;
                 store.process_rtp(&parsed, &rtp, parsed.timestamp);
             }
         }
 
-        sipnab::tui::App::new(
+        Ok(sipnab::tui::App::new(
             ds,
             ss,
             sipnab::tui::Theme::default(),
             sipnab::tui::Keymap::default(),
-        )
+        ))
     }
 
     // ── Test 1: stream_detail_enter_from_stream_list ─────────────────
 
     /// Enter on a populated stream list opens the `StreamDetail` view.
     #[test]
-    fn stream_detail_enter_from_stream_list() {
-        let mut app = app_with_one_rtp_stream(0xDEADBEEF);
+    fn stream_detail_enter_from_stream_list() -> Result<(), TestError> {
+        let mut app = app_with_one_rtp_stream(0xDEADBEEF)?;
 
         // Navigate to StreamList
         app.handle_key(KeyCode::Tab);
@@ -4602,14 +4874,15 @@ mod tui_state {
             "expected StreamDetail, got {:?}",
             app.current_view()
         );
+        Ok(())
     }
 
     // ── Test 2: stream_detail_escape_returns_to_stream_list ──────────
 
     /// Esc from stream detail returns to the stream list.
     #[test]
-    fn stream_detail_escape_returns_to_stream_list() {
-        let mut app = app_with_one_rtp_stream(0xCAFEBABE);
+    fn stream_detail_escape_returns_to_stream_list() -> Result<(), TestError> {
+        let mut app = app_with_one_rtp_stream(0xCAFEBABE)?;
 
         // Navigate to StreamList, then Enter to open StreamDetail
         app.handle_key(KeyCode::Tab);
@@ -4619,14 +4892,15 @@ mod tui_state {
         // Escape should return to StreamList
         app.handle_key(KeyCode::Esc);
         assert_eq!(*app.current_view(), View::StreamList);
+        Ok(())
     }
 
     // ── Test 3: stream_detail_scroll_j_k ─────────────────────────────
 
     /// `j`/`k` scroll the stream detail down and up, clamping at 0.
     #[test]
-    fn stream_detail_scroll_j_k() {
-        let mut app = app_with_one_rtp_stream(0x11223344);
+    fn stream_detail_scroll_j_k() -> Result<(), TestError> {
+        let mut app = app_with_one_rtp_stream(0x11223344)?;
 
         // Navigate to StreamDetail
         app.handle_key(KeyCode::Tab);
@@ -4649,18 +4923,19 @@ mod tui_state {
         assert_eq!(app.stream_detail_scroll(), 0);
         app.handle_key(KeyCode::Char('k'));
         assert_eq!(app.stream_detail_scroll(), 0);
+        Ok(())
     }
 
     // ── Test 4: rtp_bar_is_after_ack_not_200ok ───────────────────────
 
     /// The RTP bar is a separate ladder entry placed after the ACK (and 200 OK), not attached to the 200 OK.
     #[test]
-    fn rtp_bar_is_after_ack_not_200ok() {
+    fn rtp_bar_is_after_ack_not_200ok() -> Result<(), TestError> {
         use sipnab::tui::call_flow::prepare::prepare_messages;
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let messages = make_full_dialog_messages("rtp-bar-test@call");
+        let messages = make_full_dialog_messages("rtp-bar-test@call")?;
         let t0 = messages[0].timestamp;
         let theme = Theme::default();
         let fold_expanded = HashSet::new();
@@ -4683,19 +4958,19 @@ mod tui_state {
         let rtp_bar_idx = formatted
             .iter()
             .position(|m| m.is_rtp_bar)
-            .expect("should have an RTP bar in the formatted output");
+            .ok_or("should have an RTP bar in the formatted output")?;
 
         // Find the ACK message (the one with label "ACK")
         let ack_idx = formatted
             .iter()
             .position(|m| m.label == "ACK")
-            .expect("should have an ACK message");
+            .ok_or("should have an ACK message")?;
 
         // Find the 200 OK message
         let ok_200_idx = formatted
             .iter()
             .position(|m| m.label.starts_with("200"))
-            .expect("should have a 200 OK message");
+            .ok_or("should have a 200 OK message")?;
 
         // The RTP bar should be a separate entry AFTER the ACK, not on the 200 OK
         assert!(
@@ -4712,18 +4987,19 @@ mod tui_state {
             ack_idx > ok_200_idx,
             "ACK (idx {ack_idx}) should come after 200 OK (idx {ok_200_idx})"
         );
+        Ok(())
     }
 
     // ── Test 5: rtp_bar_has_timestamp_and_codec ──────────────────────
 
     /// The RTP bar label carries "RTP" plus the PCMU codec, no redundant "active", and a populated timestamp.
     #[test]
-    fn rtp_bar_has_timestamp_and_codec() {
+    fn rtp_bar_has_timestamp_and_codec() -> Result<(), TestError> {
         use sipnab::tui::call_flow::prepare::prepare_messages;
         use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use std::collections::HashSet;
 
-        let messages = make_full_dialog_messages("rtp-codec-test@call");
+        let messages = make_full_dialog_messages("rtp-codec-test@call")?;
         let t0 = messages[0].timestamp;
         let theme = Theme::default();
         let fold_expanded = HashSet::new();
@@ -4746,7 +5022,7 @@ mod tui_state {
         let rtp_bar = formatted
             .iter()
             .find(|m| m.is_rtp_bar)
-            .expect("should have an RTP bar");
+            .ok_or("should have an RTP bar")?;
 
         // The RTP bar label should contain RTP info
         let bar_text = &rtp_bar.label;
@@ -4773,6 +5049,7 @@ mod tui_state {
             !rtp_bar.timestamp.trim().is_empty(),
             "RTP bar should have a timestamp"
         );
+        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -4790,7 +5067,7 @@ mod tui_state {
         to: &str,
         user_agent: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -4802,7 +5079,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -4810,8 +5087,7 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse INVITE with User-Agent")
+        )?)
     }
 
     /// Build an `App` with one completed dialog whose INVITE carries a
@@ -4819,8 +5095,8 @@ mod tui_state {
     ///
     /// # Returns
     /// The `App` with both messages processed.
-    fn app_with_user_agent_dialog() -> App {
-        let t0 = base_ts_or_panic();
+    fn app_with_user_agent_dialog() -> Result<App, TestError> {
+        let t0 = base_ts()?;
         let messages = vec![
             make_invite_with_user_agent(
                 "call-ua@test",
@@ -4828,25 +5104,25 @@ mod tui_state {
                 "bob",
                 "FreeSWITCH-mod-sofia/1.10",
                 t0,
-            ),
-            make_response_or_panic(
+            )?,
+            make_response(
                 "call-ua@test",
                 200,
                 "OK",
                 "INVITE",
                 t0 + TimeDelta::seconds(1),
-            ),
+            )?,
         ];
-        App::with_processed_messages(messages)
+        Ok(App::with_processed_messages(messages))
     }
 
     /// The full-text search predicate matches "freeswitch", which exists only in the raw message bytes.
     #[test]
-    fn body_search_finds_sip_header_in_body() {
+    fn body_search_finds_sip_header_in_body() -> Result<(), TestError> {
         // "FreeSWITCH" appears only in the User-Agent header of the raw
         // message bytes — it is not a structured field (method, from, to,
         // state, call_id, src/dst).  Body search should still match.
-        let app = app_with_user_agent_dialog();
+        let app = app_with_user_agent_dialog()?;
         let store = app.dialog_store_ref().read();
         // Drive the production search predicate directly so the test can't
         // drift from what the call list actually filters on.
@@ -4860,12 +5136,13 @@ mod tui_state {
             1,
             "Body search for 'freeswitch' should match exactly one dialog"
         );
+        Ok(())
     }
 
     /// The same predicate matches nothing for a string absent from every field and body.
     #[test]
-    fn body_search_no_match_excludes_dialog() {
-        let app = app_with_user_agent_dialog();
+    fn body_search_no_match_excludes_dialog() -> Result<(), TestError> {
+        let app = app_with_user_agent_dialog()?;
         let store = app.dialog_store_ref().read();
         let q = "nonexistent-xyz-string".to_ascii_lowercase();
         let matches: Vec<_> = store
@@ -4877,6 +5154,7 @@ mod tui_state {
             0,
             "Body search for 'nonexistent-xyz-string' should match no dialogs"
         );
+        Ok(())
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -4885,7 +5163,7 @@ mod tui_state {
 
     /// `apply_visible_columns` shows exactly the named columns and hides all others.
     #[test]
-    fn column_config_apply_visible_columns() {
+    fn column_config_apply_visible_columns() -> Result<(), TestError> {
         use sipnab::tui::call_list::CallListState;
 
         let mut state = CallListState::new();
@@ -4907,11 +5185,12 @@ mod tui_state {
         assert!(!state.visible_columns[7], "Msgs should be hidden");
         assert!(!state.visible_columns[8], "Date should be hidden");
         assert!(!state.visible_columns[9], "PDD should be hidden");
+        Ok(())
     }
 
     /// Column names in the config list match case-insensitively.
     #[test]
-    fn column_config_case_insensitive() {
+    fn column_config_case_insensitive() -> Result<(), TestError> {
         use sipnab::tui::call_list::CallListState;
 
         let mut state = CallListState::new();
@@ -4936,11 +5215,12 @@ mod tui_state {
         assert!(!state.visible_columns[0], "# should be hidden");
         assert!(!state.visible_columns[3], "To should be hidden");
         assert!(!state.visible_columns[6], "State should be hidden");
+        Ok(())
     }
 
     /// Applying an empty column list leaves all columns visible.
     #[test]
-    fn column_config_empty_list_preserves_defaults() {
+    fn column_config_empty_list_preserves_defaults() -> Result<(), TestError> {
         use sipnab::tui::call_list::CallListState;
 
         let mut state = CallListState::new();
@@ -4954,6 +5234,7 @@ mod tui_state {
             state.visible_columns.iter().all(|&v| v),
             "All columns should remain visible when applying an empty list"
         );
+        Ok(())
     }
 
     // ── Call flow ←/→: a press is never both inert and mute ───────────
@@ -4980,7 +5261,7 @@ mod tui_state {
     ///
     /// # Returns
     /// The parsed INVITE; panics if parsing fails.
-    fn make_wide_invite(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_wide_invite(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         // A single long token: no whitespace, so nothing can shorten the
         // widest line except horizontal scrolling.
         let long_value = "x".repeat(400);
@@ -4995,7 +5276,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             endpoint_a(),
@@ -5003,8 +5284,7 @@ mod tui_state {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse wide INVITE")
+        )?)
     }
 
     /// The drawn main pane: everything between the three status lines at the
@@ -5046,48 +5326,43 @@ mod tui_state {
         messages: Vec<SipMessage>,
         focus_detail: bool,
         unwrap_detail: bool,
-    ) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    ) -> Result<(App, ratatui::Terminal<ratatui::backend::TestBackend>), TestError> {
         let mut app = App::with_processed_messages(messages);
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).unwrap();
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24))?;
         app.handle_key(KeyCode::Enter);
         assert!(matches!(app.current_view(), View::CallFlow(_)));
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         if focus_detail {
             app.handle_key(KeyCode::Tab);
         }
         if unwrap_detail {
             app.handle_key(KeyCode::Char('w'));
         }
-        draw(&mut app, &mut term);
-        (app, term)
+        draw(&mut app, &mut term)?;
+        Ok((app, term))
     }
 
     /// With the detail pane focused, wrapping off and no line wider than the
     /// pane, → moves nothing on screen and the status line names both the
     /// reason and the way out (instead of the indefinite silence of #188).
     #[test]
-    fn a_clamped_horizontal_scroll_names_the_reason_instead_of_doing_nothing_silently() {
-        let t0 = base_ts_or_panic();
+    fn a_clamped_horizontal_scroll_names_the_reason_instead_of_doing_nothing_silently()
+    -> Result<(), TestError> {
+        let t0 = base_ts()?;
         // The fixture INVITE's widest header is ~40 columns; the detail pane
         // of a 200-column terminal is far wider, so nothing overflows.
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
-                make_invite_or_panic("fits@test", "1001", "1002", t0),
-                make_response_or_panic(
-                    "fits@test",
-                    200,
-                    "OK",
-                    "INVITE",
-                    t0 + TimeDelta::seconds(1),
-                ),
+                make_invite("fits@test", "1001", "1002", t0)?,
+                make_response("fits@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1))?,
             ],
             true,
             true,
-        );
+        )?;
 
         let before = main_pane_text(&term);
         app.handle_key(KeyCode::Right);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
 
         assert_eq!(
             main_pane_text(&term),
@@ -5109,13 +5384,14 @@ mod tui_state {
         // precisely because BOTH arrows were dead.
         let before = main_pane_text(&term);
         app.handle_key(KeyCode::Left);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_eq!(main_pane_text(&term), before, "← cannot move it either");
         let status = app.status_error().unwrap_or_default();
         assert!(
             status.contains("fits the pane"),
             "← must name the same reason; got {status:?}"
         );
+        Ok(())
     }
 
     /// Every ←/→ press in the call flow either moves the drawn frame or
@@ -5123,36 +5399,37 @@ mod tui_state {
     /// all four combinations of pane focus and wrap mode, not just to the
     /// branch #188 was reported against.
     #[test]
-    fn every_call_flow_arrow_press_either_moves_the_frame_or_says_why_it_could_not() {
-        let t0 = base_ts_or_panic();
+    fn every_call_flow_arrow_press_either_moves_the_frame_or_says_why_it_could_not()
+    -> Result<(), TestError> {
+        let t0 = base_ts()?;
         for focus_detail in [false, true] {
             for unwrap_detail in [false, true] {
                 for arrow in [KeyCode::Left, KeyCode::Right] {
                     let (mut app, mut term) = call_flow_in_arrow_mode(
                         vec![
-                            make_invite_or_panic("fits@test", "1001", "1002", t0),
-                            make_response_or_panic(
+                            make_invite("fits@test", "1001", "1002", t0)?,
+                            make_response(
                                 "fits@test",
                                 200,
                                 "OK",
                                 "INVITE",
                                 t0 + TimeDelta::seconds(1),
-                            ),
+                            )?,
                         ],
                         focus_detail,
                         unwrap_detail,
-                    );
+                    )?;
                     // Park an unrelated message on the status line first.
                     // Without it a leftover "Detail wrap: OFF …" from the `w`
                     // press would stand in for a press that said nothing —
                     // the false green this gate exists to avoid.
                     app.handle_key(KeyCode::Char('m'));
                     assert_eq!(app.status_error(), Some("Mark set"));
-                    draw(&mut app, &mut term);
+                    draw(&mut app, &mut term)?;
 
                     let before = main_pane_text(&term);
                     app.handle_key(arrow);
-                    draw(&mut app, &mut term);
+                    draw(&mut app, &mut term)?;
 
                     let moved = main_pane_text(&term) != before;
                     let spoke = app.status_error().is_some_and(|s| s != "Mark set");
@@ -5165,32 +5442,27 @@ mod tui_state {
                 }
             }
         }
+        Ok(())
     }
 
     /// The reason-naming must not be bought by disabling the feature: with a
     /// header wider than the pane, → still visibly scrolls the detail pane
     /// and reports the column it landed on.
     #[test]
-    fn a_line_wider_than_the_pane_still_scrolls_and_reports_its_column() {
-        let t0 = base_ts_or_panic();
+    fn a_line_wider_than_the_pane_still_scrolls_and_reports_its_column() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
-                make_wide_invite("wide@test", t0),
-                make_response_or_panic(
-                    "wide@test",
-                    200,
-                    "OK",
-                    "INVITE",
-                    t0 + TimeDelta::seconds(1),
-                ),
+                make_wide_invite("wide@test", t0)?,
+                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1))?,
             ],
             true,
             true,
-        );
+        )?;
 
         let before = main_pane_text(&term);
         app.handle_key(KeyCode::Right);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
 
         assert_ne!(
             main_pane_text(&term),
@@ -5206,6 +5478,7 @@ mod tui_state {
             !status.contains("fits the pane"),
             "an overflowing message must never be reported as fitting; got {status:?}"
         );
+        Ok(())
     }
 
     /// The headroom the arrows consult is measured even while wrapping is
@@ -5213,24 +5486,19 @@ mod tui_state {
     /// operator is actually looking at — a burst of `w` then → arrives in
     /// one event drain, with no frame in between.
     #[test]
-    fn the_first_arrow_after_the_wrap_toggle_is_answered_from_the_wrapped_frame() {
-        let t0 = base_ts_or_panic();
+    fn the_first_arrow_after_the_wrap_toggle_is_answered_from_the_wrapped_frame()
+    -> Result<(), TestError> {
+        let t0 = base_ts()?;
         // Focused, wrapping still ON: the frame drawn here is the only one
         // the controller can consult for the presses below.
         let (mut app, mut term) = call_flow_in_arrow_mode(
             vec![
-                make_wide_invite("wide@test", t0),
-                make_response_or_panic(
-                    "wide@test",
-                    200,
-                    "OK",
-                    "INVITE",
-                    t0 + TimeDelta::seconds(1),
-                ),
+                make_wide_invite("wide@test", t0)?,
+                make_response("wide@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1))?,
             ],
             true,
             false,
-        );
+        )?;
 
         // `w` and → in one drain, exactly as a fast operator produces them.
         app.handle_key(KeyCode::Char('w'));
@@ -5242,11 +5510,12 @@ mod tui_state {
         );
 
         let before = main_pane_text(&term);
-        draw(&mut app, &mut term);
+        draw(&mut app, &mut term)?;
         assert_ne!(
             main_pane_text(&term),
             before,
             "that first press must land as a real scroll, not be clamped away"
         );
+        Ok(())
     }
 }

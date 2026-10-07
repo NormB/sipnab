@@ -19,27 +19,31 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-fn read(rel: &str) -> String {
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
+fn read(rel: &str) -> Result<String, TestError> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The text of the `## {heading}` section of `doc`, up to the next `## `.
-fn section(doc: &str, rel: &str, heading: &str) -> String {
+fn section(doc: &str, rel: &str, heading: &str) -> Result<String, TestError> {
     let marker = format!("## {heading}\n");
     let start = doc
         .find(&marker)
-        .unwrap_or_else(|| panic!("{rel} has no `## {heading}` section"));
+        .ok_or_else(|| format!("{rel} has no `## {heading}` section"))?;
     let body = &doc[start + marker.len()..];
-    body[..body.find("\n## ").unwrap_or(body.len())].to_string()
+    Ok(body[..body.find("\n## ").unwrap_or(body.len())].to_string())
 }
 
 /// Every `secrets.NAME` a workflow reads, except the per-run `GITHUB_TOKEN`.
-fn workflow_secrets() -> BTreeSet<String> {
+fn workflow_secrets() -> Result<BTreeSet<String>, TestError> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/workflows");
     let mut out = BTreeSet::new();
-    for entry in std::fs::read_dir(&dir).expect("read workflows") {
-        let body = std::fs::read_to_string(entry.expect("entry").path()).expect("read workflow");
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read workflows: {e}"))? {
+        let body = std::fs::read_to_string(entry.map_err(|e| format!("entry: {e}"))?.path())
+            .map_err(|e| format!("read workflow: {e}"))?;
         for piece in body.split("secrets.").skip(1) {
             let name: String = piece
                 .chars()
@@ -50,18 +54,18 @@ fn workflow_secrets() -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 #[test]
-fn security_md_names_every_secret_a_workflow_reads() {
-    let secrets = workflow_secrets();
+fn security_md_names_every_secret_a_workflow_reads() -> Result<(), TestError> {
+    let secrets = workflow_secrets()?;
     assert!(
         secrets.len() >= 3,
         "found only {secrets:?}; the workflow reader broke"
     );
-    let doc = read("SECURITY.md");
-    let text = section(&doc, "SECURITY.md", "Secrets and credentials");
+    let doc = read("SECURITY.md")?;
+    let text = section(&doc, "SECURITY.md", "Secrets and credentials")?;
     let missing: Vec<_> = secrets
         .iter()
         .filter(|s| !text.contains(s.as_str()))
@@ -75,18 +79,19 @@ fn security_md_names_every_secret_a_workflow_reads() {
         text.contains("trusted publishing"),
         "the secrets section must say crates.io publishing stores no token"
     );
+    Ok(())
 }
 
 #[test]
-fn the_code_scanning_policy_is_stated_and_its_gate_is_required() {
-    let doc = read("SECURITY.md");
-    let text = section(&doc, "SECURITY.md", "Code scanning");
+fn the_code_scanning_policy_is_stated_and_its_gate_is_required() -> Result<(), TestError> {
+    let doc = read("SECURITY.md")?;
+    let text = section(&doc, "SECURITY.md", "Code scanning")?;
     assert!(
         text.contains("no open") && text.contains("reason"),
         "SECURITY.md's code-scanning section must state the policy: no open \
          alerts on `main`, and a dismissal carries a reason"
     );
-    let ci = read(".github/workflows/ci.yml");
+    let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("  code-scanning-clean:"),
         "ci.yml no longer has the code-scanning-clean job the policy relies on"
@@ -102,44 +107,46 @@ fn the_code_scanning_policy_is_stated_and_its_gate_is_required() {
         "the required `CI success` job must need code-scanning-clean, or the \
          stated policy is advisory"
     );
+    Ok(())
 }
 
 #[test]
-fn maintainers_md_says_how_escalated_access_is_granted() {
-    let doc = read("MAINTAINERS.md");
-    let text = section(&doc, "MAINTAINERS.md", "Getting commit access");
+fn maintainers_md_says_how_escalated_access_is_granted() -> Result<(), TestError> {
+    let doc = read("MAINTAINERS.md")?;
+    let text = section(&doc, "MAINTAINERS.md", "Getting commit access")?;
     for needle in ["reviewed pull requests", "MAINTAINERS.md"] {
         assert!(
             text.contains(needle),
             "MAINTAINERS.md's access section must mention {needle:?}"
         );
     }
+    Ok(())
 }
 
 /// The value of `const {name}: &str = "...";` in the branch-protection drift
 /// test. That file is the one place the required checks are declared, and it
 /// compares them with the live API; an integration test cannot import another
 /// test's constants, so this reads the declaration rather than copying it.
-fn drift_test_constant(name: &str) -> String {
-    let src = read("tests/branch_protection_drift_test.rs");
+fn drift_test_constant(name: &str) -> Result<String, TestError> {
+    let src = read("tests/branch_protection_drift_test.rs")?;
     let marker = format!("const {name}: &str = \"");
     let start = src
         .find(&marker)
-        .unwrap_or_else(|| panic!("branch_protection_drift_test.rs no longer declares {name}"))
+        .ok_or_else(|| format!("branch_protection_drift_test.rs no longer declares {name}"))?
         + marker.len();
-    let end = src[start..].find('"').expect("unterminated constant") + start;
-    src[start..end].to_string()
+    let end = src[start..].find('"').ok_or("unterminated constant")? + start;
+    Ok(src[start..end].to_string())
 }
 
 #[test]
-fn contributing_md_states_the_code_review_requirements() {
-    let doc = read("CONTRIBUTING.md");
-    let text = section(&doc, "CONTRIBUTING.md", "Code review")
+fn contributing_md_states_the_code_review_requirements() -> Result<(), TestError> {
+    let doc = read("CONTRIBUTING.md")?;
+    let text = section(&doc, "CONTRIBUTING.md", "Code review")?
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    let status = drift_test_constant("DECLARED_STATUS_CHECK");
-    let cla = drift_test_constant("DECLARED_CLA_CHECK");
+    let status = drift_test_constant("DECLARED_STATUS_CHECK")?;
+    let cla = drift_test_constant("DECLARED_CLA_CHECK")?;
     assert!(
         !status.is_empty() && !cla.is_empty(),
         "the reader of the drift test's constants broke"
@@ -159,13 +166,14 @@ fn contributing_md_states_the_code_review_requirements() {
             "CONTRIBUTING.md's code review section must mention {needle:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn maintainers_md_requires_two_factor_authentication_without_sms() {
-    let doc = read("MAINTAINERS.md");
+fn maintainers_md_requires_two_factor_authentication_without_sms() -> Result<(), TestError> {
+    let doc = read("MAINTAINERS.md")?;
     // Prose wraps at any word, so compare with every run of whitespace as one space.
-    let text = section(&doc, "MAINTAINERS.md", "Getting commit access")
+    let text = section(&doc, "MAINTAINERS.md", "Getting commit access")?
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -183,4 +191,5 @@ fn maintainers_md_requires_two_factor_authentication_without_sms() {
         text.contains("SMS is not accepted"),
         "MAINTAINERS.md's access section must say SMS is not an accepted second factor"
     );
+    Ok(())
 }

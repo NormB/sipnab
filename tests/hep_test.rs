@@ -31,6 +31,8 @@ use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3, parse_hep};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+use support::TestError;
+
 /// Call-ID embedded in the synthetic INVITE; tests grep stdout for it.
 const CALL_ID: &str = "hep-test-call-1@127.0.0.1";
 
@@ -56,15 +58,22 @@ fn invite_bytes() -> Vec<u8> {
 ///
 /// # Returns
 /// The encoded HEP3 datagram.
-fn hep3_sip(payload: &[u8]) -> Vec<u8> {
+fn hep3_sip(payload: &[u8]) -> Result<Vec<u8>, TestError> {
     let ep = HepEndpoint {
-        src_addr: "127.0.0.1".parse().unwrap(),
-        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_addr: "127.0.0.1".parse()?,
+        dst_addr: "127.0.0.1".parse()?,
         src_port: 5060,
         dst_port: 5062,
         transport: sipnab::net::TransportProto::Udp,
     };
-    build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload)
+    Ok(build_hep_v3(
+        &ep,
+        Utc::now(),
+        HepProtocol::Sip,
+        0,
+        None,
+        payload,
+    ))
 }
 
 /// A HEP3 datagram like [`hep3_sip`], stamped with `capture_id` and carrying
@@ -74,22 +83,22 @@ fn hep3_sip(payload: &[u8]) -> Vec<u8> {
 /// * `capture_id` — the capture-agent id (HEP chunk 0x000c) the sender claims.
 /// * `key` — the shared secret presented in the 0x000e chunk.
 /// * `payload` — the SIP message bytes to encapsulate.
-fn hep3_sip_keyed(capture_id: u32, key: &str, payload: &[u8]) -> Vec<u8> {
+fn hep3_sip_keyed(capture_id: u32, key: &str, payload: &[u8]) -> Result<Vec<u8>, TestError> {
     let ep = HepEndpoint {
-        src_addr: "127.0.0.1".parse().unwrap(),
-        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_addr: "127.0.0.1".parse()?,
+        dst_addr: "127.0.0.1".parse()?,
         src_port: 5060,
         dst_port: 5062,
         transport: sipnab::net::TransportProto::Udp,
     };
-    build_hep_v3(
+    Ok(build_hep_v3(
         &ep,
         Utc::now(),
         HepProtocol::Sip,
         capture_id,
         Some(key),
         payload,
-    )
+    ))
 }
 
 /// A spawned `sipnab --hep-listen` process with line-buffered stdout/stderr.
@@ -107,24 +116,24 @@ impl HepListener {
     /// # Side effects
     /// Spawns the sipnab binary (stopped on drop with `terminate`), which binds
     /// an ephemeral loopback UDP port; panics if no port is reported within 10s.
-    fn spawn(extra_args: &[&str]) -> HepListener {
+    fn spawn(extra_args: &[&str]) -> Result<HepListener, TestError> {
         Self::spawn_with_log("info", extra_args)
     }
 
     /// As [`spawn`], with an explicit `SIPNAB_LOG` level (the per-packet
     /// rate-limit drop is logged at `debug`, so that test needs `debug`).
-    fn spawn_with_log(log: &str, extra_args: &[&str]) -> HepListener {
+    fn spawn_with_log(log: &str, extra_args: &[&str]) -> Result<HepListener, TestError> {
         Self::spawn_inner(log, true, extra_args)
     }
 
     /// As [`spawn`], without `--quiet`, so the end-of-run summary and the
     /// NOT DECODED notice reach stderr.
-    fn spawn_reporting(extra_args: &[&str]) -> HepListener {
+    fn spawn_reporting(extra_args: &[&str]) -> Result<HepListener, TestError> {
         Self::spawn_inner("info", false, extra_args)
     }
 
     /// The one spawn: `quiet` decides whether `--quiet` is passed.
-    fn spawn_inner(log: &str, quiet: bool, extra_args: &[&str]) -> HepListener {
+    fn spawn_inner(log: &str, quiet: bool, extra_args: &[&str]) -> Result<HepListener, TestError> {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
         cmd.args(["-N", "--hep-listen", "127.0.0.1:0", "--json"]);
         if quiet {
@@ -137,10 +146,10 @@ impl HepListener {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().expect("spawn sipnab --hep-listen");
-        let stdout_rx = line_reader(child.stdout.take().expect("stdout"));
+        let mut child = cmd.spawn()?;
+        let stdout_rx = line_reader(child.stdout.take().ok_or("stdout")?);
         let (stderr_tx, stderr_rx) = mpsc::channel();
-        let stderr = child.stderr.take().expect("stderr");
+        let stderr = child.stderr.take().ok_or("stderr")?;
         let mut port = None;
         // Scrape the bound port from stderr; forward the rest to stderr_rx.
         let (port_tx, port_rx) = mpsc::channel();
@@ -163,35 +172,35 @@ impl HepListener {
                 break;
             }
             if let Ok(Some(status)) = child.try_wait() {
-                panic!("sipnab --hep-listen exited early: {status}");
+                return Err(format!("sipnab --hep-listen exited early: {status}").into());
             }
         }
-        let port = port.unwrap_or_else(|| {
+        let port = port.ok_or_else(|| {
             let _ = child.kill();
-            panic!("HEP listener did not report a bound port within 10s");
-        });
+            "HEP listener did not report a bound port within 10s"
+        })?;
 
-        HepListener {
+        Ok(HepListener {
             child,
             port,
             stdout_rx,
             stderr_rx,
-        }
+        })
     }
 
     /// Send a datagram to the listener from a fresh loopback UDP socket.
     ///
     /// # Side effects
     /// Binds an ephemeral UDP socket for the send.
-    fn send(&self, datagram: &[u8]) {
-        let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
-        sock.send_to(datagram, ("127.0.0.1", self.port))
-            .expect("send HEP");
+    fn send(&self, datagram: &[u8]) -> Result<(), TestError> {
+        let sock = UdpSocket::bind("127.0.0.1:0")?;
+        sock.send_to(datagram, ("127.0.0.1", self.port))?;
+        Ok(())
     }
 
     /// Stop the listener the way `Drop` does and return how it exited.
-    fn stop(mut self) -> std::process::ExitStatus {
-        terminate(&mut self.child).expect("reap sipnab --hep-listen")
+    fn stop(mut self) -> Result<std::process::ExitStatus, TestError> {
+        Ok(terminate(&mut self.child)?)
     }
 
     /// Wait up to `wait` for a stdout JSON line containing `needle`.
@@ -258,16 +267,17 @@ fn line_reader<R: std::io::Read + Send + 'static>(r: R) -> mpsc::Receiver<String
 /// A synthetic HEP3-wrapped INVITE sent to `--hep-listen` surfaces on `--json`
 /// stdout with the right method and Call-ID.
 #[test]
-fn hep_listener_ingests_synthetic_hep3() {
-    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"]);
-    srv.send(&hep3_sip(&invite_bytes()));
+fn hep_listener_ingests_synthetic_hep3() -> Result<(), TestError> {
+    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"])?;
+    srv.send(&hep3_sip(&invite_bytes())?)?;
 
     let line = srv
         .wait_for_stdout(CALL_ID, test_timeout(5))
-        .expect("HEP-ingested INVITE must surface on --json stdout");
-    let msg: serde_json::Value = serde_json::from_str(&line).expect("ndjson");
+        .ok_or("HEP-ingested INVITE must surface on --json stdout")?;
+    let msg: serde_json::Value = serde_json::from_str(&line)?;
     assert_eq!(msg["method"], "INVITE");
     assert_eq!(msg["call_id"], CALL_ID);
+    Ok(())
 }
 
 /// The harness stops a listener that has done its work with SIGTERM, and the
@@ -277,33 +287,34 @@ fn hep_listener_ingests_synthetic_hep3() {
 /// listener ran under this harness went unrecorded. The exit status is the
 /// observable half of that: `signal: 9` here is the profile being thrown away.
 #[test]
-fn the_listener_harness_stops_sipnab_with_a_clean_exit() {
-    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"]);
-    srv.send(&hep3_sip(&invite_bytes()));
+fn the_listener_harness_stops_sipnab_with_a_clean_exit() -> Result<(), TestError> {
+    let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"])?;
+    srv.send(&hep3_sip(&invite_bytes())?)?;
     assert!(
         srv.wait_for_stdout(CALL_ID, test_timeout(5)).is_some(),
         "control: the listener must ingest a datagram before it is stopped"
     );
 
-    let status = srv.stop();
+    let status = srv.stop()?;
     assert_eq!(
         status.code(),
         Some(0),
         "the listener must exit on SIGTERM, not be killed: {status}"
     );
+    Ok(())
 }
 
 /// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is rejected by
 /// the allowlist before it can surface on stdout — proven by the positive
 /// per-packet drop log, not by waiting out a window of stdout silence.
 #[test]
-fn hep_allowlist_rejects_source_outside_cidr() {
+fn hep_allowlist_rejects_source_outside_cidr() -> Result<(), TestError> {
     // Loopback packets come from 127.0.0.1, which is NOT in 10.0.0.0/8, so the
     // allowlist must drop them. Run at debug so the per-packet allowlist drop is
     // logged, and synchronize on that event instead of proving a negative by
     // waiting for a fixed period of stdout silence.
-    let srv = HepListener::spawn_with_log("debug", &["--hep-allow", "10.0.0.0/8"]);
-    srv.send(&hep3_sip(&invite_bytes()));
+    let srv = HepListener::spawn_with_log("debug", &["--hep-allow", "10.0.0.0/8"])?;
+    srv.send(&hep3_sip(&invite_bytes())?)?;
 
     // Positive proof of the drop: the listener logs the allowlist rejection for
     // this exact packet. That check runs before any pipeline output, so once we
@@ -324,24 +335,30 @@ fn hep_allowlist_rejects_source_outside_cidr() {
             .is_none(),
         "a dropped packet must never surface on --json stdout"
     );
+    Ok(())
 }
 
 /// A HEP3 datagram whose HMAC token is stamped `skew` seconds in the past.
 ///
 /// Built with the production token encoder, so the only thing wrong with it is
 /// the clock — which is the condition the acceptance window is about.
-fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) -> Vec<u8> {
+fn hep3_sip_hmac_skewed(
+    key: &str,
+    payload: &[u8],
+    skew: u64,
+    nonce_byte: u8,
+) -> Result<Vec<u8>, TestError> {
     use sipnab::capture::hep::{HepHmacSigning, build_hep_v3_hmac};
     let ep = HepEndpoint {
-        src_addr: "127.0.0.1".parse().unwrap(),
-        dst_addr: "127.0.0.1".parse().unwrap(),
+        src_addr: "127.0.0.1".parse()?,
+        dst_addr: "127.0.0.1".parse()?,
         src_port: 5060,
         dst_port: 5062,
         transport: sipnab::net::TransportProto::Udp,
     };
     let ts = (Utc::now().timestamp().max(0) as u64).saturating_sub(skew);
     let nonce = [nonce_byte; 16];
-    build_hep_v3_hmac(
+    Ok(build_hep_v3_hmac(
         &ep,
         Utc::now(),
         HepProtocol::Sip,
@@ -352,7 +369,7 @@ fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) ->
             nonce: &nonce,
         },
         payload,
-    )
+    ))
 }
 
 /// `--hep-hmac-window` decides whether a clock-skewed agent is heard at all.
@@ -366,7 +383,7 @@ fn hep3_sip_hmac_skewed(key: &str, payload: &[u8], skew: u64, nonce_byte: u8) ->
 ///
 /// Ninety seconds of skew: outside the shipped thirty, inside a widened one.
 #[test]
-fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() {
+fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() -> Result<(), TestError> {
     const KEY: &str = "hmac-window-probe-key";
     let payload = invite_bytes();
 
@@ -377,8 +394,8 @@ fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() {
         KEY,
         "--hep-auth-mode",
         "hmac",
-    ]);
-    shipped.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xA1));
+    ])?;
+    shipped.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xA1)?)?;
     assert!(
         shipped
             .wait_for_stdout(CALL_ID, Duration::from_millis(750))
@@ -398,13 +415,14 @@ fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() {
         "hmac",
         "--hep-hmac-window",
         "120",
-    ]);
-    widened.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xB2));
+    ])?;
+    widened.send(&hep3_sip_hmac_skewed(KEY, &payload, 90, 0xB2)?)?;
     let line = widened
         .wait_for_stdout(CALL_ID, test_timeout(5))
-        .expect("--hep-hmac-window 120 must let the same ninety-second skew through");
-    let msg: serde_json::Value = serde_json::from_str(&line).expect("ndjson");
+        .ok_or("--hep-hmac-window 120 must let the same ninety-second skew through")?;
+    let msg: serde_json::Value = serde_json::from_str(&line)?;
     assert_eq!(msg["call_id"], CALL_ID);
+    Ok(())
 }
 
 /// The refusal warning quotes the window this run is enforcing.
@@ -414,7 +432,7 @@ fn hep_hmac_window_decides_whether_a_skewed_sender_is_heard() {
 /// constant while the run enforced something else would send them to check the
 /// wrong clock.
 #[test]
-fn the_skew_warning_quotes_the_configured_window() {
+fn the_skew_warning_quotes_the_configured_window() -> Result<(), TestError> {
     const KEY: &str = "hmac-window-message-key";
     let srv = HepListener::spawn_with_log(
         "debug",
@@ -428,12 +446,13 @@ fn the_skew_warning_quotes_the_configured_window() {
             "--hep-hmac-window",
             "45",
         ],
-    );
-    srv.send(&hep3_sip_hmac_skewed(KEY, &invite_bytes(), 600, 0xC3));
+    )?;
+    srv.send(&hep3_sip_hmac_skewed(KEY, &invite_bytes(), 600, 0xC3)?)?;
     assert!(
         srv.wait_for_stderr("outside the 45s", test_timeout(5)),
         "the skew warning must quote the window this run enforces, not a constant"
     );
+    Ok(())
 }
 
 /// A sender reaching the listener with the wrong key trips the silence
@@ -446,26 +465,25 @@ fn the_skew_warning_quotes_the_configured_window() {
 /// Sent every 50 ms — faster than the listener's 100 ms read timeout — so the
 /// check must also run while refused packets keep arriving.
 #[test]
-fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_sender_refused_on_every_packet_trips_the_silence_warning() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_file = dir.path().join("hep.key");
-    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    std::fs::write(&key_file, "the-right-key\n")?;
     let srv = HepListener::spawn(&[
         "--hep-allow",
         "127.0.0.1/32",
         "--hep-auth-file",
-        key_file.to_str().expect("utf-8 temp path"),
+        key_file.to_str().ok_or("utf-8 temp path")?,
         "--hep-silence-warn",
         "1",
-    ]);
-    let wrong = hep3_sip_keyed(7, "the-wrong-key", &invite_bytes());
-    let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+    ])?;
+    let wrong = hep3_sip_keyed(7, "the-wrong-key", &invite_bytes())?;
+    let sock = UdpSocket::bind("127.0.0.1:0")?;
 
     let deadline = Instant::now() + test_timeout(10);
     let mut warning = None;
     while warning.is_none() && Instant::now() < deadline {
-        sock.send_to(&wrong, ("127.0.0.1", srv.port))
-            .expect("send HEP");
+        sock.send_to(&wrong, ("127.0.0.1", srv.port))?;
         thread::sleep(Duration::from_millis(50));
         while let Ok(line) = srv.stderr_rx.try_recv() {
             if line.contains("every one was refused") {
@@ -473,10 +491,10 @@ fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
             }
         }
     }
-    let line = warning.expect(
+    let line = warning.ok_or(
         "a sender whose every packet is refused must trip the one-second silence \
          warning, not keep it quiet",
-    );
+    )?;
     assert!(
         line.contains("auth_mismatch") && line.contains("127.0.0.1"),
         "the warning must name the refusal and the peer: {line}"
@@ -486,6 +504,7 @@ fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
             .is_none(),
         "control: nothing with the wrong key reaches the capture"
     );
+    Ok(())
 }
 
 /// `--hep-senders --json` ends a headless run with the roster: two senders
@@ -495,41 +514,41 @@ fn a_sender_refused_on_every_packet_trips_the_silence_warning() {
 /// schema the MCP tool advertises for the same shape.
 #[cfg(feature = "mcp")]
 #[test]
-fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let key_file = dir.path().join("hep.key");
-    std::fs::write(&key_file, "the-right-key\n").expect("write key file");
+    std::fs::write(&key_file, "the-right-key\n")?;
     let srv = HepListener::spawn(&[
         "--hep-allow",
         "127.0.0.1/32",
         "--hep-auth-file",
-        key_file.to_str().expect("utf-8 temp path"),
+        key_file.to_str().ok_or("utf-8 temp path")?,
         "--hep-senders",
         "--count",
         "7",
-    ]);
+    ])?;
     let payload = invite_bytes();
     let sends = [
-        hep3_sip_keyed(7, "the-right-key", &payload),
-        hep3_sip_keyed(9, "the-right-key", &payload),
-        hep3_sip_keyed(7, "the-right-key", &payload),
-        hep3_sip_keyed(5, "the-wrong-key", &payload),
-        hep3_sip_keyed(9, "the-right-key", &payload),
-        hep3_sip_keyed(7, "the-right-key", &payload),
-        hep3_sip_keyed(5, "the-wrong-key", &payload),
+        hep3_sip_keyed(7, "the-right-key", &payload)?,
+        hep3_sip_keyed(9, "the-right-key", &payload)?,
+        hep3_sip_keyed(7, "the-right-key", &payload)?,
+        hep3_sip_keyed(5, "the-wrong-key", &payload)?,
+        hep3_sip_keyed(9, "the-right-key", &payload)?,
+        hep3_sip_keyed(7, "the-right-key", &payload)?,
+        hep3_sip_keyed(5, "the-wrong-key", &payload)?,
     ];
     for datagram in &sends {
-        srv.send(datagram);
+        srv.send(datagram)?;
         thread::sleep(Duration::from_millis(20));
     }
     let line = srv
         .wait_for_stdout("\"senders\"", test_timeout(15))
-        .expect("--hep-senders --json must print the roster as its last stdout line");
-    let report: serde_json::Value = serde_json::from_str(&line).expect("one JSON object");
+        .ok_or("--hep-senders --json must print the roster as its last stdout line")?;
+    let report: serde_json::Value = serde_json::from_str(&line)?;
 
     let senders: Vec<(String, u64)> = report["senders"]
         .as_array()
-        .expect("senders array")
+        .ok_or("senders array")?
         .iter()
         .map(|s| {
             (
@@ -549,19 +568,23 @@ fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
     assert_eq!(report["trust"], "shared_secret_plain");
     assert_eq!(report["packets_received"], 7);
     assert_eq!(report["refused_by_reason"]["auth_mismatch"], 2);
-    let refused = report["refused_sources"].as_array().expect("refused array");
+    let refused = report["refused_sources"]
+        .as_array()
+        .ok_or("refused array")?;
     assert_eq!(refused.len(), 1, "{report}");
     assert_eq!(refused[0]["peer"], "127.0.0.1");
     assert_eq!(refused[0]["by_reason"]["auth_mismatch"], 2);
 
     let schema = serde_json::to_value(rmcp::schemars::schema_for!(
         sipnab::output::model::HepSendersReport
-    ))
-    .expect("schema serializes");
-    let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+    ))?;
+    let validator = jsonschema::validator_for(&schema)?;
     if let Err(e) = validator.validate(&report) {
-        panic!("--hep-senders --json does not match its schema: {e}\n{report:#}");
+        return Err(
+            format!("--hep-senders --json does not match its schema: {e}\n{report:#}").into(),
+        );
     }
+    Ok(())
 }
 
 // ── Fake IP protocol numbers from OpenSIPS / Kamailio (issue #301) ─────
@@ -573,15 +596,19 @@ fn hep_senders_reports_who_fed_the_listener_and_who_it_refused() {
 /// Built with the production encoder, then the one byte of the 0x0002 chunk is
 /// rewritten: the encoder derives that byte from a real transport and cannot
 /// produce the fake numbers, which is correct for a sender.
-fn hep3_with_ip_proto(ip_proto: u8, payload: &[u8]) -> Vec<u8> {
+fn hep3_with_ip_proto(ip_proto: u8, payload: &[u8]) -> Result<Vec<u8>, TestError> {
     hep3_with_ip_proto_on(ip_proto, (5061, 5061), payload)
 }
 
 /// [`hep3_with_ip_proto`] with the inner SIP ports the HEP chunks assert.
-fn hep3_with_ip_proto_on(ip_proto: u8, (sport, dport): (u16, u16), payload: &[u8]) -> Vec<u8> {
+fn hep3_with_ip_proto_on(
+    ip_proto: u8,
+    (sport, dport): (u16, u16),
+    payload: &[u8],
+) -> Result<Vec<u8>, TestError> {
     let ep = HepEndpoint {
-        src_addr: "192.0.2.10".parse().unwrap(),
-        dst_addr: "192.0.2.20".parse().unwrap(),
+        src_addr: "192.0.2.10".parse()?,
+        dst_addr: "192.0.2.20".parse()?,
         src_port: sport,
         dst_port: dport,
         transport: sipnab::net::TransportProto::Udp,
@@ -592,14 +619,14 @@ fn hep3_with_ip_proto_on(ip_proto: u8, (sport, dport): (u16, u16), payload: &[u8
     let at = datagram
         .windows(chunk.len())
         .position(|w| w == chunk)
-        .expect("the encoder always writes an IP protocol chunk");
+        .ok_or("the encoder always writes an IP protocol chunk")?;
     datagram[at + chunk.len()] = ip_proto;
     assert_eq!(
-        parse_hep(&datagram).expect("still valid HEP3").ip_protocol,
+        parse_hep(&datagram)?.ip_protocol,
         ip_proto,
         "the patched chunk must be the one the listener reads"
     );
-    datagram
+    Ok(datagram)
 }
 
 /// A decrypted INVITE whose top Via names `via` and whose Call-ID is `call_id`.
@@ -626,7 +653,7 @@ fn traced_invite(via: &str, call_id: &str) -> Vec<u8> {
 /// as SIP messages with the transport their Via names; only 99 is left in the
 /// NOT DECODED notice, by number.
 #[test]
-fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
+fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() -> Result<(), TestError> {
     let sends = [
         (22u8, "TLS", "hep301-opensips-tls@192.0.2.10", Some("TLS")),
         (50, "WSS", "hep301-opensips-wss@192.0.2.10", Some("WSS")),
@@ -636,9 +663,9 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
         (99, "TLS", "hep301-unknown@192.0.2.10", None),
     ];
     let count = sends.len().to_string();
-    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", &count]);
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", &count])?;
     for (proto, via, call_id, _) in sends {
-        srv.send(&hep3_with_ip_proto(proto, &traced_invite(via, call_id)));
+        srv.send(&hep3_with_ip_proto(proto, &traced_invite(via, call_id))?)?;
         thread::sleep(Duration::from_millis(20));
     }
 
@@ -660,7 +687,7 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
     let not_decoded = stderr
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
-        .unwrap_or_else(|| panic!("the unknown protocol must still be reported: {stderr}"));
+        .ok_or_else(|| format!("the unknown protocol must still be reported: {stderr}"))?;
     assert!(
         not_decoded.starts_with("NOT DECODED: 1 of 6 frame(s)"),
         "only the unknown protocol is undecodable: {not_decoded}"
@@ -672,6 +699,7 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
             "{gone} is decoded now: {not_decoded}"
         );
     }
+    Ok(())
 }
 
 /// **`--hep-parse` reads HEP out of a capture file by the rule `-L` uses.**
@@ -683,7 +711,7 @@ fn hep_fake_ip_protocols_from_proxy_tracers_are_decoded() {
 /// with a transport the rule names must surface with that name, and the one
 /// number no tracer uses must be counted NOT DECODED by number, as on `-L`.
 #[test]
-fn hep_parse_reads_the_transport_by_the_listener_rule() {
+fn hep_parse_reads_the_transport_by_the_listener_rule() -> Result<(), TestError> {
     let sends = [
         (22u8, "TLS", "hep301-file-tls@192.0.2.10", Some("TLS")),
         (50, "WSS", "hep301-file-wss@192.0.2.10", Some("WSS")),
@@ -695,21 +723,32 @@ fn hep_parse_reads_the_transport_by_the_listener_rule() {
     let frames: Vec<Vec<u8>> = sends
         .iter()
         .map(|&(proto, via, call_id, _)| {
-            let hep = hep3_with_ip_proto(proto, &traced_invite(via, call_id));
+            let hep = hep3_with_ip_proto(proto, &traced_invite(via, call_id))?;
             // HEP rides UDP/9060 by convention.
-            pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 40000, 9060, &hep)
+            Ok::<_, TestError>(pcap_build::udp_frame(
+                [10, 1, 0, 1],
+                [10, 2, 0, 1],
+                40000,
+                9060,
+                &hep,
+            ))
         })
-        .collect();
-    let dir = tempfile::tempdir().expect("tempdir");
+        .collect::<Result<_, _>>()?;
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("hep-feed.pcap");
-    pcap_build::write_pcap_or_panic(&path, &frames);
+    pcap_build::write_pcap(&path, &frames)?;
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
+        .args([
+            "-N",
+            "-I",
+            path.to_str().ok_or("path.to_str() was None")?,
+            "--hep-parse",
+            "--json",
+        ])
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
-        .output()
-        .expect("run sipnab --hep-parse");
+        .output()?;
     assert!(out.status.success(), "{out:?}");
     let stdout: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -727,7 +766,7 @@ fn hep_parse_reads_the_transport_by_the_listener_rule() {
     let not_decoded = stderr
         .lines()
         .find(|l| l.starts_with("NOT DECODED:"))
-        .unwrap_or_else(|| panic!("the unknown protocol must be reported: {stderr}"));
+        .ok_or_else(|| format!("the unknown protocol must be reported: {stderr}"))?;
     assert!(
         not_decoded.contains("no transport (IP protocol 99) (1)"),
         "{not_decoded}"
@@ -735,6 +774,7 @@ fn hep_parse_reads_the_transport_by_the_listener_rule() {
     for gone in ["IP protocol 22", "IP protocol 50", "IP protocol 6)"] {
         assert!(!not_decoded.contains(gone), "{gone}: {not_decoded}");
     }
+    Ok(())
 }
 
 // ── --portrange does not gate HEP input (issue #301) ────────────────────
@@ -752,14 +792,14 @@ const OFF_RANGE: (u16, u16) = (7060, 7061);
 /// 7060 fed a listener that analyzed none of it and said "NOT ANALYZED ...
 /// Re-run with --portrange 1-65535".
 #[test]
-fn hep_listen_analyzes_sip_outside_the_portrange() {
-    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "1"]);
+fn hep_listen_analyzes_sip_outside_the_portrange() -> Result<(), TestError> {
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "1"])?;
     let call_id = "hep301-portrange-listen@192.0.2.10";
     srv.send(&hep3_with_ip_proto_on(
         17,
         OFF_RANGE,
         &traced_invite("UDP", call_id),
-    ));
+    )?)?;
     let (stdout, stderr) = drain_until_exit(&srv);
     assert_eq!(
         transport_of(&stdout, call_id).as_deref(),
@@ -767,16 +807,18 @@ fn hep_listen_analyzes_sip_outside_the_portrange() {
         "{stdout:#?}\n{stderr}"
     );
     assert!(!stderr.contains("NOT ANALYZED"), "{stderr}");
+    Ok(())
 }
 
 /// **`--hep-parse` does the same for HEP read out of a capture file**, and a
 /// captured frame beside it on the same off-range ports is still gated and
 /// counted: the gate is unchanged for what sipnab itself captured.
 #[test]
-fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
+fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() -> Result<(), TestError>
+{
     let hep_call = "hep301-portrange-parse@192.0.2.10";
     let wire_call = "hep301-portrange-wire@10.1.0.1";
-    let hep = hep3_with_ip_proto_on(17, OFF_RANGE, &traced_invite("UDP", hep_call));
+    let hep = hep3_with_ip_proto_on(17, OFF_RANGE, &traced_invite("UDP", hep_call))?;
     let frames = vec![
         pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 40000, 9060, &hep),
         pcap_build::udp_frame(
@@ -787,16 +829,21 @@ fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
             &traced_invite("UDP", wire_call),
         ),
     ];
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("hep-off-range.pcap");
-    pcap_build::write_pcap_or_panic(&path, &frames);
+    pcap_build::write_pcap(&path, &frames)?;
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(["-N", "-I", path.to_str().unwrap(), "--hep-parse", "--json"])
+        .args([
+            "-N",
+            "-I",
+            path.to_str().ok_or("path.to_str() was None")?,
+            "--hep-parse",
+            "--json",
+        ])
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
-        .output()
-        .expect("run sipnab --hep-parse");
+        .output()?;
     assert!(out.status.success(), "{out:?}");
     let stdout: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
@@ -817,11 +864,12 @@ fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
     let not_analyzed = stderr
         .lines()
         .find(|l| l.contains("NOT ANALYZED"))
-        .unwrap_or_else(|| panic!("the gated wire frame must be counted: {stderr}"));
+        .ok_or_else(|| format!("the gated wire frame must be counted: {stderr}"))?;
     assert!(
         not_analyzed.contains("NOT ANALYZED: 1 further SIP message(s)"),
         "exactly the one wire frame, never the HEP message: {not_analyzed}"
     );
+    Ok(())
 }
 
 /// **A HEP message marked TCP is a SIP message, not a lost segment.**
@@ -831,10 +879,10 @@ fn hep_parse_analyzes_hep_outside_the_portrange_and_still_gates_the_wire() {
 /// counted anywhere: `N packets captured, 0 SIP messages`, and no NOT DECODED
 /// line to explain it. OpenSIPS and Kamailio both send 6 for every TCP leg.
 #[test]
-fn hep_tcp_messages_are_decoded_whole() {
-    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "2"]);
+fn hep_tcp_messages_are_decoded_whole() -> Result<(), TestError> {
+    let srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32", "--count", "2"])?;
     for call_id in ["hep-tcp-1@192.0.2.10", "hep-tcp-2@192.0.2.10"] {
-        srv.send(&hep3_with_ip_proto(6, &traced_invite("TCP", call_id)));
+        srv.send(&hep3_with_ip_proto(6, &traced_invite("TCP", call_id))?)?;
         thread::sleep(Duration::from_millis(20));
     }
     let (stdout, stderr) = drain_until_exit(&srv);
@@ -850,6 +898,7 @@ fn hep_tcp_messages_are_decoded_whole() {
         "both datagrams are SIP messages: {stderr}"
     );
     assert!(!stderr.contains("NOT DECODED"), "{stderr}");
+    Ok(())
 }
 
 /// Read a `--count` listener's stdout and stderr to the end of its run.
@@ -891,30 +940,31 @@ fn transport_of(stdout: &[String], call_id: &str) -> Option<String> {
 /// A 20-datagram burst against `--hep-rate-limit 1` logs a
 /// "rate limit exceeded" drop (visible at debug log level).
 #[test]
-fn hep_rate_limit_drops_burst() {
+fn hep_rate_limit_drops_burst() -> Result<(), TestError> {
     // rate-limit 1/s, then fire a burst well above it within the same second.
     // The drop is logged at debug level, so run the listener at debug.
     let srv = HepListener::spawn_with_log(
         "debug",
         &["--hep-allow", "127.0.0.1/32", "--hep-rate-limit", "1"],
-    );
+    )?;
     for _ in 0..20 {
-        srv.send(&hep3_sip(&invite_bytes()));
+        srv.send(&hep3_sip(&invite_bytes())?)?;
     }
     assert!(
         srv.wait_for_stderr("rate limit exceeded", test_timeout(5)),
         "a burst above --hep-rate-limit must log a drop"
     );
+    Ok(())
 }
 
 /// `--hep-send` forwards fixture SIP to a collector UDP socket, and the first
 /// received datagram starts with the `HEP3` magic.
 #[test]
-fn hep_send_forwards_captured_sip_as_hep3() {
+fn hep_send_forwards_captured_sip_as_hep3() -> Result<(), TestError> {
     // Bind a collector UDP socket; have sipnab forward a fixture's SIP to it.
-    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    collector.set_read_timeout(Some(test_timeout(5))).unwrap();
-    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+    let collector = UdpSocket::bind("127.0.0.1:0")?;
+    collector.set_read_timeout(Some(test_timeout(5)))?;
+    let target = format!("127.0.0.1:{}", collector.local_addr()?.port());
 
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
@@ -927,17 +977,15 @@ fn hep_send_forwards_captured_sip_as_hep3() {
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --hep-send");
+        .spawn()?;
 
     let mut buf = [0u8; 65535];
-    let (n, _from) = collector
-        .recv_from(&mut buf)
-        .expect("collector must receive a forwarded HEP datagram");
+    let (n, _from) = collector.recv_from(&mut buf)?;
     assert!(n >= 6, "datagram too short to be HEP3");
     assert_eq!(&buf[..4], b"HEP3", "forwarded datagram must be HEP3");
 
     let _ = terminate(&mut child);
+    Ok(())
 }
 
 /// Run `sipnab -N -I <fixture> --hep-send <target>` plus `extra` to its end.
@@ -945,7 +993,7 @@ fn hep_send_forwards_captured_sip_as_hep3() {
 /// # Returns
 ///
 /// `(exit code, stderr)`.
-fn hep_send_run(target: &str, extra: &[&str]) -> (Option<i32>, String) {
+fn hep_send_run(target: &str, extra: &[&str]) -> Result<(Option<i32>, String), TestError> {
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
@@ -956,12 +1004,11 @@ fn hep_send_run(target: &str, extra: &[&str]) -> (Option<i32>, String) {
         .env("SIPNAB_LOG", "warn")
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
-        .output()
-        .expect("run sipnab --hep-send");
-    (
+        .output()?;
+    Ok((
         out.status.code(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 /// A `--hep-send` whose sender cannot start fails the run, exit 2, with the
@@ -973,10 +1020,10 @@ fn hep_send_run(target: &str, extra: &[&str]) -> (Option<i32>, String) {
 /// Two causes: a TCP collector that refuses the connection, and a host name
 /// that does not resolve. Both are found before the first packet.
 #[test]
-fn a_hep_sender_that_cannot_start_fails_the_run() {
+fn a_hep_sender_that_cannot_start_fails_the_run() -> Result<(), TestError> {
     // A port nothing listens on: bind, read the number, release it.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = closed.local_addr().expect("addr").port();
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = closed.local_addr()?.port();
     drop(closed);
     let target = format!("127.0.0.1:{port}");
     for (target, extra, what) in [
@@ -991,7 +1038,7 @@ fn a_hep_sender_that_cannot_start_fails_the_run() {
             "a name that does not resolve",
         ),
     ] {
-        let (code, stderr) = hep_send_run(target, extra);
+        let (code, stderr) = hep_send_run(target, extra)?;
         assert_eq!(
             code,
             Some(2),
@@ -1002,16 +1049,18 @@ fn a_hep_sender_that_cannot_start_fails_the_run() {
             "{what}: the error names the sender and the destination:\n{stderr}"
         );
     }
+    Ok(())
 }
 
 /// The negative control: a sender that starts still exits 0, so the fix did
 /// not turn every `--hep-send` run into a failure.
 #[test]
-fn a_hep_sender_that_starts_still_exits_zero() {
-    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
-    let (code, stderr) = hep_send_run(&target, &[]);
+fn a_hep_sender_that_starts_still_exits_zero() -> Result<(), TestError> {
+    let collector = UdpSocket::bind("127.0.0.1:0")?;
+    let target = format!("127.0.0.1:{}", collector.local_addr()?.port());
+    let (code, stderr) = hep_send_run(&target, &[])?;
     assert_eq!(code, Some(0), "a working sender exits 0:\n{stderr}");
+    Ok(())
 }
 
 /// A `--hep-send` run ends by saying what it exported: how many packets,
@@ -1019,9 +1068,9 @@ fn a_hep_sender_that_starts_still_exits_zero() {
 /// there. Before this a failed forward was one `debug!` line, so an agent
 /// whose collector was gone reported nothing wrong at the default level.
 #[test]
-fn hep_send_reports_its_exports_at_the_end_of_the_run() {
-    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+fn hep_send_reports_its_exports_at_the_end_of_the_run() -> Result<(), TestError> {
+    let collector = UdpSocket::bind("127.0.0.1:0")?;
+    let target = format!("127.0.0.1:{}", collector.local_addr()?.port());
     let pcap = format!(
         "{}/tests/fixtures/sip_call.pcap",
         env!("CARGO_MANIFEST_DIR")
@@ -1033,21 +1082,21 @@ fn hep_send_reports_its_exports_at_the_end_of_the_run() {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run sipnab --hep-send");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     let line = stderr
         .lines()
         .find(|l| l.contains(&format!("HEP export to {target} over udp")))
-        .unwrap_or_else(|| panic!("no end-of-run export line in:\n{stderr}"));
+        .ok_or_else(|| format!("no end-of-run export line in:\n{stderr}"))?;
     assert!(line.contains("none failed"), "{line}");
     assert!(line.contains("UDP reports no delivery"), "{line}");
     let sent: u64 = line
         .split_once("over udp: ")
         .and_then(|(_, rest)| rest.split(' ').next())
         .and_then(|n| n.parse().ok())
-        .unwrap_or_else(|| panic!("no packet count in: {line}"));
+        .ok_or_else(|| format!("no packet count in: {line}"))?;
     assert!(sent > 0, "the capture's SIP was forwarded: {line}");
+    Ok(())
 }
 
 /// `--hep-send` on a TCP trunk stamps every SIP datagram with IP protocol
@@ -1058,26 +1107,26 @@ fn hep_send_reports_its_exports_at_the_end_of_the_run() {
 /// literal `TransportProto::Udp` that recorded a TCP trunk as UDP lived in
 /// that loop, nine hundred lines long, where no unit test could see it.
 #[test]
-fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
-    let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-    collector.set_read_timeout(Some(test_timeout(5))).unwrap();
-    let target = format!("127.0.0.1:{}", collector.local_addr().unwrap().port());
+fn hep_send_stamps_tcp_sip_as_ip_protocol_6() -> Result<(), TestError> {
+    let collector = UdpSocket::bind("127.0.0.1:0")?;
+    collector.set_read_timeout(Some(test_timeout(5)))?;
+    let target = format!("127.0.0.1:{}", collector.local_addr()?.port());
 
     // INVITE, ACK and BYE from the client, a 200 from the far side, all over
     // one TCP connection with PSH on every segment.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("tcp_trunk.pcap");
-    pcap_build::write_pcap_or_panic(
+    pcap_build::write_pcap(
         &pcap,
         &pcap_build::tcp_sip_call_with_body("tcp-trunk-1", 40, true),
-    );
+    )?;
 
     let mut sender = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     let mut child = sender
         .args([
             "-N",
             "-I",
-            pcap.to_str().unwrap(),
+            pcap.to_str().ok_or("pcap.to_str() was None")?,
             "--hep-send",
             &target,
             "--quiet",
@@ -1086,13 +1135,12 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --hep-send");
+        .spawn()?;
 
     let mut buf = [0u8; 65535];
     let mut sip_datagrams = 0;
     while let Ok((n, _from)) = collector.recv_from(&mut buf) {
-        let pkt = parse_hep(&buf[..n]).expect("forwarded datagram must be HEP3");
+        let pkt = parse_hep(&buf[..n])?;
         if pkt.protocol != HepProtocol::Sip {
             continue;
         }
@@ -1113,6 +1161,7 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() {
     );
 
     let _ = terminate(&mut child);
+    Ok(())
 }
 
 // ── -d and -L in one process (SRC1) ────────────────────────────────────
@@ -1145,7 +1194,7 @@ fn can_live_capture() -> Option<bool> {
 /// and takes the whole session down, which is the one-fails-all rule a
 /// composite inherits from `--multi-device`.
 #[test]
-fn a_live_device_and_a_hep_listener_run_in_one_process() {
+fn a_live_device_and_a_hep_listener_run_in_one_process() -> Result<(), TestError> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.args([
         "-N",
@@ -1168,9 +1217,9 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("spawn sipnab -d lo -L");
-    let stdout_rx = line_reader(child.stdout.take().expect("stdout"));
-    let stderr_rx = line_reader(child.stderr.take().expect("stderr"));
+    let mut child = cmd.spawn()?;
+    let stdout_rx = line_reader(child.stdout.take().ok_or("stdout")?);
+    let stderr_rx = line_reader(child.stderr.take().ok_or("stderr")?);
 
     // Collect stderr until the process ends or the deadline passes, scraping
     // the composite announcement and the bound HEP port out of it.
@@ -1214,13 +1263,12 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() {
     match can_live_capture() {
         // Privileged: both members opened, and the HEP member accepts.
         Some(true) => {
-            let port = hep_port.unwrap_or_else(|| {
+            let port = hep_port.ok_or_else(|| {
                 let _ = child.kill();
-                panic!("the HEP member must bind and report its port:\n{log}");
-            });
-            let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
-            sock.send_to(&hep3_sip(&invite_bytes()), ("127.0.0.1", port))
-                .expect("send HEP");
+                format!("the HEP member must bind and report its port:\n{log}")
+            })?;
+            let sock = UdpSocket::bind("127.0.0.1:0")?;
+            sock.send_to(&hep3_sip(&invite_bytes())?, ("127.0.0.1", port))?;
 
             let found = {
                 let deadline = Instant::now() + test_timeout(10);
@@ -1258,10 +1306,10 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() {
                 }
                 seen
             };
-            let status = status.unwrap_or_else(|| {
+            let status = status.ok_or_else(|| {
                 let _ = child.kill();
-                panic!("without capture rights the run must end, not hang:\n{log}");
-            });
+                format!("without capture rights the run must end, not hang:\n{log}")
+            })?;
             assert_eq!(
                 status.code(),
                 Some(1),
@@ -1276,4 +1324,5 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() {
     }
 
     let _ = terminate(&mut child);
+    Ok(())
 }

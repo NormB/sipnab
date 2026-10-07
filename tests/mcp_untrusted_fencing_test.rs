@@ -22,12 +22,20 @@ use sipnab::mcp::shape::{
     DIALOG_FENCED_FIELDS, DIALOG_VERBATIM_FIELDS, MESSAGE_FENCED_FIELDS, MESSAGE_VERBATIM_FIELDS,
 };
 
-/// Assert every field of `name` in `path` is classified exactly once.
-fn assert_classified(path: &str, name: &str, fenced: &[&str], verbatim: &[&str], floor: usize) {
-    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-    let body = struct_body(&src, name);
+type TestError = Box<dyn std::error::Error>;
 
-    let field_re = regex::Regex::new(r"(?m)^\s{4}(?:pub )?([a-z_]+):").expect("field regex");
+/// Assert every field of `name` in `path` is classified exactly once.
+fn assert_classified(
+    path: &str,
+    name: &str,
+    fenced: &[&str],
+    verbatim: &[&str],
+    floor: usize,
+) -> Result<(), TestError> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
+    let body = struct_body(&src, name)?;
+
+    let field_re = regex::Regex::new(r"(?m)^\s{4}(?:pub )?([a-z_]+):")?;
     let fields: Vec<String> = field_re
         .captures_iter(&body)
         .map(|c| c[1].to_string())
@@ -65,14 +73,15 @@ fn assert_classified(path: &str, name: &str, fenced: &[&str], verbatim: &[&str],
         both.is_empty(),
         "{name} field(s) {both:?} are classified as both fenced and verbatim"
     );
+    Ok(())
 }
 
 /// The body of a named struct in a source file, without its closing brace.
-fn struct_body(src: &str, name: &str) -> String {
+fn struct_body(src: &str, name: &str) -> Result<String, TestError> {
     let decl = format!("struct {name}");
     let start = src
         .find(&decl)
-        .unwrap_or_else(|| panic!("{decl} is not defined in the scanned file"));
+        .ok_or_else(|| format!("{decl} is not defined in the scanned file"))?;
     let body = &src[start..];
     // The needle is built rather than written as a literal, for the reason in
     // the module docs: a bare `}` in a string breaks the unwrap checker's
@@ -81,8 +90,8 @@ fn struct_body(src: &str, name: &str) -> String {
     let close = format!("\n{}", '}');
     let end = body
         .find(&close)
-        .unwrap_or_else(|| panic!("{decl} has no closing brace"));
-    body[..end].to_string()
+        .ok_or_else(|| format!("{decl} has no closing brace"))?;
+    Ok(body[..end].to_string())
 }
 
 /// Every field of the per-message JSON is classified exactly once.
@@ -92,27 +101,29 @@ fn struct_body(src: &str, name: &str) -> String {
 /// the sender wrote. The alternative — defaulting to verbatim — is precisely how
 /// the original defect happened: nobody decided, so nothing was marked.
 #[test]
-fn every_message_json_field_is_classified_as_fenced_or_verbatim() {
+fn every_message_json_field_is_classified_as_fenced_or_verbatim() -> Result<(), TestError> {
     assert_classified(
         concat!(env!("CARGO_MANIFEST_DIR"), "/src/output/json.rs"),
         "MessageJson",
         MESSAGE_FENCED_FIELDS,
         MESSAGE_VERBATIM_FIELDS,
         16,
-    );
+    )?;
+    Ok(())
 }
 
 /// The same contract for the dialog summary, which `list_dialogs`,
 /// `find_problems` and `tail_dialogs` return and which an agent reads first.
 #[test]
-fn every_dialog_summary_field_is_classified_as_fenced_or_verbatim() {
+fn every_dialog_summary_field_is_classified_as_fenced_or_verbatim() -> Result<(), TestError> {
     assert_classified(
         concat!(env!("CARGO_MANIFEST_DIR"), "/src/output/model.rs"),
         "DialogSummary",
         DIALOG_FENCED_FIELDS,
         DIALOG_VERBATIM_FIELDS,
         9,
-    );
+    )?;
+    Ok(())
 }
 
 /// The classification is not merely declared — it is what the code does.
@@ -122,7 +133,8 @@ fn every_dialog_summary_field_is_classified_as_fenced_or_verbatim() {
 /// the assertion FROM the lists: serialize a real summary and require every
 /// fenced field to carry the marker and every verbatim field not to.
 #[test]
-fn the_dialog_summary_the_mcp_surface_returns_matches_its_classification() {
+fn the_dialog_summary_the_mcp_surface_returns_matches_its_classification() -> Result<(), TestError>
+{
     use sipnab::mcp::shape::{UNTRUSTED_OPEN, fenced_dialog_summary};
 
     let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
@@ -135,23 +147,22 @@ CSeq: 1 INVITE\r\n\
     let msg = sipnab::sip::parser::parse_sip_bytes(
         &bytes::Bytes::from_static(raw),
         chrono::Utc::now(),
-        "192.0.2.1".parse().expect("src ip"),
-        "192.0.2.2".parse().expect("dst ip"),
+        "192.0.2.1".parse()?,
+        "192.0.2.2".parse()?,
         5060,
         5060,
         sipnab::net::TransportProto::Udp,
-    )
-    .expect("fixture parses as a SIP message");
+    )?;
 
     let mut store = sipnab::sip::dialog_store::DialogStore::new(100_000, false);
     store.process_message(msg);
     let dialog = store
         .get("fencing-effect-test@example.com")
-        .expect("the fixture produced a dialog");
+        .ok_or("the fixture produced a dialog")?;
 
     let summary = fenced_dialog_summary(dialog);
-    let v = serde_json::to_value(&summary).expect("summary serializes");
-    let obj = v.as_object().expect("summary is a JSON object");
+    let v = serde_json::to_value(&summary)?;
+    let obj = v.as_object().ok_or("summary is a JSON object")?;
 
     for name in DIALOG_FENCED_FIELDS {
         if let Some(field) = obj.get(*name)
@@ -174,4 +185,5 @@ CSeq: 1 INVITE\r\n\
             );
         }
     }
+    Ok(())
 }

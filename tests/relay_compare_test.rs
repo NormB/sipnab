@@ -24,8 +24,14 @@ use sipnab::stats_vocab::{
     compare_relay_and_sipnab, ready_comparison,
 };
 
-fn at() -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 9, 13, 4, 5, 6).unwrap()
+/// Any error, boxed, so `?` works on I/O, parse and lookup failures alike.
+type TestError = Box<dyn std::error::Error>;
+
+fn at() -> Result<DateTime<Utc>, TestError> {
+    Ok(Utc
+        .with_ymd_and_hms(2026, 9, 13, 4, 5, 6)
+        .single()
+        .ok_or("fixed timestamp is unambiguous")?)
 }
 
 fn relay(value: u64, name: &str) -> ComparedFigure {
@@ -48,30 +54,33 @@ fn sipnab(value: u64) -> ComparedFigure {
 
 /// Equal counts are a match.
 #[test]
-fn equal_counts_match() {
+fn equal_counts_match() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(9000));
     assert_eq!(c.verdict, ComparisonVerdict::Match);
+    Ok(())
 }
 
 /// Any inequality is a differ -- there is no tolerance band, because a band
 /// would be a policy number sipnab does not have; both raw counts are shown and
 /// the operator judges the six-packet gap themselves.
 #[test]
-fn unequal_counts_differ() {
+fn unequal_counts_differ() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
     assert_eq!(c.verdict, ComparisonVerdict::Differ);
+    Ok(())
 }
 
 /// Both raw figures survive into the comparison, unmodified: the relay's with
 /// its own key name, sipnab's as measured. Neither is coerced toward the other.
 #[test]
-fn both_raw_figures_survive_unmodified() {
+fn both_raw_figures_survive_unmodified() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
     assert_eq!(c.relay.value, 9000);
     assert_eq!(c.relay.name.as_deref(), Some("totals.RTP.packets"));
     assert_eq!(c.relay.tier, StatisticTier::RelayReported);
     assert_eq!(c.sipnab.value, 8994);
     assert_eq!(c.sipnab.tier, StatisticTier::SipnabMeasured);
+    Ok(())
 }
 
 /// The two sides are DIFFERENT tiers, so `blends_tiers` forbids summing them --
@@ -79,19 +88,20 @@ fn both_raw_figures_survive_unmodified() {
 /// false, the two figures would be the same kind of claim and there would be
 /// nothing to compare.
 #[test]
-fn the_two_sides_are_tiers_that_must_never_be_blended() {
+fn the_two_sides_are_tiers_that_must_never_be_blended() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
     assert!(
         blends_tiers(c.relay.tier, c.sipnab.tier),
         "relay_reported and sipnab_measured must never be summed; C4 compares them"
     );
+    Ok(())
 }
 
 /// When sipnab counted fewer (an UNDERcount), the note names the ordinary
 /// undercount causes, so an operator handed "differ" does not go straight to
 /// blaming the relay.
 #[test]
-fn a_sipnab_fewer_note_names_the_undercount_causes() {
+fn a_sipnab_fewer_note_names_the_undercount_causes() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
     let note = c.note.to_lowercase();
     // capture undercount on a mirror port
@@ -109,6 +119,7 @@ fn a_sipnab_fewer_note_names_the_undercount_causes() {
         note.contains("capture_health") || note.contains("capture health"),
         "the note must point at capture_health: {note}"
     );
+    Ok(())
 }
 
 /// When sipnab counted MORE (the relay counted fewer -- an OVERcount), the note
@@ -116,7 +127,7 @@ fn a_sipnab_fewer_note_names_the_undercount_causes() {
 /// each packet more than once. Listing only undercount causes here would
 /// misexplain the common relay-segment case (observed live: ~2x the relay).
 #[test]
-fn a_relay_fewer_note_names_the_double_count_cause() {
+fn a_relay_fewer_note_names_the_double_count_cause() -> Result<(), TestError> {
     // sipnab saw ~2x, as a bridge capture of a relay hairpin does.
     let c = compare_relay_and_sipnab(relay(1998, "totals.RTP.packets"), sipnab(3980));
     let note = c.note.to_lowercase();
@@ -129,13 +140,14 @@ fn a_relay_fewer_note_names_the_double_count_cause() {
         !note.contains("undercount"),
         "an overcount must not be explained as an undercount: {note}"
     );
+    Ok(())
 }
 
 /// The note states the DIRECTION of the gap in prose, but the difference is
 /// never computed as a value -- both counts are shown and the reader subtracts
 /// if they want to, which keeps the cross-tier arithmetic out of the data.
 #[test]
-fn a_differ_note_states_direction_without_a_computed_difference() {
+fn a_differ_note_states_direction_without_a_computed_difference() -> Result<(), TestError> {
     // sipnab counted fewer than the relay.
     let fewer = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
     assert!(
@@ -158,69 +170,80 @@ fn a_differ_note_states_direction_without_a_computed_difference() {
         "the relay counted fewer is stated: {}",
         relay_fewer.note
     );
+    Ok(())
 }
 
 /// A match note confirms agreement rather than leaving the reader to infer it.
 #[test]
-fn a_match_note_confirms_agreement() {
+fn a_match_note_confirms_agreement() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(9000));
     assert!(
         c.note.to_lowercase().contains("agree"),
         "a match says the two agree: {}",
         c.note
     );
+    Ok(())
 }
 
 /// The verdict's wire spelling is stable and matches ST-S3's example (`differ`).
 #[test]
-fn the_verdict_wire_spelling_is_match_or_differ() {
+fn the_verdict_wire_spelling_is_match_or_differ() -> Result<(), TestError> {
     assert_eq!(ComparisonVerdict::Match.as_wire_str(), "match");
     assert_eq!(ComparisonVerdict::Differ.as_wire_str(), "differ");
+    Ok(())
 }
 
 // ── ready_comparison: zero versus absent (ST9) ──────────────────────────────
 
 /// Both sides present: a comparison is made, carrying both figures.
 #[test]
-fn both_sides_present_yields_a_comparison() {
+fn both_sides_present_yields_a_comparison() -> Result<(), TestError> {
     match ready_comparison(Some(9000), Some(8994)) {
         CompareOutcome::Compared(c) => {
             assert_eq!(c.relay.value, 9000);
             assert_eq!(c.sipnab.value, 8994);
             assert_eq!(c.verdict, ComparisonVerdict::Differ);
         }
-        other => panic!("both present should compare, got {other:?}"),
+        other => return Err(format!("both present should compare, got {other:?}").into()),
     }
+    Ok(())
 }
 
 /// The relay reports a total but sipnab captured no RTP for the call: this is
 /// NOT "sipnab measured zero" -- it is absent, and must not render as `0` in a
 /// comparison that then blames the relay. ST9: zero and absent are different.
 #[test]
-fn relay_present_sipnab_absent_is_not_a_zero_comparison() {
+fn relay_present_sipnab_absent_is_not_a_zero_comparison() -> Result<(), TestError> {
     match ready_comparison(Some(1796), None) {
         CompareOutcome::SipnabHasNoRtp { relay_value } => assert_eq!(relay_value, 1796),
-        other => panic!("sipnab absent must not compare against 0, got {other:?}"),
+        other => {
+            return Err(format!("sipnab absent must not compare against 0, got {other:?}").into());
+        }
     }
+    Ok(())
 }
 
 /// sipnab measured the call but the relay does not hold it: sipnab's count is
 /// carried, and the relay side is reported absent rather than compared to 0.
 #[test]
-fn sipnab_present_relay_absent_reports_the_relay_does_not_hold_it() {
+fn sipnab_present_relay_absent_reports_the_relay_does_not_hold_it() -> Result<(), TestError> {
     match ready_comparison(None, Some(500)) {
         CompareOutcome::RelayDoesNotHoldCall { sipnab_value } => assert_eq!(sipnab_value, 500),
-        other => panic!("relay absent must not compare against 0, got {other:?}"),
+        other => {
+            return Err(format!("relay absent must not compare against 0, got {other:?}").into());
+        }
     }
+    Ok(())
 }
 
 /// Neither side has anything: no comparison, no invented zeroes.
 #[test]
-fn neither_side_present_is_neither() {
+fn neither_side_present_is_neither() -> Result<(), TestError> {
     assert!(matches!(
         ready_comparison(None, None),
         CompareOutcome::NeitherSide
     ));
+    Ok(())
 }
 
 /// A genuine measured zero is still absent here, because a stream that captured
@@ -228,22 +251,23 @@ fn neither_side_present_is_neither() {
 /// this call", never `Some(0)`, so a `Some(0)` would be a real relay zero
 /// versus a real sipnab zero -- which is a match, not a fabricated gap.
 #[test]
-fn two_real_zeroes_match_rather_than_read_as_absent() {
+fn two_real_zeroes_match_rather_than_read_as_absent() -> Result<(), TestError> {
     // If both sides legitimately report zero (a call that carried no media and
     // a relay that agrees), that is a match, not "absent".
     match ready_comparison(Some(0), Some(0)) {
         CompareOutcome::Compared(c) => assert_eq!(c.verdict, ComparisonVerdict::Match),
-        other => panic!("two real zeroes are a match, got {other:?}"),
+        other => return Err(format!("two real zeroes are a match, got {other:?}").into()),
     }
+    Ok(())
 }
 
 // ── format_relay_comparison: the CLI rendering ──────────────────────────────
 
 /// The rendering names the call, both tiers, both raw values, and the verdict.
 #[test]
-fn the_rendering_shows_both_tiers_both_values_and_the_verdict() {
+fn the_rendering_shows_both_tiers_both_values_and_the_verdict() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
-    let text = format_relay_comparison(&c, "1-7@10.0.0.1", "rtpengine at 10.0.0.1:22222", at());
+    let text = format_relay_comparison(&c, "1-7@10.0.0.1", "rtpengine at 10.0.0.1:22222", at()?);
 
     assert!(text.contains("1-7@10.0.0.1"), "the call is named:\n{text}");
     assert!(
@@ -266,28 +290,31 @@ fn the_rendering_shows_both_tiers_both_values_and_the_verdict() {
         text.contains("2026-09-13T04:05:06Z"),
         "when it was asked is shown:\n{text}"
     );
+    Ok(())
 }
 
 /// A match renders the verdict word "match" and does not falsely claim a
 /// difference.
 #[test]
-fn a_match_renders_as_match() {
+fn a_match_renders_as_match() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(500, "totals.RTP.packets"), sipnab(500));
-    let text = format_relay_comparison(&c, "call-x", "relay", at());
+    let text = format_relay_comparison(&c, "call-x", "relay", at()?);
     assert!(
         text.to_lowercase().contains("match"),
         "a match renders as match:\n{text}"
     );
+    Ok(())
 }
 
 /// The rendering carries the note, so the caveat travels with the numbers
 /// rather than being dropped at the CLI.
 #[test]
-fn the_rendering_carries_the_note() {
+fn the_rendering_carries_the_note() -> Result<(), TestError> {
     let c = compare_relay_and_sipnab(relay(9000, "totals.RTP.packets"), sipnab(8994));
-    let text = format_relay_comparison(&c, "call-x", "relay", at());
+    let text = format_relay_comparison(&c, "call-x", "relay", at()?);
     assert!(
         text.to_lowercase().contains("restart") && text.to_lowercase().contains("capture_health"),
         "the note travels into the rendering:\n{text}"
     );
+    Ok(())
 }

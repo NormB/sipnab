@@ -52,6 +52,8 @@
 use std::path::Path;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Run the cookbook checker against the binary this test run just built.
 ///
 /// `CARGO_BIN_EXE_sipnab` is the binary cargo built for THIS test invocation,
@@ -59,7 +61,7 @@ use std::process::Command;
 /// a check passes against a version that no longer exists — the same trap as
 /// a test that reads a build artefact it did not produce.
 #[test]
-fn every_cookbook_command_still_works() {
+fn every_cookbook_command_still_works() -> Result<(), TestError> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let script = repo.join("scripts/check-cookbook.py");
     assert!(script.exists(), "missing {}", script.display());
@@ -70,7 +72,7 @@ fn every_cookbook_command_still_works() {
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(repo)
         .output()
-        .expect("run scripts/check-cookbook.py (python3 must be on PATH)");
+        .map_err(|e| format!("run scripts/check-cookbook.py (python3 must be on PATH): {e}"))?;
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -110,9 +112,9 @@ fn every_cookbook_command_still_works() {
     // The checker prints this line unconditionally, so a missing line means
     // the summary changed shape and this assertion had stopped reading
     // anything — which is the failure it exists to catch.
-    let uncovered = count("UNCOVERED").unwrap_or_else(|| {
-        panic!("the checker printed no UNCOVERED count; its summary has changed shape:\n{stdout}")
-    });
+    let uncovered = count("UNCOVERED").ok_or_else(|| {
+        format!("the checker printed no UNCOVERED count; its summary has changed shape:\n{stdout}")
+    })?;
     assert_eq!(
         uncovered, 0,
         "{uncovered} cookbook command(s) are covered by no check at all. \
@@ -126,9 +128,9 @@ fn every_cookbook_command_still_works() {
     // with the reason it cannot be. The checker already fails the run on a
     // gap; these read the summary so a checker that stopped comparing — and so
     // printed no line — cannot pass by saying nothing.
-    let no_golden = count("NO GOLDEN").unwrap_or_else(|| {
-        panic!("the checker printed no NO GOLDEN count; its summary has changed shape:\n{stdout}")
-    });
+    let no_golden = count("NO GOLDEN").ok_or_else(|| {
+        format!("the checker printed no NO GOLDEN count; its summary has changed shape:\n{stdout}")
+    })?;
     assert_eq!(
         no_golden, 0,
         "{no_golden} executed cookbook command(s) have no output golden and no \
@@ -146,20 +148,21 @@ fn every_cookbook_command_still_works() {
         "only {pinned} cookbook commands have an output golden; the golden \
          reader has probably stopped finding tests/cli/cookbook/*.trycmd:\n{stdout}"
     );
+    Ok(())
 }
 
 /// Run the checker with extra arguments, returning (status code, stdout+stderr).
-fn checker(extra: &[&str]) -> (Option<i32>, String) {
+fn checker(extra: &[&str]) -> Result<(Option<i32>, String), TestError> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = Command::new("python3")
         .arg(repo.join("scripts/check-cookbook.py"))
         .args(extra)
         .current_dir(repo)
         .output()
-        .expect("run scripts/check-cookbook.py (python3 must be on PATH)");
+        .map_err(|e| format!("run scripts/check-cookbook.py (python3 must be on PATH): {e}"))?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.code(), text)
+    Ok((out.status.code(), text))
 }
 
 /// Every exemption on record states a reason.
@@ -172,14 +175,14 @@ fn checker(extra: &[&str]) -> (Option<i32>, String) {
 /// proves the dump reports entries when there are entries, so an empty result
 /// means an empty table rather than a reader that stopped reading.
 #[test]
-fn every_recorded_cookbook_exemption_states_a_reason() {
-    let (code, dump) = checker(&["--dump-exemptions"]);
+fn every_recorded_cookbook_exemption_states_a_reason() -> Result<(), TestError> {
+    let (code, dump) = checker(&["--dump-exemptions"])?;
     assert_eq!(code, Some(0), "--dump-exemptions failed:\n{dump}");
 
     for line in dump.lines().filter(|l| !l.trim().is_empty()) {
         let (pattern, reason) = line
             .split_once('\t')
-            .unwrap_or_else(|| panic!("exemption line is not `pattern<TAB>reason`: {line:?}"));
+            .ok_or_else(|| format!("exemption line is not `pattern<TAB>reason`: {line:?}"))?;
         assert!(
             !pattern.trim().is_empty() && !reason.trim().is_empty(),
             "the cookbook exemption {pattern:?} states no reason. An exemption \
@@ -188,7 +191,7 @@ fn every_recorded_cookbook_exemption_states_a_reason() {
         );
     }
 
-    let (code, dump) = checker(&["--dump-exemptions", "--exempt", "sipnab -N=a stated reason"]);
+    let (code, dump) = checker(&["--dump-exemptions", "--exempt", "sipnab -N=a stated reason"])?;
     assert_eq!(
         code,
         Some(0),
@@ -200,6 +203,7 @@ fn every_recorded_cookbook_exemption_states_a_reason() {
         "the exemption dump did not report an entry that was definitely there, \
          so the loop above proves nothing about an empty table"
     );
+    Ok(())
 }
 
 /// The checker REFUSES an exemption with no stated reason.
@@ -208,8 +212,8 @@ fn every_recorded_cookbook_exemption_states_a_reason() {
 /// its source for a validator that might never be called. Cheap on purpose —
 /// the reason check runs before the binary is opened, so nothing is executed.
 #[test]
-fn an_exemption_without_a_stated_reason_is_refused() {
-    let (code, text) = checker(&["--exempt", "sipnab -N="]);
+fn an_exemption_without_a_stated_reason_is_refused() -> Result<(), TestError> {
+    let (code, text) = checker(&["--exempt", "sipnab -N="])?;
     assert_eq!(
         code,
         Some(2),
@@ -222,7 +226,7 @@ fn an_exemption_without_a_stated_reason_is_refused() {
          an unrelated failure:\n{text}"
     );
 
-    let (code, text) = checker(&["--exempt", "=a stated reason"]);
+    let (code, text) = checker(&["--exempt", "=a stated reason"])?;
     assert_eq!(
         code,
         Some(2),
@@ -233,4 +237,5 @@ fn an_exemption_without_a_stated_reason_is_refused() {
         text.contains("empty pattern"),
         "exit 2, but not for the empty pattern:\n{text}"
     );
+    Ok(())
 }

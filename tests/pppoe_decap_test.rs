@@ -24,6 +24,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The one PPPoE capture in the sample set: 32 frames, all EtherType 0x8864.
 const FIXTURE: &str = "tests/pcap-samples/DTMFsipinfo.pcap";
 
@@ -55,17 +57,16 @@ fn repo_path(rel: &str) -> String {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab(args: &[&str]) -> (String, String, i32) {
+fn run_sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// Every `--json-dialogs` object on stdout, in order.
@@ -88,14 +89,14 @@ fn dialog_objects(stdout: &str) -> Vec<serde_json::Value> {
 /// traffic without the PPPoE headers, so any decapsulation that drops, doubles
 /// or mis-attributes a frame fails here rather than rounding to "some SIP".
 #[test]
-fn pppoe_capture_yields_the_exact_dialog_it_contains() {
+fn pppoe_capture_yields_the_exact_dialog_it_contains() -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(FIXTURE),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab exited {code}; stderr:\n{stderr}");
 
     let dialogs = dialog_objects(&stdout);
@@ -117,6 +118,7 @@ fn pppoe_capture_yields_the_exact_dialog_it_contains() {
     assert_eq!(d["final_status_reason"], serde_json::json!("OK"));
     assert_eq!(d["from"], serde_json::json!("admind"));
     assert_eq!(d["to"], serde_json::json!("echo"));
+    Ok(())
 }
 
 /// `--report` renders the call rather than claiming the capture holds no SIP.
@@ -127,14 +129,14 @@ fn pppoe_capture_yields_the_exact_dialog_it_contains() {
 /// both streams are checked — asserting only on stdout would be an assertion
 /// that cannot fail.
 #[test]
-fn pppoe_capture_report_is_not_empty_and_does_not_deny_the_sip() {
+fn pppoe_capture_report_is_not_empty_and_does_not_deny_the_sip() -> Result<(), TestError> {
     let (stdout, stderr, code) = run_sipnab(&[
         "-N",
         "-I",
         &repo_path(FIXTURE),
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(code, 0, "sipnab exited {code}; stderr:\n{stderr}");
 
     for (stream, text) in [("stdout", &stdout), ("stderr", &stderr)] {
@@ -152,7 +154,7 @@ fn pppoe_capture_report_is_not_empty_and_does_not_deny_the_sip() {
     let row = stdout
         .lines()
         .find(|l| l.starts_with(shown))
-        .unwrap_or_else(|| panic!("report has no dialog row for {CALL_ID}:\n{stdout}"));
+        .ok_or_else(|| format!("report has no dialog row for {CALL_ID}:\n{stdout}"))?;
     assert!(
         row.split_whitespace().any(|f| f == "32"),
         "dialog row reports a message count other than {EXPECTED_MSG_COUNT}: {row}"
@@ -161,6 +163,7 @@ fn pppoe_capture_report_is_not_empty_and_does_not_deny_the_sip() {
         row.contains("200"),
         "dialog row reports no final status code: {row}"
     );
+    Ok(())
 }
 
 /// Sharding across `--cores` does not change the result.
@@ -170,9 +173,9 @@ fn pppoe_capture_report_is_not_empty_and_does_not_deny_the_sip() {
 /// that peek does not understand PPPoE it returns `None`, every packet lands on
 /// worker 0, and the two dispatch sites disagree about what a frame contains.
 #[test]
-fn pppoe_capture_shards_identically_across_cores() {
+fn pppoe_capture_shards_identically_across_cores() -> Result<(), TestError> {
     let path = repo_path(FIXTURE);
-    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"]);
+    let one = run_sipnab(&["-N", "-I", &path, "--json-dialogs", "--no-cli-print"])?;
     let two = run_sipnab(&[
         "-N",
         "-I",
@@ -181,7 +184,7 @@ fn pppoe_capture_shards_identically_across_cores() {
         "2",
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(one.2, 0, "single-core run failed:\n{}", one.1);
     assert_eq!(two.2, 0, "--cores 2 run failed:\n{}", two.1);
 
@@ -195,4 +198,5 @@ fn pppoe_capture_shards_identically_across_cores() {
         "--cores 2 lost messages the single-core run found"
     );
     assert_eq!(a[0]["call_id"], b[0]["call_id"]);
+    Ok(())
 }

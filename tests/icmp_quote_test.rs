@@ -33,6 +33,8 @@ use sipnab::pipeline;
 #[path = "support/mod.rs"]
 mod support;
 
+use support::TestError;
+
 // ── Fixtures ─────────────────────────────────────────────────────────
 
 /// Ethernet link type (DLT_EN10MB).
@@ -96,7 +98,7 @@ fn icmpv4_error(
     icmp_type: u8,
     icmp_code: u8,
     quoted: &[u8],
-) -> Packet {
+) -> Result<Packet, TestError> {
     let mut icmp = Vec::with_capacity(8 + quoted.len());
     icmp.push(icmp_type);
     icmp.push(icmp_code);
@@ -155,7 +157,7 @@ fn icmpv6_error(
     icmp_type: u8,
     icmp_code: u8,
     quoted: &[u8],
-) -> Packet {
+) -> Result<Packet, TestError> {
     let mut icmp = Vec::with_capacity(8 + quoted.len());
     icmp.push(icmp_type);
     icmp.push(icmp_code);
@@ -179,16 +181,18 @@ fn icmpv6_error(
 }
 
 /// A [`Packet`] over Ethernet with a fixed capture timestamp.
-fn make_packet(data: Vec<u8>) -> Packet {
+fn make_packet(data: Vec<u8>) -> Result<Packet, TestError> {
     let len = data.len();
-    Packet::new(
-        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+    Ok(Packet::new(
+        Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+            .single()
+            .ok_or("the timestamp is not a single valid instant")?,
         data,
         len,
         len,
         None,
         DLT_EN10MB,
-    )
+    ))
 }
 
 /// The proxy that sent the request that failed.
@@ -211,7 +215,7 @@ fn router() -> Ipv4Addr {
 /// An ICMPv4 port-unreachable quoting an `OPTIONS` yields the quoted request's
 /// method, `Call-ID`, and the socket that did not answer.
 #[test]
-fn icmpv4_port_unreachable_quoting_sip_is_parsed() {
+fn icmpv4_port_unreachable_quoting_sip_is_parsed() -> Result<(), TestError> {
     let quoted = quoted_ipv4_udp(
         sender(),
         dead_peer(),
@@ -219,9 +223,9 @@ fn icmpv4_port_unreachable_quoting_sip_is_parsed() {
         5080,
         &options_keepalive("icmp-parse-1@test"),
     );
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
 
-    let q = parse_icmp_error(&pkt).expect("an ICMP destination-unreachable must yield a quote");
+    let q = parse_icmp_error(&pkt).ok_or("an ICMP destination-unreachable must yield a quote")?;
     assert_eq!(q.kind, IcmpErrorKind::DestinationUnreachable);
     assert_eq!((q.icmp_type, q.icmp_code), (3, 3));
     assert_eq!(q.quoted_src, IpAddr::V4(sender()));
@@ -237,6 +241,7 @@ fn icmpv4_port_unreachable_quoting_sip_is_parsed() {
         !q.quoted_truncated,
         "this quote carries the whole datagram the IP header declares"
     );
+    Ok(())
 }
 
 /// The ICMP source is the *reporter*; the quoted destination is the endpoint
@@ -252,7 +257,7 @@ fn icmpv4_port_unreachable_quoting_sip_is_parsed() {
 /// for the invariant did not. The round trip below is what closes the gap.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn the_reporter_is_never_the_unreachable_endpoint() {
+fn the_reporter_is_never_the_unreachable_endpoint() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let call_id = "icmp-attrib-1@test";
@@ -263,8 +268,8 @@ fn the_reporter_is_never_the_unreachable_endpoint() {
         5080,
         &options_keepalive(call_id),
     );
-    let pkt = icmpv4_error(router(), sender(), 3, 1, &quoted);
-    let q = parse_icmp_error(&pkt).expect("parses");
+    let pkt = icmpv4_error(router(), sender(), 3, 1, &quoted)?;
+    let q = parse_icmp_error(&pkt).ok_or("parses")?;
 
     // Layer 1: the parser keeps them apart.
     assert_eq!(q.reporter, IpAddr::V4(router()));
@@ -308,13 +313,14 @@ fn the_reporter_is_never_the_unreachable_endpoint() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// RFC 792's minimum: the IP header plus 8 bytes. The quote then holds the UDP
 /// header and NOT ONE BYTE of SIP — so there is no method, no `Call-ID`, and
 /// the truncation must be reported rather than guessed around.
 #[test]
-fn an_rfc792_minimum_quote_is_reported_as_truncated() {
+fn an_rfc792_minimum_quote_is_reported_as_truncated() -> Result<(), TestError> {
     let full = quoted_ipv4_udp(
         sender(),
         dead_peer(),
@@ -324,9 +330,9 @@ fn an_rfc792_minimum_quote_is_reported_as_truncated() {
     );
     // IP header + 8 bytes, with Total Length still declaring the whole thing.
     let minimal = &full[..28];
-    let pkt = icmpv4_error(router(), sender(), 3, 3, minimal);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, minimal)?;
 
-    let q = parse_icmp_error(&pkt).expect("a minimal quote is still a quote");
+    let q = parse_icmp_error(&pkt).ok_or("a minimal quote is still a quote")?;
     assert_eq!(q.quoted_dst, IpAddr::V4(dead_peer()));
     assert_eq!(q.quoted_dst_port, Some(5080));
     assert!(
@@ -338,25 +344,26 @@ fn an_rfc792_minimum_quote_is_reported_as_truncated() {
         "the datagram declared more than the quote carries; saying otherwise \
          would present a header prefix as a whole message"
     );
+    Ok(())
 }
 
 /// A quote that stops mid-header is a prefix, not a message: it must be
 /// flagged truncated and must not be fed to the SIP parser as a message.
 #[test]
-fn a_mid_header_quote_is_a_prefix_not_a_message() {
+fn a_mid_header_quote_is_a_prefix_not_a_message() -> Result<(), TestError> {
     let sip = options_keepalive("icmp-trunc-2@test");
     let full = quoted_ipv4_udp(sender(), dead_peer(), 5080, 5080, &sip);
     let cut = &full[..28 + 60]; // request line + start of Via
-    let pkt = icmpv4_error(router(), sender(), 3, 3, cut);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, cut)?;
 
-    let q = parse_icmp_error(&pkt).expect("parses");
+    let q = parse_icmp_error(&pkt).ok_or("parses")?;
     assert!(q.quoted_truncated);
     assert_eq!(q.quoted_payload.len(), 60);
 
     // The start line survived, so the method is known — and the headers did
     // not, so nothing further may be claimed. Reading the prefix must stop
     // where the quote stopped rather than inventing the rest.
-    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).expect("a request prefix");
+    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).ok_or("a request prefix")?;
     assert_eq!(prefix.method, "OPTIONS");
     assert_eq!(
         prefix.call_id, None,
@@ -364,6 +371,7 @@ fn a_mid_header_quote_is_a_prefix_not_a_message() {
          under a dialog it does not belong to"
     );
     assert_eq!(prefix.cseq, None);
+    Ok(())
 }
 
 /// A quote cut in the MIDDLE of the `Call-ID` value must yield no `Call-ID`.
@@ -375,7 +383,7 @@ fn a_mid_header_quote_is_a_prefix_not_a_message() {
 /// that does. The header's own terminator is what makes the value trustworthy,
 /// so a value without one is not read at all.
 #[test]
-fn a_call_id_cut_mid_value_is_not_a_call_id() {
+fn a_call_id_cut_mid_value_is_not_a_call_id() -> Result<(), TestError> {
     let sip = options_keepalive("a-long-call-id-that-gets-cut@example.net");
     let full = quoted_ipv4_udp(sender(), dead_peer(), 5080, 5080, &sip);
     // Everything up to and including "Call-ID: a-long-call-id" and no further.
@@ -383,51 +391,53 @@ fn a_call_id_cut_mid_value_is_not_a_call_id() {
         + sip
             .windows(23)
             .position(|w| w == b"Call-ID: a-long-call-id")
-            .expect("fixture contains the header")
+            .ok_or("fixture contains the header")?
         + 23;
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &full[..cut_at]);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &full[..cut_at])?;
 
-    let q = parse_icmp_error(&pkt).expect("parses");
-    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).expect("a request prefix");
+    let q = parse_icmp_error(&pkt).ok_or("parses")?;
+    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).ok_or("a request prefix")?;
     assert_eq!(prefix.method, "OPTIONS");
     assert_eq!(
         prefix.call_id, None,
         "an unterminated Call-ID line is a partial value; reading it would \
          attribute this evidence to a Call-ID that was never sent"
     );
+    Ok(())
 }
 
 /// A header present but empty carries no value, and an empty `Call-ID` is not
 /// a dialog. It must not be attributed to one.
 #[test]
-fn an_empty_call_id_header_is_not_a_call_id() {
+fn an_empty_call_id_header_is_not_a_call_id() -> Result<(), TestError> {
     let sip = b"OPTIONS sip:peer@198.51.100.20:5080 SIP/2.0\r\n\
                 Via: SIP/2.0/UDP 192.0.2.10:5080;branch=z9hG4bK-icmp-9\r\n\
                 Call-ID: \r\n\
                 CSeq: 42 OPTIONS\r\n\r\n";
     let full = quoted_ipv4_udp(sender(), dead_peer(), 5080, 5080, sip);
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &full);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &full)?;
 
-    let q = parse_icmp_error(&pkt).expect("parses");
-    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).expect("a request prefix");
+    let q = parse_icmp_error(&pkt).ok_or("parses")?;
+    let prefix = pipeline::quoted_sip_prefix(&q.quoted_payload).ok_or("a request prefix")?;
     assert_eq!(
         prefix.call_id, None,
         "an empty Call-ID names no dialog; returning Some(\"\") would collect \
          every such quote under one imaginary call"
     );
+    Ok(())
 }
 
 /// ICMPv6 (RFC 4443) carries the same evidence and must be parsed too.
 #[test]
-fn icmpv6_destination_unreachable_quoting_sip_is_parsed() {
-    let src: Ipv6Addr = "2001:db8::10".parse().expect("v6 literal");
-    let dst: Ipv6Addr = "2001:db8::20".parse().expect("v6 literal");
-    let rtr: Ipv6Addr = "2001:db8::1".parse().expect("v6 literal");
+fn icmpv6_destination_unreachable_quoting_sip_is_parsed() -> Result<(), TestError> {
+    let src: Ipv6Addr = "2001:db8::10".parse()?;
+    let dst: Ipv6Addr = "2001:db8::20".parse()?;
+    let rtr: Ipv6Addr = "2001:db8::1".parse()?;
 
     let quoted = quoted_ipv6_udp(src, dst, 5060, 5060, &options_keepalive("icmp-v6-1@test"));
-    let pkt = icmpv6_error(rtr, src, 1, 4, &quoted); // 1/4 = port unreachable
+    let pkt = icmpv6_error(rtr, src, 1, 4, &quoted)?; // 1/4 = port unreachable
 
-    let q = parse_icmp_error(&pkt).expect("ICMPv6 errors must yield a quote too");
+    let q = parse_icmp_error(&pkt).ok_or("ICMPv6 errors must yield a quote too")?;
     assert_eq!(q.kind, IcmpErrorKind::DestinationUnreachable);
     assert_eq!(q.reporter, IpAddr::V6(rtr));
     assert_eq!(q.quoted_src, IpAddr::V6(src));
@@ -435,21 +445,23 @@ fn icmpv6_destination_unreachable_quoting_sip_is_parsed() {
     assert_eq!(q.quoted_dst_port, Some(5060));
     assert!(q.quoted_payload.starts_with(b"OPTIONS sip:"));
     assert!(!q.quoted_truncated);
+    Ok(())
 }
 
 /// ICMPv6 Packet Too Big (type 2) is a PMTU black hole — the reason a large
 /// `INVITE` with SDP vanishes while small requests succeed. It quotes the
 /// datagram like any other error and must be read.
 #[test]
-fn icmpv6_packet_too_big_is_an_error_that_quotes() {
-    let src: Ipv6Addr = "2001:db8::10".parse().expect("v6 literal");
-    let dst: Ipv6Addr = "2001:db8::20".parse().expect("v6 literal");
-    let rtr: Ipv6Addr = "2001:db8::1".parse().expect("v6 literal");
+fn icmpv6_packet_too_big_is_an_error_that_quotes() -> Result<(), TestError> {
+    let src: Ipv6Addr = "2001:db8::10".parse()?;
+    let dst: Ipv6Addr = "2001:db8::20".parse()?;
+    let rtr: Ipv6Addr = "2001:db8::1".parse()?;
     let quoted = quoted_ipv6_udp(src, dst, 5060, 5060, &options_keepalive("icmp-v6-2@test"));
-    let pkt = icmpv6_error(rtr, src, 2, 0, &quoted);
+    let pkt = icmpv6_error(rtr, src, 2, 0, &quoted)?;
 
-    let q = parse_icmp_error(&pkt).expect("Packet Too Big quotes the datagram");
+    let q = parse_icmp_error(&pkt).ok_or("Packet Too Big quotes the datagram")?;
     assert_eq!(q.kind, IcmpErrorKind::PacketTooBig);
+    Ok(())
 }
 
 /// An ICMP message that is not an error must yield nothing — even when its
@@ -467,7 +479,7 @@ fn icmpv6_packet_too_big_is_an_error_that_quotes() {
 /// it reports a better route rather than a failure, and reading it as one
 /// would report a fault on a path that is working.
 #[test]
-fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
+fn only_errors_quote_and_a_ping_payload_cannot_forge_one() -> Result<(), TestError> {
     let forged = quoted_ipv4_udp(
         sender(),
         dead_peer(),
@@ -483,7 +495,7 @@ fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
         (13, "timestamp request"),
     ] {
         assert!(
-            parse_icmp_error(&icmpv4_error(router(), sender(), icmp_type, 0, &forged)).is_none(),
+            parse_icmp_error(&icmpv4_error(router(), sender(), icmp_type, 0, &forged)?).is_none(),
             "an ICMP {what} (type {icmp_type}) is not a delivery failure; reading \
              its payload as a quoted datagram would report an endpoint as \
              unreachable on the word of a ping"
@@ -491,9 +503,9 @@ fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
     }
 
     // ICMPv6 echo (128) and neighbor discovery (135) are likewise not errors.
-    let src: Ipv6Addr = "2001:db8::10".parse().expect("v6 literal");
-    let dst: Ipv6Addr = "2001:db8::20".parse().expect("v6 literal");
-    let rtr: Ipv6Addr = "2001:db8::1".parse().expect("v6 literal");
+    let src: Ipv6Addr = "2001:db8::10".parse()?;
+    let dst: Ipv6Addr = "2001:db8::20".parse()?;
+    let rtr: Ipv6Addr = "2001:db8::1".parse()?;
     let forged6 = quoted_ipv6_udp(
         src,
         dst,
@@ -503,37 +515,39 @@ fn only_errors_quote_and_a_ping_payload_cannot_forge_one() {
     );
     for (icmp_type, what) in [(128u8, "echo request"), (135, "neighbor solicitation")] {
         assert!(
-            parse_icmp_error(&icmpv6_error(rtr, src, icmp_type, 0, &forged6)).is_none(),
+            parse_icmp_error(&icmpv6_error(rtr, src, icmp_type, 0, &forged6)?).is_none(),
             "an ICMPv6 {what} (type {icmp_type}) is not a delivery failure"
         );
     }
 
     // …and the control: the same bytes under an error type ARE read.
-    let real = icmpv4_error(router(), sender(), 3, 3, &forged);
+    let real = icmpv4_error(router(), sender(), 3, 3, &forged)?;
     assert!(
         parse_icmp_error(&real).is_some(),
         "precondition: the payload really is a well-formed quote, so the \
          rejections above came from the type check and nothing else"
     );
+    Ok(())
 }
 
 /// A destination-unreachable quoting RTP (not SIP) still parses at the packet
 /// layer — it is real evidence about media — but must never be attributed to a
 /// dialog, because there is no `Call-ID` in an RTP packet to attribute it by.
 #[test]
-fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() {
+fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() -> Result<(), TestError> {
     let mut rtp = vec![0x80u8, 0x00, 0x00, 0x01];
     rtp.extend_from_slice(&[0x00; 8]);
     rtp.extend_from_slice(&[0xAB; 160]);
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), 20000, 20002, &rtp);
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
 
-    let q = parse_icmp_error(&pkt).expect("still a parseable ICMP error");
+    let q = parse_icmp_error(&pkt).ok_or("still a parseable ICMP error")?;
     assert_eq!(q.quoted_dst_port, Some(20002));
     assert!(
         pipeline::quoted_sip_prefix(&q.quoted_payload).is_none(),
         "an RTP payload must not be read as a SIP request prefix"
     );
+    Ok(())
 }
 
 // ── Accounting ───────────────────────────────────────────────────────
@@ -551,7 +565,7 @@ fn a_quote_of_non_sip_traffic_is_not_attributed_to_a_dialog() {
 /// interleaving and one more serialized test was enough to produce it.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_icmp_error_is_never_a_parsed_packet() {
+fn an_icmp_error_is_never_a_parsed_packet() -> Result<(), TestError> {
     let quoted = quoted_ipv4_udp(
         sender(),
         dead_peer(),
@@ -559,12 +573,13 @@ fn an_icmp_error_is_never_a_parsed_packet() {
         5080,
         &options_keepalive("icmp-count-1@test"),
     );
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
     assert!(
         parse_packet(&pkt).is_err(),
         "an ICMP error must not become a ParsedPacket: it would be classified, \
          counted, and could reach a dialog's message list as an ordinary rung"
     );
+    Ok(())
 }
 
 // ── Evidence association ─────────────────────────────────────────────
@@ -573,7 +588,7 @@ fn an_icmp_error_is_never_a_parsed_packet() {
 /// unreachable endpoint (not the reporter) recorded against it.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn evidence_is_attributed_by_the_quoted_call_id() {
+fn evidence_is_attributed_by_the_quoted_call_id() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let call_id = "icmp-evidence-1@test";
@@ -584,7 +599,7 @@ fn evidence_is_attributed_by_the_quoted_call_id() {
         5080,
         &options_keepalive(call_id),
     );
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
     assert!(parse_packet(&pkt).is_err());
 
     let ev = pipeline::icmp_evidence_for(call_id);
@@ -601,6 +616,7 @@ fn evidence_is_attributed_by_the_quoted_call_id() {
     assert_eq!(report.unattributed, 0);
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// A quote too short to reach the `Call-ID` cannot be attributed — and is
@@ -608,7 +624,7 @@ fn evidence_is_attributed_by_the_quoted_call_id() {
 /// the network said something sipnab could not place.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn an_unattributable_quote_is_counted_not_dropped() {
+fn an_unattributable_quote_is_counted_not_dropped() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let full = quoted_ipv4_udp(
@@ -620,7 +636,7 @@ fn an_unattributable_quote_is_counted_not_dropped() {
     );
     // Request line only: enough to know it was an OPTIONS, not enough for a
     // Call-ID.
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &full[..28 + 30]);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &full[..28 + 30])?;
     assert!(parse_packet(&pkt).is_err());
 
     assert_eq!(
@@ -643,20 +659,21 @@ fn an_unattributable_quote_is_counted_not_dropped() {
     assert_eq!(report.endpoints[0].addr, IpAddr::V4(dead_peer()));
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// An ICMP error about media (no SIP in the quote) is not SIP evidence and
 /// must not enter the SIP evidence report at all.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn media_icmp_does_not_enter_the_sip_evidence_report() {
+fn media_icmp_does_not_enter_the_sip_evidence_report() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let mut rtp = vec![0x80u8, 0x00, 0x00, 0x01];
     rtp.extend_from_slice(&[0x00; 8]);
     rtp.extend_from_slice(&[0xAB; 160]);
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), 20000, 20002, &rtp);
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
     assert!(parse_packet(&pkt).is_err());
 
     assert_eq!(
@@ -666,6 +683,7 @@ fn media_icmp_does_not_enter_the_sip_evidence_report() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 // ── Diagnosis ────────────────────────────────────────────────────────
@@ -675,7 +693,7 @@ fn media_icmp_does_not_enter_the_sip_evidence_report() {
 /// must name the endpoint that failed, never the router that said so.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn icmp_evidence_turns_silence_into_a_stated_cause() {
+fn icmp_evidence_turns_silence_into_a_stated_cause() -> Result<(), TestError> {
     use sipnab::sip::parser::parse_sip_bytes;
 
     pipeline::reset_icmp_evidence();
@@ -684,31 +702,28 @@ fn icmp_evidence_turns_silence_into_a_stated_cause() {
     let sip: bytes::Bytes = options_keepalive(call_id).into();
     let mut messages = Vec::new();
     for i in 0..3 {
-        messages.push(
-            parse_sip_bytes(
-                &sip,
-                Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, i)
-                    .single()
-                    .expect("ts"),
-                IpAddr::V4(sender()),
-                IpAddr::V4(dead_peer()),
-                5080,
-                5080,
-                TransportProto::Udp,
-            )
-            .expect("fixture parses"),
-        );
+        messages.push(parse_sip_bytes(
+            &sip,
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, i)
+                .single()
+                .ok_or("ts")?,
+            IpAddr::V4(sender()),
+            IpAddr::V4(dead_peer()),
+            5080,
+            5080,
+            TransportProto::Udp,
+        )?);
     }
 
     let quoted = quoted_ipv4_udp(sender(), dead_peer(), 5080, 5080, &sip);
-    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted);
+    let pkt = icmpv4_error(router(), sender(), 3, 3, &quoted)?;
     assert!(parse_packet(&pkt).is_err());
 
     let diag = sipnab::sip::diagnosis::diagnose_signaling(&messages);
     let icmp = diag
         .icmp_unreachable
         .as_ref()
-        .expect("an ICMP quote for this Call-ID must reach the diagnosis");
+        .ok_or("an ICMP quote for this Call-ID must reach the diagnosis")?;
     assert_eq!(icmp.unreachable_endpoint, format!("{}:5080", dead_peer()));
     assert_eq!(icmp.reported_by, router().to_string());
     assert_eq!(icmp.errors, 1);
@@ -721,7 +736,7 @@ fn icmp_evidence_turns_silence_into_a_stated_cause() {
         .hints
         .iter()
         .find(|h| h.starts_with("ICMP "))
-        .expect("the finding must reach the plain-language hints");
+        .ok_or("the finding must reach the plain-language hints")?;
     assert!(
         hint.contains(&dead_peer().to_string()),
         "the hint must name the endpoint that did not answer: {hint}"
@@ -732,6 +747,7 @@ fn icmp_evidence_turns_silence_into_a_stated_cause() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// With no ICMP evidence recorded, diagnosis is byte-identical to what it was
@@ -739,7 +755,7 @@ fn icmp_evidence_turns_silence_into_a_stated_cause() {
 /// drawn from the same old silence.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn without_evidence_the_diagnosis_is_unchanged() {
+fn without_evidence_the_diagnosis_is_unchanged() -> Result<(), TestError> {
     use sipnab::sip::parser::parse_sip_bytes;
 
     pipeline::reset_icmp_evidence();
@@ -749,20 +765,20 @@ fn without_evidence_the_diagnosis_is_unchanged() {
         &sip,
         Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
             .single()
-            .expect("ts"),
+            .ok_or("ts")?,
         IpAddr::V4(sender()),
         IpAddr::V4(dead_peer()),
         5080,
         5080,
         TransportProto::Udp,
-    )
-    .expect("fixture parses");
+    )?;
 
     let diag = sipnab::sip::diagnosis::diagnose_signaling(&[msg]);
     assert!(
         diag.icmp_unreachable.is_none(),
         "no ICMP was seen, so no ICMP claim may be made"
     );
+    Ok(())
 }
 
 /// The published JSON schema must describe the field, not merely tolerate its
@@ -775,21 +791,19 @@ fn without_evidence_the_diagnosis_is_unchanged() {
 /// on the first real capture that contains ICMP. This validates a diagnosis
 /// that actually carries the field.
 #[test]
-fn the_schema_declares_the_icmp_finding() {
+fn the_schema_declares_the_icmp_finding() -> Result<(), TestError> {
     use serde_json::Value;
     use sipnab::sip::diagnosis::{IcmpUnreachable, SignalingDiagnosis};
 
-    let schema: Value = serde_json::from_str(
-        &std::fs::read_to_string(support::schema::schema_path("call_report.schema.json"))
-            .expect("read call_report.schema.json"),
-    )
-    .expect("parse schema");
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(
+        support::schema::schema_path("call_report.schema.json"),
+    )?)?;
     let subschema = schema
         .get("$defs")
         .and_then(|d| d.get("signaling_diagnosis"))
-        .expect("call_report.schema.json must define signaling_diagnosis")
+        .ok_or("call_report.schema.json must define signaling_diagnosis")?
         .clone();
-    let validator = jsonschema::validator_for(&subschema).expect("compile signaling_diagnosis");
+    let validator = jsonschema::validator_for(&subschema)?;
 
     let diag = SignalingDiagnosis {
         icmp_unreachable: Some(IcmpUnreachable {
@@ -806,7 +820,7 @@ fn the_schema_declares_the_icmp_finding() {
         hints: vec!["ICMP port unreachable".to_string()],
         ..Default::default()
     };
-    let instance = serde_json::to_value(&diag).expect("serialize");
+    let instance = serde_json::to_value(&diag)?;
     support::schema::assert_valid(
         &validator,
         &instance,
@@ -815,12 +829,13 @@ fn the_schema_declares_the_icmp_finding() {
 
     // …and absence still serializes to nothing at all, so a capture with no
     // ICMP produces the same object it always did.
-    let clean = serde_json::to_value(SignalingDiagnosis::default()).expect("serialize");
+    let clean = serde_json::to_value(SignalingDiagnosis::default())?;
     assert!(
         clean.get("icmp_unreachable").is_none(),
         "a diagnosis with no ICMP evidence must omit the field, not emit null: \
          null would claim the check ran on a capture that held no ICMP"
     );
+    Ok(())
 }
 
 // ── Bounded retention, exact counts ──────────────────────────────────
@@ -834,7 +849,7 @@ fn the_schema_declares_the_icmp_finding() {
 /// one of those two numbers is a fact about the network.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn a_dialog_past_the_sample_cap_still_reports_the_exact_count() {
+fn a_dialog_past_the_sample_cap_still_reports_the_exact_count() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     let call_id = "icmp-cap-1@test";
@@ -847,7 +862,7 @@ fn a_dialog_past_the_sample_cap_still_reports_the_exact_count() {
         &options_keepalive(call_id),
     );
     for _ in 0..over {
-        assert!(parse_packet(&icmpv4_error(router(), sender(), 3, 1, &quoted)).is_err());
+        assert!(parse_packet(&icmpv4_error(router(), sender(), 3, 1, &quoted)?).is_err());
     }
 
     let ev = pipeline::icmp_evidence_for(call_id);
@@ -867,22 +882,22 @@ fn a_dialog_past_the_sample_cap_still_reports_the_exact_count() {
         &sip,
         Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
             .single()
-            .expect("ts"),
+            .ok_or("ts")?,
         IpAddr::V4(sender()),
         IpAddr::V4(dead_peer()),
         5080,
         5080,
         TransportProto::Udp,
-    )
-    .expect("fixture parses");
+    )?;
     let diag = sipnab::sip::diagnosis::diagnose_signaling(&[msg]);
-    let finding = diag.icmp_unreachable.as_ref().expect("a finding");
+    let finding = diag.icmp_unreachable.as_ref().ok_or("a finding")?;
     assert_eq!(
         finding.errors, over,
         "the finding must report every error, not just the retained ones"
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }
 
 /// Past the endpoint cap, errors are counted as untallied rather than
@@ -891,7 +906,7 @@ fn a_dialog_past_the_sample_cap_still_reports_the_exact_count() {
 /// one.
 #[test]
 #[serial_test::serial(icmp_evidence)]
-fn endpoint_overflow_is_counted_not_forgotten() {
+fn endpoint_overflow_is_counted_not_forgotten() -> Result<(), TestError> {
     pipeline::reset_icmp_evidence();
 
     // One more distinct unreachable endpoint than the store retains.
@@ -907,7 +922,7 @@ fn endpoint_overflow_is_counted_not_forgotten() {
             5080,
             &options_keepalive("icmp-cap-2@test"),
         );
-        assert!(parse_packet(&icmpv4_error(router(), sender(), 3, 1, &quoted)).is_err());
+        assert!(parse_packet(&icmpv4_error(router(), sender(), 3, 1, &quoted)?).is_err());
     }
 
     let report = pipeline::icmp_evidence_report();
@@ -925,4 +940,5 @@ fn endpoint_overflow_is_counted_not_forgotten() {
     );
 
     pipeline::reset_icmp_evidence();
+    Ok(())
 }

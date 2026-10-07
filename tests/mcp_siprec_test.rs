@@ -14,9 +14,11 @@
 
 #![cfg(feature = "mcp")]
 
+use support::TestError;
+
 #[path = "support/mcp.rs"]
 mod support;
-use support::{call_tool_with_args_or_panic, ok_payload_or_panic};
+use support::{call_tool_with_args, ok_payload};
 
 /// A SIPREC INVITE toward a recording server, carrying the multipart body an
 /// SRC sends: the session SDP and the `application/rs-metadata+xml` part.
@@ -41,20 +43,20 @@ const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 const G711_CALL: &str = "1-1966@10.0.2.20";
 
 /// Call `siprec_metadata` and return its payload.
-fn siprec(pcap: &str, call_id: &str) -> serde_json::Value {
-    let msg = call_tool_with_args_or_panic(
+fn siprec(pcap: &str, call_id: &str) -> Result<serde_json::Value, TestError> {
+    let msg = call_tool_with_args(
         pcap,
         &[],
         "siprec_metadata",
         serde_json::json!({ "call_id": call_id }),
-    );
-    ok_payload_or_panic(&msg)
+    )?;
+    ok_payload(&msg)
 }
 
 /// The recording metadata of a real SIPREC INVITE reaches the agent whole.
 #[test]
-fn a_siprec_invite_yields_its_metadata_through_the_tool() {
-    let v = siprec(SIPREC, SIPREC_CALL);
+fn a_siprec_invite_yields_its_metadata_through_the_tool() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
     assert_eq!(
         v["recorded"], true,
         "a dialog whose INVITE carries rs-metadata is recorded: {v}"
@@ -75,6 +77,7 @@ fn a_siprec_invite_yields_its_metadata_through_the_tool() {
         Some(3),
         "three recorded streams: {sr}"
     );
+    Ok(())
 }
 
 /// Each recorded stream names the participant that sends it.
@@ -83,37 +86,38 @@ fn a_siprec_invite_yields_its_metadata_through_the_tool() {
 /// `participantstreamassoc`, and without reading that this is null on every
 /// stream -- which is the state this surface was built in.
 #[test]
-fn each_recorded_stream_names_the_party_that_sends_it() {
-    let v = siprec(SIPREC, SIPREC_CALL);
-    let streams = v["siprec"]["streams"].as_array().expect("streams array");
-    let owner = |id: &str| {
-        streams
+fn each_recorded_stream_names_the_party_that_sends_it() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
+    let streams = v["siprec"]["streams"].as_array().ok_or("streams array")?;
+    let owner = |id: &str| -> Result<serde_json::Value, String> {
+        Ok(streams
             .iter()
             .find(|s| s["stream_id"] == id)
-            .unwrap_or_else(|| panic!("stream {id} present"))["participant_id"]
-            .clone()
+            .ok_or_else(|| format!("stream {id} present"))?["participant_id"]
+            .clone())
     };
-    assert_eq!(owner("1a2b3c4d"), "9b2d1f00", "Alice's audio is Alice's");
+    assert_eq!(owner("1a2b3c4d")?, "9b2d1f00", "Alice's audio is Alice's");
     assert_eq!(
-        owner("2b3c4d5e"),
+        owner("2b3c4d5e")?,
         "9b2d1f00",
         "and so is her video -- a second stream for one party is the audio and \
          video case, which is the reason labels matter"
     );
     assert_eq!(
-        owner("3c4d5e6f"),
+        owner("3c4d5e6f")?,
         "c7e40a13",
         "Bob's audio is Bob's, though Alice receives it: <recv> is not ownership"
     );
+    Ok(())
 }
 
 /// Each stream carries the label that names its `m=` line.
 #[test]
-fn each_recorded_stream_carries_its_m_line_label() {
-    let v = siprec(SIPREC, SIPREC_CALL);
+fn each_recorded_stream_carries_its_m_line_label() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
     let labels: Vec<String> = v["siprec"]["streams"]
         .as_array()
-        .expect("streams array")
+        .ok_or("streams array")?
         .iter()
         .map(|s| s["label"].as_str().unwrap_or_default().to_string())
         .collect();
@@ -123,15 +127,16 @@ fn each_recorded_stream_carries_its_m_line_label() {
         "the SDP label is the only route from a recorded stream to the media \
          description it was cut from"
     );
+    Ok(())
 }
 
 /// A participant's AOR and display name survive the whole path.
 #[test]
-fn a_participants_identity_reaches_the_agent() {
-    let v = siprec(SIPREC, SIPREC_CALL);
+fn a_participants_identity_reaches_the_agent() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
     let ps = v["siprec"]["participants"]
         .as_array()
-        .expect("participants");
+        .ok_or("participants")?;
     assert_eq!(ps[0]["aor"], "sip:alice@example.invalid");
     assert_eq!(ps[0]["name"], "Alice");
     assert_eq!(
@@ -143,19 +148,21 @@ fn a_participants_identity_reaches_the_agent() {
         ps[1].get("name").is_none(),
         "and no name is invented for it: {ps:?}"
     );
+    Ok(())
 }
 
 /// A call with no SIPREC says so, and says what that does and does not mean.
 #[test]
-fn a_call_with_no_siprec_is_reported_as_such_without_overclaiming() {
-    let v = siprec(G711, G711_CALL);
+fn a_call_with_no_siprec_is_reported_as_such_without_overclaiming() -> Result<(), TestError> {
+    let v = siprec(G711, G711_CALL)?;
     assert_eq!(v["recorded"], false);
-    let reason = v["reason"].as_str().expect("a reason is given");
+    let reason = v["reason"].as_str().ok_or("a reason is given")?;
     assert!(
         reason.contains("capture point"),
         "the absence must be attributed to what sipnab saw, not asserted as \
          the call having gone unrecorded: {reason}"
     );
+    Ok(())
 }
 
 /// A Call-ID the store does not hold is refused, not answered.
@@ -165,19 +172,20 @@ fn a_call_with_no_siprec_is_reported_as_such_without_overclaiming() {
 /// two would let an agent typo a Call-ID and read the result as "that call was
 /// not recorded".
 #[test]
-fn an_unknown_call_id_is_refused_rather_than_answered() {
-    let msg = call_tool_with_args_or_panic(
+fn an_unknown_call_id_is_refused_rather_than_answered() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         SIPREC,
         &[],
         "siprec_metadata",
         serde_json::json!({ "call_id": "no-such-call@nowhere.invalid" }),
-    );
+    )?;
     assert!(
         msg["error"].is_object(),
         "an unknown call must be an error, not a recorded=false answer: {msg}"
     );
     let code = msg["error"]["code"].as_i64().unwrap_or_default();
     assert_eq!(code, -32602, "invalid_params is the JSON-RPC code: {msg}");
+    Ok(())
 }
 
 /// The answer says how much of the capture stands behind it.
@@ -186,8 +194,8 @@ fn an_unknown_call_id_is_refused_rather_than_answered() {
 /// off a truncated capture needs to know the capture was truncated. The
 /// completeness gate requires a probe for it; this is the assertion.
 #[test]
-fn the_answer_says_how_much_of_the_capture_it_read() {
-    let v = siprec(SIPREC, SIPREC_CALL);
+fn the_answer_says_how_much_of_the_capture_it_read() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
     assert_eq!(
         v["source_exhausted"], true,
         "a whole pcap was read to the end: {v}"
@@ -196,6 +204,7 @@ fn the_answer_says_how_much_of_the_capture_it_read() {
         v["source_stopped_early"], false,
         "and nothing stopped it early: {v}"
     );
+    Ok(())
 }
 
 /// The answer identifies the capture it came from.
@@ -204,8 +213,8 @@ fn the_answer_says_how_much_of_the_capture_it_read() {
 /// a fixture replayed twice does exactly that -- and an agent caching answers
 /// needs to tell them apart.
 #[test]
-fn the_answer_identifies_the_capture_it_came_from() {
-    let v = siprec(SIPREC, SIPREC_CALL);
+fn the_answer_identifies_the_capture_it_came_from() -> Result<(), TestError> {
+    let v = siprec(SIPREC, SIPREC_CALL)?;
     let id = &v["capture_identity"];
     assert!(
         id["instance"].is_string(),
@@ -215,6 +224,7 @@ fn the_answer_identifies_the_capture_it_came_from() {
         id["dialog_generation"].is_number(),
         "and the store generation behind the answer: {v}"
     );
+    Ok(())
 }
 
 /// A recorded call is an ordinary dialog everywhere else.
@@ -224,14 +234,14 @@ fn the_answer_identifies_the_capture_it_came_from() {
 /// ask -- and the calls it did not know to ask about are exactly the ones it
 /// would miss.
 #[test]
-fn a_recorded_call_still_appears_in_the_ordinary_dialog_listing() {
-    let msg = call_tool_with_args_or_panic(
+fn a_recorded_call_still_appears_in_the_ordinary_dialog_listing() -> Result<(), TestError> {
+    let msg = call_tool_with_args(
         SIPREC,
         &[],
         "list_dialogs",
         serde_json::json!({ "limit": 10 }),
-    );
-    let v = ok_payload_or_panic(&msg);
+    )?;
+    let v = ok_payload(&msg)?;
     let ids: Vec<&str> = v["dialogs"]
         .as_array()
         .map(|a| a.iter().filter_map(|d| d["call_id"].as_str()).collect())
@@ -240,4 +250,5 @@ fn a_recorded_call_still_appears_in_the_ordinary_dialog_listing() {
         ids.contains(&SIPREC_CALL),
         "the recording dialog must be listed like any other: {ids:?}"
     );
+    Ok(())
 }

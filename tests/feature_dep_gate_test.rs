@@ -18,6 +18,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -28,12 +32,12 @@ fn repo() -> PathBuf {
 /// implementations of one rule is two things to keep true, and the one that
 /// drifts is whichever nobody reads.
 #[test]
-fn every_feature_declares_what_its_modules_import() {
+fn every_feature_declares_what_its_modules_import() -> Result<(), TestError> {
     let out = Command::new("python3")
         .arg("scripts/check-feature-deps.py")
         .current_dir(repo())
         .output()
-        .expect("run scripts/check-feature-deps.py");
+        .map_err(|e| format!("run scripts/check-feature-deps.py: {e}"))?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -56,6 +60,7 @@ fn every_feature_declares_what_its_modules_import() {
         "the check reported only {scanned} feature-gated modules; it is not \
          reaching src/ and a pass would mean nothing.\n{stdout}{stderr}"
     );
+    Ok(())
 }
 
 /// 2. `pre-commit` actually invokes it.
@@ -63,9 +68,9 @@ fn every_feature_declares_what_its_modules_import() {
 /// Without this the script can stay green in isolation forever while no gate
 /// runs it, which is indistinguishable from a repository where the rule holds.
 #[test]
-fn the_pre_commit_hook_runs_the_feature_dependency_check() {
+fn the_pre_commit_hook_runs_the_feature_dependency_check() -> Result<(), TestError> {
     let hook = std::fs::read_to_string(repo().join(".githooks/pre-commit"))
-        .expect("read .githooks/pre-commit");
+        .map_err(|e| format!("read .githooks/pre-commit: {e}"))?;
     assert!(
         hook.contains("scripts/check-feature-deps.py"),
         ".githooks/pre-commit does not run scripts/check-feature-deps.py, so \
@@ -76,6 +81,7 @@ fn the_pre_commit_hook_runs_the_feature_dependency_check() {
         hook.contains("exit 1"),
         "the hook must FAIL on the check rather than print and continue"
     );
+    Ok(())
 }
 
 /// 3. The script refuses rather than passes when it cannot see its subject.
@@ -83,9 +89,9 @@ fn the_pre_commit_hook_runs_the_feature_dependency_check() {
 /// This is the property that separates it from the gate it replaces. Status 2
 /// means "cannot answer" and must not be confused with 0, "nothing wrong".
 #[test]
-fn the_check_refuses_when_it_can_see_nothing() {
+fn the_check_refuses_when_it_can_see_nothing() -> Result<(), TestError> {
     let script = std::fs::read_to_string(repo().join("scripts/check-feature-deps.py"))
-        .expect("read scripts/check-feature-deps.py");
+        .map_err(|e| format!("read scripts/check-feature-deps.py: {e}"))?;
     assert!(
         script.contains("return 2"),
         "the script has no distinct 'cannot answer' status. Without one, a walk \
@@ -98,18 +104,19 @@ fn the_check_refuses_when_it_can_see_nothing() {
          Cargo.toml dependency parse. Either going blind alone makes every \
          later comparison vacuous"
     );
+    Ok(())
 }
 
 /// 4. The script is executable and lives where the hook expects it.
 #[test]
-fn the_check_script_is_present_and_executable() {
+fn the_check_script_is_present_and_executable() -> Result<(), TestError> {
     let path = repo().join("scripts/check-feature-deps.py");
     assert!(path.is_file(), "scripts/check-feature-deps.py is missing");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path)
-            .expect("stat the script")
+            .map_err(|e| format!("stat the script: {e}"))?
             .permissions()
             .mode();
         assert!(
@@ -118,6 +125,7 @@ fn the_check_script_is_present_and_executable() {
         );
     }
     let _ = Path::new("");
+    Ok(())
 }
 
 // ── the rule itself, driven against fixture trees ───────────────────────
@@ -146,11 +154,11 @@ impl Fixture {
     /// Padded to clear the script's own anti-vacuity floors: it refuses with
     /// status 2 below ten gated modules or five optional crates, and a
     /// refusal must not be mistaken here for the verdict under test.
-    fn new(name: &str, gate: &str) -> Self {
+    fn new(name: &str, gate: &str) -> Result<Self, TestError> {
         let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
         let _ = std::fs::remove_dir_all(&root);
         let src = root.join("src");
-        std::fs::create_dir_all(&src).expect("create fixture src");
+        std::fs::create_dir_all(&src).map_err(|e| format!("create fixture src: {e}"))?;
 
         std::fs::write(
             root.join("Cargo.toml"),
@@ -166,47 +174,49 @@ impl Fixture {
              b = [\"dep:beta\"]\n\
              filler = [\"dep:gamma\"]\n",
         )
-        .expect("write fixture Cargo.toml");
+        .map_err(|e| format!("write fixture Cargo.toml: {e}"))?;
 
         // The subject: gated by `gate`, importing a crate only `a` supplies.
         let subject = src.join("subject");
-        std::fs::create_dir_all(&subject).expect("create subject");
+        std::fs::create_dir_all(&subject).map_err(|e| format!("create subject: {e}"))?;
         std::fs::write(
             subject.join("mod.rs"),
             format!("#[cfg({gate})]\npub mod thing;\n"),
         )
-        .expect("write subject mod.rs");
-        std::fs::write(subject.join("thing.rs"), "use alpha::Thing;\n").expect("write thing.rs");
+        .map_err(|e| format!("write subject mod.rs: {e}"))?;
+        std::fs::write(subject.join("thing.rs"), "use alpha::Thing;\n")
+            .map_err(|e| format!("write thing.rs: {e}"))?;
 
         // Padding: gated, clean, and enough of it to clear the floor.
         for i in 0..11 {
             let d = src.join(format!("pad{i}"));
-            std::fs::create_dir_all(&d).expect("create pad");
+            std::fs::create_dir_all(&d).map_err(|e| format!("create pad: {e}"))?;
             std::fs::write(
                 d.join("mod.rs"),
                 "#[cfg(feature = \"filler\")]\npub mod m;\n",
             )
-            .expect("write pad mod.rs");
-            std::fs::write(d.join("m.rs"), "use gamma::X;\n").expect("write pad m.rs");
+            .map_err(|e| format!("write pad mod.rs: {e}"))?;
+            std::fs::write(d.join("m.rs"), "use gamma::X;\n")
+                .map_err(|e| format!("write pad m.rs: {e}"))?;
         }
 
-        Self { root }
+        Ok(Self { root })
     }
 
     /// The script's exit status against this tree, and what it said.
-    fn verdict(&self) -> (i32, String) {
+    fn verdict(&self) -> Result<(i32, String), TestError> {
         let out = Command::new("python3")
             .arg(repo().join("scripts/check-feature-deps.py"))
             .arg(&self.root)
             .current_dir(repo())
             .output()
-            .expect("run scripts/check-feature-deps.py");
+            .map_err(|e| format!("run scripts/check-feature-deps.py: {e}"))?;
         let said = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        (out.status.code().unwrap_or(-1), said)
+        Ok((out.status.code().unwrap_or(-1), said))
     }
 
     fn discard(self) {
@@ -220,9 +230,9 @@ impl Fixture {
 /// fails on an import `a` was supplying. If relaxing `all` had relaxed this
 /// too, the gate would pass the very defect it was written for.
 #[test]
-fn an_any_gate_still_requires_each_alternative_to_stand_alone() {
-    let fixture = Fixture::new("any_gate", "any(feature = \"a\", feature = \"b\")");
-    let (code, said) = fixture.verdict();
+fn an_any_gate_still_requires_each_alternative_to_stand_alone() -> Result<(), TestError> {
+    let fixture = Fixture::new("any_gate", "any(feature = \"a\", feature = \"b\")")?;
+    let (code, said) = fixture.verdict()?;
     fixture.discard();
 
     assert_eq!(
@@ -234,6 +244,7 @@ fn an_any_gate_still_requires_each_alternative_to_stand_alone() {
         said.contains("alpha") && said.contains('b'),
         "the report must name the crate and the feature that lacks it:\n{said}"
     );
+    Ok(())
 }
 
 /// `all(a, b)` is satisfied by the two features together.
@@ -241,9 +252,9 @@ fn an_any_gate_still_requires_each_alternative_to_stand_alone() {
 /// The correction. Every build compiling this file has both features, so
 /// requiring `b` to declare what `a` supplies describes no build that exists.
 #[test]
-fn an_all_gate_is_satisfied_by_the_two_features_together() {
-    let fixture = Fixture::new("all_gate", "all(feature = \"a\", feature = \"b\")");
-    let (code, said) = fixture.verdict();
+fn an_all_gate_is_satisfied_by_the_two_features_together() -> Result<(), TestError> {
+    let fixture = Fixture::new("all_gate", "all(feature = \"a\", feature = \"b\")")?;
+    let (code, said) = fixture.verdict()?;
     fixture.discard();
 
     assert_eq!(
@@ -251,6 +262,7 @@ fn an_all_gate_is_satisfied_by_the_two_features_together() {
         "a module gated all(a, b) is compiled only when BOTH are on, so `a` \
          supplying the import is enough. Got:\n{said}"
     );
+    Ok(())
 }
 
 /// A gate mixing the two falls back to the strict reading.
@@ -260,12 +272,12 @@ fn an_all_gate_is_satisfied_by_the_two_features_together() {
 /// permissively when confused is a gate that opens as soon as it stops
 /// recognizing what it reads.
 #[test]
-fn a_cfg_the_parser_does_not_model_is_read_strictly() {
+fn a_cfg_the_parser_does_not_model_is_read_strictly() -> Result<(), TestError> {
     let fixture = Fixture::new(
         "mixed_gate",
         "any(all(feature = \"a\", feature = \"b\"), feature = \"filler\")",
-    );
-    let (code, said) = fixture.verdict();
+    )?;
+    let (code, said) = fixture.verdict()?;
     fixture.discard();
 
     assert_eq!(
@@ -273,6 +285,7 @@ fn a_cfg_the_parser_does_not_model_is_read_strictly() {
         "a cfg the parser cannot model must be read strictly, not waved \
          through. Got:\n{said}"
     );
+    Ok(())
 }
 
 /// The fixtures clear the script's floors, so a verdict is a verdict.
@@ -281,9 +294,9 @@ fn a_cfg_the_parser_does_not_model_is_read_strictly() {
 /// and a test asserting "not zero" would read that refusal as the failure it
 /// was looking for, passing for a reason that has nothing to do with the rule.
 #[test]
-fn the_fixtures_are_large_enough_for_the_script_to_answer() {
-    let fixture = Fixture::new("floor_check", "any(feature = \"a\", feature = \"b\")");
-    let (code, said) = fixture.verdict();
+fn the_fixtures_are_large_enough_for_the_script_to_answer() -> Result<(), TestError> {
+    let fixture = Fixture::new("floor_check", "any(feature = \"a\", feature = \"b\")")?;
+    let (code, said) = fixture.verdict()?;
     fixture.discard();
 
     assert_ne!(
@@ -296,4 +309,5 @@ fn the_fixtures_are_large_enough_for_the_script_to_answer() {
         "the fixture should present 12 gated modules; if it does not, the \
          walk is not seeing what these tests think it is:\n{said}"
     );
+    Ok(())
 }

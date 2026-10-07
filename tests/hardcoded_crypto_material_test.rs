@@ -15,6 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -165,35 +167,33 @@ fn binds_numeric_literal(l: &str) -> bool {
         && (init.starts_with("0x") || init.chars().next().is_some_and(|c| c.is_ascii_digit()))
 }
 
-fn rust_sources() -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-        for e in std::fs::read_dir(dir).expect("read_dir") {
-            let p = e.expect("entry").path();
+fn rust_sources() -> Result<Vec<PathBuf>, TestError> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), TestError> {
+        for e in std::fs::read_dir(dir)? {
+            let p = e?.path();
             if p.is_dir() {
-                walk(&p, out);
+                walk(&p, out)?;
             } else if p.extension().is_some_and(|x| x == "rs") {
                 out.push(p);
             }
         }
+        Ok(())
     }
     let mut v = Vec::new();
-    walk(&repo().join("src"), &mut v);
+    walk(&repo().join("src"), &mut v)?;
     v.sort();
-    v
+    Ok(v)
 }
 
 #[test]
-fn production_code_hands_no_literal_to_cryptographic_material() {
+fn production_code_hands_no_literal_to_cryptographic_material() -> Result<(), TestError> {
     let mut bad = Vec::new();
-    for p in rust_sources() {
-        let src = std::fs::read_to_string(&p).expect("read");
+    for p in rust_sources()? {
+        let src = std::fs::read_to_string(&p)?;
         let (prod, _) = split_cfg_test(&src);
         for (n, l) in offending_lines(prod) {
             let n = n + first_line_of(&src, prod) - 1;
-            bad.push(format!(
-                "{}:{n}: {l}",
-                p.strip_prefix(repo()).unwrap().display()
-            ));
+            bad.push(format!("{}:{n}: {l}", p.strip_prefix(repo())?.display()));
         }
     }
     assert!(
@@ -201,22 +201,20 @@ fn production_code_hands_no_literal_to_cryptographic_material() {
         "literal cryptographic material in production code:\n{}",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// Test fixtures too: CodeQL scans them, and a pasted nonce is what it flagged.
 /// A fixture derives its nonce (see `digest_leak::tests::nonce_for`).
 #[test]
-fn test_fixtures_derive_their_nonces_rather_than_paste_them() {
+fn test_fixtures_derive_their_nonces_rather_than_paste_them() -> Result<(), TestError> {
     let mut bad = Vec::new();
-    for p in rust_sources() {
-        let src = std::fs::read_to_string(&p).expect("read");
+    for p in rust_sources()? {
+        let src = std::fs::read_to_string(&p)?;
         let (_, tests) = split_cfg_test(&src);
         for (n, l) in offending_lines_in(tests, true) {
             let n = n + first_line_of(&src, tests) - 1;
-            bad.push(format!(
-                "{}:{n}: {l}",
-                p.strip_prefix(repo()).unwrap().display()
-            ));
+            bad.push(format!("{}:{n}: {l}", p.strip_prefix(repo())?.display()));
         }
     }
     assert!(
@@ -224,14 +222,16 @@ fn test_fixtures_derive_their_nonces_rather_than_paste_them() {
         "test code hands a literal to cryptographic material (CodeQL will flag each):\n{}",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the matcher sees every shape it claims to.
 #[test]
-fn the_matcher_reports_each_literal_material_shape() {
+fn the_matcher_reports_each_literal_material_shape() -> Result<(), TestError> {
     let src = "let nonce = \"abc\";\nlet a = Auth { secret: \"x\" };\nchallenge(\"a\", 1, \"b\", \"n-shared\");\n";
     let hits: Vec<usize> = offending_lines(src).into_iter().map(|(n, _)| n).collect();
     assert_eq!(hits, [1, 2, 3]);
+    Ok(())
 }
 
 /// The two shapes that walked past this matcher into CI.
@@ -241,7 +241,7 @@ fn the_matcher_reports_each_literal_material_shape() {
 /// `"`, and a `const` DECLARATION, which is neither an assignment nor a call
 /// argument. This test is the shape of the miss, not of the fix.
 #[test]
-fn the_matcher_reports_byte_strings_and_const_declarations() {
+fn the_matcher_reports_byte_strings_and_const_declarations() -> Result<(), TestError> {
     let src = concat!(
         "const KEY_A: &[u8] = b\"signing-key-alpha\";\n",
         "static SIGNING_KEY: &[u8] = b\"x\";\n",
@@ -250,12 +250,13 @@ fn the_matcher_reports_byte_strings_and_const_declarations() {
     );
     let hits: Vec<usize> = offending_lines(src).into_iter().map(|(n, _)| n).collect();
     assert_eq!(hits, [1, 2, 3, 4], "every one of these reached CI");
+    Ok(())
 }
 
 /// A declaration whose name merely CONTAINS a material word, or whose value is
 /// a plain string rather than bytes, is not material.
 #[test]
-fn a_declaration_that_is_not_material_is_not_reported() {
+fn a_declaration_that_is_not_material_is_not_reported() -> Result<(), TestError> {
     let src = concat!(
         "const KEY_ORDER: &[&str] = &[\"a\"];\n",
         "const MONKEY: &str = \"m\";\n",
@@ -269,23 +270,25 @@ fn a_declaration_that_is_not_material_is_not_reported() {
         "{:?}",
         offending_lines(src)
     );
+    Ok(())
 }
 
 /// A literal that is not material -- a Via branch, a display name -- is not reported.
 #[test]
-fn a_literal_that_is_not_material_is_not_reported() {
+fn a_literal_that_is_not_material_is_not_reported() -> Result<(), TestError> {
     let src = "let branch = \"z9hG4bK-a1\";\nlet name = \"alice\";\nlet nonce = extract_param(h, \"nonce\");\n";
     assert!(
         offending_lines(src).is_empty(),
         "{:?}",
         offending_lines(src)
     );
+    Ok(())
 }
 
 /// The splitter really separates production from tests, or the production
 /// scan is silently reading fixtures and the fixture scan is reading nothing.
 #[test]
-fn the_cfg_test_splitter_keeps_fixtures_out_of_the_production_scan() {
+fn the_cfg_test_splitter_keeps_fixtures_out_of_the_production_scan() -> Result<(), TestError> {
     let src =
         "fn real() {}\n#[cfg(test)]\nmod tests {\n    fn f() { let nonce = \"pasted\"; }\n}\n";
     let (prod, tests) = split_cfg_test(src);
@@ -299,19 +302,21 @@ fn the_cfg_test_splitter_keeps_fixtures_out_of_the_production_scan() {
         !all.is_empty() && none.is_empty(),
         "no test module: everything is production"
     );
+    Ok(())
 }
 
 /// A struct field named `key` holding a lookup name is not material.
 #[test]
-fn a_lookup_key_field_is_not_material() {
+fn a_lookup_key_field_is_not_material() -> Result<(), TestError> {
     let src = "Row { key: \"jitter_warn_ms\", .. }\nlet key = \"k3y\";\n";
     let hits: Vec<usize> = offending_lines(src).into_iter().map(|(n, _)| n).collect();
     assert_eq!(hits, [2], "only the assignment is material");
+    Ok(())
 }
 
 /// The named exception is honored, and only in its exact form with a reason.
 #[test]
-fn a_named_fixture_exception_is_honored_and_a_bare_one_is_not() {
+fn a_named_fixture_exception_is_honored_and_a_bare_one_is_not() -> Result<(), TestError> {
     let ok = "let key = \"k3y\"; // material: fixture -- the parser must accept these bytes\n";
     assert!(
         offending_lines(ok).is_empty(),
@@ -323,28 +328,31 @@ fn a_named_fixture_exception_is_honored_and_a_bare_one_is_not() {
         1,
         "an unexplained comment is not an exception"
     );
+    Ok(())
 }
 
 /// The shape CodeQL flagged after the string literals were gone: a hash of
 /// the label seeded with a constant, inside `fn nonce_for`. Derived from a
 /// constant is still constant, to the query and to a reviewer.
 #[test]
-fn a_constant_seed_inside_a_material_function_is_reported() {
+fn a_constant_seed_inside_a_material_function_is_reported() -> Result<(), TestError> {
     let src = "fn nonce_for(label: &str) -> String {\n    let mut h: u64 = 0xcbf2_9ce4_8422_2325;\n    format!(\"{h:x}\")\n}\n";
     let hits: Vec<usize> = offending_lines_in(src, true)
         .into_iter()
         .map(|(n, _)| n)
         .collect();
     assert_eq!(hits, [2], "the seed line");
+    Ok(())
 }
 
 /// The runtime-minted form is not: no constant, only the clock and a count.
 #[test]
-fn a_runtime_minted_material_function_is_not_reported() {
+fn a_runtime_minted_material_function_is_not_reported() -> Result<(), TestError> {
     let src = "fn nonce_for(label: &str) -> String {\n    let nanos = now();\n    let distinct = minted.len() as u64;\n    format!(\"{:016x}\", nanos ^ distinct)\n}\nfn receive_frame() -> u64 {\n    let mut h: u64 = 0x1234;\n    tampered[last] ^= 0xff;\n    h\n}\n";
     assert!(
         offending_lines_in(src, true).is_empty(),
         "{:?}",
         offending_lines_in(src, true)
     );
+    Ok(())
 }

@@ -7,6 +7,8 @@
 
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Builds a `Command` targeting the compiled `sipnab` test binary.
 ///
 /// # Returns
@@ -17,8 +19,8 @@ fn sipnab_cmd() -> Command {
 
 /// `--version` exits 0 and its output contains the binary name `sipnab`.
 #[test]
-fn version_flag_works() {
-    let output = sipnab_cmd().arg("--version").output().unwrap();
+fn version_flag_works() -> Result<(), TestError> {
+    let output = sipnab_cmd().arg("--version").output()?;
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -26,12 +28,13 @@ fn version_flag_works() {
         "Expected version output to contain 'sipnab', got:\n{}",
         stdout
     );
+    Ok(())
 }
 
 /// `--help` exits 0 and mentions each of a representative set of key flags.
 #[test]
-fn help_shows_key_flags() {
-    let output = sipnab_cmd().arg("--help").output().unwrap();
+fn help_shows_key_flags() -> Result<(), TestError> {
+    let output = sipnab_cmd().arg("--help").output()?;
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -55,12 +58,13 @@ fn help_shows_key_flags() {
             stdout
         );
     }
+    Ok(())
 }
 
 /// An unknown flag makes the process exit non-zero with an error on stderr.
 #[test]
-fn invalid_flag_rejected() {
-    let output = sipnab_cmd().arg("--nonexistent-flag").output().unwrap();
+fn invalid_flag_rejected() -> Result<(), TestError> {
+    let output = sipnab_cmd().arg("--nonexistent-flag").output()?;
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -68,4 +72,5 @@ fn invalid_flag_rejected() {
         "Expected error message about unknown flag, got: {}",
         stderr
     );
+    Ok(())
 }

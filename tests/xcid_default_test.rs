@@ -19,8 +19,8 @@ mod mcp;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap_at_or_panic};
+use mcp::{McpSession, TestError};
+use pcap_build::{udp_frame, write_pcap_at};
 
 /// An `INVITE` with nothing that links it to another call except, when
 /// `x_call_id` is given, an `X-Call-ID` header naming that call.
@@ -42,9 +42,9 @@ fn invite(call_id: &str, branch: &str, x_call_id: Option<&str>) -> Vec<u8> {
 
 /// Two legs 30 seconds apart, far outside the timing heuristic's window, the
 /// second pointing at the first with `X-Call-ID`. Returns the capture path.
-fn capture(dir: &std::path::Path) -> String {
+fn capture(dir: &std::path::Path) -> Result<String, TestError> {
     let path = dir.join("xcid.pcap");
-    write_pcap_at_or_panic(
+    write_pcap_at(
         &path,
         &[
             (invite("a-leg@10.1.0.1", "-a", None), 0),
@@ -54,74 +54,77 @@ fn capture(dir: &std::path::Path) -> String {
             ),
         ],
         1,
-    );
-    path.to_str().expect("utf-8 path").to_string()
+    )?;
+    Ok(path.to_str().ok_or("utf-8 path")?.to_string())
 }
 
 /// The strategies `find_correlated` names for `call_id`.
-fn strategies(session: &mut McpSession, call_id: &str) -> Vec<String> {
-    let msg = session.call_or_panic("find_correlated", serde_json::json!({ "call_id": call_id }));
+fn strategies(session: &mut McpSession, call_id: &str) -> Result<Vec<String>, TestError> {
+    let msg = session.call("find_correlated", serde_json::json!({ "call_id": call_id }))?;
     assert!(
         msg.get("error").is_none(),
         "find_correlated must answer, got: {msg}"
     );
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .expect("text payload")
+        .ok_or("text payload")?
         .to_string();
-    let value: serde_json::Value = serde_json::from_str(&text).expect("payload is JSON");
-    value["legs"]
+    let value: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(value["legs"]
         .as_array()
         .map(|legs| {
             legs.iter()
                 .filter_map(|l| l["strategy"].as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default())
 }
 
 /// Write `body` as a config file in `dir` and return its path.
-fn config(dir: &std::path::Path, body: &str) -> String {
+fn config(dir: &std::path::Path, body: &str) -> Result<String, TestError> {
     let path = dir.join("sipnab.toml");
-    std::fs::write(&path, body).expect("write config");
-    path.to_str().expect("utf-8 path").to_string()
+    std::fs::write(&path, body)?;
+    Ok(path.to_str().ok_or("utf-8 path")?.to_string())
 }
 
 /// No configuration: the header is in the capture and is not followed.
 #[test]
-fn an_unconfigured_run_follows_no_correlation_header() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path());
-    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
+fn an_unconfigured_run_follows_no_correlation_header() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path())?;
+    let mut session = McpSession::start(&pcap, &["--no-config"])?;
     assert!(
-        strategies(&mut session, "a-leg@10.1.0.1").is_empty(),
+        strategies(&mut session, "a-leg@10.1.0.1")?.is_empty(),
         "X-Call-ID is not a default; the legs must not correlate"
     );
+    Ok(())
 }
 
 /// `[sip] xcid_headers` naming the header turns the strategy on.
 #[test]
-fn the_configured_header_correlates_the_legs() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path());
-    let cfg = config(dir.path(), "[sip]\nxcid_headers = [\"X-Call-ID\"]\n");
-    let mut session = McpSession::start_or_panic(&pcap, &["--config", &cfg]);
+fn the_configured_header_correlates_the_legs() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path())?;
+    let cfg = config(dir.path(), "[sip]\nxcid_headers = [\"X-Call-ID\"]\n")?;
+    let mut session = McpSession::start(&pcap, &["--config", &cfg])?;
     assert_eq!(
-        strategies(&mut session, "a-leg@10.1.0.1"),
+        strategies(&mut session, "a-leg@10.1.0.1")?,
         vec!["x_call_id".to_string()],
         "the configured header must reach the store that answers"
     );
+    Ok(())
 }
 
 /// An explicit empty list is the same as no key: no header strategy.
 #[test]
-fn an_empty_header_list_follows_nothing() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let pcap = capture(dir.path());
-    let cfg = config(dir.path(), "[sip]\nxcid_headers = []\n");
-    let mut session = McpSession::start_or_panic(&pcap, &["--config", &cfg]);
+fn an_empty_header_list_follows_nothing() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = capture(dir.path())?;
+    let cfg = config(dir.path(), "[sip]\nxcid_headers = []\n")?;
+    let mut session = McpSession::start(&pcap, &["--config", &cfg])?;
     assert!(
-        strategies(&mut session, "a-leg@10.1.0.1").is_empty(),
+        strategies(&mut session, "a-leg@10.1.0.1")?.is_empty(),
         "an empty list must not bring the old default back"
     );
+    Ok(())
 }

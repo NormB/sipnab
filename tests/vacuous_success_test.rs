@@ -53,6 +53,8 @@ mod absence_scan;
 
 use absence_scan::test_fns;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// This file, excluded from its own scans.
 ///
 /// The derivation below looks for files that name [`CORPUS_MARKER`], and this
@@ -96,14 +98,14 @@ fn repo() -> PathBuf {
 }
 
 /// Every `tests/*.rs` except this one, as `(file name, text)`.
-fn test_sources() -> Vec<(String, String)> {
+fn test_sources() -> Result<Vec<(String, String)>, TestError> {
     let dir = repo().join("tests");
-    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-        panic!(
+    let entries = std::fs::read_dir(&dir).map_err(|e| {
+        format!(
             "tests/ must be readable to derive anything about the test tree: {}: {e}",
             dir.display()
         )
-    });
+    })?;
     let mut out: Vec<(String, String)> = entries
         .flatten()
         .map(|e| e.path())
@@ -117,7 +119,7 @@ fn test_sources() -> Vec<(String, String)> {
         })
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The corpus test binaries: every `tests/*.rs` whose text names the marker.
@@ -125,12 +127,12 @@ fn test_sources() -> Vec<(String, String)> {
 /// This is the *binary* selection — what `cargo test --test <name>` would be
 /// pointed at — and it is a property of what a file READS, which is why no
 /// filter over test names can reproduce it.
-fn corpus_binaries() -> Vec<String> {
-    test_sources()
+fn corpus_binaries() -> Result<Vec<String>, TestError> {
+    Ok(test_sources()?
         .into_iter()
         .filter(|(_, text)| text.contains(CORPUS_MARKER))
         .map(|(name, _)| name)
-        .collect()
+        .collect())
 }
 
 /// What a walk over a collection concluded.
@@ -185,11 +187,16 @@ enum RunOutcome {
 ///
 /// The whole point is the `passed == 0` arm: cargo prints `ok` for a run that
 /// executed nothing, so `ok` is not evidence and only a non-zero pass count is.
-fn classify_cargo_summary(line: &str) -> Option<RunOutcome> {
+fn classify_cargo_summary(line: &str) -> Result<Option<RunOutcome>, TestError> {
     let summary = Regex::new(r"test result: (ok|FAILED)\. (\d+) passed; (\d+) failed")
-        .expect("the cargo summary pattern must compile");
-    let filtered =
-        Regex::new(r"(\d+) filtered out").expect("the filtered-out pattern must compile");
+        .map_err(|e| format!("the cargo summary pattern must compile: {e}"))?;
+    let filtered = Regex::new(r"(\d+) filtered out")
+        .map_err(|e| format!("the filtered-out pattern must compile: {e}"))?;
+    Ok(classify_with(&summary, &filtered, line))
+}
+
+/// [`classify_cargo_summary`] over already-compiled patterns.
+fn classify_with(summary: &Regex, filtered: &Regex, line: &str) -> Option<RunOutcome> {
     let caps = summary.captures(line)?;
     let passed: usize = caps[2].parse().ok()?;
     let failed: usize = caps[3].parse().ok()?;
@@ -283,9 +290,10 @@ fn decode_entities(doc: &str) -> String {
 }
 
 /// Every `https://` URL in a document.
-fn extract_urls(doc: &str) -> BTreeSet<String> {
-    let re = Regex::new(r#"https://[^\s"'<>]+"#).expect("the URL pattern must compile");
-    re.find_iter(doc).map(|m| m.as_str().to_string()).collect()
+fn extract_urls(doc: &str) -> Result<BTreeSet<String>, TestError> {
+    let re = Regex::new(r#"https://[^\s"'<>]+"#)
+        .map_err(|e| format!("the URL pattern must compile: {e}"))?;
+    Ok(re.find_iter(doc).map(|m| m.as_str().to_string()).collect())
 }
 
 // ── 1. the walk ─────────────────────────────────────────────────────
@@ -298,7 +306,7 @@ fn extract_urls(doc: &str) -> BTreeSet<String> {
 /// checked. Pinning that both verdicts of the refusing walk are DIFFERENT is
 /// what makes an empty input impossible to mistake for a clean one.
 #[test]
-fn a_clean_walk_and_an_empty_walk_must_not_share_a_verdict() {
+fn a_clean_walk_and_an_empty_walk_must_not_share_a_verdict() -> Result<(), TestError> {
     let checked = ["https://sipnab.com/", "https://sipnab.com/docs/"];
     let broken = ["https://sipnab.com/", "ftp://sipnab.com/"];
     let empty: [&str; 0] = [];
@@ -336,6 +344,7 @@ fn a_clean_walk_and_an_empty_walk_must_not_share_a_verdict() {
         "empty and clean must be distinguishable verdicts; if they collapse to \
          one value, every caller downstream inherits the bug"
     );
+    Ok(())
 }
 
 // ── 2. the selection ────────────────────────────────────────────────
@@ -349,9 +358,10 @@ fn a_clean_walk_and_an_empty_walk_must_not_share_a_verdict() {
 /// filter runs nothing at all — the "0 passed" prints — and binaries the name
 /// filter does run that never touch a capture.
 #[test]
-fn filtering_by_test_name_selects_a_different_set_than_selecting_binaries() {
-    let sources = test_sources();
-    let corpus: BTreeSet<String> = corpus_binaries().into_iter().collect();
+fn filtering_by_test_name_selects_a_different_set_than_selecting_binaries() -> Result<(), TestError>
+{
+    let sources = test_sources()?;
+    let corpus: BTreeSet<String> = corpus_binaries()?.into_iter().collect();
     assert!(
         corpus.len() >= MIN_CORPUS_BINARIES,
         "derived only {} corpus binaries from {} test file(s); the comparison \
@@ -424,6 +434,7 @@ fn filtering_by_test_name_selects_a_different_set_than_selecting_binaries() {
          reads the corpus; without one, the filter would merely be narrow \
          rather than wrong, and the run would still be about the right files"
     );
+    Ok(())
 }
 
 // ── 3. the summary line ─────────────────────────────────────────────
@@ -436,7 +447,7 @@ fn filtering_by_test_name_selects_a_different_set_than_selecting_binaries() {
 /// count is evidence, and this pins that the classifier never returns
 /// `Verified` without one.
 #[test]
-fn a_zero_passed_summary_is_not_a_verified_run() {
+fn a_zero_passed_summary_is_not_a_verified_run() -> Result<(), TestError> {
     let empty_run = "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; \
                      2 filtered out; finished in 0.00s";
     let cases: Vec<(&str, RunOutcome)> = vec![
@@ -470,9 +481,9 @@ fn a_zero_passed_summary_is_not_a_verified_run() {
         cases.len()
     );
     for (line, expected) in &cases {
-        let got = classify_cargo_summary(line).unwrap_or_else(|| {
-            panic!("the classifier failed to recognize a real cargo summary line: {line}")
-        });
+        let got = classify_cargo_summary(line)?.ok_or_else(|| {
+            format!("the classifier failed to recognize a real cargo summary line: {line}")
+        })?;
         assert_eq!(
             &got, expected,
             "misclassified a real cargo summary line: {line}"
@@ -481,7 +492,7 @@ fn a_zero_passed_summary_is_not_a_verified_run() {
 
     assert!(
         !matches!(
-            classify_cargo_summary(empty_run),
+            classify_cargo_summary(empty_run)?,
             Some(RunOutcome::Verified(_))
         ),
         "a run that executed nothing was classified as verified; that is the \
@@ -489,11 +500,12 @@ fn a_zero_passed_summary_is_not_a_verified_run() {
          binaries printed `ok` over zero tests"
     );
     assert_eq!(
-        classify_cargo_summary("running 0 tests"),
+        classify_cargo_summary("running 0 tests")?,
         None,
         "a line that is not a result summary must not be classified at all; \
          inventing a verdict for it would put a pass where there was no report"
     );
+    Ok(())
 }
 
 // ── 4. the escaped document ─────────────────────────────────────────
@@ -507,8 +519,8 @@ fn a_zero_passed_summary_is_not_a_verified_run() {
 /// decoding is what recovers the links rather than something that merely
 /// changes how many are found.
 #[test]
-fn escaped_markup_must_be_decoded_before_links_are_extracted() {
-    let plain = extract_urls(RENDERED_PAGE);
+fn escaped_markup_must_be_decoded_before_links_are_extracted() -> Result<(), TestError> {
+    let plain = extract_urls(RENDERED_PAGE)?;
     assert!(
         plain.len() >= 3,
         "the fixture page yielded only {} URL(s); with too few, an extraction \
@@ -523,7 +535,7 @@ fn escaped_markup_must_be_decoded_before_links_are_extracted() {
          this test is not reproducing the page that broke the extraction"
     );
 
-    let straight_from_the_page = extract_urls(&escaped);
+    let straight_from_the_page = extract_urls(&escaped)?;
     assert!(
         straight_from_the_page.is_empty(),
         "extraction over the escaped page found {} URL(s); the incident being \
@@ -538,12 +550,13 @@ fn escaped_markup_must_be_decoded_before_links_are_extracted() {
         "decoding must restore the document exactly; a decoder that drops or \
          mangles text would change which links are found for a second reason"
     );
-    let decoded = extract_urls(&decode_entities(&escaped));
+    let decoded = extract_urls(&decode_entities(&escaped))?;
     assert_eq!(
         decoded, plain,
         "the decoded page must yield the same URL set as the unescaped one; \
          anything less means the check runs over a subset nobody chose"
     );
+    Ok(())
 }
 
 // ── 5. the derivation's floor ───────────────────────────────────────
@@ -557,9 +570,9 @@ fn escaped_markup_must_be_decoded_before_links_are_extracted() {
 /// failure loud. The upper bound matters just as much: a derivation matching
 /// every file would clear the floor while selecting nothing in particular.
 #[test]
-fn the_corpus_binary_derivation_finds_the_binaries_that_exist() {
-    let binaries = corpus_binaries();
-    let total = test_sources().len();
+fn the_corpus_binary_derivation_finds_the_binaries_that_exist() -> Result<(), TestError> {
+    let binaries = corpus_binaries()?;
+    let total = test_sources()?.len();
     assert!(
         binaries.len() >= MIN_CORPUS_BINARIES,
         "derived {} corpus binaries from {total} test file(s), below the floor \
@@ -584,6 +597,7 @@ fn the_corpus_binary_derivation_finds_the_binaries_that_exist() {
         "the derivation named files that are not on disk: {missing:?}; a list \
          of binaries that cannot be run is not a selection anyone can act on"
     );
+    Ok(())
 }
 
 // ── 6. this file, turned on itself ──────────────────────────────────
@@ -598,11 +612,13 @@ fn the_corpus_binary_derivation_finds_the_binaries_that_exist() {
 /// running. The scanner refuses to run over a file in which it finds no loops,
 /// for the same reason.
 #[test]
-fn every_loop_in_this_file_is_bounded_by_a_non_emptiness_check() {
+fn every_loop_in_this_file_is_bounded_by_a_non_emptiness_check() -> Result<(), TestError> {
     let src = include_str!("vacuous_success_test.rs");
     let lines: Vec<&str> = src.lines().collect();
-    let loop_re = Regex::new(FOR_LOOP).expect("the loop pattern must compile");
-    let guard_re = Regex::new(EMPTINESS_GUARD).expect("the guard pattern must compile");
+    let loop_re =
+        Regex::new(FOR_LOOP).map_err(|e| format!("the loop pattern must compile: {e}"))?;
+    let guard_re =
+        Regex::new(EMPTINESS_GUARD).map_err(|e| format!("the guard pattern must compile: {e}"))?;
 
     let loops: Vec<usize> = lines
         .iter()
@@ -634,4 +650,5 @@ fn every_loop_in_this_file_is_bounded_by_a_non_emptiness_check() {
          nearby check that it holds anything; each one can iterate zero times \
          and report success over nothing"
     );
+    Ok(())
 }

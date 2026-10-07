@@ -13,6 +13,10 @@
 
 use std::collections::HashSet;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/source_scan.rs"]
 mod source_scan;
 
@@ -130,7 +134,7 @@ fn allowed_undocumented(ch: char) -> Option<&'static str> {
 /// Every action key in the default `Keymap` (quit/help/save/…) appears as a
 /// token in the F1 `HELP_TEXT`.
 #[test]
-fn keymap_default_keys_are_documented() {
+fn keymap_default_keys_are_documented() -> Result<(), TestError> {
     let docs = documented_tokens();
     let km = Keymap::default();
     for (action, kc) in [
@@ -152,12 +156,13 @@ fn keymap_default_keys_are_documented() {
             "keymap action '{action}' (key {tok}) is not documented in the F1 help"
         );
     }
+    Ok(())
 }
 
 /// A fixed roster of must-discover command keys (n/N/O/s/u/r/v/t/c/d,
 /// Shift+P, Ctrl+L) is present in the F1 help.
 #[test]
-fn important_command_keys_are_documented() {
+fn important_command_keys_are_documented() -> Result<(), TestError> {
     let docs = documented_tokens();
     // Keys the user must be able to discover from F1 (the ones the drift fix
     // added, plus the long-standing display/command keys).
@@ -180,6 +185,7 @@ fn important_command_keys_are_documented() {
             "expected key '{tok}' to be documented in the F1 help; have: {docs:?}"
         );
     }
+    Ok(())
 }
 
 /// Every converted view has a real key→action mapping table — probe each
@@ -188,7 +194,7 @@ fn important_command_keys_are_documented() {
 /// below still covers what has no mapping table (the global dispatcher
 /// fallbacks and the text-entry popups).
 #[test]
-fn mapped_char_keys_are_documented_or_allowlisted() {
+fn mapped_char_keys_are_documented_or_allowlisted() -> Result<(), TestError> {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
@@ -250,12 +256,13 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         "these view mappers bind chars the F1 help doesn't document: {undocumented:?}\n\
          Document them in src/tui/help.rs HELP_TEXT, or add them to allowed_undocumented() with a reason."
     );
+    Ok(())
 }
 
 /// Every `KeyCode::Char('x')` literal scraped from the controller sources is
 /// either documented in the F1 help or allow-listed with a reason.
 #[test]
-fn every_handled_char_key_is_documented_or_allowlisted() {
+fn every_handled_char_key_is_documented_or_allowlisted() -> Result<(), TestError> {
     let docs = documented_tokens();
     let mut undocumented = Vec::new();
     for ch in scraped_char_keys() {
@@ -271,6 +278,7 @@ fn every_handled_char_key_is_documented_or_allowlisted() {
         "these handled KeyCode::Char keys are neither in the F1 help nor allow-listed: {undocumented:?}\n\
          Document them in src/tui/help.rs HELP_TEXT, or add them to allowed_undocumented() with a reason."
     );
+    Ok(())
 }
 
 /// (section heading, token) pairs the reverse check must skip, with reasons.
@@ -289,7 +297,7 @@ fn reverse_allowed(section: &str, tok: &str) -> Option<&'static str> {
 /// the one-way check above (handled ⇒ documented) can never catch a
 /// documented-but-missing key.
 #[test]
-fn every_documented_view_key_is_handled() {
+fn every_documented_view_key_is_handled() -> Result<(), TestError> {
     let km = Keymap::default();
     type Checker = fn(&Keymap, KeyEvent) -> bool;
     let sections: &[(&str, Checker)] = &[
@@ -423,17 +431,18 @@ fn every_documented_view_key_is_handled() {
         "documented-but-unhandled keys:\n{}",
         failures.join("\n")
     );
+    Ok(())
 }
 
 /// Description-level drift the token-based checks above cannot catch: the
 /// help overlay once listed three From/To modes including an invented
 /// "both" while the real enum has four.
 #[test]
-fn help_documents_all_four_from_to_modes() {
+fn help_documents_all_four_from_to_modes() -> Result<(), TestError> {
     let u_line = sipnab::tui::help::HELP_TEXT
         .lines()
         .find(|l| l.trim_start().starts_with("u "))
-        .expect("help must document the u key");
+        .ok_or("help must document the u key")?;
     for mode in ["default", "host:port", "user", "user@host:port"] {
         assert!(
             u_line.contains(mode),
@@ -444,52 +453,56 @@ fn help_documents_all_four_from_to_modes() {
         !u_line.contains("both"),
         "stale invented 'both' mode: {u_line}"
     );
+    Ok(())
 }
 
 /// The F2 save dialog cycles many formats (incl. Mermaid); the help line
 /// must not pretend it is PCAP/PCAP-NG/TXT only.
 #[test]
-fn help_f2_line_mentions_mermaid() {
+fn help_f2_line_mentions_mermaid() -> Result<(), TestError> {
     let f2_line = sipnab::tui::help::HELP_TEXT
         .lines()
         .find(|l| l.trim_start().starts_with("F2 ") && l.contains("Save capture"))
-        .expect("help must document F2 save");
+        .ok_or("help must document F2 save")?;
     assert!(
         f2_line.contains("Mermaid"),
         "F2 line must mention the full format cycle: {f2_line}"
     );
+    Ok(())
 }
 
 /// Statistics can be closed with q and s, not just Esc; the help section
 /// covering it must say so.
 #[test]
-fn help_documents_statistics_close_keys() {
+fn help_documents_statistics_close_keys() -> Result<(), TestError> {
     let section = sipnab::tui::help::HELP_TEXT
         .split("MESSAGE DIFF / COMBINED DETAIL / STATISTICS:")
         .nth(1)
-        .expect("statistics section present")
+        .ok_or("statistics section present")?
         .split("\n\n")
         .next()
-        .unwrap()
+        .ok_or("statistics section has a first paragraph")?
         .to_string();
     assert!(
         section.contains("q, s") || section.contains("q / s"),
         "statistics close keys must be documented: {section}"
     );
+    Ok(())
 }
 
 /// v/V and n work in EVERY view (global fallback keys) but were documented
 /// only under CALL LIST.
 #[test]
-fn help_marks_global_keys_as_global() {
+fn help_marks_global_keys_as_global() -> Result<(), TestError> {
     for key in ["n ", "v "] {
         let line = sipnab::tui::help::HELP_TEXT
             .lines()
             .find(|l| l.trim_start().starts_with(key))
-            .unwrap_or_else(|| panic!("help must document the {key}key"));
+            .ok_or_else(|| format!("help must document the {key}key"))?;
         assert!(
             line.contains("every view") || line.contains("global"),
             "'{key}' is global and must say so: {line}"
         );
     }
+    Ok(())
 }

@@ -22,19 +22,23 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sipnab::security::tfps::{TfpsAction, TfpsBanned, TfpsDropped, TfpsLabel, TfpsStatus};
 
-fn repo_file(rel: &str) -> String {
-    std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+type TestError = Box<dyn std::error::Error>;
+
+fn repo_file(rel: &str) -> Result<String, TestError> {
+    Ok(
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+            .map_err(|e| format!("read {rel}: {e}"))?,
+    )
 }
 
 /// The keys sipnab serializes for `T`, from the first line of a fixture.
-fn keys_of<T: DeserializeOwned + Serialize>(fixture: &str) -> BTreeSet<String> {
-    let line = repo_file(&format!("tests/fixtures/{fixture}"));
-    let line = line.lines().next().expect("fixture has a line");
-    let value: T = serde_json::from_str(line).unwrap_or_else(|e| panic!("{fixture}: {e}"));
-    match serde_json::to_value(value).expect("serializes") {
-        Value::Object(m) => m.keys().cloned().collect(),
-        other => panic!("{fixture} is not an object: {other}"),
+fn keys_of<T: DeserializeOwned + Serialize>(fixture: &str) -> Result<BTreeSet<String>, TestError> {
+    let line = repo_file(&format!("tests/fixtures/{fixture}"))?;
+    let line = line.lines().next().ok_or("fixture has a line")?;
+    let value: T = serde_json::from_str(line).map_err(|e| format!("{fixture}: {e}"))?;
+    match serde_json::to_value(value).map_err(|e| format!("serializes: {e}"))? {
+        Value::Object(m) => Ok(m.keys().cloned().collect()),
+        other => Err(format!("{fixture} is not an object: {other}").into()),
     }
 }
 
@@ -53,9 +57,11 @@ fn kind(v: &Value) -> &'static str {
 /// For each key, the JSON types it takes across EVERY line of a fixture.
 /// `null` is always allowed on top, because an example may show a field
 /// that happens to be unknown.
-fn kinds_of(fixture: &str) -> std::collections::BTreeMap<String, BTreeSet<&'static str>> {
+fn kinds_of(
+    fixture: &str,
+) -> Result<std::collections::BTreeMap<String, BTreeSet<&'static str>>, TestError> {
     let mut out: std::collections::BTreeMap<String, BTreeSet<&'static str>> = Default::default();
-    for line in repo_file(&format!("tests/fixtures/{fixture}")).lines() {
+    for line in repo_file(&format!("tests/fixtures/{fixture}"))?.lines() {
         let Ok(Value::Object(m)) = serde_json::from_str::<Value>(line) else {
             continue;
         };
@@ -65,7 +71,7 @@ fn kinds_of(fixture: &str) -> std::collections::BTreeMap<String, BTreeSet<&'stat
             e.insert("null");
         }
     }
-    out
+    Ok(out)
 }
 
 /// The words TFPS answers a refused ban or unban with: `local`, `declared`
@@ -131,17 +137,17 @@ fn json_blocks(page: &str) -> Vec<(usize, Value)> {
 }
 
 /// What is wrong with one documented TFPS answer, as `(line, problem)`.
-fn problems_in(page: &str) -> (usize, Vec<String>) {
-    let status = keys_of::<TfpsStatus>("tfps-status-golden.json");
+fn problems_in(page: &str) -> Result<(usize, Vec<String>), TestError> {
+    let status = keys_of::<TfpsStatus>("tfps-status-golden.json")?;
     let rows = [
-        ("banned", keys_of::<TfpsBanned>("tfps-banned-golden.jsonl")),
-        ("labels", keys_of::<TfpsLabel>("tfps-labels-golden.jsonl")),
+        ("banned", keys_of::<TfpsBanned>("tfps-banned-golden.jsonl")?),
+        ("labels", keys_of::<TfpsLabel>("tfps-labels-golden.jsonl")?),
         (
             "dropped",
-            keys_of::<TfpsDropped>("tfps-dropped-golden.jsonl"),
+            keys_of::<TfpsDropped>("tfps-dropped-golden.jsonl")?,
         ),
     ];
-    let action = keys_of::<TfpsAction>("tfps-ban-golden.jsonl");
+    let action = keys_of::<TfpsAction>("tfps-ban-golden.jsonl")?;
     let mut checked = 0;
     let mut problems = Vec::new();
     for (line, v) in json_blocks(page) {
@@ -202,7 +208,7 @@ fn problems_in(page: &str) -> (usize, Vec<String>) {
                 line,
                 "status",
                 s,
-                &kinds_of("tfps-status-golden.json"),
+                &kinds_of("tfps-status-golden.json")?,
             ));
         }
         for row in v
@@ -217,15 +223,15 @@ fn problems_in(page: &str) -> (usize, Vec<String>) {
                 ("labels", "tfps-labels-golden.jsonl"),
                 ("dropped", "tfps-dropped-golden.jsonl"),
             ] {
-                let kinds = kinds_of(fixture);
+                let kinds = kinds_of(fixture)?;
                 if kinds.keys().cloned().collect::<BTreeSet<_>>() == k {
                     problems.extend(wrong_kinds(line, name, row, &kinds));
                 }
             }
         }
         if let Some(a) = v.get("action") {
-            let mut kinds = kinds_of("tfps-ban-golden.jsonl");
-            for (k, v) in kinds_of("tfps-unban-golden.jsonl") {
+            let mut kinds = kinds_of("tfps-ban-golden.jsonl")?;
+            for (k, v) in kinds_of("tfps-unban-golden.jsonl")? {
                 kinds.entry(k).or_default().extend(v);
             }
             problems.extend(wrong_kinds(line, "action", a, &kinds));
@@ -246,11 +252,11 @@ fn problems_in(page: &str) -> (usize, Vec<String>) {
             ));
         }
     }
-    (checked, problems)
+    Ok((checked, problems))
 }
 
-fn assert_page(rel: &str, at_least: usize) {
-    let (checked, problems) = problems_in(&repo_file(rel));
+fn assert_page(rel: &str, at_least: usize) -> Result<(), TestError> {
+    let (checked, problems) = problems_in(&repo_file(rel)?)?;
     assert!(
         checked >= at_least,
         "{rel}: found {checked} TFPS answers, expected at least {at_least}; the \
@@ -261,6 +267,7 @@ fn assert_page(rel: &str, at_least: usize) {
         "{rel} shows TFPS answers sipnab does not send:\n{}",
         problems.join("\n")
     );
+    Ok(())
 }
 
 // 7 -> 5 on each page: the ban and unban examples stopped being TFPS's reply
@@ -268,13 +275,15 @@ fn assert_page(rel: &str, at_least: usize) {
 // sipnab's own answer, which `the_*_reference_shows_the_action_answers_*`
 // below checks against sipnab's own type.
 #[test]
-fn the_rest_reference_shows_the_tfps_answers_sipnab_sends() {
-    assert_page("docs/rest-api.md", 5);
+fn the_rest_reference_shows_the_tfps_answers_sipnab_sends() -> Result<(), TestError> {
+    assert_page("docs/rest-api.md", 5)?;
+    Ok(())
 }
 
 #[test]
-fn the_mcp_reference_shows_the_tfps_answers_sipnab_sends() {
-    assert_page("docs/mcp-tools.md", 5);
+fn the_mcp_reference_shows_the_tfps_answers_sipnab_sends() -> Result<(), TestError> {
+    assert_page("docs/mcp-tools.md", 5)?;
+    Ok(())
 }
 
 /// Every action answer and revert report a page shows, checked against the
@@ -284,11 +293,13 @@ fn the_mcp_reference_shows_the_tfps_answers_sipnab_sends() {
 /// `reverted`. The keys come from serializing sipnab's own types, not from a
 /// list here.
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
-fn action_problems_in(page: &str) -> (usize, usize, Vec<String>) {
+fn action_problems_in(page: &str) -> Result<(usize, usize, Vec<String>), TestError> {
     use sipnab::security::actions::{ActionDone, RevertReport};
-    let object_keys = |v: Value| match v {
-        Value::Object(m) => m.keys().cloned().collect::<BTreeSet<String>>(),
-        other => panic!("not an object: {other}"),
+    let object_keys = |v: Value| -> Result<BTreeSet<String>, TestError> {
+        match v {
+            Value::Object(m) => Ok(m.keys().cloned().collect::<BTreeSet<String>>()),
+            other => Err(format!("not an object: {other}").into()),
+        }
     };
     let done = object_keys(
         serde_json::to_value(ActionDone {
@@ -296,9 +307,11 @@ fn action_problems_in(page: &str) -> (usize, usize, Vec<String>) {
             applied: true,
             refused: None,
         })
-        .expect("serializes"),
-    );
-    let report = object_keys(serde_json::to_value(RevertReport::default()).expect("serializes"));
+        .map_err(|e| format!("serializes: {e}"))?,
+    )?;
+    let report = object_keys(
+        serde_json::to_value(RevertReport::default()).map_err(|e| format!("serializes: {e}"))?,
+    )?;
     let (mut actions, mut reverts, mut problems) = (0, 0, Vec::new());
     for (line, v) in json_blocks(page) {
         if v.get("applied").is_some() && v.get("id").is_some() {
@@ -326,12 +339,12 @@ fn action_problems_in(page: &str) -> (usize, usize, Vec<String>) {
             }
         }
     }
-    (actions, reverts, problems)
+    Ok((actions, reverts, problems))
 }
 
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
-fn assert_action_page(rel: &str) {
-    let (actions, reverts, problems) = action_problems_in(&repo_file(rel));
+fn assert_action_page(rel: &str) -> Result<(), TestError> {
+    let (actions, reverts, problems) = action_problems_in(&repo_file(rel)?)?;
     // A ban, a refused ban and an unban; one revert report.
     assert!(
         actions >= 3 && reverts >= 1,
@@ -343,16 +356,19 @@ fn assert_action_page(rel: &str) {
         "{rel} shows action answers sipnab does not send:\n{}",
         problems.join("\n")
     );
+    Ok(())
 }
 
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 #[test]
-fn the_rest_reference_shows_the_action_answers_sipnab_sends() {
-    assert_action_page("docs/rest-api.md");
+fn the_rest_reference_shows_the_action_answers_sipnab_sends() -> Result<(), TestError> {
+    assert_action_page("docs/rest-api.md")?;
+    Ok(())
 }
 
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 #[test]
-fn the_mcp_reference_shows_the_action_answers_sipnab_sends() {
-    assert_action_page("docs/mcp-tools.md");
+fn the_mcp_reference_shows_the_action_answers_sipnab_sends() -> Result<(), TestError> {
+    assert_action_page("docs/mcp-tools.md")?;
+    Ok(())
 }

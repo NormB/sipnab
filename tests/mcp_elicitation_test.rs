@@ -31,6 +31,8 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+type TestError = Box<dyn std::error::Error>;
+
 /// A capture with one dialog and RTP.
 const PCAP: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
@@ -93,7 +95,7 @@ impl Wire {
     /// `capabilities` is the CLIENT's half of `initialize`, which is the whole
     /// experiment: the same server binary must behave differently depending on
     /// what the client said it can do.
-    fn start(capabilities: Value) -> Self {
+    fn start(capabilities: Value) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .args([
@@ -110,11 +112,10 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sipnab --mcp");
+            .spawn()?;
 
         {
-            let stdin = child.stdin.as_mut().expect("stdin");
+            let stdin = child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
@@ -126,24 +127,22 @@ impl Wire {
                         "clientInfo": {"name": "elicitation-test", "version": "1"}
                     }
                 })
-            )
-            .expect("write initialize");
+            )?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            )
-            .expect("write initialized");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
 
-        let stdout = child.stdout.take().expect("stdout");
+        let stdout = child.stdout.take().ok_or("stdout")?;
         let mut wire = Self {
             child,
             reader: BufReader::new(stdout),
             next_id: 2,
         };
-        let handshake = wire.await_reply(1, None).0;
+        let handshake = wire.await_reply(1, None)?.0;
         assert!(
             handshake["result"]["capabilities"].is_object(),
             "handshake failed: {handshake}"
@@ -153,25 +152,25 @@ impl Wire {
         const MAX_POLLS: usize = 400;
         let mut loaded = false;
         for _ in 0..MAX_POLLS {
-            let reply = wire.request("tools/call", json!({"name": "capture_status"}));
-            if text_payload(&reply)["source_exhausted"] == json!(true) {
+            let reply = wire.request("tools/call", json!({"name": "capture_status"}))?;
+            if text_payload(&reply)?["source_exhausted"] == json!(true) {
                 loaded = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert!(loaded, "capture never finished loading for {PCAP}");
-        wire
+        Ok(wire)
     }
 
     /// Issue one request and return the reply, expecting no elicitation.
-    fn request(&mut self, method: &str, params: Value) -> Value {
-        let (reply, asked) = self.ask_and_answer(method, params, None);
+    fn request(&mut self, method: &str, params: Value) -> Result<Value, TestError> {
+        let (reply, asked) = self.ask_and_answer(method, params, None)?;
         assert!(
             asked.is_empty(),
             "{method} raised an elicitation nobody expected: {asked:?}"
         );
-        reply
+        Ok(reply)
     }
 
     /// Issue one request, answering any `elicitation/create` with `answer`.
@@ -183,18 +182,17 @@ impl Wire {
         method: &str,
         params: Value,
         answer: Option<Answer>,
-    ) -> (Value, Vec<Value>) {
+    ) -> Result<(Value, Vec<Value>), TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-            )
-            .expect("write request");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
         self.await_reply(id, answer)
     }
@@ -206,54 +204,61 @@ impl Wire {
     /// `answer`; anything else fails the test rather than being ignored,
     /// because a server calling a method this harness does not implement would
     /// otherwise look like a hang.
-    fn await_reply(&mut self, id: i64, answer: Option<Answer>) -> (Value, Vec<Value>) {
+    fn await_reply(
+        &mut self,
+        id: i64,
+        answer: Option<Answer>,
+    ) -> Result<(Value, Vec<Value>), TestError> {
         let mut asked = Vec::new();
         let mut line = String::new();
         for _ in 0..MAX_LINES {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for id {id}; saw {asked:?}");
+                return Err(format!(
+                    "sipnab closed stdout while waiting for id {id}; saw {asked:?}"
+                )
+                .into());
             }
             let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
             if msg["id"] == json!(id) && msg["method"].is_null() {
-                return (msg, asked);
+                return Ok((msg, asked));
             }
             if msg["method"].is_string() && !msg["id"].is_null() {
                 assert_eq!(
                     msg["method"], "elicitation/create",
                     "the server called a method this client does not implement: {msg}"
                 );
-                let answer = answer.expect(
+                let answer = answer.ok_or(
                     "the server asked for a confirmation in a case where none was expected",
-                );
+                )?;
                 let reply = json!({
                     "jsonrpc": "2.0",
                     "id": msg["id"].clone(),
                     "result": answer.result(),
                 });
                 asked.push(msg);
-                let stdin = self.child.stdin.as_mut().expect("stdin");
-                writeln!(stdin, "{reply}").expect("write elicitation answer");
-                stdin.flush().expect("flush");
+                let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
+                writeln!(stdin, "{reply}")?;
+                stdin.flush()?;
             }
         }
-        panic!("no reply to id {id} within {MAX_LINES} lines; saw {asked:?}");
+        Err(format!("no reply to id {id} within {MAX_LINES} lines; saw {asked:?}").into())
     }
 
     /// Every Call-ID the loaded capture currently holds.
-    fn call_ids(&mut self) -> Vec<String> {
+    fn call_ids(&mut self) -> Result<Vec<String>, TestError> {
         let reply = self.request(
             "tools/call",
             json!({"name": "list_dialogs", "arguments": {"limit": 100}}),
-        );
-        text_payload(&reply)["dialogs"]
+        )?;
+        Ok(text_payload(&reply)?["dialogs"]
             .as_array()
-            .expect("a dialogs array")
+            .ok_or("a dialogs array")?
             .iter()
             .filter_map(|d| d["call_id"].as_str().map(str::to_string))
-            .collect()
+            .collect())
     }
 }
 
@@ -269,11 +274,11 @@ fn a_client_that_can_be_asked() -> Value {
 }
 
 /// The payload block of a successful tool result, parsed.
-fn text_payload(reply: &Value) -> Value {
+fn text_payload(reply: &Value) -> Result<Value, TestError> {
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("expected a text payload, got {reply}"));
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("payload is not JSON: {text}"))
+        .ok_or_else(|| format!("expected a text payload, got {reply}"))?;
+    Ok(serde_json::from_str(text).map_err(|_| format!("payload is not JSON: {text}"))?)
 }
 
 /// The confirmation is a REQUEST, and it carries a form sipnab can read back.
@@ -282,13 +287,13 @@ fn text_payload(reply: &Value) -> Value {
 /// notification, or a message with no `id`, is something a client may ignore
 /// and sipnab could never wait on. What must be on the wire is a request.
 #[test]
-fn stopping_asks_the_operator_with_a_real_request() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn stopping_asks_the_operator_with_a_real_request() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         Some(Answer::No),
-    );
+    )?;
 
     assert_eq!(
         asked.len(),
@@ -303,7 +308,7 @@ fn stopping_asks_the_operator_with_a_real_request() {
     assert!(
         ask["params"]["message"]
             .as_str()
-            .expect("a message")
+            .ok_or("a message")?
             .contains("STOP"),
         "the person is not told what they are approving: {ask}"
     );
@@ -313,20 +318,21 @@ fn stopping_asks_the_operator_with_a_real_request() {
         schema["properties"]["confirm"]["type"], "boolean",
         "the form does not ask the field sipnab reads back: {ask}"
     );
+    Ok(())
 }
 
 /// Declining stops nothing, and the process is still answering afterwards.
 #[test]
-fn a_declined_confirmation_leaves_the_server_running() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn a_declined_confirmation_leaves_the_server_running() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         Some(Answer::No),
-    );
+    )?;
     assert_eq!(asked.len(), 1, "no confirmation was asked for: {reply}");
 
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(
         payload["would_stop"],
         json!(false),
@@ -336,11 +342,12 @@ fn a_declined_confirmation_leaves_the_server_running() {
     assert_eq!(payload["dry_run"], json!(false), "this was not a dry run");
 
     // The proof that outlives the payload: the process is still there.
-    let status = wire.request("tools/call", json!({"name": "capture_status"}));
+    let status = wire.request("tools/call", json!({"name": "capture_status"}))?;
     assert!(
         status["error"].is_null(),
         "the server stopped despite the decline: {status}"
     );
+    Ok(())
 }
 
 /// An accepted form carrying `confirm: false` is a refusal, not a yes.
@@ -349,15 +356,15 @@ fn a_declined_confirmation_leaves_the_server_running() {
 /// Reading `action` alone would stop the server on a form deliberately left
 /// empty, and every other test here would still pass.
 #[test]
-fn an_accepted_form_that_says_no_stops_nothing() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn an_accepted_form_that_says_no_stops_nothing() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         Some(Answer::AcceptedButUnticked),
-    );
+    )?;
     assert_eq!(asked.len(), 1);
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(
         payload["would_stop"],
         json!(false),
@@ -366,14 +373,15 @@ fn an_accepted_form_that_says_no_stops_nothing() {
     assert!(
         payload["note"]
             .as_str()
-            .expect("a note")
+            .ok_or("a note")?
             .contains("confirm"),
         "the caller is not told which half refused: {payload}"
     );
     assert!(
-        wire.request("tools/call", json!({"name": "capture_status"}))["error"].is_null(),
+        wire.request("tools/call", json!({"name": "capture_status"}))?["error"].is_null(),
         "the server stopped on an unticked confirmation"
     );
+    Ok(())
 }
 
 /// An accepted form with NO content is a refusal, not a yes.
@@ -384,15 +392,15 @@ fn an_accepted_form_that_says_no_stops_nothing() {
 /// found this: flipping that default from `false` to `true` passed every other
 /// test in this file, because they all send the field.
 #[test]
-fn an_accepted_form_carrying_nothing_stops_nothing() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn an_accepted_form_carrying_nothing_stops_nothing() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         Some(Answer::AcceptedWithNothing),
-    );
+    )?;
     assert_eq!(asked.len(), 1);
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(
         payload["would_stop"],
         json!(false),
@@ -400,9 +408,10 @@ fn an_accepted_form_carrying_nothing_stops_nothing() {
     );
     assert_eq!(payload["confirmed_by_operator"], json!(false));
     assert!(
-        wire.request("tools/call", json!({"name": "capture_status"}))["error"].is_null(),
+        wire.request("tools/call", json!({"name": "capture_status"}))?["error"].is_null(),
         "the server stopped on a form that carried no confirmation"
     );
+    Ok(())
 }
 
 /// Confirming a stop stops the process.
@@ -412,15 +421,15 @@ fn an_accepted_form_carrying_nothing_stops_nothing() {
 /// than the payload alone: `would_stop: true` from a process that is still
 /// running is exactly the report `dry_run` used to make impossible.
 #[test]
-fn a_confirmed_stop_actually_stops() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn a_confirmed_stop_actually_stops() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         Some(Answer::Yes),
-    );
+    )?;
     assert_eq!(asked.len(), 1, "the stop did not ask: {reply}");
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(payload["would_stop"], json!(true), "{payload}");
     assert_eq!(payload["confirmed_by_operator"], json!(true), "{payload}");
 
@@ -439,6 +448,7 @@ fn a_confirmed_stop_actually_stops() {
         "the confirmation was accepted, the reply said would_stop, and the \
          process is still running"
     );
+    Ok(())
 }
 
 /// A dry run asks nobody.
@@ -447,18 +457,18 @@ fn a_confirmed_stop_actually_stops() {
 /// confirmation dialog with no consequence behind it teaches whoever reads it
 /// to click through the next one.
 #[test]
-fn a_dry_run_asks_nobody() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
+fn a_dry_run_asks_nobody() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {}}),
         None,
-    );
+    )?;
     assert!(
         asked.is_empty(),
         "a dry run raised a confirmation: {asked:?}"
     );
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(payload["dry_run"], json!(true));
     assert_eq!(payload["would_stop"], json!(false));
     assert_eq!(
@@ -466,6 +476,7 @@ fn a_dry_run_asks_nobody() {
         Value::Null,
         "nobody was asked, so the answer is null rather than a verdict: {payload}"
     );
+    Ok(())
 }
 
 /// A client that cannot be asked still gets the `dry_run` convention.
@@ -475,18 +486,18 @@ fn a_dry_run_asks_nobody() {
 /// `shutdown_server` would stop working on every stock client, and the tests
 /// above would all still pass.
 #[test]
-fn a_client_without_the_capability_is_never_asked_and_still_works() {
-    let mut wire = Wire::start(json!({}));
+fn a_client_without_the_capability_is_never_asked_and_still_works() -> Result<(), TestError> {
+    let mut wire = Wire::start(json!({}))?;
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "shutdown_server", "arguments": {"dry_run": false}}),
         None,
-    );
+    )?;
     assert!(
         asked.is_empty(),
         "a client that declared no elicitation capability was sent one: {asked:?}"
     );
-    let payload = text_payload(&reply);
+    let payload = text_payload(&reply)?;
     assert_eq!(
         payload["would_stop"],
         json!(true),
@@ -497,13 +508,14 @@ fn a_client_without_the_capability_is_never_asked_and_still_works() {
         Value::Null,
         "nobody was asked, so the answer must be null rather than false: {payload}"
     );
+    Ok(())
 }
 
 /// Declining a capture swap keeps the capture, and says which one it kept.
 #[test]
-fn a_declined_swap_keeps_every_dialog() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
-    let before = wire.call_ids();
+fn a_declined_swap_keeps_every_dialog() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
+    let before = wire.call_ids()?;
     assert!(
         !before.is_empty(),
         "{PCAP} holds no dialogs; the fixture cannot prove anything"
@@ -513,12 +525,12 @@ fn a_declined_swap_keeps_every_dialog() {
         "tools/call",
         json!({"name": "open_capture", "arguments": {"filename": OTHER_PCAP}}),
         Some(Answer::No),
-    );
+    )?;
     assert_eq!(asked.len(), 1, "the swap did not ask: {reply}");
     assert!(
         asked[0]["params"]["message"]
             .as_str()
-            .expect("a message")
+            .ok_or("a message")?
             .contains(OTHER_PCAP),
         "the person is not told which capture would replace theirs: {}",
         asked[0]
@@ -528,11 +540,12 @@ fn a_declined_swap_keeps_every_dialog() {
         "a declined swap reported success: {reply}"
     );
 
-    let after = wire.call_ids();
+    let after = wire.call_ids()?;
     assert_eq!(
         after, before,
         "the capture was replaced despite the decline"
     );
+    Ok(())
 }
 
 /// Confirming a capture swap performs it.
@@ -540,36 +553,37 @@ fn a_declined_swap_keeps_every_dialog() {
 /// The other half of the pair. Without it, a handler that always refused
 /// would pass every decline test in this file.
 #[test]
-fn a_confirmed_swap_replaces_the_capture() {
-    let mut wire = Wire::start(a_client_that_can_be_asked());
-    let before = wire.call_ids();
+fn a_confirmed_swap_replaces_the_capture() -> Result<(), TestError> {
+    let mut wire = Wire::start(a_client_that_can_be_asked())?;
+    let before = wire.call_ids()?;
     assert!(!before.is_empty(), "{PCAP} holds no dialogs");
 
     let (reply, asked) = wire.ask_and_answer(
         "tools/call",
         json!({"name": "open_capture", "arguments": {"filename": OTHER_PCAP}}),
         Some(Answer::Yes),
-    );
+    )?;
     assert_eq!(asked.len(), 1, "the swap did not ask: {reply}");
     assert!(
         reply["error"].is_null(),
         "the confirmed swap failed: {reply}"
     );
-    assert_eq!(text_payload(&reply)["status"], "loading");
+    assert_eq!(text_payload(&reply)?["status"], "loading");
 
     // The load runs on a background thread; poll until it finishes, then the
     // vocabulary must be the other capture's.
     const MAX_POLLS: usize = 400;
     for _ in 0..MAX_POLLS {
-        let status = wire.request("tools/call", json!({"name": "capture_status"}));
-        if text_payload(&status)["load"]["done"] == json!(true) {
+        let status = wire.request("tools/call", json!({"name": "capture_status"}))?;
+        if text_payload(&status)?["load"]["done"] == json!(true) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    let after = wire.call_ids();
+    let after = wire.call_ids()?;
     assert_ne!(
         after, before,
         "the confirmation was accepted and nothing was replaced"
     );
+    Ok(())
 }

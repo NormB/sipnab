@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn mint(label: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -35,30 +37,30 @@ fn mint(label: &str) -> String {
     format!("pw{:016x}{label}", h.finish())
 }
 
-fn capture(call_id: &str) -> Vec<u8> {
-    let dir = tempfile::tempdir().expect("tmp");
+fn capture(call_id: &str) -> Result<Vec<u8>, TestError> {
+    let dir = tempfile::tempdir()?;
     let p = dir.path().join("c.pcap");
     let frames: Vec<(Vec<u8>, u64)> = pcap_build::sip_call_frames(call_id, "b1", "alice", "bob")
         .into_iter()
         .enumerate()
         .map(|(i, f)| (f, 10_000_000 + i as u64 * 1_000))
         .collect();
-    pcap_build::write_pcap_at_or_panic(&p, &frames, 1);
-    std::fs::read(&p).expect("read back")
+    pcap_build::write_pcap_at(&p, &frames, 1)?;
+    Ok(std::fs::read(&p)?)
 }
 
 /// An AES-256 ZIP holding one call under `calls/a.pcap`.
-fn locked_zip(dir: &Path, call_id: &str, password: &str) -> PathBuf {
+fn locked_zip(dir: &Path, call_id: &str, password: &str) -> Result<PathBuf, TestError> {
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .with_aes_encryption(zip::AesMode::Aes256, password);
-    w.start_file("calls/a.pcap", opts).expect("start");
-    w.write_all(&capture(call_id)).expect("write");
-    let bytes = w.finish().expect("finish").into_inner();
+    w.start_file("calls/a.pcap", opts)?;
+    w.write_all(&capture(call_id)?)?;
+    let bytes = w.finish()?.into_inner();
     let path = dir.join("evidence.zip");
-    std::fs::write(&path, bytes).expect("write zip");
-    path
+    std::fs::write(&path, bytes)?;
+    Ok(path)
 }
 
 /// A pty pair: the master this test reads and types into, the slave that
@@ -130,13 +132,18 @@ fn drain(mut src: impl std::io::Read + Send + 'static) -> std::thread::JoinHandl
     })
 }
 
-fn start(args: &[&str], tmpdir: &Path, with_tty: bool) -> Session {
+fn start(args: &[&str], tmpdir: &Path, with_tty: bool) -> Result<Session, TestError> {
     start_with(args, tmpdir, with_tty, false)
 }
 
 /// [`start`], with stdout on the terminal too when `stdout_tty`, as a TUI run
 /// needs.
-fn start_with(args: &[&str], tmpdir: &Path, with_tty: bool, stdout_tty: bool) -> Session {
+fn start_with(
+    args: &[&str],
+    tmpdir: &Path,
+    with_tty: bool,
+    stdout_tty: bool,
+) -> Result<Session, TestError> {
     let pty = pty();
     let slave = pty.slave.as_raw_fd();
     let master = pty.master.as_raw_fd();
@@ -150,7 +157,7 @@ fn start_with(args: &[&str], tmpdir: &Path, with_tty: bool, stdout_tty: bool) ->
         .stdin(Stdio::null())
         .stderr(Stdio::piped());
     if stdout_tty {
-        let out = pty.slave.try_clone().expect("dup slave");
+        let out = pty.slave.try_clone()?;
         cmd.stdout(Stdio::from(out));
     } else {
         cmd.stdout(Stdio::piped());
@@ -170,21 +177,21 @@ fn start_with(args: &[&str], tmpdir: &Path, with_tty: bool, stdout_tty: bool) ->
             Ok(())
         });
     }
-    let mut child = cmd.spawn().expect("spawn sipnab");
+    let mut child = cmd.spawn()?;
     let drains = vec![
         match child.stdout.take() {
             Some(out) => drain(out),
             None => drain(std::io::empty()),
         },
-        drain(child.stderr.take().expect("stderr")),
+        drain(child.stderr.take().ok_or("stderr")?),
     ];
-    Session {
+    Ok(Session {
         child,
         pty,
         screen: String::new(),
         drains,
         answered: 0,
-    }
+    })
 }
 
 impl Session {
@@ -249,10 +256,10 @@ impl Session {
     }
 
     /// Wait for sipnab to exit, reading the terminal meanwhile.
-    fn finish(mut self) -> Finished {
+    fn finish(mut self) -> Result<Finished, TestError> {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            if let Some(_status) = self.child.try_wait().expect("wait") {
+            if let Some(_status) = self.child.try_wait()? {
                 break;
             }
             assert!(Instant::now() < deadline, "sipnab hung:\n{}", self.screen);
@@ -260,17 +267,21 @@ impl Session {
         }
         self.pump(Duration::from_millis(50));
         let lflag = lflag(&self.pty.slave);
-        let status = self.child.wait().expect("wait");
-        let mut drained = self.drains.into_iter().map(|h| h.join().expect("drain"));
+        let status = self.child.wait()?;
+        let mut drained = Vec::new();
+        for h in self.drains {
+            drained.push(h.join().map_err(|_| "drain thread panicked")?);
+        }
+        let mut drained = drained.into_iter();
         let stdout = drained.next().unwrap_or_default();
         let stderr = drained.next().unwrap_or_default();
-        Finished {
+        Ok(Finished {
             code: status.code(),
             stdout: String::from_utf8_lossy(&stdout).into_owned(),
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             screen: self.screen,
             lflag,
-        }
+        })
     }
 }
 
@@ -318,18 +329,19 @@ fn args(spec: &str) -> Vec<String> {
 }
 
 #[test]
-fn the_prompt_asks_on_the_terminal_with_stdin_redirected_and_echoes_nothing() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn the_prompt_asks_on_the_terminal_with_stdin_redirected_and_echoes_nothing()
+-> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("prompt");
-    let zip = locked_zip(root.path(), "prompt@test", &password);
+    let zip = locked_zip(root.path(), "prompt@test", &password)?;
     let spec = zip.display().to_string();
     let a = args(&spec);
     let mut s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         true,
-    );
+    )?;
     s.wait_for("(member calls/a.pcap, attempt 1 of 3): ");
     assert!(
         s.screen.contains(&format!("Password for {spec}")),
@@ -338,32 +350,33 @@ fn the_prompt_asks_on_the_terminal_with_stdin_redirected_and_echoes_nothing() {
     );
     s.type_in(password.as_bytes());
     s.type_in(b"\r");
-    let done = s.finish();
+    let done = s.finish()?;
     assert_eq!(done.code, Some(0), "{}", done.stderr);
     assert!(done.stdout.contains("prompt@test"), "{}", done.stderr);
     done.assert_sealed(&password);
     done.assert_terminal_restored();
+    Ok(())
 }
 
 #[test]
-fn three_wrong_attempts_skip_the_member() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn three_wrong_attempts_skip_the_member() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("three");
-    let zip = locked_zip(root.path(), "three@test", &password);
+    let zip = locked_zip(root.path(), "three@test", &password)?;
     let a = args(&zip.display().to_string());
     let mut s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         true,
-    );
+    )?;
     let wrong: Vec<String> = (0..3).map(|i| mint(&format!("wrong{i}"))).collect();
     for (i, w) in wrong.iter().enumerate() {
         s.wait_for(&format!("attempt {} of 3): ", i + 1));
         s.type_in(w.as_bytes());
         s.type_in(b"\r");
     }
-    let done = s.finish();
+    let done = s.finish()?;
     assert_eq!(done.code, Some(1), "{}", done.stderr);
     assert!(
         done.stderr.contains("encrypted_wrong_password"),
@@ -382,23 +395,24 @@ fn three_wrong_attempts_skip_the_member() {
     }
     done.assert_sealed(&password);
     done.assert_terminal_restored();
+    Ok(())
 }
 
 #[test]
-fn an_empty_entry_skips_the_archive() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn an_empty_entry_skips_the_archive() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("empty");
-    let zip = locked_zip(root.path(), "empty@test", &password);
+    let zip = locked_zip(root.path(), "empty@test", &password)?;
     let a = args(&zip.display().to_string());
     let mut s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         true,
-    );
+    )?;
     s.wait_for("attempt 1 of 3): ");
     s.type_in(b"\r");
-    let done = s.finish();
+    let done = s.finish()?;
     assert_eq!(done.code, Some(1), "{}", done.stderr);
     assert!(
         done.stderr.contains("encrypted_no_password"),
@@ -407,43 +421,45 @@ fn an_empty_entry_skips_the_archive() {
     );
     assert!(!done.screen.contains("attempt 2"), "{}", done.screen);
     done.assert_terminal_restored();
+    Ok(())
 }
 
 #[test]
-fn ctrl_c_at_the_prompt_restores_the_terminal_and_stops() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn ctrl_c_at_the_prompt_restores_the_terminal_and_stops() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("ctrlc");
-    let zip = locked_zip(root.path(), "ctrlc@test", &password);
+    let zip = locked_zip(root.path(), "ctrlc@test", &password)?;
     let a = args(&zip.display().to_string());
     let mut s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         true,
-    );
+    )?;
     s.wait_for("attempt 1 of 3): ");
     s.type_in(b"half");
     s.type_in(&[0x03]);
-    let done = s.finish();
+    let done = s.finish()?;
     assert_ne!(done.code, Some(0), "{}", done.stderr);
     assert!(!done.stdout.contains("ctrlc@test"));
     done.assert_terminal_restored();
+    Ok(())
 }
 
 #[test]
-fn no_password_prompt_never_asks_even_with_a_terminal() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn no_password_prompt_never_asks_even_with_a_terminal() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("noprompt");
-    let zip = locked_zip(root.path(), "noprompt@test", &password);
+    let zip = locked_zip(root.path(), "noprompt@test", &password)?;
     let mut a = args(&zip.display().to_string());
     a.push("--no-password-prompt".into());
     let s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         true,
-    );
-    let done = s.finish();
+    )?;
+    let done = s.finish()?;
     assert_eq!(done.code, Some(1), "{}", done.stderr);
     assert!(!done.screen.contains("Password for"), "{}", done.screen);
     assert!(
@@ -451,22 +467,23 @@ fn no_password_prompt_never_asks_even_with_a_terminal() {
         "{}",
         done.stderr
     );
+    Ok(())
 }
 
 #[test]
-fn without_a_terminal_there_is_no_prompt_and_no_hang() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn without_a_terminal_there_is_no_prompt_and_no_hang() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("notty");
-    let zip = locked_zip(root.path(), "notty@test", &password);
+    let zip = locked_zip(root.path(), "notty@test", &password)?;
     let a = args(&zip.display().to_string());
     let started = Instant::now();
     let s = start(
         &a.iter().map(String::as_str).collect::<Vec<_>>(),
         tmp.path(),
         false,
-    );
-    let done = s.finish();
+    )?;
+    let done = s.finish()?;
     assert_eq!(done.code, Some(1), "{}", done.stderr);
     assert!(!done.screen.contains("Password for"), "{}", done.screen);
     assert!(
@@ -475,19 +492,20 @@ fn without_a_terminal_there_is_no_prompt_and_no_hang() {
         done.stderr
     );
     assert!(started.elapsed() < Duration::from_secs(20));
+    Ok(())
 }
 
 #[test]
-fn a_decrypted_export_warns_that_it_is_written_unencrypted() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn a_decrypted_export_warns_that_it_is_written_unencrypted() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("export");
-    let zip = locked_zip(root.path(), "export@test", &password);
+    let zip = locked_zip(root.path(), "export@test", &password)?;
     let pw_file = root.path().join("pw");
-    std::fs::write(&pw_file, format!("{password}\n")).expect("write");
+    std::fs::write(&pw_file, format!("{password}\n"))?;
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pw_file, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        std::fs::set_permissions(&pw_file, std::fs::Permissions::from_mode(0o600))?;
     }
     let out = root.path().join("out.pcap");
     let s = start(
@@ -503,8 +521,8 @@ fn a_decrypted_export_warns_that_it_is_written_unencrypted() {
         ],
         tmp.path(),
         false,
-    );
-    let done = s.finish();
+    )?;
+    let done = s.finish()?;
     assert_eq!(done.code, Some(0), "{}", done.stderr);
     assert_eq!(
         done.stderr
@@ -515,18 +533,19 @@ fn a_decrypted_export_warns_that_it_is_written_unencrypted() {
         done.stderr
     );
     done.assert_sealed(&password);
+    Ok(())
 }
 
 /// `-I` in TUI mode resolves before the TUI takes the screen, so the prompt
 /// asks on the plain terminal first; the TUI then opens on what it read.
 #[test]
-fn the_tui_asks_for_an_i_archive_before_it_draws() {
-    let root = tempfile::tempdir().expect("root");
-    let tmp = tempfile::tempdir().expect("tmp");
+fn the_tui_asks_for_an_i_archive_before_it_draws() -> Result<(), TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
     let password = mint("tuistart");
-    let zip = locked_zip(root.path(), "tuistart@test", &password);
+    let zip = locked_zip(root.path(), "tuistart@test", &password)?;
     let spec = zip.display().to_string();
-    let mut s = start_with(&["-I", &spec], tmp.path(), true, true);
+    let mut s = start_with(&["-I", &spec], tmp.path(), true, true)?;
     s.wait_for("attempt 1 of 3): ");
     assert!(
         !s.screen.contains("\u{1b}[?1049h"),
@@ -540,8 +559,9 @@ fn the_tui_asks_for_an_i_archive_before_it_draws() {
     s.type_in(b"q");
     std::thread::sleep(Duration::from_millis(300));
     s.type_in(b"y");
-    let done = s.finish();
+    let done = s.finish()?;
     assert_eq!(done.code, Some(0), "{}", done.stderr);
     done.assert_sealed(&password);
     done.assert_terminal_restored();
+    Ok(())
 }

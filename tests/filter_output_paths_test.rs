@@ -19,6 +19,10 @@
 //! capture (the parts must sum to the whole and none may be the whole).
 #![cfg(feature = "native")]
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/run.rs"]
 mod run_support;
 
@@ -46,20 +50,20 @@ const G711: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 ///
 /// # Panics
 /// When the process exits non-zero, with its stderr attached.
-fn run_ok(args: &[&str]) -> String {
-    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("error"));
+fn run_ok(args: &[&str]) -> Result<String, TestError> {
+    let (stdout, stderr, code) = run_support::run(args, Some("error"))?;
     assert_eq!(code, Some(0), "sipnab {args:?} exited {code:?}\n{stderr}");
-    stdout
+    Ok(stdout)
 }
 
 /// Every `call_id` in an NDJSON dialog stream, in emission order.
-fn call_ids(ndjson: &str) -> Vec<String> {
+fn call_ids(ndjson: &str) -> Result<Vec<String>, TestError> {
     ndjson
         .lines()
         .filter(|l| l.starts_with('{'))
-        .map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).expect("dialog line must be JSON");
-            v["call_id"].as_str().unwrap_or_default().to_string()
+        .map(|l| -> Result<String, TestError> {
+            let v: serde_json::Value = serde_json::from_str(l)?;
+            Ok(v["call_id"].as_str().unwrap_or_default().to_string())
         })
         .collect()
 }
@@ -87,16 +91,15 @@ fn assert_same_rows(got: &[String], expected: &[String], what: &str) {
 /// `SipDialog::state()` while the DSL compares against `sip::dsl::state_to_str`
 /// — two renderings of the same field, so agreement is a real cross-check
 /// rather than the evaluator agreeing with itself.
-fn call_ids_in_state(ndjson: &str, state: &str) -> Vec<String> {
-    ndjson
-        .lines()
-        .filter(|l| l.starts_with('{'))
-        .filter_map(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).expect("dialog line must be JSON");
-            (v["state"].as_str() == Some(state))
-                .then(|| v["call_id"].as_str().unwrap_or_default().to_string())
-        })
-        .collect()
+fn call_ids_in_state(ndjson: &str, state: &str) -> Result<Vec<String>, TestError> {
+    let mut out = Vec::new();
+    for l in ndjson.lines().filter(|l| l.starts_with('{')) {
+        let v: serde_json::Value = serde_json::from_str(l)?;
+        if v["state"].as_str() == Some(state) {
+            out.push(v["call_id"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    Ok(out)
 }
 
 /// The dialog-table rows of a `--report`, as `(call_id, state)` pairs.
@@ -135,13 +138,13 @@ fn report_stream_ssrcs(report: &str) -> Vec<String> {
 /// `--filter "state == 'Failed'"` must emit the failed dialogs and nothing
 /// else. It used to emit all 1334.
 #[test]
-fn json_dialogs_filter_selects_only_matching_dialogs() {
-    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"]);
-    let expected = call_ids_in_state(&all, "Failed");
+fn json_dialogs_filter_selects_only_matching_dialogs() -> Result<(), TestError> {
+    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"])?;
+    let expected = call_ids_in_state(&all, "Failed")?;
 
     // Ground truth, checkable by hand: the fixture holds 1334 dialogs, 127 of
     // them Failed. `sipnab -N -I <fixture> --json-dialogs | grep -c Failed`.
-    assert_eq!(call_ids(&all).len(), 1334, "fixture dialog count changed");
+    assert_eq!(call_ids(&all)?.len(), 1334, "fixture dialog count changed");
     assert_eq!(expected.len(), 127, "fixture Failed count changed");
 
     let filtered = run_ok(&[
@@ -152,13 +155,14 @@ fn json_dialogs_filter_selects_only_matching_dialogs() {
         "--json-dialogs",
         "--filter",
         "state == 'Failed'",
-    ]);
+    ])?;
 
     assert_same_rows(
-        &call_ids(&filtered),
+        &call_ids(&filtered)?,
         &expected,
         "--filter \"state == 'Failed'\" must select the 127 Failed dialogs, not all 1334",
     );
+    Ok(())
 }
 
 /// The two states partition the capture: neither selection may be the whole
@@ -166,9 +170,9 @@ fn json_dialogs_filter_selects_only_matching_dialogs() {
 /// an inert filter cannot pass — it catches "returns everything" without
 /// depending on any particular expected count.
 #[test]
-fn json_dialogs_filters_partition_the_capture() {
-    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"]);
-    let total = call_ids(&all).len();
+fn json_dialogs_filters_partition_the_capture() -> Result<(), TestError> {
+    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"])?;
+    let total = call_ids(&all)?.len();
 
     let failed = run_ok(&[
         "-N",
@@ -178,7 +182,7 @@ fn json_dialogs_filters_partition_the_capture() {
         "--json-dialogs",
         "--filter",
         "state == 'Failed'",
-    ]);
+    ])?;
     let registered = run_ok(&[
         "-N",
         "-I",
@@ -187,9 +191,9 @@ fn json_dialogs_filters_partition_the_capture() {
         "--json-dialogs",
         "--filter",
         "state == 'Registered'",
-    ]);
+    ])?;
 
-    let (n_failed, n_registered) = (call_ids(&failed).len(), call_ids(&registered).len());
+    let (n_failed, n_registered) = (call_ids(&failed)?.len(), call_ids(&registered)?.len());
     assert!(n_failed > 0 && n_failed < total, "Failed rows: {n_failed}");
     assert!(
         n_registered > 0 && n_registered < total,
@@ -200,12 +204,13 @@ fn json_dialogs_filters_partition_the_capture() {
         total,
         "the two states must partition the {total} dialogs"
     );
+    Ok(())
 }
 
 /// A filter that matches nothing must emit nothing and still exit 0 — an
 /// empty result is an answer, not an error.
 #[test]
-fn json_dialogs_filter_matching_nothing_emits_no_rows() {
+fn json_dialogs_filter_matching_nothing_emits_no_rows() -> Result<(), TestError> {
     let out = run_ok(&[
         "-N",
         "-I",
@@ -214,25 +219,25 @@ fn json_dialogs_filter_matching_nothing_emits_no_rows() {
         "--json-dialogs",
         "--filter",
         "from.user == '__no_such_user__'",
-    ]);
-    assert_eq!(call_ids(&out).len(), 0, "unmatched filter emitted rows");
+    ])?;
+    assert_eq!(call_ids(&out)?.len(), 0, "unmatched filter emitted rows");
+    Ok(())
 }
 
 /// A numeric field selects on its value, not on parseability: `msg_count`
 /// splits the capture, and the two halves must sum to the whole.
 #[test]
-fn json_dialogs_numeric_filter_splits_on_the_value() {
-    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"]);
-    let total = call_ids(&all).len();
+fn json_dialogs_numeric_filter_splits_on_the_value() -> Result<(), TestError> {
+    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"])?;
+    let total = call_ids(&all)?.len();
     // Independent expectation from the unfiltered JSON's own msg_count.
-    let expected_small = all
-        .lines()
-        .filter(|l| l.starts_with('{'))
-        .filter(|l| {
-            let v: serde_json::Value = serde_json::from_str(l).expect("JSON");
-            v["msg_count"].as_u64().unwrap_or(0) < 4
-        })
-        .count();
+    let mut expected_small = 0;
+    for l in all.lines().filter(|l| l.starts_with('{')) {
+        let v: serde_json::Value = serde_json::from_str(l)?;
+        if v["msg_count"].as_u64().unwrap_or(0) < 4 {
+            expected_small += 1;
+        }
+    }
 
     let small = run_ok(&[
         "-N",
@@ -242,7 +247,7 @@ fn json_dialogs_numeric_filter_splits_on_the_value() {
         "--json-dialogs",
         "--filter",
         "msg_count < 4",
-    ]);
+    ])?;
     let big = run_ok(&[
         "-N",
         "-I",
@@ -251,23 +256,24 @@ fn json_dialogs_numeric_filter_splits_on_the_value() {
         "--json-dialogs",
         "--filter",
         "msg_count >= 4",
-    ]);
+    ])?;
 
-    assert_eq!(call_ids(&small).len(), expected_small, "msg_count < 4");
+    assert_eq!(call_ids(&small)?.len(), expected_small, "msg_count < 4");
     assert_eq!(
-        call_ids(&small).len() + call_ids(&big).len(),
+        call_ids(&small)?.len() + call_ids(&big)?.len(),
         total,
         "msg_count halves must sum to the capture"
     );
+    Ok(())
 }
 
 // ── --report ────────────────────────────────────────────────────────
 
 /// `--report` is generated from the same final store and was equally inert.
 #[test]
-fn report_dialog_table_honors_the_filter() {
-    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"]);
-    let expected = call_ids_in_state(&all, "Failed");
+fn report_dialog_table_honors_the_filter() -> Result<(), TestError> {
+    let all = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs"])?;
+    let expected = call_ids_in_state(&all, "Failed")?;
 
     let report = run_ok(&[
         "-N",
@@ -277,7 +283,7 @@ fn report_dialog_table_honors_the_filter() {
         "--report",
         "--filter",
         "state == 'Failed'",
-    ]);
+    ])?;
     let rows = report_rows(&report);
 
     assert_eq!(
@@ -289,14 +295,15 @@ fn report_dialog_table_honors_the_filter() {
     for (call_id, state) in &rows {
         assert_eq!(state, "Failed", "row {call_id} is not Failed");
     }
+    Ok(())
 }
 
 /// The report's RTP tables must follow the dialog selection: showing every
 /// stream in the capture beside three filtered dialogs misreports which media
 /// belongs to the calls on screen.
 #[test]
-fn report_stream_table_follows_the_dialog_filter() {
-    let unfiltered = run_ok(&["-N", "-I", G711, "--no-cli-print", "--report"]);
+fn report_stream_table_follows_the_dialog_filter() -> Result<(), TestError> {
+    let unfiltered = run_ok(&["-N", "-I", G711, "--no-cli-print", "--report"])?;
     // Two dialogs (Completed, InCall), one linked stream each.
     assert_eq!(report_rows(&unfiltered).len(), 2, "fixture dialog count");
     assert_eq!(report_stream_ssrcs(&unfiltered).len(), 2, "fixture streams");
@@ -309,22 +316,24 @@ fn report_stream_table_follows_the_dialog_filter() {
         "--report",
         "--filter",
         "state == 'Completed'",
-    ]);
+    ])?;
     assert_eq!(report_rows(&filtered).len(), 1, "one Completed dialog");
     assert_eq!(
         report_stream_ssrcs(&filtered).len(),
         1,
         "only the Completed dialog's stream may be listed"
     );
+    Ok(())
 }
 
 /// With no filter the report is unchanged — the fix must not quietly start
 /// dropping streams from an unfiltered run.
 #[test]
-fn report_without_a_filter_is_unchanged() {
-    let report = run_ok(&["-N", "-I", G711, "--no-cli-print", "--report"]);
+fn report_without_a_filter_is_unchanged() -> Result<(), TestError> {
+    let report = run_ok(&["-N", "-I", G711, "--no-cli-print", "--report"])?;
     assert_eq!(report_rows(&report).len(), 2);
     assert_eq!(report_stream_ssrcs(&report).len(), 2);
+    Ok(())
 }
 
 // ── aliases ─────────────────────────────────────────────────────────
@@ -332,7 +341,7 @@ fn report_without_a_filter_is_unchanged() {
 /// docs/filter-dsl.md: "The alias and the expression it expands to select the
 /// same dialogs." Proved on rows, not on both being accepted.
 #[test]
-fn filter_alias_and_its_expansion_select_the_same_rows() {
+fn filter_alias_and_its_expansion_select_the_same_rows() -> Result<(), TestError> {
     for (alias, expansion) in [
         ("short-calls", "duration < 5.0 AND state == 'Completed'"),
         ("one-way", "one_way == true"),
@@ -347,7 +356,7 @@ fn filter_alias_and_its_expansion_select_the_same_rows() {
             "--json-dialogs",
             "--filter",
             alias,
-        ]);
+        ])?;
         let by_expansion = run_ok(&[
             "-N",
             "-I",
@@ -356,19 +365,20 @@ fn filter_alias_and_its_expansion_select_the_same_rows() {
             "--json-dialogs",
             "--filter",
             expansion,
-        ]);
+        ])?;
         assert_same_rows(
-            &call_ids(&by_alias),
-            &call_ids(&by_expansion),
+            &call_ids(&by_alias)?,
+            &call_ids(&by_expansion)?,
             &format!("--filter {alias} vs --filter \"{expansion}\""),
         );
     }
+    Ok(())
 }
 
 /// The dedicated alias flags (`--short-calls`, ...) are documented as the same
 /// aliases behind `--filter <name>`, so they must select the same rows.
 #[test]
-fn alias_flags_match_their_documented_expansions() {
+fn alias_flags_match_their_documented_expansions() -> Result<(), TestError> {
     for (flag, alias) in [
         ("--short-calls", "short-calls"),
         ("--slow-setup", "slow-setup"),
@@ -376,7 +386,7 @@ fn alias_flags_match_their_documented_expansions() {
         ("--nat-issues", "nat-issues"),
         ("--problems", "problems"),
     ] {
-        let by_flag = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs", flag]);
+        let by_flag = run_ok(&["-N", "-I", BRANCH, "--no-cli-print", "--json-dialogs", flag])?;
         let by_alias = run_ok(&[
             "-N",
             "-I",
@@ -385,13 +395,14 @@ fn alias_flags_match_their_documented_expansions() {
             "--json-dialogs",
             "--filter",
             alias,
-        ]);
+        ])?;
         assert_same_rows(
-            &call_ids(&by_flag),
-            &call_ids(&by_alias),
+            &call_ids(&by_flag)?,
+            &call_ids(&by_alias)?,
             &format!("{flag} vs --filter {alias}"),
         );
     }
+    Ok(())
 }
 
 // ── --call-report ───────────────────────────────────────────────────
@@ -399,10 +410,10 @@ fn alias_flags_match_their_documented_expansions() {
 /// `--call-report` names one Call-ID exactly; a filter narrows a listing, and
 /// must not turn a named lookup into a "not found" exit.
 #[test]
-fn call_report_names_a_dialog_regardless_of_the_filter() {
-    let all = run_ok(&["-N", "-I", G711, "--no-cli-print", "--json-dialogs"]);
-    let in_call = call_ids_in_state(&all, "InCall");
-    let target = in_call.first().expect("fixture has an InCall dialog");
+fn call_report_names_a_dialog_regardless_of_the_filter() -> Result<(), TestError> {
+    let all = run_ok(&["-N", "-I", G711, "--no-cli-print", "--json-dialogs"])?;
+    let in_call = call_ids_in_state(&all, "InCall")?;
+    let target = in_call.first().ok_or("fixture has an InCall dialog")?;
 
     // The filter excludes this dialog; the explicit lookup still resolves.
     let out = run_ok(&[
@@ -414,11 +425,12 @@ fn call_report_names_a_dialog_regardless_of_the_filter() {
         target,
         "--filter",
         "state == 'Completed'",
-    ]);
+    ])?;
     assert!(
         out.contains(target),
         "--call-report must still report the Call-ID it was given"
     );
+    Ok(())
 }
 
 // ── -O is not a dialog-level extractor ──────────────────────────────
@@ -446,10 +458,10 @@ fn call_report_names_a_dialog_regardless_of_the_filter() {
 /// filtering, whoever changed it is told that a documentation page and a
 /// disclosure warning depend on the old answer.
 #[test]
-fn a_dialog_filter_does_not_narrow_the_output_capture() {
+fn a_dialog_filter_does_not_narrow_the_output_capture() -> Result<(), TestError> {
     let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("o_filter_pin");
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::create_dir_all(&dir)?;
     let filtered = dir.join("filtered.pcap");
     let plain = dir.join("plain.pcap");
 
@@ -461,19 +473,19 @@ fn a_dialog_filter_does_not_narrow_the_output_capture() {
         "--filter",
         "from.user == 'no-such-user-anywhere'",
         "-O",
-        filtered.to_str().expect("path"),
-    ]);
+        filtered.to_str().ok_or("path")?,
+    ])?;
     run_ok(&[
         "-N",
         "-I",
         BRANCH,
         "--no-cli-print",
         "-O",
-        plain.to_str().expect("path"),
-    ]);
+        plain.to_str().ok_or("path")?,
+    ])?;
 
-    let a = std::fs::read(&filtered).expect("read filtered output");
-    let b = std::fs::read(&plain).expect("read unfiltered output");
+    let a = std::fs::read(&filtered)?;
+    let b = std::fs::read(&plain)?;
     let _ = std::fs::remove_dir_all(&dir);
 
     assert!(
@@ -488,6 +500,7 @@ fn a_dialog_filter_does_not_narrow_the_output_capture() {
          exists because the opposite claim was a disclosure hazard. Update \
          both, then change this pin."
     );
+    Ok(())
 }
 
 /// No page tells a reader that `-O` writes what the filter selected.
@@ -495,13 +508,12 @@ fn a_dialog_filter_does_not_narrow_the_output_capture() {
 /// The gate that matters. The behavior above is defensible; the claim is what
 /// put a capture of everyone's traffic in an email to a vendor.
 #[test]
-fn no_page_claims_the_output_capture_is_filtered() {
+fn no_page_claims_the_output_capture_is_filtered() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
         .args(["ls-files", "docs/", "website/content/"])
         .current_dir(root)
-        .output()
-        .expect("git ls-files");
+        .output()?;
 
     // Phrases that promise a dialog-filtered `-O`. Each is a sentence a reader
     // would act on, not a passing mention.
@@ -541,4 +553,5 @@ fn no_page_claims_the_output_capture_is_filtered() {
          calls\" sends the whole capture:\n{}",
         offenders.join("\n")
     );
+    Ok(())
 }

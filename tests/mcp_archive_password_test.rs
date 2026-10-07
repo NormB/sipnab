@@ -16,7 +16,7 @@ use std::io::Write;
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload_or_panic};
+use support::{McpSession, TestError, ok_payload};
 
 const FIRST: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
@@ -35,47 +35,41 @@ fn mint(label: &str) -> String {
 }
 
 /// A file root holding `evidence.zip`: the SIPp scenario, AES-locked.
-fn root_with_locked_zip(tag: &str, password: &str) -> std::path::PathBuf {
+fn root_with_locked_zip(tag: &str, password: &str) -> Result<std::path::PathBuf, TestError> {
     let root = std::env::temp_dir().join(format!("sipnab-mcp-zip-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).expect("mkdir");
+    std::fs::create_dir_all(&root)?;
     let pcap = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples/sipp-branch-scenario.pcapng"),
-    )
-    .expect("fixture");
+    )?;
     let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
     let opts = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .with_aes_encryption(zip::AesMode::Aes256, password);
-    w.start_file("calls/scenario.pcapng", opts).expect("start");
-    w.write_all(&pcap).expect("write");
-    std::fs::write(
-        root.join("evidence.zip"),
-        w.finish().expect("finish").into_inner(),
-    )
-    .expect("write zip");
-    root
+    w.start_file("calls/scenario.pcapng", opts)?;
+    w.write_all(&pcap)?;
+    std::fs::write(root.join("evidence.zip"), w.finish()?.into_inner())?;
+    Ok(root)
 }
 
-fn wait_for_load(session: &mut McpSession) -> serde_json::Value {
+fn wait_for_load(session: &mut McpSession) -> Result<serde_json::Value, TestError> {
     for _ in 0..400 {
-        let v =
-            ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
+        let v = ok_payload(&session.call("capture_status", serde_json::json!({}))?)?;
         if v["load"]["done"] == true {
-            return v;
+            return Ok(v);
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    panic!("the load never finished");
+    Err("the load never finished".into())
 }
 
 #[test]
-fn a_password_in_a_tool_call_is_refused_and_never_recorded() {
+fn a_password_in_a_tool_call_is_refused_and_never_recorded() -> Result<(), TestError> {
     let password = mint("arg");
-    let root = root_with_locked_zip("arg", &password);
+    let root = root_with_locked_zip("arg", &password)?;
     let audit = root.join("audit.jsonl");
-    let mut session = McpSession::start_or_panic(
+    let mut session = McpSession::start(
         FIRST,
         &[
             "--mcp-file-root",
@@ -84,35 +78,36 @@ fn a_password_in_a_tool_call_is_refused_and_never_recorded() {
             "--mcp-audit-file",
             audit.to_str().unwrap_or_default(),
         ],
-    );
-    let msg = session.call_or_panic(
+    )?;
+    let msg = session.call(
         "open_capture",
         serde_json::json!({"filename": "evidence.zip", "archive_password": password}),
-    );
+    )?;
     let err = msg["error"]["message"].as_str().unwrap_or_default();
     assert!(err.contains("--archive-password-file"), "{msg}");
     assert!(!msg.to_string().contains(&password), "the reply echoed it");
     drop(session);
-    let record = std::fs::read_to_string(&audit).expect("audit file");
+    let record = std::fs::read_to_string(&audit)?;
     assert!(record.contains("open_capture"), "{record}");
     assert!(
         !record.contains(&password),
         "the audit record holds the password"
     );
     let _ = std::fs::remove_dir_all(&root);
+    Ok(())
 }
 
 #[test]
-fn the_operator_s_password_file_opens_the_archive() {
+fn the_operator_s_password_file_opens_the_archive() -> Result<(), TestError> {
     let password = mint("file");
-    let root = root_with_locked_zip("file", &password);
+    let root = root_with_locked_zip("file", &password)?;
     let pw = root.join("pw");
-    std::fs::write(&pw, format!("{password}\n")).expect("write");
+    std::fs::write(&pw, format!("{password}\n"))?;
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600))?;
     }
-    let mut session = McpSession::start_or_panic(
+    let mut session = McpSession::start(
         FIRST,
         &[
             "--mcp-file-root",
@@ -121,17 +116,18 @@ fn the_operator_s_password_file_opens_the_archive() {
             "--archive-password-file",
             pw.to_str().unwrap_or_default(),
         ],
-    );
-    let msg = session.call_or_panic(
+    )?;
+    let msg = session.call(
         "open_capture",
         serde_json::json!({"filename": "evidence.zip"}),
-    );
+    )?;
     assert!(msg["error"].is_null(), "{msg}");
-    let status = wait_for_load(&mut session);
+    let status = wait_for_load(&mut session)?;
     assert!(status["load"]["error"].is_null(), "{status}");
     assert!(
         status["dialog_count"].as_u64().unwrap_or(0) > 100,
         "the scenario's dialogs were read: {status}"
     );
     let _ = std::fs::remove_dir_all(&root);
+    Ok(())
 }

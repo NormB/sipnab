@@ -25,6 +25,10 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// The error a fallible test returns: any error, boxed, so `?` works on
+/// I/O, parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A documented pipeline: the output mode a block invokes, and the fields its
 /// `jq` reads from it.
 #[derive(Debug)]
@@ -78,16 +82,20 @@ const NESTED_OR_DERIVED: &[&str] = &[
 ];
 
 /// Pull `sipnab ... --json* ... | jq '...'` pairs out of fenced blocks.
-fn recipes() -> Vec<Recipe> {
+fn recipes() -> Result<Vec<Recipe>, TestError> {
     let mut out = Vec::new();
-    let docs = std::fs::read_dir("docs").expect("docs/ must exist");
+    let docs = std::fs::read_dir("docs").map_err(|e| format!("docs/ must exist: {e}"))?;
     for entry in docs.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).expect("read doc");
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read doc: {e}"))?;
+        let name = path
+            .file_name()
+            .ok_or("a doc path has a file name")?
+            .to_string_lossy()
+            .to_string();
 
         for block in text.split("```").skip(1).step_by(2) {
             if !block.contains("sipnab") || !block.contains("jq") {
@@ -139,7 +147,7 @@ fn recipes() -> Vec<Recipe> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Fixtures whose UNION exercises the conditional fields.
@@ -166,7 +174,7 @@ const STUN_FIXTURES: &[&str] = &[
 ];
 
 /// Top-level keys the given mode emits across every fixture.
-fn keys_for(mode: Mode) -> BTreeSet<String> {
+fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     let flag = match mode {
         Mode::Messages => "--json",
         Mode::Dialogs => "--json-dialogs",
@@ -189,7 +197,7 @@ fn keys_for(mode: Mode) -> BTreeSet<String> {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
             .args(&args)
             .output()
-            .expect("run sipnab");
+            .map_err(|e| format!("run sipnab: {e}"))?;
         let text = String::from_utf8_lossy(&out.stdout);
         for line in text.lines().filter(|l| l.starts_with('{')) {
             let v: serde_json::Value = match serde_json::from_str(line) {
@@ -240,13 +248,13 @@ fn keys_for(mode: Mode) -> BTreeSet<String> {
          pass vacuously",
         fixtures.len()
     );
-    keys
+    Ok(keys)
 }
 
 /// Every documented `jq` field exists in the output its own block produces.
 #[test]
-fn documented_jq_fields_exist_in_the_output() {
-    let recipes = recipes();
+fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
+    let recipes = recipes()?;
     assert!(
         recipes.len() >= 3,
         "found only {} doc pipelines to check — the extractor stopped matching, \
@@ -254,10 +262,10 @@ fn documented_jq_fields_exist_in_the_output() {
         recipes.len()
     );
 
-    let messages = keys_for(Mode::Messages);
-    let dialogs = keys_for(Mode::Dialogs);
-    let stun = keys_for(Mode::Stun);
-    let analyze = keys_for(Mode::Analyze);
+    let messages = keys_for(Mode::Messages)?;
+    let dialogs = keys_for(Mode::Dialogs)?;
+    let stun = keys_for(Mode::Stun)?;
+    let analyze = keys_for(Mode::Analyze)?;
 
     let mut bad = Vec::new();
     for r in &recipes {
@@ -288,4 +296,5 @@ fn documented_jq_fields_exist_in_the_output() {
          these and gets a confidently empty answer:\n  {}",
         bad.join("\n  ")
     );
+    Ok(())
 }

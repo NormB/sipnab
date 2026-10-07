@@ -38,23 +38,26 @@
 
 use std::path::PathBuf;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 /// Read a repository file, panicking with the path on failure.
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `(path, version)` pair in the e2e lockfile, as raw text pairs.
 ///
 /// Parsed by hand rather than with a JSON crate the test tree does not
 /// otherwise need. The lockfile is machine-generated, so its shape is stable.
-fn lockfile_packages() -> Vec<(String, String)> {
-    let text = read("e2e/package-lock.json");
+fn lockfile_packages() -> Result<Vec<(String, String)>, TestError> {
+    let text = read("e2e/package-lock.json")?;
     let mut out = Vec::new();
     let mut current: Option<String> = None;
     for line in text.lines() {
@@ -71,32 +74,32 @@ fn lockfile_packages() -> Vec<(String, String)> {
             out.push((pkg, v.to_string()));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Installed versions of one package name, across every path it appears at.
-fn versions_of(pkg: &str) -> Vec<String> {
-    lockfile_packages()
+fn versions_of(pkg: &str) -> Result<Vec<String>, TestError> {
+    Ok(lockfile_packages()?
         .into_iter()
         .filter(|(path, _)| path.rsplit("node_modules/").next() == Some(pkg))
         .map(|(_, v)| v)
-        .collect()
+        .collect())
 }
 
 /// The `overrides` block of `e2e/package.json`, as `(package, requirement)`.
-fn overrides() -> Vec<(String, String)> {
-    let text = read("e2e/package.json");
+fn overrides() -> Result<Vec<(String, String)>, TestError> {
+    let text = read("e2e/package.json")?;
     let Some(start) = text.find("\"overrides\"") else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(open) = text[start..].find('{') else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(close) = text[start + open..].find('}') else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let block = &text[start + open + 1..start + open + close];
-    block
+    Ok(block
         .split(',')
         .filter_map(|line| {
             let mut it = line
@@ -110,7 +113,7 @@ fn overrides() -> Vec<(String, String)> {
             })?;
             Some((k, v.to_string()))
         })
-        .collect()
+        .collect())
 }
 
 /// Versions a published advisory says are fixed, and the version the tree must
@@ -164,8 +167,8 @@ fn at_least(have: &str, want: &str) -> bool {
 /// Every rule below compares against what this returns, so a parser that found
 /// nothing would report a perfectly patched tree.
 #[test]
-fn the_lockfile_parser_reads_a_real_lockfile() {
-    let pkgs = lockfile_packages();
+fn the_lockfile_parser_reads_a_real_lockfile() -> Result<(), TestError> {
+    let pkgs = lockfile_packages()?;
     assert!(
         pkgs.len() >= 100,
         "parsed only {} package(s) from e2e/package-lock.json; the parser has \
@@ -177,13 +180,14 @@ fn the_lockfile_parser_reads_a_real_lockfile() {
         "the lockfile does not contain @lhci/cli, which every entry in this \
          file is about"
     );
+    Ok(())
 }
 
 /// Every package with a published fix is at or past it.
 #[test]
-fn every_package_with_a_published_fix_is_patched() {
+fn every_package_with_a_published_fix_is_patched() -> Result<(), TestError> {
     for (pkg, patched) in MUST_BE_PATCHED {
-        let found = versions_of(pkg);
+        let found = versions_of(pkg)?;
         assert!(
             !found.is_empty(),
             "{pkg} is not in the lockfile at all; either the dependency was \
@@ -198,12 +202,13 @@ fn every_package_with_a_published_fix_is_patched() {
             );
         }
     }
+    Ok(())
 }
 
 /// `tmp` specifically, because its failure blocked a release.
 #[test]
-fn the_lockfile_pins_tmp_past_the_advisory() {
-    let found = versions_of("tmp");
+fn the_lockfile_pins_tmp_past_the_advisory() -> Result<(), TestError> {
+    let found = versions_of("tmp")?;
     assert!(!found.is_empty(), "tmp is absent from the lockfile");
     for v in &found {
         assert!(
@@ -214,6 +219,7 @@ fn the_lockfile_pins_tmp_past_the_advisory() {
              completed non-success run."
         );
     }
+    Ok(())
 }
 
 /// `uuid` specifically, and at every path it appears.
@@ -222,8 +228,8 @@ fn the_lockfile_pins_tmp_past_the_advisory() {
 /// under a dependency that pinned an older range, and a check that looked at
 /// only the top-level copy would call that patched.
 #[test]
-fn the_lockfile_pins_uuid_past_the_advisory_everywhere_it_appears() {
-    let paths: Vec<(String, String)> = lockfile_packages()
+fn the_lockfile_pins_uuid_past_the_advisory_everywhere_it_appears() -> Result<(), TestError> {
+    let paths: Vec<(String, String)> = lockfile_packages()?
         .into_iter()
         .filter(|(p, _)| p.rsplit("node_modules/").next() == Some("uuid"))
         .collect();
@@ -235,6 +241,7 @@ fn the_lockfile_pins_uuid_past_the_advisory_everywhere_it_appears() {
              as exploitable as the top-level one"
         );
     }
+    Ok(())
 }
 
 // ── overrides must actually take ────────────────────────────────────
@@ -245,8 +252,8 @@ fn the_lockfile_pins_uuid_past_the_advisory_everywhere_it_appears() {
 /// it, or the entry names a package the tree does not have, the vulnerable
 /// version stays installed while `package.json` reads as though it were fixed.
 #[test]
-fn every_override_took_effect_in_the_lockfile() {
-    let ov = overrides();
+fn every_override_took_effect_in_the_lockfile() -> Result<(), TestError> {
+    let ov = overrides()?;
     assert!(
         !ov.is_empty(),
         "no overrides parsed from e2e/package.json; if they were removed, the \
@@ -254,7 +261,7 @@ fn every_override_took_effect_in_the_lockfile() {
     );
     for (pkg, req) in &ov {
         let want = req.trim_start_matches(['^', '~']);
-        let found = versions_of(pkg);
+        let found = versions_of(pkg)?;
         assert!(
             !found.is_empty(),
             "override pins {pkg} to {req}, but {pkg} is not in the lockfile — \
@@ -268,6 +275,7 @@ fn every_override_took_effect_in_the_lockfile() {
             );
         }
     }
+    Ok(())
 }
 
 /// No override is stale.
@@ -275,14 +283,15 @@ fn every_override_took_effect_in_the_lockfile() {
 /// An override for a package the tree no longer pulls is a standing
 /// instruction about nothing, and it outlives the reason nobody wrote down.
 #[test]
-fn no_override_names_a_package_the_tree_no_longer_has() {
-    for (pkg, _) in overrides() {
+fn no_override_names_a_package_the_tree_no_longer_has() -> Result<(), TestError> {
+    for (pkg, _) in overrides()? {
         assert!(
-            !versions_of(&pkg).is_empty(),
+            !versions_of(&pkg)?.is_empty(),
             "override names {pkg}, which the lockfile does not contain; delete \
              the entry rather than leaving it to be read as protection"
         );
     }
+    Ok(())
 }
 
 // ── the package that had no fix is simply gone ──────────────────────
@@ -296,8 +305,8 @@ fn no_override_names_a_package_the_tree_no_longer_has() {
 /// nothing to do with Puppeteer, and every version check here would still be
 /// green.
 #[test]
-fn the_lockfile_no_longer_contains_extract_zip() {
-    let found = versions_of("extract-zip");
+fn the_lockfile_no_longer_contains_extract_zip() -> Result<(), TestError> {
+    let found = versions_of("extract-zip")?;
     assert!(
         found.is_empty(),
         "extract-zip {found:?} is back in e2e/package-lock.json. It has TWO \
@@ -306,6 +315,7 @@ fn the_lockfile_no_longer_contains_extract_zip() {
          alert on it, which turns main red. Find what pulled it in and pin that \
          package past the release that dropped it."
     );
+    Ok(())
 }
 
 /// Nothing in the tree still ASKS for `extract-zip`.
@@ -315,14 +325,15 @@ fn the_lockfile_no_longer_contains_extract_zip() {
 /// `npm install` on a runner would resolve it and put the vulnerable version
 /// back, while the lockfile this repository committed still looks clean.
 #[test]
-fn no_package_in_the_lockfile_still_depends_on_extract_zip() {
-    let lock = read("e2e/package-lock.json");
+fn no_package_in_the_lockfile_still_depends_on_extract_zip() -> Result<(), TestError> {
+    let lock = read("e2e/package-lock.json")?;
     assert!(
         !lock.contains("\"extract-zip\""),
         "e2e/package-lock.json still names extract-zip, so some package \
          declares it even if none resolved to it. The next install would \
          bring it back."
     );
+    Ok(())
 }
 
 /// The version comparator orders releases numerically, not as text.
@@ -330,7 +341,7 @@ fn no_package_in_the_lockfile_still_depends_on_extract_zip() {
 /// `"0.2.7"` vs `"0.10.0"` is the case a string comparison gets backwards, and
 /// every rule above rests on this being right.
 #[test]
-fn the_version_comparison_is_numeric_not_lexical() {
+fn the_version_comparison_is_numeric_not_lexical() -> Result<(), TestError> {
     assert!(at_least("0.2.7", "0.2.7"), "equal must satisfy at-least");
     assert!(at_least("0.2.8", "0.2.7"));
     assert!(
@@ -342,4 +353,5 @@ fn the_version_comparison_is_numeric_not_lexical() {
     assert!(at_least("11.1.1", "11.1.1"));
     assert!(!at_least("8.3.2", "11.1.1"), "8 is below 11");
     assert!(at_least("2.0.1", "2.0.1"));
+    Ok(())
 }

@@ -39,8 +39,10 @@ mod pcap_build;
 #[path = "support/mod.rs"]
 mod support;
 
-use pcap_build::write_pcap_or_panic;
-use support::schema::{assert_valid, load_validator_or_panic};
+use pcap_build::write_pcap;
+use support::schema::{assert_valid, load_validator};
+
+use support::TestError;
 
 /// The endpoint sending audio into a black hole.
 const SENDER: [u8; 4] = [192, 0, 2, 10];
@@ -161,7 +163,7 @@ fn icmp_unreachable_frame(quoted: &[u8], quoted_bytes: usize) -> Vec<u8> {
 ///
 /// `quoted_bytes` is the whole quote's length: 20 keeps only the IP header
 /// (the `unkeyed` case), `usize::MAX` keeps all of it.
-fn call_with_media_icmp(path: &Path, quoted_bytes: usize) {
+fn call_with_media_icmp(path: &Path, quoted_bytes: usize) -> Result<(), TestError> {
     use pcap_build::udp_frame;
     let common = [
         "Via: SIP/2.0/UDP 192.0.2.10:5060;branch=z9hG4bK-icmp-media",
@@ -245,38 +247,39 @@ fn call_with_media_icmp(path: &Path, quoted_bytes: usize) {
         &sip("SIP/2.0 200 OK", &as_refs(&bye_ok_h), ""),
     ));
 
-    write_pcap_or_panic(path, &frames);
+    write_pcap(path, &frames)?;
+    Ok(())
 }
 
 /// Run the built binary and return stdout, failing loudly on a non-zero exit.
-fn run_sipnab(args: &[&str]) -> String {
+fn run_sipnab(args: &[&str]) -> Result<String, TestError> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
     cmd.args(args);
     support::deterministic_env(&mut cmd);
-    let out = cmd.output().expect("spawn sipnab");
+    let out = cmd.output()?;
     assert!(
         out.status.success(),
         "sipnab {args:?} exited {:?}\nstderr: {}",
         out.status.code(),
         String::from_utf8_lossy(&out.stderr)
     );
-    String::from_utf8(out.stdout).expect("utf8 stdout")
+    Ok(String::from_utf8(out.stdout)?)
 }
 
 /// The ICMP media section of a `--report`, split into (summary, rows).
-fn media_section(report: &str) -> (String, Vec<String>) {
+fn media_section(report: &str) -> Result<(String, Vec<String>), TestError> {
     let (_, section) = report
         .split_once("ICMP (media, capture-wide):")
-        .unwrap_or_else(|| panic!("--report carried no ICMP media section:\n{report}"));
+        .ok_or_else(|| format!("--report carried no ICMP media section:\n{report}"))?;
     let (summary, table) = section
         .split_once("Description")
-        .unwrap_or_else(|| panic!("the section rendered no table:\n{section}"));
+        .ok_or_else(|| format!("the section rendered no table:\n{section}"))?;
     let rows = table
         .lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('-'))
         .map(str::to_string)
         .collect();
-    (summary.to_string(), rows)
+    Ok((summary.to_string(), rows))
 }
 
 /// `--report` carries the finding, and every row names its tier.
@@ -284,19 +287,19 @@ fn media_section(report: &str) -> (String, Vec<String>) {
 /// Before this, a `--report` of a capture holding a media blackhole was
 /// byte-identical to one of a capture holding none.
 #[test]
-fn the_report_carries_the_media_finding_with_its_tier() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_report_carries_the_media_finding_with_its_tier() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("media-icmp.pcap");
-    call_with_media_icmp(&pcap, usize::MAX);
+    call_with_media_icmp(&pcap, usize::MAX)?;
 
     let report = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--report",
         "--no-cli-print",
-    ]);
-    let (summary, rows) = media_section(&report);
+    ])?;
+    let (summary, rows) = media_section(&report)?;
 
     assert_eq!(rows.len(), 1, "one quoted flow, one row:\n{report}");
     let tier = rows[0].split_whitespace().next().unwrap_or("");
@@ -317,31 +320,32 @@ fn the_report_carries_the_media_finding_with_its_tier() {
         summary.contains("1 error(s) quoting non-SIP traffic, 1 of them media"),
         "the summary must count the error and class it as media:\n{report}"
     );
+    Ok(())
 }
 
 /// `--json-dialogs` carries the finding, its tier, and the outcome counters.
 #[test]
-fn json_dialogs_carries_the_media_finding_with_its_tier() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn json_dialogs_carries_the_media_finding_with_its_tier() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("media-icmp.pcap");
-    call_with_media_icmp(&pcap, usize::MAX);
+    call_with_media_icmp(&pcap, usize::MAX)?;
 
     let out = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     let line = out
         .lines()
         .find(|l| l.contains(CALL_ID))
-        .unwrap_or_else(|| panic!("the call is missing from --json-dialogs:\n{out}"));
-    let v: Value = serde_json::from_str(line).expect("NDJSON line parses");
+        .ok_or_else(|| format!("the call is missing from --json-dialogs:\n{out}"))?;
+    let v: Value = serde_json::from_str(line)?;
 
     let block = v
         .get("icmp_media")
-        .unwrap_or_else(|| panic!("--json-dialogs dropped the media evidence:\n{line}"));
+        .ok_or_else(|| format!("--json-dialogs dropped the media evidence:\n{line}"))?;
     assert_eq!(block["capture"]["errors"], 1);
     assert_eq!(block["capture"]["media"], 1);
     assert_eq!(block["capture"]["attributed"], 1);
@@ -350,7 +354,7 @@ fn json_dialogs_carries_the_media_finding_with_its_tier() {
 
     let findings = block["findings"]
         .as_array()
-        .unwrap_or_else(|| panic!("the finding named this call and must be attached:\n{line}"));
+        .ok_or_else(|| format!("the finding named this call and must be attached:\n{line}"))?;
     assert_eq!(findings.len(), 1);
     assert_eq!(
         findings[0]["attribution"], "flow",
@@ -363,6 +367,7 @@ fn json_dialogs_carries_the_media_finding_with_its_tier() {
         findings[0]["unreachable_endpoint"],
         format!("{}:{RTP_DST}", ip(PEER))
     );
+    Ok(())
 }
 
 /// The emitted document still answers to the call-report schema.
@@ -372,23 +377,23 @@ fn json_dialogs_carries_the_media_finding_with_its_tier() {
 /// contract drifting apart. The schema also `enum`s the tier, so a finding that
 /// reached a consumer with an unknown or missing `attribution` fails here.
 #[test]
-fn the_emitted_document_still_matches_the_call_report_schema() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_emitted_document_still_matches_the_call_report_schema() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("media-icmp.pcap");
-    call_with_media_icmp(&pcap, usize::MAX);
+    call_with_media_icmp(&pcap, usize::MAX)?;
 
-    let validator = load_validator_or_panic("call_report.schema.json");
+    let validator = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
 
     let mut with_findings = 0;
     for (i, line) in out.lines().filter(|l| !l.trim().is_empty()).enumerate() {
-        let v: Value = serde_json::from_str(line).expect("NDJSON line parses");
+        let v: Value = serde_json::from_str(line)?;
         if !v
             .pointer("/icmp_media/findings")
             .and_then(Value::as_array)
@@ -402,6 +407,7 @@ fn the_emitted_document_still_matches_the_call_report_schema() {
         with_findings > 0,
         "no line carried a finding, so the finding shape went unvalidated:\n{out}"
     );
+    Ok(())
 }
 
 /// The schema rejects a finding whose tier was dropped or invented.
@@ -410,25 +416,24 @@ fn the_emitted_document_still_matches_the_call_report_schema() {
 /// corruption the field exists to prevent: a finding that reads as a
 /// measurement because nothing says how strong the claim is.
 #[test]
-fn the_schema_rejects_a_finding_without_a_valid_tier() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_schema_rejects_a_finding_without_a_valid_tier() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("media-icmp.pcap");
-    call_with_media_icmp(&pcap, usize::MAX);
+    call_with_media_icmp(&pcap, usize::MAX)?;
 
-    let validator = load_validator_or_panic("call_report.schema.json");
+    let validator = load_validator("call_report.schema.json")?;
     let out = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     let good: Value = serde_json::from_str(
         out.lines()
             .find(|l| l.contains(CALL_ID))
-            .expect("the call's line"),
-    )
-    .expect("parses");
+            .ok_or("the call's line")?,
+    )?;
     assert!(
         validator.is_valid(&good),
         "sanity: real output must validate"
@@ -438,7 +443,7 @@ fn the_schema_rejects_a_finding_without_a_valid_tier() {
     let mut bad = good.clone();
     bad["icmp_media"]["findings"][0]
         .as_object_mut()
-        .expect("finding object")
+        .ok_or("finding object")?
         .remove("attribution");
     assert!(
         !validator.is_valid(&bad),
@@ -458,12 +463,13 @@ fn the_schema_rejects_a_finding_without_a_valid_tier() {
     let mut bad = good.clone();
     bad["icmp_media"]["capture"]
         .as_object_mut()
-        .expect("capture object")
+        .ok_or("capture object")?
         .remove("unkeyed");
     assert!(
         !validator.is_valid(&bad),
         "dropping `unkeyed` collapses three outcomes into two"
     );
+    Ok(())
 }
 
 /// A quote that stopped before the ports is its own outcome on every surface.
@@ -473,24 +479,24 @@ fn the_schema_rejects_a_finding_without_a_valid_tier() {
 /// `sum(flow errors) + unkeyed + untracked == errors`, and that is only
 /// checkable from the output while the counters stay apart.
 #[test]
-fn a_quote_too_short_to_key_is_reported_as_unkeyed_not_as_a_miss() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_quote_too_short_to_key_is_reported_as_unkeyed_not_as_a_miss() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let pcap = dir.path().join("unkeyed-icmp.pcap");
     // 20 bytes of quote is the IP header alone: no ports, so no flow.
-    call_with_media_icmp(&pcap, 20);
+    call_with_media_icmp(&pcap, 20)?;
 
     let out = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     let line = out
         .lines()
         .find(|l| l.contains(CALL_ID))
-        .unwrap_or_else(|| panic!("the call is missing:\n{out}"));
-    let v: Value = serde_json::from_str(line).expect("parses");
+        .ok_or_else(|| format!("the call is missing:\n{out}"))?;
+    let v: Value = serde_json::from_str(line)?;
     let c = &v["icmp_media"]["capture"];
 
     assert_eq!(c["errors"], 1, "the error is still counted: {c}");
@@ -499,22 +505,23 @@ fn a_quote_too_short_to_key_is_reported_as_unkeyed_not_as_a_miss() {
     assert_eq!(c["attributed"], 0);
     assert_eq!(c["unattributed"], 1);
 
-    let n = |k: &str| c[k].as_u64().unwrap_or_else(|| panic!("{k} missing: {c}"));
-    assert_eq!(n("attributed") + n("unattributed"), n("errors"));
-    assert_eq!(n("unkeyed") + n("untracked_flows"), n("errors"));
+    let n = |k: &str| c[k].as_u64().ok_or_else(|| format!("{k} missing: {c}"));
+    assert_eq!(n("attributed")? + n("unattributed")?, n("errors")?);
+    assert_eq!(n("unkeyed")? + n("untracked_flows")?, n("errors")?);
 
     let report = run_sipnab(&[
         "-N",
         "-I",
-        pcap.to_str().expect("utf8 path"),
+        pcap.to_str().ok_or("utf8 path")?,
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         report.contains("1 quoted too little to name a flow"),
         "the report must say the error had no flow rather than implying it \
          matched nothing:\n{report}"
     );
+    Ok(())
 }
 
 /// A capture with no ICMP grows neither the section nor the JSON field.
@@ -522,14 +529,14 @@ fn a_quote_too_short_to_key_is_reported_as_unkeyed_not_as_a_miss() {
 /// Absent rather than empty, so "no ICMP" in an output reads as "this capture
 /// had none" and stays true.
 #[test]
-fn a_clean_capture_grows_neither_section_nor_field() {
+fn a_clean_capture_grows_neither_section_nor_field() -> Result<(), TestError> {
     let report = run_sipnab(&[
         "-N",
         "-I",
         "tests/fixtures/sip_call.pcap",
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     assert!(
         !report.contains("ICMP (media"),
         "a clean capture must not grow a section:\n{report}"
@@ -541,14 +548,15 @@ fn a_clean_capture_grows_neither_section_nor_field() {
         "tests/fixtures/sip_call.pcap",
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
-        let v: Value = serde_json::from_str(line).expect("parses");
+        let v: Value = serde_json::from_str(line)?;
         assert!(
             v.get("icmp_media").is_none(),
             "a clean capture must not grow the field: {line}"
         );
     }
+    Ok(())
 }
 
 /// Render an address for comparison against output.

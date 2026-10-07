@@ -17,63 +17,69 @@ use clap::Parser;
 use sipnab::cli::Cli;
 use sipnab::config::Config;
 
-fn config(body: &str) -> Config {
-    let dir = tempfile::tempdir().expect("tempdir");
+type TestError = Box<dyn std::error::Error>;
+
+fn config(body: &str) -> Result<Config, TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("sipnab.toml");
-    std::fs::write(&path, body).expect("write");
-    Config::load_file_with_env(&path, &|_| None).expect("config loads")
+    std::fs::write(&path, body)?;
+    Ok(Config::load_file_with_env(&path, &|_| None)?)
 }
 
-fn cli(args: &[&str]) -> Cli {
+fn cli(args: &[&str]) -> Result<Cli, TestError> {
     let mut argv = vec!["sipnab", "-N"];
     argv.extend_from_slice(args);
-    Cli::try_parse_from(argv).expect("parse")
+    Ok(Cli::try_parse_from(argv)?)
 }
 
 #[test]
-fn with_nothing_configured_the_journal_is_under_var_lib() {
+fn with_nothing_configured_the_journal_is_under_var_lib() -> Result<(), TestError> {
     assert_eq!(
-        cli(&[]).journal_dir(&config("")),
+        cli(&[])?.journal_dir(&config("")?),
         PathBuf::from("/var/lib/sipnab/journal")
     );
+    Ok(())
 }
 
 #[test]
-fn the_config_file_moves_the_journal_and_the_flag_overrides_it() {
-    let c = config("[journal]\ndir = \"/srv/sipnab/journal\"\n");
-    assert_eq!(cli(&[]).journal_dir(&c), Path::new("/srv/sipnab/journal"));
+fn the_config_file_moves_the_journal_and_the_flag_overrides_it() -> Result<(), TestError> {
+    let c = config("[journal]\ndir = \"/srv/sipnab/journal\"\n")?;
+    assert_eq!(cli(&[])?.journal_dir(&c), Path::new("/srv/sipnab/journal"));
     assert_eq!(
-        cli(&["--journal-dir", "/run/j"]).journal_dir(&c),
+        cli(&["--journal-dir", "/run/j"])?.journal_dir(&c),
         Path::new("/run/j")
     );
+    Ok(())
 }
 
 #[test]
-fn with_nothing_configured_the_limits_are_the_shipped_ones() {
-    let l = cli(&[]).action_limits(&config("")).expect("limits");
+fn with_nothing_configured_the_limits_are_the_shipped_ones() -> Result<(), TestError> {
+    let l = cli(&[])?.action_limits(&config("")?)?;
     assert_eq!(l.per_minute(), 10);
     assert_eq!(l.per_caller_per_minute(), 5);
     assert_eq!(l.address_cooldown(), Duration::from_secs(60));
     assert_eq!(l.default_ban_secs(), 3_600);
     assert_eq!(l.max_ban_secs(), 7 * 86_400);
+    Ok(())
 }
 
 #[test]
-fn every_limit_can_be_configured() {
+fn every_limit_can_be_configured() -> Result<(), TestError> {
     let c = config(
         "[action_limits]\nper_minute = 20\nper_caller_per_minute = 4\n\
          address_cooldown_secs = 2\ndefault_ban_secs = 600\nmax_ban_secs = 86400\n",
-    );
-    let l = cli(&[]).action_limits(&c).expect("limits");
+    )?;
+    let l = cli(&[])?.action_limits(&c)?;
     assert_eq!(l.per_minute(), 20);
     assert_eq!(l.per_caller_per_minute(), 4);
     assert_eq!(l.address_cooldown(), Duration::from_secs(2));
     assert_eq!(l.default_ban_secs(), 600);
     assert_eq!(l.max_ban_secs(), 86_400);
+    Ok(())
 }
 
 #[test]
-fn no_limit_can_be_turned_off_with_zero() {
+fn no_limit_can_be_turned_off_with_zero() -> Result<(), TestError> {
     for key in [
         "per_minute",
         "per_caller_per_minute",
@@ -81,30 +87,35 @@ fn no_limit_can_be_turned_off_with_zero() {
         "default_ban_secs",
         "max_ban_secs",
     ] {
-        let c = config(&format!("[action_limits]\n{key} = 0\n"));
-        let err = cli(&[]).action_limits(&c).expect_err(key);
+        let c = config(&format!("[action_limits]\n{key} = 0\n"))?;
+        let err = cli(&[])?.action_limits(&c).err().ok_or(key)?;
         assert!(err.contains("cannot be turned off"), "{key}: {err}");
     }
+    Ok(())
 }
 
 #[test]
-fn a_default_lifetime_over_the_maximum_is_refused() {
-    let c = config("[action_limits]\ndefault_ban_secs = 7200\nmax_ban_secs = 3600\n");
-    let err = cli(&[]).action_limits(&c).expect_err("default above max");
+fn a_default_lifetime_over_the_maximum_is_refused() -> Result<(), TestError> {
+    let c = config("[action_limits]\ndefault_ban_secs = 7200\nmax_ban_secs = 3600\n")?;
+    let err = cli(&[])?
+        .action_limits(&c)
+        .err()
+        .ok_or("default above max")?;
     assert!(err.contains("7200") && err.contains("3600"), "{err}");
+    Ok(())
 }
 
 #[test]
-fn a_misspelled_limit_is_reported_as_unknown() {
-    let unknown = Config::unknown_keys("[action_limits]\nper_minuet = 3\n").expect("parses");
+fn a_misspelled_limit_is_reported_as_unknown() -> Result<(), TestError> {
+    let unknown = Config::unknown_keys("[action_limits]\nper_minuet = 3\n")?;
     assert_eq!(unknown, ["action_limits.per_minuet"]);
-    let unknown = Config::unknown_keys("[journal]\ndri = \"/x\"\n").expect("parses");
+    let unknown = Config::unknown_keys("[journal]\ndri = \"/x\"\n")?;
     assert_eq!(unknown, ["journal.dri"]);
     let known = Config::unknown_keys(
         "[action_limits]\nper_minute = 3\nper_caller_per_minute = 2\n\
          address_cooldown_secs = 5\ndefault_ban_secs = 60\nmax_ban_secs = 60\n\
          [journal]\ndir = \"/x\"\n",
-    )
-    .expect("parses");
+    )?;
     assert!(known.is_empty(), "{known:?}");
+    Ok(())
 }

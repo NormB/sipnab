@@ -41,6 +41,8 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
+type TestError = Box<dyn std::error::Error>;
+
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
@@ -84,7 +86,7 @@ impl Wire {
     ///
     /// Does NOT wait for the source to drain — [`Self::drain`] does that, and
     /// the tests that measure the window must run before it.
-    fn start(input: &Path, extra: &[&str]) -> Self {
+    fn start(input: &Path, extra: &[&str]) -> Result<Self, TestError> {
         let mut args: Vec<String> = vec![
             "--mcp".into(),
             "-N".into(),
@@ -100,11 +102,10 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sipnab --mcp");
+            .spawn()?;
 
         {
-            let stdin = child.stdin.as_mut().expect("stdin");
+            let stdin = child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
@@ -116,52 +117,52 @@ impl Wire {
                         "clientInfo": {"name": "completeness-test", "version": "1"}
                     }
                 })
-            )
-            .expect("write initialize");
+            )?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            )
-            .expect("write initialized");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
 
-        let stdout = child.stdout.take().expect("stdout");
+        let stdout = child.stdout.take().ok_or("stdout")?;
         let mut wire = Self {
             child,
             reader: BufReader::new(stdout),
             next_id: 2,
         };
-        wire.await_id(1);
-        wire
+        wire.await_id(1)?;
+        Ok(wire)
     }
 
     /// Read until the reply with `id` arrives, discarding notifications.
-    fn await_id(&mut self, id: i64) -> Value {
+    fn await_id(&mut self, id: i64) -> Result<Value, TestError> {
         let mut line = String::new();
         for _ in 0..MAX_LINES {
             line.clear();
             match self.reader.read_line(&mut line) {
-                Ok(0) => panic!("the server closed stdout before replying to {id}"),
+                Ok(0) => {
+                    return Err(format!("the server closed stdout before replying to {id}").into());
+                }
                 Ok(_) => {}
-                Err(e) => panic!("reading the wire failed: {e}"),
+                Err(e) => return Err(format!("reading the wire failed: {e}").into()),
             }
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
             let value: Value = serde_json::from_str(trimmed)
-                .unwrap_or_else(|e| panic!("stdout line is not JSON-RPC: {e}\n{trimmed}"));
+                .map_err(|e| format!("stdout line is not JSON-RPC: {e}\n{trimmed}"))?;
             if value.get("id").and_then(Value::as_i64) == Some(id) {
-                return value;
+                return Ok(value);
             }
         }
-        panic!("no reply to id {id} within {MAX_LINES} lines");
+        Err(format!("no reply to id {id} within {MAX_LINES} lines").into())
     }
 
     /// Call `tool` with `args` and return the whole JSON-RPC reply.
-    fn call(&mut self, tool: &str, args: Value) -> Value {
+    fn call(&mut self, tool: &str, args: Value) -> Result<Value, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         let request = json!({
@@ -169,55 +170,54 @@ impl Wire {
             "params": {"name": tool, "arguments": args}
         });
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
-            writeln!(stdin, "{request}").expect("write request");
-            stdin.flush().expect("flush");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
+            writeln!(stdin, "{request}")?;
+            stdin.flush()?;
         }
         self.await_id(id)
     }
 
     /// Every tool the server registers, from `tools/list`.
-    fn tool_names(&mut self) -> Vec<String> {
+    fn tool_names(&mut self) -> Result<Vec<String>, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"})
-            )
-            .expect("write tools/list");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
-        let reply = self.await_id(id);
-        reply["result"]["tools"]
+        let reply = self.await_id(id)?;
+        Ok(reply["result"]["tools"]
             .as_array()
-            .expect("tools array")
+            .ok_or("tools array")?
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_string))
-            .collect()
+            .collect())
     }
 
     /// Poll `capture_status` until the source drains.
-    fn drain(&mut self) {
+    fn drain(&mut self) -> Result<(), TestError> {
         for _ in 0..1200 {
-            let reply = self.call("capture_status", json!({}));
-            if payload(&reply)[EXHAUSTED] == json!(true) {
-                return;
+            let reply = self.call("capture_status", json!({}))?;
+            if payload(&reply)?[EXHAUSTED] == json!(true) {
+                return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        panic!("the capture never finished loading");
+        Err("the capture never finished loading".into())
     }
 
     /// A Call-ID from the loaded store, for the per-dialog probes.
-    fn a_call_id(&mut self) -> String {
-        let reply = self.call("list_dialogs", json!({"limit": 1}));
-        payload(&reply)["dialogs"][0]["call_id"]
+    fn a_call_id(&mut self) -> Result<String, TestError> {
+        let reply = self.call("list_dialogs", json!({"limit": 1}))?;
+        Ok(payload(&reply)?["dialogs"][0]["call_id"]
             .as_str()
-            .expect("the fixture holds at least one dialog")
-            .to_string()
+            .ok_or("the fixture holds at least one dialog")?
+            .to_string())
     }
 }
 
@@ -231,17 +231,17 @@ impl Drop for Wire {
 }
 
 /// The first content block of a reply, parsed.
-fn payload(reply: &Value) -> Value {
+fn payload(reply: &Value) -> Result<Value, TestError> {
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text content block in {reply}"));
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("payload is not JSON: {e}\n{text}"))
+        .ok_or_else(|| format!("no text content block in {reply}"))?;
+    Ok(serde_json::from_str(text).map_err(|e| format!("payload is not JSON: {e}\n{text}"))?)
 }
 
 // ── generated captures ──────────────────────────────────────────────────
 
 /// Write a capture of `calls` distinct SIP calls to `path`.
-fn write_big_capture(path: &Path, calls: usize) {
+fn write_big_capture(path: &Path, calls: usize) -> Result<(), TestError> {
     let mut frames: Vec<Vec<u8>> = Vec::with_capacity(calls * 6);
     for n in 0..calls {
         frames.extend(pcap_build::sip_call_frames(
@@ -251,7 +251,8 @@ fn write_big_capture(path: &Path, calls: usize) {
             &format!("callee{n}"),
         ));
     }
-    pcap_build::write_pcap_or_panic(path, &frames);
+    pcap_build::write_pcap(path, &frames)?;
+    Ok(())
 }
 
 /// Copy `INTACT` into `dir` with its last packet record cut in half.
@@ -259,9 +260,8 @@ fn write_big_capture(path: &Path, calls: usize) {
 /// libpcap answers `truncated dump file; tried to read N captured bytes, only
 /// got M` on the trailing partial record — the same condition a ring buffer's
 /// newest member is in while it is still being written.
-fn write_truncated_capture(dir: &Path, name: &str) -> PathBuf {
-    let whole = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(INTACT))
-        .expect("read the intact fixture");
+fn write_truncated_capture(dir: &Path, name: &str) -> Result<PathBuf, TestError> {
+    let whole = std::fs::read(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(INTACT))?;
     assert!(
         whole.len() > 200,
         "the fixture must be long enough to cut meaningfully"
@@ -269,8 +269,8 @@ fn write_truncated_capture(dir: &Path, name: &str) -> PathBuf {
     // Two thirds keeps a real prefix of packets and lands inside a record.
     let cut = whole.len() * 2 / 3;
     let path = dir.join(name);
-    std::fs::write(&path, &whole[..cut]).expect("write the truncated capture");
-    path
+    std::fs::write(&path, &whole[..cut])?;
+    Ok(path)
 }
 
 /// Absolute path to a checked-in sample.
@@ -287,32 +287,32 @@ fn sample(rel: &str) -> PathBuf {
 /// separate "after" test could pass against a capture the "before" test never
 /// caught loading, and neither would notice.
 #[test]
-fn partial_capture_lifecycle() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn partial_capture_lifecycle() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let big = dir.path().join("big.pcap");
-    write_big_capture(&big, BIG_CALLS);
+    write_big_capture(&big, BIG_CALLS)?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
+    )?;
+    wire.drain()?;
 
     // `open_capture` clears both stores and returns while the worker reads, so
     // the very next call is inside the window every VAL3 measurement was taken
     // in. The startup path has the same window; this one is reachable without
     // racing the handshake.
-    let opened = wire.call("open_capture", json!({"filename": "big.pcap"}));
+    let opened = wire.call("open_capture", json!({"filename": "big.pcap"}))?;
     assert_ne!(
         opened["result"]["isError"],
         json!(true),
         "open_capture must be permitted here: {opened}"
     );
 
-    let early_dialogs = payload(&wire.call("list_dialogs", json!({"limit": 5})));
-    let early_problems = payload(&wire.call("find_problems", json!({"limit": 5})));
-    let early_report = payload(&wire.call("get_capture_report", json!({})));
+    let early_dialogs = payload(&wire.call("list_dialogs", json!({"limit": 5}))?)?;
+    let early_problems = payload(&wire.call("find_problems", json!({"limit": 5}))?)?;
+    let early_report = payload(&wire.call("get_capture_report", json!({}))?)?;
 
     assert_eq!(
         early_dialogs[EXHAUSTED],
@@ -343,14 +343,14 @@ fn partial_capture_lifecycle() {
 
     let early_total = early_dialogs["total_matched"]
         .as_u64()
-        .unwrap_or_else(|| panic!("total_matched missing: {early_dialogs}"));
+        .ok_or_else(|| format!("total_matched missing: {early_dialogs}"))?;
 
-    wire.drain();
+    wire.drain()?;
 
-    let late = payload(&wire.call("list_dialogs", json!({"limit": 5})));
+    let late = payload(&wire.call("list_dialogs", json!({"limit": 5}))?)?;
     let late_total = late["total_matched"]
         .as_u64()
-        .unwrap_or_else(|| panic!("total_matched missing: {late}"));
+        .ok_or_else(|| format!("total_matched missing: {late}"))?;
 
     assert_eq!(late[EXHAUSTED], json!(true), "{late}");
     assert_eq!(
@@ -369,6 +369,7 @@ fn partial_capture_lifecycle() {
          test stops testing anything on a faster machine: it saw {early_total} \
          of the eventual {late_total}. Raise BIG_CALLS."
     );
+    Ok(())
 }
 
 /// The report's own `complete` flag, before and after, on one session.
@@ -376,20 +377,20 @@ fn partial_capture_lifecycle() {
 /// VAL4 measured this reading backwards: `true` at `frames_read: 312`, `false`
 /// at `frames_read: 365747`.
 #[test]
-fn capture_report_complete_never_reads_backwards() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn capture_report_complete_never_reads_backwards() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let big = dir.path().join("big.pcap");
-    write_big_capture(&big, BIG_CALLS);
+    write_big_capture(&big, BIG_CALLS)?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
-    wire.call("open_capture", json!({"filename": "big.pcap"}));
+    )?;
+    wire.drain()?;
+    wire.call("open_capture", json!({"filename": "big.pcap"}))?;
 
-    let early = payload(&wire.call("get_capture_report", json!({})));
+    let early = payload(&wire.call("get_capture_report", json!({}))?)?;
     let early_dialogs = early["dialogs_examined"].as_u64().unwrap_or_default();
     assert_eq!(
         early[EXHAUSTED],
@@ -397,8 +398,8 @@ fn capture_report_complete_never_reads_backwards() {
         "the mid-load probe must really be mid-load: {early}"
     );
 
-    wire.drain();
-    let late = payload(&wire.call("get_capture_report", json!({})));
+    wire.drain()?;
+    let late = payload(&wire.call("get_capture_report", json!({}))?)?;
     let late_dialogs = late["dialogs_examined"].as_u64().unwrap_or_default();
 
     // `dialogs_examined` rather than `frames_read`: the latter is read from the
@@ -416,6 +417,7 @@ fn capture_report_complete_never_reads_backwards() {
         json!(true),
         "a whole read of an intact capture is complete: {late}"
     );
+    Ok(())
 }
 
 // ── VAL2: a capture that stopped early ──────────────────────────────────
@@ -423,20 +425,20 @@ fn capture_report_complete_never_reads_backwards() {
 /// `capture_health` is the tool an agent calls to ask whether a capture is
 /// sound. On a truncated file it said nothing at all.
 #[test]
-fn capture_health_discloses_a_capture_that_stopped_early() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_truncated_capture(dir.path(), "cut.pcap");
+fn capture_health_discloses_a_capture_that_stopped_early() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_truncated_capture(dir.path(), "cut.pcap")?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
-    wire.call("open_capture", json!({"filename": "cut.pcap"}));
-    wire.drain();
+    )?;
+    wire.drain()?;
+    wire.call("open_capture", json!({"filename": "cut.pcap"}))?;
+    wire.drain()?;
 
-    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1})));
+    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1}))?)?;
     assert_eq!(
         health[STOPPED_EARLY],
         json!(true),
@@ -448,6 +450,7 @@ fn capture_health_discloses_a_capture_that_stopped_early() {
         json!(true),
         "the reader did reach the end of what there was to read: {health}"
     );
+    Ok(())
 }
 
 /// The startup `-I` path, which is the one VAL2 measured.
@@ -458,14 +461,14 @@ fn capture_health_discloses_a_capture_that_stopped_early() {
 /// a second copy, so an agent and `$?` cannot be told different things about
 /// one run.
 #[test]
-fn capture_health_discloses_a_truncated_startup_capture() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let cut = write_truncated_capture(dir.path(), "cut.pcap");
+fn capture_health_discloses_a_truncated_startup_capture() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cut = write_truncated_capture(dir.path(), "cut.pcap")?;
 
-    let mut wire = Wire::start(&cut, &[]);
-    wire.drain();
+    let mut wire = Wire::start(&cut, &[])?;
+    wire.drain()?;
 
-    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1})));
+    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1}))?)?;
     assert_eq!(
         health[STOPPED_EARLY],
         json!(true),
@@ -473,73 +476,76 @@ fn capture_health_discloses_a_truncated_startup_capture() {
          reached no MCP response at all: {health}"
     );
 
-    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000})));
+    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000}))?)?;
     assert_eq!(page[STOPPED_EARLY], json!(true), "{page}");
     assert!(
         page.get("truncated").is_none(),
         "an answer resting on part of a capture must not say nothing was \
          withheld: {page}"
     );
+    Ok(())
 }
 
 /// A fix that always warns is useless. An intact capture must not be accused.
 #[test]
-fn capture_health_does_not_accuse_an_intact_capture() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
+fn capture_health_does_not_accuse_an_intact_capture() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
 
-    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1})));
+    let health = payload(&wire.call("capture_health", json!({"sample_seconds": 1}))?)?;
     assert_eq!(
         health[STOPPED_EARLY],
         json!(false),
         "this capture was read in full: {health}"
     );
     assert_eq!(health[EXHAUSTED], json!(true), "{health}");
+    Ok(())
 }
 
 /// `capture_status` carries the same disclosure, so a poller learns it too.
 #[test]
-fn capture_status_discloses_a_capture_that_stopped_early() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_truncated_capture(dir.path(), "cut.pcap");
+fn capture_status_discloses_a_capture_that_stopped_early() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_truncated_capture(dir.path(), "cut.pcap")?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
+    )?;
+    wire.drain()?;
 
-    let before = payload(&wire.call("capture_status", json!({})));
+    let before = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(
         before[STOPPED_EARLY],
         json!(false),
         "the intact startup capture is not accused: {before}"
     );
 
-    wire.call("open_capture", json!({"filename": "cut.pcap"}));
-    wire.drain();
+    wire.call("open_capture", json!({"filename": "cut.pcap"}))?;
+    wire.drain()?;
 
-    let after = payload(&wire.call("capture_status", json!({})));
+    let after = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(after[STOPPED_EARLY], json!(true), "{after}");
+    Ok(())
 }
 
 /// A page over a capture that stopped early makes no completeness claim.
 #[test]
-fn a_page_over_a_partial_capture_does_not_claim_it_is_whole() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_truncated_capture(dir.path(), "cut.pcap");
+fn a_page_over_a_partial_capture_does_not_claim_it_is_whole() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_truncated_capture(dir.path(), "cut.pcap")?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
-    wire.call("open_capture", json!({"filename": "cut.pcap"}));
-    wire.drain();
+    )?;
+    wire.drain()?;
+    wire.call("open_capture", json!({"filename": "cut.pcap"}))?;
+    wire.drain()?;
 
-    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000})));
+    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000}))?)?;
     assert_eq!(page[STOPPED_EARLY], json!(true), "{page}");
     assert!(
         page.get("truncated").is_none(),
@@ -548,12 +554,13 @@ fn a_page_over_a_partial_capture_does_not_claim_it_is_whole() {
          {page}"
     );
 
-    let report = payload(&wire.call("get_capture_report", json!({})));
+    let report = payload(&wire.call("get_capture_report", json!({}))?)?;
     assert_ne!(
         report["complete"],
         json!(true),
         "a capture read in part is not a capture read in full: {report}"
     );
+    Ok(())
 }
 
 /// The record belongs to the capture, not to the process.
@@ -562,32 +569,33 @@ fn a_page_over_a_partial_capture_does_not_claim_it_is_whole() {
 /// accused — a sticky false positive is the same defect as a missing one,
 /// pointed the other way.
 #[test]
-fn opening_an_intact_capture_clears_the_partial_read_record() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    write_truncated_capture(dir.path(), "cut.pcap");
+fn opening_an_intact_capture_clears_the_partial_read_record() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    write_truncated_capture(dir.path(), "cut.pcap")?;
     let whole = dir.path().join("whole.pcap");
-    std::fs::copy(sample(INTACT), &whole).expect("copy the intact fixture");
+    std::fs::copy(sample(INTACT), &whole)?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
+    )?;
+    wire.drain()?;
 
-    wire.call("open_capture", json!({"filename": "cut.pcap"}));
-    wire.drain();
-    let accused = payload(&wire.call("capture_status", json!({})));
+    wire.call("open_capture", json!({"filename": "cut.pcap"}))?;
+    wire.drain()?;
+    let accused = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(accused[STOPPED_EARLY], json!(true), "{accused}");
 
-    wire.call("open_capture", json!({"filename": "whole.pcap"}));
-    wire.drain();
-    let cleared = payload(&wire.call("capture_status", json!({})));
+    wire.call("open_capture", json!({"filename": "whole.pcap"}))?;
+    wire.drain()?;
+    let cleared = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(
         cleared[STOPPED_EARLY],
         json!(false),
         "the previous file's partial read is not this file's: {cleared}"
     );
+    Ok(())
 }
 // ── VAL17: the rendered documents ───────────────────────────────────────
 
@@ -630,11 +638,11 @@ const RENDERED: &[(&str, &str)] = &[
 /// [`payload`] parses; these answers are documents and must not parse, which
 /// is the premise [`rendered_documents`] proves before asserting anything
 /// about them.
-fn document(reply: &Value) -> String {
-    reply["result"]["content"][0]["text"]
+fn document(reply: &Value) -> Result<String, TestError> {
+    Ok(reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no text content block in {reply}"))
-        .to_string()
+        .ok_or_else(|| format!("no text content block in {reply}"))?
+        .to_string())
 }
 
 /// Every [`RENDERED`] answer, as `(what was called, what came back)`.
@@ -643,7 +651,7 @@ fn document(reply: &Value) -> String {
 /// returned. Without that the whole section could pass while measuring the
 /// `json` arm — a tool that started answering these formats with an object
 /// would be asserted about under a name that no longer described it.
-fn rendered_documents(wire: &mut Wire, call_id: &str) -> Vec<(String, String)> {
+fn rendered_documents(wire: &mut Wire, call_id: &str) -> Result<Vec<(String, String)>, TestError> {
     assert!(
         RENDERED.len() >= 6,
         "only {} rendered formats; three tools answer with a document in two \
@@ -654,15 +662,15 @@ fn rendered_documents(wire: &mut Wire, call_id: &str) -> Vec<(String, String)> {
     for (tool, template) in RENDERED {
         let raw = template.replace("{CALL}", call_id);
         let args: Value = serde_json::from_str(&raw)
-            .unwrap_or_else(|e| panic!("{tool}: probe arguments are not JSON: {e}"));
+            .map_err(|e| format!("{tool}: probe arguments are not JSON: {e}"))?;
         let label = format!("{tool} {template}");
-        let reply = wire.call(tool, args);
+        let reply = wire.call(tool, args)?;
         assert_ne!(
             reply["result"]["isError"],
             json!(true),
             "{label} refused its probe: {reply}"
         );
-        let text = document(&reply);
+        let text = document(&reply)?;
         assert!(
             !text.trim().is_empty(),
             "{label} answered with nothing at all"
@@ -674,7 +682,7 @@ fn rendered_documents(wire: &mut Wire, call_id: &str) -> Vec<(String, String)> {
         );
         out.push((label, text));
     }
-    out
+    Ok(out)
 }
 
 /// A document drawn over a capture that stopped early says so, in prose.
@@ -687,16 +695,16 @@ fn rendered_documents(wire: &mut Wire, call_id: &str) -> Vec<(String, String)> {
 /// ladder has no `$?` and no JSON in front of them, which is precisely the
 /// case `--report`'s `INCOMPLETE RUN` block was added for (VAL2).
 #[test]
-fn a_rendered_document_over_a_partial_capture_says_so_in_prose() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let cut = write_truncated_capture(dir.path(), "cut.pcap");
+fn a_rendered_document_over_a_partial_capture_says_so_in_prose() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cut = write_truncated_capture(dir.path(), "cut.pcap")?;
 
-    let mut wire = Wire::start(&cut, &[]);
-    wire.drain();
+    let mut wire = Wire::start(&cut, &[])?;
+    wire.drain()?;
 
     // The premise, off the wire rather than assumed: this capture really did
     // stop early, and really was read to the end of what there was.
-    let status = payload(&wire.call("capture_status", json!({})));
+    let status = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(
         status[STOPPED_EARLY],
         json!(true),
@@ -705,8 +713,8 @@ fn a_rendered_document_over_a_partial_capture_says_so_in_prose() {
     );
     assert_eq!(status[EXHAUSTED], json!(true), "{status}");
 
-    let call_id = wire.a_call_id();
-    for (label, doc) in rendered_documents(&mut wire, &call_id) {
+    let call_id = wire.a_call_id()?;
+    for (label, doc) in rendered_documents(&mut wire, &call_id)? {
         assert!(
             doc.contains(INCOMPLETE),
             "{label} rests on a partial read and its reader is looking at \
@@ -737,6 +745,7 @@ fn a_rendered_document_over_a_partial_capture_says_so_in_prose() {
              the two facts made it so: {doc}"
         );
     }
+    Ok(())
 }
 
 /// A document drawn while the capture is still loading says that instead.
@@ -748,26 +757,26 @@ fn a_rendered_document_over_a_partial_capture_says_so_in_prose() {
 /// mid-load there is no id to hand the per-dialog renderers that is not
 /// itself a race.
 #[test]
-fn a_document_drawn_mid_load_says_the_capture_is_still_being_read() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn a_document_drawn_mid_load_says_the_capture_is_still_being_read() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let big = dir.path().join("big.pcap");
-    write_big_capture(&big, BIG_CALLS);
+    write_big_capture(&big, BIG_CALLS)?;
 
     let root = dir.path().to_string_lossy().into_owned();
     let mut wire = Wire::start(
         &sample(INTACT),
         &["--mcp-file-root", &root, "--mcp-allow-open-capture"],
-    );
-    wire.drain();
-    wire.call("open_capture", json!({"filename": "big.pcap"}));
+    )?;
+    wire.drain()?;
+    wire.call("open_capture", json!({"filename": "big.pcap"}))?;
 
-    let drawn = document(&wire.call("get_capture_report", json!({"format": "markdown"})));
+    let drawn = document(&wire.call("get_capture_report", json!({"format": "markdown"}))?)?;
 
     // The premise is proved AFTER the measurement, deliberately.
     // `source_exhausted` only ever goes false -> true within one capture, so a
     // reading of `false` taken now proves it was false at the earlier call as
     // well. Asking first would prove nothing about what happened after.
-    let status = payload(&wire.call("capture_status", json!({})));
+    let status = payload(&wire.call("capture_status", json!({}))?)?;
     assert_eq!(
         status[EXHAUSTED],
         json!(false),
@@ -788,6 +797,7 @@ fn a_document_drawn_mid_load_says_the_capture_is_still_being_read() {
          situations, and a reader who has to act on one of them cannot be \
          handed a sentence that fits both: {drawn}"
     );
+    Ok(())
 }
 
 /// A whole capture is not accused, and its documents are untouched.
@@ -797,12 +807,12 @@ fn a_document_drawn_mid_load_says_the_capture_is_still_being_read() {
 /// exactly where it used to. This mirrors that decision rather than making a
 /// second one.
 #[test]
-fn a_rendered_document_over_a_whole_capture_says_nothing() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
+fn a_rendered_document_over_a_whole_capture_says_nothing() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
 
-    let call_id = wire.a_call_id();
-    for (label, doc) in rendered_documents(&mut wire, &call_id) {
+    let call_id = wire.a_call_id()?;
+    for (label, doc) in rendered_documents(&mut wire, &call_id)? {
         assert!(
             !doc.contains(INCOMPLETE),
             "{label} was drawn over a capture read in full and accuses it \
@@ -815,22 +825,23 @@ fn a_rendered_document_over_a_whole_capture_says_nothing() {
     let ladder = document(&wire.call(
         "render_ladder",
         json!({"call_id": call_id, "format": "markdown"}),
-    ));
+    )?)?;
     assert!(
         ladder.starts_with("# Call Report"),
         "the drawing opens exactly as it always did: {ladder}"
     );
+    Ok(())
 }
 
 // ── no regression on an intact, drained capture ─────────────────────────
 
 /// Everything a drained intact capture used to answer, it still answers.
 #[test]
-fn a_drained_intact_capture_is_unchanged() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
+fn a_drained_intact_capture_is_unchanged() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
 
-    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000})));
+    let page = payload(&wire.call("list_dialogs", json!({"limit": 1000}))?)?;
     assert_eq!(page[EXHAUSTED], json!(true), "{page}");
     assert_eq!(page[STOPPED_EARLY], json!(false), "{page}");
     assert_eq!(
@@ -852,31 +863,33 @@ fn a_drained_intact_capture_is_unchanged() {
     // The structured view and the text view remain ONE document, which is the
     // guarantee `mcp::structured` exists to hold and which a rewrite of the
     // text block could quietly break.
-    let reply = wire.call("list_dialogs", json!({"limit": 1000}));
+    let reply = wire.call("list_dialogs", json!({"limit": 1000}))?;
     assert_eq!(
         reply["result"]["structuredContent"],
-        payload(&reply),
+        payload(&reply)?,
         "structuredContent is parsed FROM the text block: {reply}"
     );
+    Ok(())
 }
 
 /// A tool whose answer cannot move with the load is not annotated.
 #[test]
-fn source_independent_tools_are_not_stamped() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
+fn source_independent_tools_are_not_stamped() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
 
     for (tool, args) in [
         ("explain_response_code", json!({"code": 488})),
         ("server_capabilities", json!({})),
     ] {
-        let body = payload(&wire.call(tool, args));
+        let body = payload(&wire.call(tool, args)?)?;
         assert!(
             body.get(EXHAUSTED).is_none() && body.get(STOPPED_EARLY).is_none(),
             "{tool} answers the same whatever the load state, so annotating it \
              would invent a dependency it does not have: {body}"
         );
     }
+    Ok(())
 }
 
 /// `timeline` carries the envelope IN its payload, not beside it.
@@ -893,12 +906,12 @@ fn source_independent_tools_are_not_stamped() {
 /// return to, and `mcp_protocol_features_test::no_tool_answers_with_a_top_level_array`
 /// holds that line for every drivable tool.
 #[test]
-fn the_timeline_envelope_arrives_inside_the_payload() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
+fn the_timeline_envelope_arrives_inside_the_payload() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
 
-    let reply = wire.call("timeline", json!({}));
-    let body = payload(&reply);
+    let reply = wire.call("timeline", json!({}))?;
+    let body = payload(&reply)?;
     assert!(
         body.is_object(),
         "timeline answers with an envelope now; an array would have nowhere to \
@@ -910,6 +923,7 @@ fn the_timeline_envelope_arrives_inside_the_payload() {
         body.get("buckets").is_some(),
         "the rows are still there, under a key: {body}"
     );
+    Ok(())
 }
 
 // ── the enumeration, derived from the source ────────────────────────────
@@ -1046,11 +1060,11 @@ const NOT_PROBED: &[(&str, &str)] = &[
 /// the file walk and the block boundary is a second place for either to go
 /// wrong: one derivation would then agree with any implementation while the
 /// other held the line, and nothing would say which of them was blind.
-fn tools_matching(markers: &[&str]) -> Vec<String> {
+fn tools_matching(markers: &[&str]) -> Result<Vec<String>, TestError> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mcp");
     let mut files: Vec<PathBuf> = Vec::new();
     for dir in [root.clone(), root.join("tools")] {
-        for entry in std::fs::read_dir(&dir).expect("read src/mcp").flatten() {
+        for entry in std::fs::read_dir(&dir)?.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "rs") {
                 files.push(path);
@@ -1066,7 +1080,7 @@ fn tools_matching(markers: &[&str]) -> Vec<String> {
 
     let mut found = Vec::new();
     for path in files {
-        let text = std::fs::read_to_string(&path).expect("read a source file");
+        let text = std::fs::read_to_string(&path)?;
         let src = source_scan::production_source(&text);
         // Each handler runs from its `#[tool(` attribute to the next one (or to
         // the end of the production text), which is a superset of its body and
@@ -1089,7 +1103,7 @@ fn tools_matching(markers: &[&str]) -> Vec<String> {
     }
     found.sort();
     found.dedup();
-    found
+    Ok(found)
 }
 
 /// Tools whose answer is derived from the capture, read out of the source.
@@ -1098,7 +1112,7 @@ fn tools_matching(markers: &[&str]) -> Vec<String> {
 /// against this gate without anyone remembering to add it. The markers are the
 /// ways a handler reaches the capture: the two stores directly, or one of the
 /// helpers that reads them for it.
-fn capture_derived_tools() -> Vec<String> {
+fn capture_derived_tools() -> Result<Vec<String>, TestError> {
     tools_matching(&[
         "self.dialog_store",
         "self.stream_store",
@@ -1117,7 +1131,7 @@ fn capture_derived_tools() -> Vec<String> {
 /// is derived for the reason [`capture_derived_tools`] is — the fourth tool to
 /// grow a `markdown` arm has to be measured by [`RENDERED`] without anyone
 /// remembering to put it there.
-fn tools_that_render_a_document() -> Vec<String> {
+fn tools_that_render_a_document() -> Result<Vec<String>, TestError> {
     tools_matching(&["ReportFormat::Markdown"])
 }
 
@@ -1127,8 +1141,8 @@ fn tools_that_render_a_document() -> Vec<String> {
 /// rendering tool would quietly not be on. The set it must cover is derived
 /// from the source instead, which is the direction that fails safe.
 #[test]
-fn every_tool_that_renders_a_document_is_driven_in_both_formats() {
-    let derived = tools_that_render_a_document();
+fn every_tool_that_renders_a_document_is_driven_in_both_formats() -> Result<(), TestError> {
+    let derived = tools_that_render_a_document()?;
     assert!(
         derived.len() >= 3,
         "only {} tools with a rendered arm were derived from src/mcp. A \
@@ -1148,12 +1162,13 @@ fn every_tool_that_renders_a_document_is_driven_in_both_formats() {
             );
         }
     }
+    Ok(())
 }
 
 /// The derivation finds a real population, and nothing it finds has opted out.
 #[test]
-fn no_capture_derived_tool_is_marked_source_independent() {
-    let derived = capture_derived_tools();
+fn no_capture_derived_tool_is_marked_source_independent() -> Result<(), TestError> {
+    let derived = capture_derived_tools()?;
     assert!(
         derived.len() >= 30,
         "only {} capture-derived tools were derived from src/mcp. A scanner \
@@ -1171,12 +1186,13 @@ fn no_capture_derived_tool_is_marked_source_independent() {
         "these read a capture store and are still marked source-independent, so \
          their answers move with the load and say nothing about it: {opted_out:?}"
     );
+    Ok(())
 }
 
 /// Every capture-derived tool is either probed on the wire or excused by name.
 #[test]
-fn every_capture_derived_tool_is_probed_or_excused() {
-    let derived = capture_derived_tools();
+fn every_capture_derived_tool_is_probed_or_excused() -> Result<(), TestError> {
+    let derived = capture_derived_tools()?;
     let missing: Vec<&String> = derived
         .iter()
         .filter(|name| {
@@ -1196,15 +1212,16 @@ fn every_capture_derived_tool_is_probed_or_excused() {
         PROBES.len(),
         NOT_PROBED.len()
     );
+    Ok(())
 }
 
 /// Every probed tool really carries both facts, read off the wire.
 #[test]
-fn every_probed_tool_carries_both_facts() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    wire.drain();
-    let call_id = wire.a_call_id();
-    let registered = wire.tool_names();
+fn every_probed_tool_carries_both_facts() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    wire.drain()?;
+    let call_id = wire.a_call_id()?;
+    let registered = wire.tool_names()?;
 
     assert!(
         PROBES.len() >= 25,
@@ -1218,14 +1235,14 @@ fn every_probed_tool_carries_both_facts() {
             "{tool} is probed here and the server does not register it"
         );
         let args: Value = serde_json::from_str(&template.replace("{CALL}", &call_id))
-            .unwrap_or_else(|e| panic!("{tool}: probe arguments are not JSON: {e}"));
-        let reply = wire.call(tool, args);
+            .map_err(|e| format!("{tool}: probe arguments are not JSON: {e}"))?;
+        let reply = wire.call(tool, args)?;
         assert_ne!(
             reply["result"]["isError"],
             json!(true),
             "{tool} refused its probe: {reply}"
         );
-        let body = payload(&reply);
+        let body = payload(&reply)?;
         assert_eq!(
             body[EXHAUSTED],
             json!(true),
@@ -1238,13 +1255,14 @@ fn every_probed_tool_carries_both_facts() {
             "{tool} does not say whether the capture was read in full: {body}"
         );
     }
+    Ok(())
 }
 
 /// Every excuse names a tool the server actually registers.
 #[test]
-fn every_excused_tool_is_registered_and_reasoned() {
-    let mut wire = Wire::start(&sample(INTACT), &[]);
-    let registered = wire.tool_names();
+fn every_excused_tool_is_registered_and_reasoned() -> Result<(), TestError> {
+    let mut wire = Wire::start(&sample(INTACT), &[])?;
+    let registered = wire.tool_names()?;
     assert!(
         registered.len() >= 40,
         "only {} tools registered; tools/list stopped answering",
@@ -1267,4 +1285,5 @@ fn every_excused_tool_is_registered_and_reasoned() {
             "{tool} is marked source-independent and is not a registered tool"
         );
     }
+    Ok(())
 }

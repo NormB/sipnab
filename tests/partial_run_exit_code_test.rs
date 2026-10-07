@@ -34,6 +34,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+/// Any error, boxed, so `?` works on every error type alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Exit code the run is expected to return once it has failed to do what was
 /// asked. Not hard-coded from taste: `documented_exit_code_matches_the_binary`
 /// reads it back out of `docs/cli-reference.md` and compares.
@@ -46,12 +49,12 @@ fn fixture() -> PathBuf {
 }
 
 /// Run the binary and return the whole outcome.
-fn sipnab(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sipnab"))
+fn sipnab(args: &[&str]) -> Result<Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .output()
-        .expect("the sipnab binary runs")
+        .map_err(|e| format!("the sipnab binary runs: {e:?}"))?)
 }
 
 /// The exit code, or a message naming the signal that replaced it.
@@ -59,13 +62,14 @@ fn sipnab(args: &[&str]) -> Output {
 /// `Option::None` from `ExitStatus::code()` means the process was killed by a
 /// signal; treating that as "non-zero, good enough" would let a segfault pass
 /// a test about exit codes.
-fn code_of(out: &Output) -> i32 {
+fn code_of(out: &Output) -> Result<i32, TestError> {
     match out.status.code() {
-        Some(c) => c,
-        None => panic!(
+        Some(c) => Ok(c),
+        None => Err(format!(
             "sipnab was killed by a signal, not exited: {:?}",
             out.status
-        ),
+        )
+        .into()),
     }
 }
 
@@ -80,23 +84,25 @@ fn stderr_of(out: &Output) -> String {
 /// Copy the leading 60% of the fixture into `dir`, producing a pcap whose last
 /// record is cut in half — exactly what a `tcpdump` killed mid-write leaves
 /// behind, and what libpcap reports as `truncated dump file`.
-fn truncated_capture(dir: &Path) -> PathBuf {
-    let whole = std::fs::read(fixture()).expect("fixture is readable");
+fn truncated_capture(dir: &Path) -> Result<PathBuf, TestError> {
+    let whole = std::fs::read(fixture()).map_err(|e| format!("fixture is readable: {e:?}"))?;
     let cut = whole.len() * 60 / 100;
     let path = dir.join("half.pcap");
-    std::fs::write(&path, &whole[..cut]).expect("truncated fixture is writable");
-    path
+    std::fs::write(&path, &whole[..cut])
+        .map_err(|e| format!("truncated fixture is writable: {e:?}"))?;
+    Ok(path)
 }
 
 /// Every NDJSON line of a `--json-dialogs` run, parsed.
-fn ndjson(out: &str) -> Vec<serde_json::Value> {
-    out.lines()
+fn ndjson(out: &str) -> Result<Vec<serde_json::Value>, TestError> {
+    Ok(out
+        .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
             serde_json::from_str(l)
-                .unwrap_or_else(|e| panic!("every --json-dialogs line is JSON: {e}: {l}"))
+                .map_err(|e| format!("every --json-dialogs line is JSON: {e}: {l}"))
         })
-        .collect()
+        .collect::<Result<_, _>>()?)
 }
 
 /// The run-integrity trailer, if the run emitted one.
@@ -118,21 +124,21 @@ fn dialog_lines(lines: &[serde_json::Value]) -> Vec<&serde_json::Value> {
 // ── The input was not read in full ────────────────────────────────────────
 
 #[test]
-fn a_truncated_capture_exits_non_zero() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let half = truncated_capture(dir.path());
+fn a_truncated_capture_exits_non_zero() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let half = truncated_capture(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
         &half.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
 
     // The specific code, not merely "non-zero": a binary that failed to build
     // or rejected the arguments also exits non-zero, and neither is this.
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         EXPECTED_FAILURE_CODE,
         "stdout={} stderr={}",
         stdout_of(&out),
@@ -140,16 +146,17 @@ fn a_truncated_capture_exits_non_zero() {
     );
     // And the run really did the work — a partial read is still worth looking
     // at, and this is what tells a rejected invocation from a completed one.
-    let lines = ndjson(&stdout_of(&out));
+    let lines = ndjson(&stdout_of(&out))?;
     assert!(
         !dialog_lines(&lines).is_empty(),
         "a truncated capture must still report the dialogs it did read: {}",
         stdout_of(&out)
     );
+    Ok(())
 }
 
 #[test]
-fn an_intact_capture_still_exits_zero() {
+fn an_intact_capture_still_exits_zero() -> Result<(), TestError> {
     // The regression that matters most. Every other test here can be satisfied
     // by a binary that always fails; this is the one that cannot.
     let out = sipnab(&[
@@ -158,35 +165,36 @@ fn an_intact_capture_still_exits_zero() {
         &fixture().display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         0,
         "an intact capture must still exit 0; stderr={}",
         stderr_of(&out)
     );
-    let lines = ndjson(&stdout_of(&out));
+    let lines = ndjson(&stdout_of(&out))?;
     assert!(!dialog_lines(&lines).is_empty(), "and must report dialogs");
+    Ok(())
 }
 
 #[test]
-fn a_truncated_capture_marks_its_json() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let half = truncated_capture(dir.path());
+fn a_truncated_capture_marks_its_json() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let half = truncated_capture(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
         &half.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
-    let lines = ndjson(&stdout_of(&out));
-    let m = marker(&lines).unwrap_or_else(|| {
-        panic!(
+    ])?;
+    let lines = ndjson(&stdout_of(&out))?;
+    let m = marker(&lines).ok_or_else(|| {
+        format!(
             "a truncated capture's JSON must carry the run-integrity trailer: {}",
             stdout_of(&out)
         )
-    });
+    })?;
 
     assert_eq!(
         m["input_complete"],
@@ -198,7 +206,7 @@ fn a_truncated_capture_marks_its_json() {
     assert_eq!(m["files"]["stopped_early"], serde_json::json!(1), "{m}");
     // The stdout half must agree with the `$?` half, or a consumer of one
     // reaches a different verdict than a consumer of the other.
-    assert_eq!(code_of(&out), EXPECTED_FAILURE_CODE);
+    assert_eq!(code_of(&out)?, EXPECTED_FAILURE_CODE);
     // And it must name a reason, not merely raise a flag: a bare `false` says
     // something is wrong without saying what, which is the half-answer the
     // exit code alone already gives.
@@ -210,18 +218,19 @@ fn a_truncated_capture_marks_its_json() {
             .contains("not read to the end")),
         "{m}"
     );
+    Ok(())
 }
 
 #[test]
-fn an_intact_capture_does_not_mark_its_json() {
+fn an_intact_capture_does_not_mark_its_json() -> Result<(), TestError> {
     let out = sipnab(&[
         "-N",
         "-I",
         &fixture().display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
-    let lines = ndjson(&stdout_of(&out));
+    ])?;
+    let lines = ndjson(&stdout_of(&out))?;
     assert!(
         marker(&lines).is_none(),
         "a clean run must declare nothing: {}",
@@ -233,19 +242,20 @@ fn an_intact_capture_does_not_mark_its_json() {
          produced nothing: {}",
         stdout_of(&out)
     );
+    Ok(())
 }
 
 #[test]
-fn a_truncated_capture_marks_its_report() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let half = truncated_capture(dir.path());
+fn a_truncated_capture_marks_its_report() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let half = truncated_capture(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
         &half.display().to_string(),
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     let text = stdout_of(&out);
     assert!(
         text.contains("INCOMPLETE RUN"),
@@ -256,20 +266,21 @@ fn a_truncated_capture_marks_its_report() {
         text.contains("not read to the end"),
         "and it must say what happened: {text}"
     );
-    assert_eq!(code_of(&out), EXPECTED_FAILURE_CODE);
+    assert_eq!(code_of(&out)?, EXPECTED_FAILURE_CODE);
+    Ok(())
 }
 
 #[test]
-fn an_intact_capture_does_not_mark_its_report() {
+fn an_intact_capture_does_not_mark_its_report() -> Result<(), TestError> {
     let out = sipnab(&[
         "-N",
         "-I",
         &fixture().display().to_string(),
         "--report",
         "--no-cli-print",
-    ]);
+    ])?;
     let text = stdout_of(&out);
-    assert_eq!(code_of(&out), 0, "stderr={}", stderr_of(&out));
+    assert_eq!(code_of(&out)?, 0, "stderr={}", stderr_of(&out));
     assert!(
         !text.contains("INCOMPLETE"),
         "a clean report must be unchanged: {text}"
@@ -278,22 +289,23 @@ fn an_intact_capture_does_not_mark_its_report() {
         !text.trim().is_empty(),
         "and it must actually be a report: {text}"
     );
+    Ok(())
 }
 
 #[test]
-fn the_human_signal_survives_the_machine_one() {
+fn the_human_signal_survives_the_machine_one() -> Result<(), TestError> {
     // The stderr lines were never the problem — they were the only thing that
     // worked. Trading them for the exit code would be a different defect with
     // the same shape.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let half = truncated_capture(dir.path());
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let half = truncated_capture(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
         &half.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     let err = stderr_of(&out);
     assert!(
         err.contains("truncated dump file"),
@@ -311,6 +323,7 @@ fn the_human_signal_survives_the_machine_one() {
         err.contains("1 stopped early"),
         "and must still say how many stopped early: {err}"
     );
+    Ok(())
 }
 
 // ── A requested --plugin did not load ─────────────────────────────────────
@@ -318,7 +331,7 @@ fn the_human_signal_survives_the_machine_one() {
 /// A conforming plugin, assembled from WAT so the test needs no wasm32
 /// toolchain. Mirrors the host's own fixtures in `src/plugin/mod.rs`.
 #[cfg(feature = "plugins")]
-fn loadable_plugin(dir: &Path) -> PathBuf {
+fn loadable_plugin(dir: &Path) -> Result<PathBuf, TestError> {
     let abi = sipnab::plugin::ABI_VERSION;
     let wat = format!(
         r#"(module
@@ -328,16 +341,16 @@ fn loadable_plugin(dir: &Path) -> PathBuf {
              (func (export "sipnab_dealloc") (param i32 i32))
              (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#
     );
-    let bytes = wat::parse_str(&wat).expect("fixture WAT assembles");
+    let bytes = wat::parse_str(&wat).map_err(|e| format!("fixture WAT assembles: {e:?}"))?;
     let path = dir.join("ok.wasm");
-    std::fs::write(&path, bytes).expect("plugin is writable");
-    path
+    std::fs::write(&path, bytes).map_err(|e| format!("plugin is writable: {e:?}"))?;
+    Ok(path)
 }
 
 #[cfg(feature = "plugins")]
 #[test]
-fn an_absent_plugin_exits_non_zero() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_absent_plugin_exits_non_zero() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
     let missing = dir.path().join("not-here.wasm");
     let out = sipnab(&[
         "-N",
@@ -347,9 +360,9 @@ fn an_absent_plugin_exits_non_zero() {
         &missing.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         EXPECTED_FAILURE_CODE,
         "stderr={}",
         stderr_of(&out)
@@ -361,9 +374,9 @@ fn an_absent_plugin_exits_non_zero() {
     );
     // The capture itself was whole, so the dialogs are still there and the
     // trailer must blame the plugin rather than the input.
-    let lines = ndjson(&stdout_of(&out));
+    let lines = ndjson(&stdout_of(&out))?;
     assert!(!dialog_lines(&lines).is_empty(), "{}", stdout_of(&out));
-    let m = marker(&lines).unwrap_or_else(|| panic!("no trailer: {}", stdout_of(&out)));
+    let m = marker(&lines).ok_or_else(|| format!("no trailer: {}", stdout_of(&out)))?;
     assert_eq!(m["plugins"]["requested"], serde_json::json!(1), "{m}");
     assert_eq!(m["plugins"]["failed"], serde_json::json!(1), "{m}");
     assert_eq!(m["plugins"]["loaded"], serde_json::json!(0), "{m}");
@@ -372,11 +385,12 @@ fn an_absent_plugin_exits_non_zero() {
         serde_json::json!(1),
         "the capture was whole; only the plugin failed: {m}"
     );
+    Ok(())
 }
 
 #[cfg(feature = "plugins")]
 #[test]
-fn an_oversized_plugin_exits_non_zero() {
+fn an_oversized_plugin_exits_non_zero() -> Result<(), TestError> {
     // A second, distinct failure mode: the file exists and is readable, and is
     // refused by the size cap before a single byte reaches the interpreter.
     //
@@ -384,9 +398,10 @@ fn an_oversized_plugin_exits_non_zero() {
     // stderr assertion below is the tripwire that keeps that from going stale
     // silently. Raise the cap without touching this file and the run fails for
     // a different reason (not valid WASM), which this test then reports.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
     let fat = dir.path().join("fat.wasm");
-    std::fs::write(&fat, vec![0u8; 16 * 1024 * 1024 + 1]).expect("oversized plugin is writable");
+    std::fs::write(&fat, vec![0u8; 16 * 1024 * 1024 + 1])
+        .map_err(|e| format!("oversized plugin is writable: {e:?}"))?;
     let out = sipnab(&[
         "-N",
         "-I",
@@ -395,9 +410,9 @@ fn an_oversized_plugin_exits_non_zero() {
         &fat.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         EXPECTED_FAILURE_CODE,
         "stderr={}",
         stderr_of(&out)
@@ -407,19 +422,21 @@ fn an_oversized_plugin_exits_non_zero() {
         "the size cap must be the reason, not some later one: {}",
         stderr_of(&out)
     );
-    let m = marker(&ndjson(&stdout_of(&out)))
-        .unwrap_or_else(|| panic!("no trailer: {}", stdout_of(&out)));
+    let m = marker(&ndjson(&stdout_of(&out))?)
+        .ok_or_else(|| format!("no trailer: {}", stdout_of(&out)))?;
     assert_eq!(m["plugins"]["failed"], serde_json::json!(1), "{m}");
+    Ok(())
 }
 
 #[cfg(feature = "plugins")]
 #[test]
-fn a_plugin_that_is_not_wasm_exits_non_zero() {
+fn a_plugin_that_is_not_wasm_exits_non_zero() -> Result<(), TestError> {
     // A third failure mode, and the one the reproducer in the backlog uses:
     // the path resolves and reads, and holds no module.
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
     let junk = dir.path().join("junk.wasm");
-    std::fs::write(&junk, b"this is not a wasm module").expect("junk plugin is writable");
+    std::fs::write(&junk, b"this is not a wasm module")
+        .map_err(|e| format!("junk plugin is writable: {e:?}"))?;
     let out = sipnab(&[
         "-N",
         "-I",
@@ -428,9 +445,9 @@ fn a_plugin_that_is_not_wasm_exits_non_zero() {
         &junk.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         EXPECTED_FAILURE_CODE,
         "stderr={}",
         stderr_of(&out)
@@ -440,15 +457,16 @@ fn a_plugin_that_is_not_wasm_exits_non_zero() {
         "{}",
         stderr_of(&out)
     );
+    Ok(())
 }
 
 #[cfg(feature = "plugins")]
 #[test]
-fn a_plugin_that_loads_still_exits_zero() {
+fn a_plugin_that_loads_still_exits_zero() -> Result<(), TestError> {
     // The other regression guard. A fix that failed every run with `--plugin`
     // would pass all three tests above.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let good = loadable_plugin(dir.path());
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let good = loadable_plugin(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
@@ -457,29 +475,30 @@ fn a_plugin_that_loads_still_exits_zero() {
         &good.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         0,
         "a plugin that loads must not fail the run; stderr={}",
         stderr_of(&out)
     );
-    let lines = ndjson(&stdout_of(&out));
+    let lines = ndjson(&stdout_of(&out))?;
     assert!(
         marker(&lines).is_none(),
         "and must declare nothing: {}",
         stdout_of(&out)
     );
     assert!(!dialog_lines(&lines).is_empty(), "{}", stdout_of(&out));
+    Ok(())
 }
 
 #[cfg(feature = "plugins")]
 #[test]
-fn one_failed_plugin_among_several_is_counted_as_one() {
+fn one_failed_plugin_among_several_is_counted_as_one() -> Result<(), TestError> {
     // The `--on-dialog-exec` standard: distinguish "none ran" from "one of
     // three did not". A flag cannot; the counts can.
-    let dir = tempfile::tempdir().expect("tempdir");
-    let good = loadable_plugin(dir.path());
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let good = loadable_plugin(dir.path())?;
     let missing = dir.path().join("not-here.wasm");
     let out = sipnab(&[
         "-N",
@@ -491,19 +510,20 @@ fn one_failed_plugin_among_several_is_counted_as_one() {
         &missing.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
-    assert_eq!(code_of(&out), EXPECTED_FAILURE_CODE);
-    let m = marker(&ndjson(&stdout_of(&out)))
-        .unwrap_or_else(|| panic!("no trailer: {}", stdout_of(&out)));
+    ])?;
+    assert_eq!(code_of(&out)?, EXPECTED_FAILURE_CODE);
+    let m = marker(&ndjson(&stdout_of(&out))?)
+        .ok_or_else(|| format!("no trailer: {}", stdout_of(&out)))?;
     assert_eq!(m["plugins"]["requested"], serde_json::json!(2), "{m}");
     assert_eq!(m["plugins"]["loaded"], serde_json::json!(1), "{m}");
     assert_eq!(m["plugins"]["failed"], serde_json::json!(1), "{m}");
+    Ok(())
 }
 
 // ── The published contract ────────────────────────────────────────────────
 
 #[test]
-fn documented_exit_code_matches_the_binary() {
+fn documented_exit_code_matches_the_binary() -> Result<(), TestError> {
     // `docs/cli-reference.md` says "Scripts can rely on these" above its
     // exit-code table. A gate that only checked the binary against a constant
     // in this file would let the code and the published contract drift apart
@@ -512,12 +532,12 @@ fn documented_exit_code_matches_the_binary() {
     let doc = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli-reference.md"),
     )
-    .expect("docs/cli-reference.md is readable");
+    .map_err(|e| format!("docs/cli-reference.md is readable: {e:?}"))?;
 
     let table = doc
         .split("## Exit codes")
         .nth(1)
-        .unwrap_or_else(|| panic!("docs/cli-reference.md has an '## Exit codes' section"));
+        .ok_or("docs/cli-reference.md has an '## Exit codes' section")?;
 
     // The row that claims this class of failure. Matched on the words the
     // table itself uses, so renaming the row is a deliberate act that shows up
@@ -526,7 +546,7 @@ fn documented_exit_code_matches_the_binary() {
         .lines()
         .take_while(|l| !l.starts_with("## ") || l.starts_with("## Exit codes"))
         .find(|l| l.starts_with('|') && l.contains("capture error"))
-        .unwrap_or_else(|| panic!("the exit-code table has no row for a capture error:\n{table}"));
+        .ok_or_else(|| format!("the exit-code table has no row for a capture error:\n{table}"))?;
 
     let documented: i32 = row
         .split('|')
@@ -535,44 +555,45 @@ fn documented_exit_code_matches_the_binary() {
         .trim()
         .trim_matches('`')
         .parse()
-        .unwrap_or_else(|e| panic!("the code cell of {row:?} is a number: {e}"));
+        .map_err(|e| format!("the code cell of {row:?} is a number: {e}"))?;
 
     assert_eq!(
         documented, EXPECTED_FAILURE_CODE,
         "this suite and the published table must agree"
     );
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let half = truncated_capture(dir.path());
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+    let half = truncated_capture(dir.path())?;
     let out = sipnab(&[
         "-N",
         "-I",
         &half.display().to_string(),
         "--json-dialogs",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(
-        code_of(&out),
+        code_of(&out)?,
         documented,
         "the binary must return the code docs/cli-reference.md publishes for a \
          capture error; stderr={}",
         stderr_of(&out)
     );
+    Ok(())
 }
 
 #[test]
-fn the_exit_code_table_documents_the_partial_read() {
+fn the_exit_code_table_documents_the_partial_read() -> Result<(), TestError> {
     // The other half of the doc gate: the table must actually describe the new
     // behavior, not merely happen to carry a compatible number. Without this
     // the fix ships with a contract that never mentions it.
     let doc = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli-reference.md"),
     )
-    .expect("docs/cli-reference.md is readable");
+    .map_err(|e| format!("docs/cli-reference.md is readable: {e:?}"))?;
     let table = doc
         .split("## Exit codes")
         .nth(1)
-        .unwrap_or_else(|| panic!("docs/cli-reference.md has an '## Exit codes' section"));
+        .ok_or("docs/cli-reference.md has an '## Exit codes' section")?;
     let row = table
         .lines()
         .find(|l| l.starts_with('|') && l.contains("capture error"))
@@ -586,6 +607,7 @@ fn the_exit_code_table_documents_the_partial_read() {
         row.contains("--plugin"),
         "and that a --plugin that would not load lands here: {row}"
     );
+    Ok(())
 }
 
 /// Every line of a clean `--json-dialogs` run must be a dialog.
@@ -613,7 +635,7 @@ fn the_exit_code_table_documents_the_partial_read() {
 /// the invariant. Emitting the trailer unconditionally fails four tests here,
 /// so the pair does hold the ground between them.
 #[test]
-fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
+fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() -> Result<(), TestError> {
     let out = sipnab(&[
         "-N",
         "-I",
@@ -621,7 +643,7 @@ fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
         "--json-dialogs",
         "--no-cli-print",
         "--quiet",
-    ]);
+    ])?;
     assert_eq!(out.status.code(), Some(0), "the control run must be clean");
     let stdout = String::from_utf8_lossy(&out.stdout);
     let lines: Vec<&str> = stdout.lines().filter(|l| l.starts_with('{')).collect();
@@ -631,7 +653,7 @@ fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
     );
     for line in &lines {
         let v: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("unparseable line: {e}\n{line}"));
+            serde_json::from_str(line).map_err(|e| format!("unparseable line: {e}\n{line}"))?;
         assert!(
             v.get("call_id").is_some(),
             "a clean run put a line in the dialog stream that is not a dialog. \
@@ -642,6 +664,7 @@ fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
             "the run trailer must not appear on a complete read:\n{line}"
         );
     }
+    Ok(())
 }
 
 /// A partial read adds exactly one line, and it is unmistakably not a dialog.
@@ -650,12 +673,13 @@ fn every_line_of_a_clean_json_dialogs_run_is_a_dialog() {
 /// it when the answer really is partial. It carries a key no dialog has, so a
 /// consumer that checks can tell them apart rather than guessing.
 #[test]
-fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
     let src = Path::new("tests/pcap-samples/sip-rtp-g711.pcap");
-    let whole = std::fs::read(src).expect("read fixture");
+    let whole = std::fs::read(src).map_err(|e| format!("read fixture: {e:?}"))?;
     let cut = dir.path().join("truncated.pcap");
-    std::fs::write(&cut, &whole[..whole.len() * 60 / 100]).expect("write truncated");
+    std::fs::write(&cut, &whole[..whole.len() * 60 / 100])
+        .map_err(|e| format!("write truncated: {e:?}"))?;
 
     let clean = sipnab(&[
         "-N",
@@ -664,7 +688,7 @@ fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() {
         "--json-dialogs",
         "--no-cli-print",
         "--quiet",
-    ]);
+    ])?;
     let partial = sipnab(&[
         "-N",
         "-I",
@@ -672,7 +696,7 @@ fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() {
         "--json-dialogs",
         "--no-cli-print",
         "--quiet",
-    ]);
+    ])?;
     assert_eq!(partial.status.code(), Some(1), "a partial read exits 1");
 
     let count = |o: &Output| -> (usize, usize) {
@@ -699,4 +723,5 @@ fn a_partial_read_adds_exactly_one_line_and_it_is_not_a_dialog() {
         partial_trailers, 1,
         "a partial read must declare itself exactly once"
     );
+    Ok(())
 }

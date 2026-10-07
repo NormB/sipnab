@@ -61,6 +61,8 @@ mod absence_scan;
 
 use absence_scan::split_raw_strings;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The repository root.
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -284,7 +286,7 @@ fn unbalanced_brace_source() -> String {
 /// either poisoned text (fixtures counted as code) or truncated text (code
 /// blanked as fixture), and the counts it reports are unrelated to the tree.
 #[test]
-fn the_raw_string_splitter_handles_every_shape_that_broke_an_ad_hoc_one() {
+fn the_raw_string_splitter_handles_every_shape_that_broke_an_ad_hoc_one() -> Result<(), TestError> {
     let src = raw_string_shapes();
     let (stripped, inner) = split_raw_strings(&src);
 
@@ -348,7 +350,8 @@ fn the_raw_string_splitter_handles_every_shape_that_broke_an_ad_hoc_one() {
     // string. Backreferences are not available in the `regex` crate, so the
     // pattern below is the opener half of `r(#*)\"(.*?)\"\\1` — which is
     // where the over-match happens.
-    let opener = Regex::new("r#*\"").expect("the over-matching opener pattern must compile");
+    let opener = Regex::new("r#*\"")
+        .map_err(|e| format!("the over-matching opener pattern must compile: {e}"))?;
     let regex_hits = opener.find_iter(&src).count();
     assert_eq!(
         regex_hits, 6,
@@ -368,6 +371,7 @@ fn the_raw_string_splitter_handles_every_shape_that_broke_an_ad_hoc_one() {
         "the regex no longer over-matches relative to the splitter, so the \
          reason the splitter exists is no longer demonstrated here"
     );
+    Ok(())
 }
 
 // ── 2. the toggle, pinned as wrong ──────────────────────────────────
@@ -383,7 +387,7 @@ fn the_raw_string_splitter_handles_every_shape_that_broke_an_ad_hoc_one() {
 /// file after its first single-line raw string — the shape that produced
 /// roughly 180 false positives.
 #[test]
-fn the_naive_in_raw_line_toggle_disagrees_with_the_splitter() {
+fn the_naive_in_raw_line_toggle_disagrees_with_the_splitter() -> Result<(), TestError> {
     let src = toggle_fixture();
     let naive = naive_in_raw_flags(&src);
     let correct = correct_in_raw_flags(&src);
@@ -429,6 +433,7 @@ fn the_naive_in_raw_line_toggle_disagrees_with_the_splitter() {
          string, and the toggle must still be calling it quoted for this \
          fixture to reproduce the incident"
     );
+    Ok(())
 }
 
 // ── 3. the delimiter ────────────────────────────────────────────────
@@ -442,7 +447,7 @@ fn the_naive_in_raw_line_toggle_disagrees_with_the_splitter() {
 /// tests reports names that do not exist as missing and module names as
 /// phantoms, and the two lists are the same tests seen twice.
 #[test]
-fn a_module_qualified_test_name_is_its_last_path_segment() {
+fn a_module_qualified_test_name_is_its_last_path_segment() -> Result<(), TestError> {
     let listing = [
         "mod_a::test_one: test",
         "test_two: test",
@@ -488,6 +493,7 @@ fn a_module_qualified_test_name_is_its_last_path_segment() {
         "the phantom and missing counts came apart; their being equal is the \
          signature that says one truncation is being reported from both ends"
     );
+    Ok(())
 }
 
 // ── 4. the field name ───────────────────────────────────────────────
@@ -502,9 +508,9 @@ fn a_module_qualified_test_name_is_its_last_path_segment() {
 /// an empty column reads as unlabeled data, and rows that are fully
 /// labeled get reported as missing their labels.
 #[test]
-fn a_missing_json_key_is_not_an_empty_value() {
+fn a_missing_json_key_is_not_an_empty_value() -> Result<(), TestError> {
     let row: serde_json::Value = serde_json::from_str("{\"from_user\":\"alice\",\"to_user\":\"\"}")
-        .expect("the fixture row must parse as JSON");
+        .map_err(|e| format!("the fixture row must parse as JSON: {e}"))?;
 
     assert!(
         row.get("from").is_none(),
@@ -555,6 +561,7 @@ fn a_missing_json_key_is_not_an_empty_value() {
         "the present empty value indexed as Null, which would make the two \
          cases identical even to a caller that checks"
     );
+    Ok(())
 }
 
 // ── 5. exercised by the real tree ───────────────────────────────────
@@ -580,7 +587,7 @@ const MINIMUM_RAW_STRINGS: usize = 25;
 /// blanked — so the definition scanners under-count silently — or a fixture
 /// marker is being counted as a definition, which is the phantom-test case.
 #[test]
-fn the_raw_string_splitter_is_exercised_by_the_real_test_tree() {
+fn the_raw_string_splitter_is_exercised_by_the_real_test_tree() -> Result<(), TestError> {
     let mut total_raw = 0usize;
     let mut files_with_raw = 0usize;
     let mut markers_before = 0usize;
@@ -649,6 +656,7 @@ fn the_raw_string_splitter_is_exercised_by_the_real_test_tree() {
          above should have named where, and an empty list with unequal totals \
          means this test's own accounting is broken"
     );
+    Ok(())
 }
 
 // ── 6. counting versus matching ─────────────────────────────────────
@@ -666,7 +674,7 @@ fn the_raw_string_splitter_is_exercised_by_the_real_test_tree() {
 /// small number confidently, and the number is a measure of where the
 /// stripper got stuck rather than of the tree.
 #[test]
-fn brace_counting_is_fooled_by_a_string_literal_and_matching_is_not() {
+fn brace_counting_is_fooled_by_a_string_literal_and_matching_is_not() -> Result<(), TestError> {
     let src = unbalanced_brace_source();
     assert_eq!(
         env_reads(&src),
@@ -726,4 +734,5 @@ fn brace_counting_is_fooled_by_a_string_literal_and_matching_is_not() {
          defect is that it removes too much, and if it now removes less the \
          comparison has inverted and the fixture needs rereading"
     );
+    Ok(())
 }

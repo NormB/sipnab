@@ -34,6 +34,9 @@ mod executable;
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+/// Any error, boxed, so `?` works on every error type alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// A capture with real dialogs and RTP, so payloads are not all empty.
 const PCAP: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
@@ -58,12 +61,12 @@ impl Wire {
     /// `--mcp-allow-save-findings` because `save_findings` declares an
     /// `outputSchema` and a server that refuses it cannot prove the payload
     /// conforms.
-    fn start() -> Self {
+    fn start() -> Result<Self, TestError> {
         Self::start_with(&[])
     }
 
     /// [`Self::start`] with `extra` arguments after the fixed set.
-    fn start_with(extra: &[&str]) -> Self {
+    fn start_with(extra: &[&str]) -> Result<Self, TestError> {
         let mut args = vec![
             "--mcp",
             "-N",
@@ -80,10 +83,10 @@ impl Wire {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .expect("spawn sipnab --mcp");
+            .map_err(|e| format!("spawn sipnab --mcp: {e:?}"))?;
 
         {
-            let stdin = child.stdin.as_mut().expect("stdin");
+            let stdin = child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
@@ -97,17 +100,17 @@ impl Wire {
                     }
                 })
             )
-            .expect("write initialize");
+            .map_err(|e| format!("write initialize: {e:?}"))?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
             )
-            .expect("write initialized");
-            stdin.flush().expect("flush");
+            .map_err(|e| format!("write initialized: {e:?}"))?;
+            stdin.flush().map_err(|e| format!("flush: {e:?}"))?;
         }
 
-        let stdout = child.stdout.take().expect("stdout");
+        let stdout = child.stdout.take().ok_or("stdout")?;
         let mut wire = Self {
             child,
             reader: BufReader::new(stdout),
@@ -121,20 +124,20 @@ impl Wire {
         const MAX_POLLS: usize = 400;
         let mut loaded = false;
         for _ in 0..MAX_POLLS {
-            let reply = wire.call("capture_status", json!({}), None);
+            let reply = wire.call("capture_status", json!({}), None)?;
             // Read from the TEXT block, never from `structuredContent`. The
             // harness must not depend on the feature these tests exist to
             // check: with the dependency in, removing structuredContent fails
             // every test here with "capture never finished loading", which
             // names the wrong cause.
-            if text_payload(&reply)["source_exhausted"] == json!(true) {
+            if text_payload(&reply)?["source_exhausted"] == json!(true) {
                 loaded = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert!(loaded, "capture never finished loading for {PCAP}");
-        wire
+        Ok(wire)
     }
 
     /// Issue one `tools/call` and return the raw JSON-RPC reply.
@@ -144,7 +147,12 @@ impl Wire {
     /// progress notifications back. Notifications seen while waiting land in
     /// [`Wire::notifications`], which is cleared per call so a test reads only
     /// what its own call produced.
-    fn call(&mut self, tool: &str, args: Value, progress_token: Option<&str>) -> Value {
+    fn call(
+        &mut self,
+        tool: &str,
+        args: Value,
+        progress_token: Option<&str>,
+    ) -> Result<Value, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         self.notifications.clear();
@@ -154,66 +162,66 @@ impl Wire {
             params["_meta"] = json!({"progressToken": token});
         }
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": params})
             )
-            .expect("write tool call");
-            stdin.flush().expect("flush");
+            .map_err(|e| format!("write tool call: {e:?}"))?;
+            stdin.flush().map_err(|e| format!("flush: {e:?}"))?;
         }
 
         let mut line = String::new();
         for _ in 0..MAX_LINES {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for {tool}");
+                return Err(format!("sipnab closed stdout while waiting for {tool}").into());
             }
             let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
             if msg["id"] == json!(id) {
-                return msg;
+                return Ok(msg);
             }
             if msg["method"].is_string() && msg["id"].is_null() {
                 self.notifications.push(msg);
             }
         }
-        panic!("no reply to {tool} within {MAX_LINES} lines");
+        Err(format!("no reply to {tool} within {MAX_LINES} lines").into())
     }
 
     /// Every tool the server advertises, with its full metadata.
-    fn tools(&mut self) -> Vec<Value> {
+    fn tools(&mut self) -> Result<Vec<Value>, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self.child.stdin.as_mut().ok_or("stdin")?;
             writeln!(
                 stdin,
                 "{}",
                 json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"})
             )
-            .expect("write tools/list");
-            stdin.flush().expect("flush");
+            .map_err(|e| format!("write tools/list: {e:?}"))?;
+            stdin.flush().map_err(|e| format!("flush: {e:?}"))?;
         }
         let mut line = String::new();
         for _ in 0..MAX_LINES {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for tools/list");
+                return Err("sipnab closed stdout while waiting for tools/list".into());
             }
             let Ok(msg) = serde_json::from_str::<Value>(line.trim()) else {
                 continue;
             };
             if msg["id"] == json!(id) {
-                return msg["result"]["tools"]
+                return Ok(msg["result"]["tools"]
                     .as_array()
-                    .expect("tools/list returns an array")
-                    .clone();
+                    .ok_or("tools/list returns an array")?
+                    .clone());
             }
         }
-        panic!("no reply to tools/list within {MAX_LINES} lines");
+        Err(format!("no reply to tools/list within {MAX_LINES} lines").into())
     }
 
     /// The `notifications/progress` params carried by the last call.
@@ -226,13 +234,13 @@ impl Wire {
     }
 
     /// The first Call-ID this capture holds, so no test hardcodes one.
-    fn a_call_id(&mut self) -> String {
-        let reply = self.call("list_dialogs", json!({"limit": 1}), None);
-        let payload = text_payload(&reply);
-        payload["dialogs"][0]["call_id"]
+    fn a_call_id(&mut self) -> Result<String, TestError> {
+        let reply = self.call("list_dialogs", json!({"limit": 1}), None)?;
+        let payload = text_payload(&reply)?;
+        Ok(payload["dialogs"][0]["call_id"]
             .as_str()
-            .unwrap_or_else(|| panic!("no dialogs in {PCAP}: {reply}"))
-            .to_string()
+            .ok_or_else(|| format!("no dialogs in {PCAP}: {reply}"))?
+            .to_string())
     }
 }
 
@@ -243,11 +251,11 @@ impl Drop for Wire {
 }
 
 /// The payload block of a successful tool result, parsed.
-fn text_payload(reply: &Value) -> Value {
+fn text_payload(reply: &Value) -> Result<Value, TestError> {
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("expected a text payload, got {reply}"));
-    serde_json::from_str(text).unwrap_or_else(|_| panic!("payload is not JSON: {text}"))
+        .ok_or_else(|| format!("expected a text payload, got {reply}"))?;
+    Ok(serde_json::from_str(text).map_err(|_| format!("payload is not JSON: {text}"))?)
 }
 
 /// Arguments that make each schema-declaring tool answer.
@@ -368,10 +376,11 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
 /// The flags that let `tfps_ban` and `tfps_unban` act against the fake in
 /// `fake`: enabled for MCP, journaled beside it, and an address cooldown of
 /// one second rather than a minute, so the unban probe can follow the ban.
-fn tfps_action_args(fake: &tempfile::TempDir) -> Vec<String> {
+fn tfps_action_args(fake: &tempfile::TempDir) -> Result<Vec<String>, TestError> {
     let config = fake.path().join("sipnab.toml");
-    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
-    vec![
+    std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n")
+        .map_err(|e| format!("config: {e:?}"))?;
+    Ok(vec![
         "--tfps-ctl".to_string(),
         fake.path().join("tfps_ctl").display().to_string(),
         "--allow-action".to_string(),
@@ -380,7 +389,7 @@ fn tfps_action_args(fake: &tempfile::TempDir) -> Vec<String> {
         fake.path().join("journal").display().to_string(),
         "--config".to_string(),
         config.display().to_string(),
-    ]
+    ])
 }
 
 /// Wait out the one-second address cooldown before the unban probe, which
@@ -397,10 +406,10 @@ fn before_probe(tool: &str) {
 /// The probes above MUST be hermetic: on a machine that has TFPS installed a
 /// probe of `tfps_ban` against `PATH` would be a real ban request. Naming
 /// the fake with `--tfps-ctl` is what keeps this test from ever reaching it.
-fn fake_tfps_ctl() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn fake_tfps_ctl() -> Result<tempfile::TempDir, TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
     let path = dir.path().join("tfps_ctl");
-    let one = |text: &str| text.lines().next().expect("a line").to_string();
+    let one = |text: &str| text.lines().next().map(str::to_string).ok_or("a line");
     let script = format!(
         "#!/bin/sh\ncase \"$1\" in\n\
          status) cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\n;;\n\
@@ -415,11 +424,11 @@ fn fake_tfps_ctl() -> tempfile::TempDir {
         include_str!("fixtures/tfps-banned-golden.jsonl").trim_end(),
         include_str!("fixtures/tfps-dropped-golden.jsonl").trim_end(),
         include_str!("fixtures/tfps-labels-golden.jsonl").trim_end(),
-        one(include_str!("fixtures/tfps-ban-golden.jsonl")),
-        one(include_str!("fixtures/tfps-unban-golden.jsonl")),
+        one(include_str!("fixtures/tfps-ban-golden.jsonl"))?,
+        one(include_str!("fixtures/tfps-unban-golden.jsonl"))?,
     );
-    executable::write_executable(&path, &script).expect("write the fake");
-    dir
+    executable::write_executable(&path, &script).map_err(|e| format!("write the fake: {e:?}"))?;
+    Ok(dir)
 }
 
 /// PB1's whole point: the payload arrives parsed, not as a string to re-parse.
@@ -429,9 +438,9 @@ fn fake_tfps_ctl() -> tempfile::TempDir {
 /// `structuredContent` to a hand-written expectation would still pass if the
 /// text block drifted away from it.
 #[test]
-fn a_json_payload_arrives_as_structured_content_matching_its_text_block() {
-    let mut wire = Wire::start();
-    let call_id = wire.a_call_id();
+fn a_json_payload_arrives_as_structured_content_matching_its_text_block() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let call_id = wire.a_call_id()?;
 
     for (tool, args) in [
         ("capture_status", json!({})),
@@ -439,7 +448,7 @@ fn a_json_payload_arrives_as_structured_content_matching_its_text_block() {
         ("get_dialog", json!({"call_id": call_id.clone()})),
         ("rtp_stats", json!({"call_id": call_id})),
     ] {
-        let reply = wire.call(tool, args, None);
+        let reply = wire.call(tool, args, None)?;
         let structured = &reply["result"]["structuredContent"];
         assert!(
             structured.is_object(),
@@ -447,19 +456,20 @@ fn a_json_payload_arrives_as_structured_content_matching_its_text_block() {
         );
         assert_eq!(
             *structured,
-            text_payload(&reply),
+            text_payload(&reply)?,
             "{tool}'s structuredContent and its text block must be one document"
         );
     }
+    Ok(())
 }
 
 /// A drawn ladder is a document, not an object. Wrapping it in a synthetic key
 /// would put a shape in `structuredContent` that the text block does not have.
 #[test]
-fn a_rendered_document_carries_no_structured_content() {
-    let mut wire = Wire::start();
-    let call_id = wire.a_call_id();
-    let reply = wire.call("render_ladder", json!({"call_id": call_id}), None);
+fn a_rendered_document_carries_no_structured_content() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let call_id = wire.a_call_id()?;
+    let reply = wire.call("render_ladder", json!({"call_id": call_id}), None)?;
 
     assert!(
         reply["result"]["content"][0]["text"].is_string(),
@@ -469,6 +479,7 @@ fn a_rendered_document_carries_no_structured_content() {
         reply["result"]["structuredContent"].is_null(),
         "a rendered ladder has no object to publish: {reply}"
     );
+    Ok(())
 }
 
 /// No tool answers with a top-level array.
@@ -485,7 +496,7 @@ fn a_rendered_document_carries_no_structured_content() {
 /// content block, so a client reading `result.content[0]` alone got rows with
 /// no idea how much of the capture they covered.
 #[test]
-fn no_tool_answers_with_a_top_level_array() {
+fn no_tool_answers_with_a_top_level_array() -> Result<(), TestError> {
     // The same file root the schema probe needs, for the same reason: this
     // drives the same probe list, and a file tool that refuses returns an
     // error rather than the payload whose shape is under test.
@@ -493,12 +504,12 @@ fn no_tool_answers_with_a_top_level_array() {
     let root = root.display().to_string();
     // The fake, for the reason `fake_tfps_ctl` gives: a probe of `tfps_ban`
     // against `PATH` would be a real ban on a machine with TFPS.
-    let fake = fake_tfps_ctl();
-    let actions = tfps_action_args(&fake);
+    let fake = fake_tfps_ctl()?;
+    let actions = tfps_action_args(&fake)?;
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     args.extend(["--mcp-file-root", &root]);
-    let mut wire = Wire::start_with(&args);
-    let call_id = wire.a_call_id();
+    let mut wire = Wire::start_with(&args)?;
+    let call_id = wire.a_call_id()?;
 
     // Driven, not asserted from source: a shape is a property of the wire.
     // The SET comes from the wire too. A probe may name a tool this build does
@@ -506,7 +517,7 @@ fn no_tool_answers_with_a_top_level_array() {
     // calling it would test the registration, not the shape. Whether a tool
     // SHOULD be registered here is gated in `mcp_capability_agreement_test`.
     let offered: Vec<String> = wire
-        .tools()
+        .tools()?
         .into_iter()
         .map(|t| t["name"].as_str().unwrap_or_default().to_string())
         .collect();
@@ -528,8 +539,8 @@ fn no_tool_answers_with_a_top_level_array() {
             continue;
         }
         before_probe(tool);
-        let reply = wire.call(tool, args, None);
-        let payload = text_payload(&reply);
+        let reply = wire.call(tool, args, None)?;
+        let payload = text_payload(&reply)?;
         assert!(
             !payload.is_array(),
             "{tool} answers with a top-level array, which can carry no envelope \
@@ -537,6 +548,7 @@ fn no_tool_answers_with_a_top_level_array() {
              object, as VAL16 did for timeline: {payload}"
         );
     }
+    Ok(())
 }
 
 /// `timeline` carries an envelope, and the stamp lands inside it.
@@ -544,10 +556,10 @@ fn no_tool_answers_with_a_top_level_array() {
 /// The other half of VAL16: it is not enough that the payload stopped being an
 /// array, it has to actually describe itself now.
 #[test]
-fn timeline_answers_with_a_self_describing_envelope() {
-    let mut wire = Wire::start();
-    let reply = wire.call("timeline", json!({"bucket_seconds": 60}), None);
-    let payload = text_payload(&reply);
+fn timeline_answers_with_a_self_describing_envelope() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let reply = wire.call("timeline", json!({"bucket_seconds": 60}), None)?;
+    let payload = text_payload(&reply)?;
 
     assert!(
         payload.is_object(),
@@ -575,6 +587,7 @@ fn timeline_answers_with_a_self_describing_envelope() {
         "an object payload publishes structuredContent, which the array form \
          could never carry: {reply}"
     );
+    Ok(())
 }
 
 /// Every place in a schema a strict client could object to.
@@ -662,9 +675,9 @@ fn nullable_unions(node: &Value, at: &str, optional: bool, out: &mut Vec<String>
 /// immediately. The 83 findings that remain are all on output schemas and are
 /// waived for that reason.
 #[test]
-fn no_input_schema_advertises_a_spelling_a_strict_client_may_refuse() {
-    let mut wire = Wire::start();
-    let tools = wire.tools();
+fn no_input_schema_advertises_a_spelling_a_strict_client_may_refuse() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let tools = wire.tools()?;
     assert!(
         tools.len() > 40,
         "only {} tool(s) listed; this gate would pass by examining nothing",
@@ -690,6 +703,7 @@ fn no_input_schema_advertises_a_spelling_a_strict_client_may_refuse() {
         all.len(),
         all.join("\n  ")
     );
+    Ok(())
 }
 
 /// The `format` values JSON Schema 2020-12 defines (section 7.3). Anything
@@ -745,9 +759,9 @@ fn foreign_formats(schema: &Value, path: &str, out: &mut Vec<String>) {
 /// schema. The bounds that carry the meaning (`minimum: 0` for an unsigned
 /// type) stay.
 #[test]
-fn no_schema_advertises_a_format_json_schema_does_not_define() {
-    let mut wire = Wire::start();
-    let tools = wire.tools();
+fn no_schema_advertises_a_format_json_schema_does_not_define() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let tools = wire.tools()?;
     assert!(
         tools.len() > 40,
         "only {} tool(s) listed; this gate would pass by examining nothing",
@@ -777,11 +791,12 @@ fn no_schema_advertises_a_format_json_schema_does_not_define() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+    Ok(())
 }
 
 /// The format scan finds a foreign format at depth and leaves a defined one.
 #[test]
-fn the_format_scan_reports_a_foreign_format_and_passes_a_defined_one() {
+fn the_format_scan_reports_a_foreign_format_and_passes_a_defined_one() -> Result<(), TestError> {
     let planted = json!({
         "type": "object",
         "properties": {
@@ -794,6 +809,7 @@ fn the_format_scan_reports_a_foreign_format_and_passes_a_defined_one() {
     foreign_formats(&planted, "t", &mut found);
     found.sort();
     assert_eq!(found, vec!["t.$defs.Inner=double", "t.properties.n=uint64"]);
+    Ok(())
 }
 
 /// The scan can actually find something, in every place it recurses.
@@ -803,7 +819,7 @@ fn the_format_scan_reports_a_foreign_format_and_passes_a_defined_one() {
 /// at each of them, and a sixth that must NOT be reported — a required
 /// property, where the union is the only way to send the key empty.
 #[test]
-fn the_input_schema_scan_finds_a_union_wherever_one_hides() {
+fn the_input_schema_scan_finds_a_union_wherever_one_hides() -> Result<(), TestError> {
     let planted = json!({
         "type": "object",
         "required": ["kept"],
@@ -855,6 +871,7 @@ fn the_input_schema_scan_finds_a_union_wherever_one_hides() {
          forbidding a value the tool accepts: {where_:?}"
     );
     assert_eq!(found.len(), 5, "one finding per planted union: {found:?}");
+    Ok(())
 }
 
 /// Every declared `outputSchema` must describe the payload the tool actually
@@ -863,24 +880,24 @@ fn the_input_schema_scan_finds_a_union_wherever_one_hides() {
 /// This is the check that makes a schema a promise instead of decoration: a
 /// client is entitled to validate against it, so the server has to.
 #[test]
-fn every_declared_output_schema_matches_the_payload_it_describes() {
-    let fake = fake_tfps_ctl();
+fn every_declared_output_schema_matches_the_payload_it_describes() -> Result<(), TestError> {
+    let fake = fake_tfps_ctl()?;
     // A file root, so the file-tool group answers instead of refusing. Without
     // one `find_in_captures` returns invalid_params and the probe would have
     // to be exempted -- which would leave the schema of the tool most in need
     // of a precise one checked by nothing.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
     let root = root.display().to_string();
-    let actions = tfps_action_args(&fake);
+    let actions = tfps_action_args(&fake)?;
     let mut args: Vec<&str> = actions.iter().map(String::as_str).collect();
     // Output schemas are off by default; this gate needs them declared.
     args.extend(["--mcp-file-root", &root, "--mcp-output-schemas"]);
-    let mut wire = Wire::start_with(&args);
-    let call_id = wire.a_call_id();
+    let mut wire = Wire::start_with(&args)?;
+    let call_id = wire.a_call_id()?;
     let probes = schema_probes(&call_id);
 
     let declared: Vec<(String, Value)> = wire
-        .tools()
+        .tools()?
         .into_iter()
         .filter(|t| t["outputSchema"].is_object())
         .map(|t| {
@@ -906,39 +923,44 @@ fn every_declared_output_schema_matches_the_payload_it_describes() {
             continue;
         }
         let Some((_, args)) = probes.iter().find(|(t, _)| t == name) else {
-            panic!(
+            return Err(format!(
                 "{name} declares an outputSchema but has no case in schema_probes, \
                  so nothing checks that its payload conforms"
-            );
+            )
+            .into());
         };
 
         let validator = jsonschema::validator_for(schema)
-            .unwrap_or_else(|e| panic!("{name}'s outputSchema does not compile: {e}"));
+            .map_err(|e| format!("{name}'s outputSchema does not compile: {e}"))?;
         before_probe(name);
-        let reply = wire.call(name, args.clone(), None);
+        let reply = wire.call(name, args.clone(), None)?;
         let structured = &reply["result"]["structuredContent"];
         assert!(
             structured.is_object(),
             "{name} declares an outputSchema but returned no structuredContent: {reply}"
         );
         if let Err(e) = validator.validate(structured) {
-            panic!("{name}'s payload does not match its own outputSchema: {e}\n{structured:#}");
+            return Err(format!(
+                "{name}'s payload does not match its own outputSchema: {e}\n{structured:#}"
+            )
+            .into());
         }
     }
+    Ok(())
 }
 
 /// PB5: a caller that sent a `progressToken` is told how far through the wait
 /// it is, rather than watching a request that could equally be a hung server.
 #[test]
-fn capture_health_reports_progress_when_the_caller_asks() {
-    let mut wire = Wire::start();
+fn capture_health_reports_progress_when_the_caller_asks() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     // Three seconds so more than one tick fits inside the window; a
     // one-second window could legitimately report once.
     let reply = wire.call(
         "capture_health",
         json!({"sample_seconds": 3}),
         Some("probe-token"),
-    );
+    )?;
     // Asserted on `isError` rather than on `structuredContent`: this test is
     // about PB5, and borrowing PB1's field would make it fail for PB1's reasons.
     assert_eq!(
@@ -978,14 +1000,15 @@ fn capture_health_reports_progress_when_the_caller_asks() {
         values.iter().all(|v| *v <= 3.0),
         "no report may claim more elapsed than the window holds; got {values:?}"
     );
+    Ok(())
 }
 
 /// The other direction, which is the one the spec states as a MUST NOT: a
 /// request with no `progressToken` earns no notifications.
 #[test]
-fn capture_health_sends_no_progress_when_the_caller_did_not_ask() {
-    let mut wire = Wire::start();
-    let reply = wire.call("capture_health", json!({"sample_seconds": 3}), None);
+fn capture_health_sends_no_progress_when_the_caller_did_not_ask() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
+    let reply = wire.call("capture_health", json!({"sample_seconds": 3}), None)?;
     // Asserted on `isError` rather than on `structuredContent`: this test is
     // about PB5, and borrowing PB1's field would make it fail for PB1's reasons.
     assert_eq!(
@@ -1000,6 +1023,7 @@ fn capture_health_sends_no_progress_when_the_caller_did_not_ask() {
          notifications; got {:?}",
         wire.progress_reports()
     );
+    Ok(())
 }
 
 /// Every excuse names a registered tool and gives a reason.
@@ -1007,10 +1031,10 @@ fn capture_health_sends_no_progress_when_the_caller_did_not_ask() {
 /// Without this an entry could outlive the tool it excuses, and a list naming
 /// something deleted asserts nothing while looking like it asserts something.
 #[test]
-fn every_schema_excuse_is_registered_and_reasoned() {
-    let mut wire = Wire::start();
+fn every_schema_excuse_is_registered_and_reasoned() -> Result<(), TestError> {
+    let mut wire = Wire::start()?;
     let registered: Vec<String> = wire
-        .tools()
+        .tools()?
         .into_iter()
         .filter_map(|t| t["name"].as_str().map(str::to_owned))
         .collect();
@@ -1028,6 +1052,7 @@ fn every_schema_excuse_is_registered_and_reasoned() {
             "{tool}'s excuse must say WHY, not merely that it is excused"
         );
     }
+    Ok(())
 }
 
 /// Every excused tool really is undrivable here, and refuses for the stated
@@ -1040,7 +1065,7 @@ fn every_schema_excuse_is_registered_and_reasoned() {
 /// security property rest on the same fact, so one test covers both, and it
 /// loops over the whole excuse list so a new excuse cannot ship unproven.
 #[test]
-fn every_excused_tool_refuses_on_a_stock_server() {
+fn every_excused_tool_refuses_on_a_stock_server() -> Result<(), TestError> {
     // Enough arguments to clear parameter deserialization, so the refusal is the
     // access gate's own and not a missing-field error: relay_compare requires a
     // call_id, the others take none.
@@ -1048,9 +1073,9 @@ fn every_excused_tool_refuses_on_a_stock_server() {
         "relay_compare" => json!({ "call_id": "probe@stock" }),
         _ => json!({}),
     };
-    let mut wire = Wire::start();
+    let mut wire = Wire::start()?;
     for (tool, _reason) in SCHEMA_NOT_DRIVEN {
-        let reply = wire.call(tool, probe_args(tool), None);
+        let reply = wire.call(tool, probe_args(tool), None)?;
         assert!(
             reply["result"].is_null(),
             "{tool} answered on a server with no relay configured, no opt-in, \
@@ -1071,4 +1096,5 @@ fn every_excused_tool_refuses_on_a_stock_server() {
             );
         }
     }
+    Ok(())
 }

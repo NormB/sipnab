@@ -22,6 +22,8 @@
 //! `tools/call` needs the `Mcp-Session-Id` handshake and an SSE body parse.
 #![cfg(all(unix, feature = "mcp-http"))]
 
+use mcp::TestError;
+
 #[path = "support/mcp.rs"]
 mod mcp;
 
@@ -62,12 +64,14 @@ fn mint(scope: &str) -> String {
 /// test can read the audit trail after the calls. The shared helper drops its
 /// receiver once the listen line appears, which is fine for status-code
 /// probes and useless for asserting what was audited.
-fn spawn_with_stderr() -> (Child, String, mpsc::Receiver<String>) {
+fn spawn_with_stderr() -> Result<(Child, String, mpsc::Receiver<String>), TestError> {
     spawn_with_stderr_and(&[])
 }
 
 /// [`spawn_with_stderr`], with `extra` flags after the fixed ones.
-fn spawn_with_stderr_and(extra: &[&str]) -> (Child, String, mpsc::Receiver<String>) {
+fn spawn_with_stderr_and(
+    extra: &[&str],
+) -> Result<(Child, String, mpsc::Receiver<String>), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = mcp::fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -91,10 +95,9 @@ fn spawn_with_stderr_and(extra: &[&str]) -> (Child, String, mpsc::Receiver<Strin
         .env("SIPNAB_LOG", "info")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn sipnab --mcp http");
+        .spawn()?;
 
-    let stderr = child.stderr.take().expect("stderr");
+    let stderr = child.stderr.take().ok_or("stderr")?;
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
@@ -119,15 +122,15 @@ fn spawn_with_stderr_and(extra: &[&str]) -> (Child, String, mpsc::Receiver<Strin
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-    let addr = addr.unwrap_or_else(|| {
+    let Some(addr) = addr else {
         // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
         unsafe {
             libc::kill(child.id() as i32, libc::SIGTERM);
         }
         let _ = child.wait();
-        panic!("server never reported a listening address");
-    });
-    (child, addr, rx)
+        return Err("server never reported a listening address".into());
+    };
+    Ok((child, addr, rx))
 }
 
 /// One parsed HTTP reply: status, headers (lower-cased names), decoded body.
@@ -156,15 +159,18 @@ impl Reply {
 /// and `Transfer-Encoding: chunked` is decoded (SSE responses arrive that
 /// way). Reads until EOF or the read timeout — request-scoped SSE streams
 /// close once the response event is sent, so EOF is the normal end.
-fn post_mcp(addr: &str, bearer: &str, session: Option<&str>, body: &serde_json::Value) -> Reply {
-    let (host, port_str) = addr.rsplit_once(':').expect("host:port");
-    let port: u16 = port_str.parse().expect("port");
-    let mut stream = TcpStream::connect((host, port)).expect("connect");
-    stream
-        .set_read_timeout(Some(test_timeout(5)))
-        .expect("read timeout");
+fn post_mcp(
+    addr: &str,
+    bearer: &str,
+    session: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<Reply, TestError> {
+    let (host, port_str) = addr.rsplit_once(':').ok_or("host:port")?;
+    let port: u16 = port_str.parse()?;
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(test_timeout(5)))?;
 
-    let body_str = serde_json::to_string(body).expect("serialize");
+    let body_str = serde_json::to_string(body)?;
     let mut req = format!(
         "POST /mcp HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
@@ -180,7 +186,7 @@ fn post_mcp(addr: &str, bearer: &str, session: Option<&str>, body: &serde_json::
     }
     req.push_str("\r\n");
     req.push_str(&body_str);
-    stream.write_all(req.as_bytes()).expect("write");
+    stream.write_all(req.as_bytes())?;
 
     // Read to EOF; a timeout mid-stream keeps whatever arrived, which is
     // enough as long as the response event was flushed (asserted by the
@@ -209,11 +215,11 @@ fn post_mcp(addr: &str, bearer: &str, session: Option<&str>, body: &serde_json::
     } else {
         rest.to_string()
     };
-    Reply {
+    Ok(Reply {
         status,
         headers,
         body,
-    }
+    })
 }
 
 /// Decode an HTTP/1.1 chunked body (sizes in hex, CRLF-framed). Tolerant of a
@@ -238,38 +244,39 @@ fn dechunk(raw: &str) -> String {
 
 /// Extract the LAST JSON-RPC message from a response body that is either
 /// plain JSON or an SSE stream of `data:` lines.
-fn last_json_message(body: &str) -> serde_json::Value {
+fn last_json_message(body: &str) -> Result<serde_json::Value, TestError> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) {
-        return v;
+        return Ok(v);
     }
-    body.lines()
+    Ok(body
+        .lines()
         .filter_map(|l| l.strip_prefix("data:"))
         .filter_map(|d| serde_json::from_str::<serde_json::Value>(d.trim()).ok())
         .next_back()
-        .unwrap_or_else(|| panic!("no JSON-RPC message in body: {body:?}"))
+        .ok_or_else(|| format!("no JSON-RPC message in body: {body:?}"))?)
 }
 
 /// Handshake as `bearer` and return the session id for `tools/call`s.
-fn establish_session(addr: &str, bearer: &str) -> String {
-    let init = post_mcp(addr, bearer, None, &mcp::initialize_payload());
+fn establish_session(addr: &str, bearer: &str) -> Result<String, TestError> {
+    let init = post_mcp(addr, bearer, None, &mcp::initialize_payload())?;
     assert_eq!(init.status, 200, "initialize failed: {}", init.body);
     let session = init
         .header("mcp-session-id")
-        .expect("initialize reply carries a session id")
+        .ok_or("initialize reply carries a session id")?
         .to_string();
     let notify = post_mcp(
         addr,
         bearer,
         Some(&session),
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-    );
+    )?;
     assert!(
         notify.status == 202 || notify.status == 200,
         "initialized notification rejected: {} {}",
         notify.status,
         notify.body
     );
-    session
+    Ok(session)
 }
 
 /// Issue one `tools/call` in `session` and return the raw JSON-RPC reply.
@@ -280,7 +287,7 @@ fn call_tool(
     id: i64,
     tool: &str,
     args: serde_json::Value,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, TestError> {
     let reply = post_mcp(
         addr,
         bearer,
@@ -289,7 +296,7 @@ fn call_tool(
             "jsonrpc": "2.0", "id": id, "method": "tools/call",
             "params": {"name": tool, "arguments": args}
         }),
-    );
+    )?;
     assert_eq!(
         reply.status, 200,
         "tools/call {tool} transport-level failure: {}",
@@ -309,13 +316,13 @@ fn call_tool(
 /// request under a full token gets past the scope check to the tool's own
 /// unarmed-shutdown refusal.
 #[test]
-fn a_read_token_reaches_read_only_tools_and_nothing_else() {
-    let (child, addr, stderr_rx) = spawn_with_stderr();
+fn a_read_token_reaches_read_only_tools_and_nothing_else() -> Result<(), TestError> {
+    let (child, addr, stderr_rx) = spawn_with_stderr()?;
     let read_token = mint(sipnab::auth::SCOPE_READ);
     let full_token = mint(sipnab::auth::SCOPE_FULL);
 
     // ── Accept half: a read-only tool answers a read token. ──────────
-    let session = establish_session(&addr, &read_token);
+    let session = establish_session(&addr, &read_token)?;
     let ok = call_tool(
         &addr,
         &read_token,
@@ -323,7 +330,7 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
         2,
         "capture_status",
         serde_json::json!({}),
-    );
+    )?;
     assert!(
         ok.get("error").is_none() && ok["result"].is_object(),
         "a read token must be able to call the read-only capture_status tool: {ok}"
@@ -337,10 +344,10 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
         3,
         "shutdown_server",
         serde_json::json!({}),
-    );
-    let msg = refused["error"]["message"].as_str().unwrap_or_else(|| {
-        panic!("shutdown_server under a read token must be a JSON-RPC error: {refused}")
-    });
+    )?;
+    let msg = refused["error"]["message"].as_str().ok_or_else(|| {
+        format!("shutdown_server under a read token must be a JSON-RPC error: {refused}")
+    })?;
     assert!(
         msg.contains("shutdown_server") && msg.contains("\"read\""),
         "the refusal must name the tool and the scope: {msg}"
@@ -350,7 +357,7 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
     // and reaches the tool's own gate (unarmed shutdown refuses, naming its
     // opt-in flag). This is what proves the read-token refusal above was
     // scope enforcement and not shutdown_server failing for everyone. ──
-    let full_session = establish_session(&addr, &full_token);
+    let full_session = establish_session(&addr, &full_token)?;
     let gated = call_tool(
         &addr,
         &full_token,
@@ -358,10 +365,10 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
         4,
         "shutdown_server",
         serde_json::json!({}),
-    );
-    let gated_msg = gated["error"]["message"].as_str().unwrap_or_else(|| {
-        panic!("unarmed shutdown_server must still refuse a full token: {gated}")
-    });
+    )?;
+    let gated_msg = gated["error"]["message"].as_str().ok_or_else(|| {
+        format!("unarmed shutdown_server must still refuse a full token: {gated}")
+    })?;
     assert!(
         gated_msg.contains("--mcp-allow-shutdown"),
         "a full token must get past scope to the tool's own gate: {gated_msg}"
@@ -396,6 +403,7 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
             .any(|l| l.contains("tool=capture_status ") && l.contains("outcome=ok")),
         "the accepted read-scope capture_status call must be audited ok:\n{audit:#?}"
     );
+    Ok(())
 }
 
 /// The audit line names WHICH token made the call (PB10).
@@ -416,14 +424,14 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() {
 /// the quoted caller field, so a build that logs the id somewhere else on the
 /// line does not pass either.
 #[test]
-fn the_audit_line_names_the_token_that_made_the_call() {
+fn the_audit_line_names_the_token_that_made_the_call() -> Result<(), TestError> {
     // Distinctive enough that it cannot match anything else on the line.
     const TOKEN_ID: &str = "pb10-audit-e2e-token";
 
-    let (child, addr, stderr_rx) = spawn_with_stderr();
+    let (child, addr, stderr_rx) = spawn_with_stderr()?;
     let token = mint_with_id(TOKEN_ID, sipnab::auth::SCOPE_FULL);
 
-    let session = establish_session(&addr, &token);
+    let session = establish_session(&addr, &token)?;
     let ok = call_tool(
         &addr,
         &token,
@@ -431,7 +439,7 @@ fn the_audit_line_names_the_token_that_made_the_call() {
         2,
         "capture_status",
         serde_json::json!({}),
-    );
+    )?;
     assert!(
         ok.get("error").is_none() && ok["result"].is_object(),
         "the call must succeed, so the audit line below describes a real \
@@ -462,20 +470,20 @@ fn the_audit_line_names_the_token_that_made_the_call() {
          field inside the quoted caller — a token named outside those quotes \
          is not attributed to this caller: {line}"
     );
+    Ok(())
 }
 
 /// An action over HTTP is journaled under the id of the token that asked:
 /// the name an operator revokes, and the one the per-caller limit counts.
 #[test]
-fn an_action_over_http_is_journaled_under_the_tokens_id() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_action_over_http_is_journaled_under_the_tokens_id() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let ctl = dir.path().join("tfps_ctl");
     executable::write_executable(
         &ctl,
         "#!/bin/sh\necho '{\"ip\":\"198.51.100.20\",\"action\":\"ban\",\"applied\":true,\
          \"refused\":null,\"expires\":null,\"source\":\"operator\"}'\n",
-    )
-    .expect("write the fake");
+    )?;
     let journal = dir.path().join("journal");
     let ctl = ctl.display().to_string();
     let journal_arg = journal.display().to_string();
@@ -486,9 +494,9 @@ fn an_action_over_http_is_journaled_under_the_tokens_id() {
         "tfps:mcp",
         "--journal-dir",
         &journal_arg,
-    ]);
+    ])?;
     let token = mint_with_id("agent-7", sipnab::auth::SCOPE_ACTIONS);
-    let session = establish_session(&addr, &token);
+    let session = establish_session(&addr, &token)?;
     let reply = call_tool(
         &addr,
         &token,
@@ -496,33 +504,32 @@ fn an_action_over_http_is_journaled_under_the_tokens_id() {
         2,
         "tfps_ban",
         serde_json::json!({"ip": "198.51.100.20"}),
-    );
+    )?;
     let text = reply["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("no result: {reply}"));
-    let answer: serde_json::Value = serde_json::from_str(text).expect("JSON");
+        .ok_or_else(|| format!("no result: {reply}"))?;
+    let answer: serde_json::Value = serde_json::from_str(text)?;
     assert_eq!(answer["applied"], true, "{answer}");
     mcp::shutdown(child);
 
-    let records: Vec<serde_json::Value> = std::fs::read_dir(&journal)
-        .expect("journal")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
-        .flat_map(|p| {
-            std::fs::read_to_string(p)
-                .expect("segment")
-                .lines()
-                .map(|l| serde_json::from_str(l).expect("record"))
-                .collect::<Vec<serde_json::Value>>()
-        })
-        .collect();
+    let mut records: Vec<serde_json::Value> = Vec::new();
+    for entry in std::fs::read_dir(&journal)? {
+        let p = entry?.path();
+        if !p.extension().is_some_and(|x| x == "jsonl") {
+            continue;
+        }
+        for l in std::fs::read_to_string(p)?.lines() {
+            records.push(serde_json::from_str(l)?);
+        }
+    }
     let intent = records
         .iter()
         .find(|r| r["kind"] == "action_intent")
-        .unwrap_or_else(|| panic!("no intent: {records:?}"));
+        .ok_or_else(|| format!("no intent: {records:?}"))?;
     assert_eq!(intent["caller"], "token:agent-7", "{intent}");
     assert!(
         !records.iter().any(|r| r.to_string().contains(&token)),
         "the token itself reached the journal"
     );
+    Ok(())
 }

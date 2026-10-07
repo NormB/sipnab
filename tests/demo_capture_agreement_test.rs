@@ -19,23 +19,22 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every `.tape` under `demos/`, as (name, contents).
-fn tapes() -> Vec<(String, String)> {
+fn tapes() -> Result<Vec<(String, String)>, TestError> {
     let dir = repo().join("demos");
     let mut out = Vec::new();
-    for e in std::fs::read_dir(&dir)
-        .expect("demos/ is readable")
-        .flatten()
-    {
+    for e in std::fs::read_dir(&dir)?.flatten() {
         let p = e.path();
         if p.extension().is_some_and(|x| x == "tape") {
             let name = p
@@ -46,7 +45,7 @@ fn tapes() -> Vec<(String, String)> {
         }
     }
     out.sort();
-    out
+    Ok(out)
 }
 
 /// The capture path a tape drives, read off its `Type "sipnab -I …"` line.
@@ -77,16 +76,16 @@ fn capture_of(tape: &str) -> Option<String> {
 }
 
 /// The capture `/analyze` fetches behind "Load a sample call".
-fn analyze_sample() -> String {
-    let js = read("website/static/js/analyze.js");
+fn analyze_sample() -> Result<String, TestError> {
+    let js = read("website/static/js/analyze.js")?;
     let at = js
         .find("/demos/")
-        .expect("analyze.js fetches a sample capture from /demos/");
+        .ok_or("analyze.js fetches a sample capture from /demos/")?;
     let tail = &js[at..];
     let end = tail
         .find(['"', '\''])
-        .expect("the fetch path is a quoted literal");
-    tail[..end].trim_start_matches('/').to_string()
+        .ok_or("the fetch path is a quoted literal")?;
+    Ok(tail[..end].trim_start_matches('/').to_string())
 }
 
 /// Which tape renders the animation the hero swaps to.
@@ -95,27 +94,30 @@ fn analyze_sample() -> String {
 /// decodes, so the ANIMATION is what a visitor actually watches. Reading the
 /// template rather than hard-coding the name, so renaming the asset moves this
 /// test with it instead of leaving it pinned to a file nobody serves.
-fn hero_animation_asset() -> String {
-    let html = read("website/templates/index.html");
+fn hero_animation_asset() -> Result<String, TestError> {
+    let html = read("website/templates/index.html")?;
     let at = html
         .find("var animated =")
-        .expect("index.html swaps the hero for an animation");
+        .ok_or("index.html swaps the hero for an animation")?;
     let tail = &html[at..];
-    let open = tail.find("path='").expect("the swap names an asset path") + 6;
+    let open = tail.find("path='").ok_or("the swap names an asset path")? + 6;
     let rest = &tail[open..];
-    let end = rest.find('\'').expect("an unterminated asset path");
-    rest[..end].to_string()
+    let end = rest.find('\'').ok_or("an unterminated asset path")?;
+    Ok(rest[..end].to_string())
 }
 
 /// The tape whose `Output` produces a given static asset.
-fn tape_producing(asset: &str) -> Option<(String, String)> {
-    let stem = Path::new(asset).file_stem()?.to_string_lossy().into_owned();
-    tapes().into_iter().find(|(_, body)| {
+fn tape_producing(asset: &str) -> Result<Option<(String, String)>, TestError> {
+    let Some(stem) = Path::new(asset).file_stem() else {
+        return Ok(None);
+    };
+    let stem = stem.to_string_lossy().into_owned();
+    Ok(tapes()?.into_iter().find(|(_, body)| {
         body.lines().any(|l| {
             let l = l.trim();
             l.starts_with("Output ") && l.contains(&stem)
         })
-    })
+    }))
 }
 
 /// The homepage animation and the analyze sample are ONE capture.
@@ -124,13 +126,13 @@ fn tape_producing(asset: &str) -> Option<(String, String)> {
 /// a sample call" must be given the call they were just shown; being handed a
 /// different one makes the demo a promise the page does not keep.
 #[test]
-fn the_homepage_animation_and_the_analyze_sample_use_one_capture() {
-    let asset = hero_animation_asset();
+fn the_homepage_animation_and_the_analyze_sample_use_one_capture() -> Result<(), TestError> {
+    let asset = hero_animation_asset()?;
     let (tape_name, tape) =
-        tape_producing(&asset).unwrap_or_else(|| panic!("no tape produces {asset}"));
+        tape_producing(&asset)?.ok_or_else(|| format!("no tape produces {asset}"))?;
     let shown = capture_of(&tape)
-        .unwrap_or_else(|| panic!("{tape_name} drives no capture: it has no `-I` argument"));
-    let offered = analyze_sample();
+        .ok_or_else(|| format!("{tape_name} drives no capture: it has no `-I` argument"))?;
+    let offered = analyze_sample()?;
 
     assert!(
         shown.ends_with(&offered) || offered.ends_with(&shown),
@@ -138,6 +140,7 @@ fn the_homepage_animation_and_the_analyze_sample_use_one_capture() {
          {offered}. A visitor who watches the video and clicks through is handed \
          a different call than the one they just saw."
     );
+    Ok(())
 }
 
 /// The hero still and the hero animation are ONE capture.
@@ -147,12 +150,12 @@ fn the_homepage_animation_and_the_analyze_sample_use_one_capture() {
 /// it is the exact half-fix that shipped on 2026-08-31: the still was
 /// retargeted and the animation was not.
 #[test]
-fn the_hero_still_and_the_hero_animation_use_one_capture() {
-    let still = capture_of(&read("demos/hero.tape")).expect("hero.tape drives a capture");
-    let anim_asset = hero_animation_asset();
+fn the_hero_still_and_the_hero_animation_use_one_capture() -> Result<(), TestError> {
+    let still = capture_of(&read("demos/hero.tape")?).ok_or("hero.tape drives a capture")?;
+    let anim_asset = hero_animation_asset()?;
     let (anim_tape, body) =
-        tape_producing(&anim_asset).unwrap_or_else(|| panic!("no tape produces {anim_asset}"));
-    let anim = capture_of(&body).unwrap_or_else(|| panic!("{anim_tape} drives no capture"));
+        tape_producing(&anim_asset)?.ok_or_else(|| format!("no tape produces {anim_asset}"))?;
+    let anim = capture_of(&body).ok_or_else(|| format!("{anim_tape} drives no capture"))?;
 
     assert_eq!(
         still, anim,
@@ -160,6 +163,7 @@ fn the_hero_still_and_the_hero_animation_use_one_capture() {
          from {anim} ({anim_tape}). The page would cut between two different \
          calls as the animation loads."
     );
+    Ok(())
 }
 
 /// Every tape drives a capture that is actually there.
@@ -168,10 +172,10 @@ fn the_hero_still_and_the_hero_animation_use_one_capture() {
 /// error and VHS records the error. The result is a plausible-looking demo of
 /// nothing, and only a human looking at the output would notice.
 #[test]
-fn every_demo_tape_drives_a_capture_that_exists() {
+fn every_demo_tape_drives_a_capture_that_exists() -> Result<(), TestError> {
     let mut missing = Vec::new();
     let mut checked = 0;
-    for (name, body) in tapes() {
+    for (name, body) in tapes()? {
         let Some(cap) = capture_of(&body) else {
             continue; // a tape that opens no capture is fine; `mcp-*.tape` do not
         };
@@ -191,6 +195,7 @@ fn every_demo_tape_drives_a_capture_that_exists() {
          sipnab's error and ship it as a demo:\n{}",
         missing.join("\n")
     );
+    Ok(())
 }
 
 /// No tape depends on a capture the repository does not ship.
@@ -199,17 +204,16 @@ fn every_demo_tape_drives_a_capture_that_exists() {
 /// The corpus rule makes this concrete: real customer traffic can never be
 /// committed, so a demo built on it can never be reproduced by anyone.
 #[test]
-fn no_demo_tape_drives_an_uncommitted_capture() {
+fn no_demo_tape_drives_an_uncommitted_capture() -> Result<(), TestError> {
     let tracked = std::process::Command::new("git")
         .args(["ls-files"])
         .current_dir(repo())
-        .output()
-        .expect("git ls-files");
+        .output()?;
     let tracked = String::from_utf8_lossy(&tracked.stdout);
     let tracked: std::collections::BTreeSet<&str> = tracked.lines().collect();
 
     let mut untracked = Vec::new();
-    for (name, body) in tapes() {
+    for (name, body) in tapes()? {
         let Some(cap) = capture_of(&body) else {
             continue;
         };
@@ -223,6 +227,7 @@ fn no_demo_tape_drives_an_uncommitted_capture() {
          re-render them:\n{}",
         untracked.join("\n")
     );
+    Ok(())
 }
 
 /// The capture `/analyze` offers is one the site actually ships.
@@ -231,8 +236,8 @@ fn no_demo_tape_drives_an_uncommitted_capture() {
 /// 404s in production turns the one button a first-time visitor presses into a
 /// dead end.
 #[test]
-fn the_analyze_sample_capture_is_shipped() {
-    let offered = analyze_sample();
+fn the_analyze_sample_capture_is_shipped() -> Result<(), TestError> {
+    let offered = analyze_sample()?;
     let on_disk = repo().join("website/static").join(&offered);
     assert!(
         on_disk.is_file(),
@@ -245,6 +250,7 @@ fn the_analyze_sample_capture_is_shipped() {
         "the offered sample is {bytes} bytes, which cannot be a capture worth \
          demonstrating"
     );
+    Ok(())
 }
 
 /// Every tape writes its output where the site serves from.
@@ -252,10 +258,10 @@ fn the_analyze_sample_capture_is_shipped() {
 /// A tape whose `Output` lands outside `website/static/demos/` renders
 /// something no page can show, and the render still reports success.
 #[test]
-fn every_demo_tape_writes_into_the_served_directory() {
+fn every_demo_tape_writes_into_the_served_directory() -> Result<(), TestError> {
     let mut stray = Vec::new();
     let mut outputs = 0;
-    for (name, body) in tapes() {
+    for (name, body) in tapes()? {
         for line in body.lines() {
             let line = line.trim();
             let Some(out) = line.strip_prefix("Output ") else {
@@ -279,6 +285,7 @@ fn every_demo_tape_writes_into_the_served_directory() {
         "these tapes render to a path the site does not serve:\n{}",
         stray.join("\n")
     );
+    Ok(())
 }
 
 /// The scan reads a real tree.
@@ -286,8 +293,8 @@ fn every_demo_tape_writes_into_the_served_directory() {
 /// Anti-vacuity for every filter above. Each one narrows, and a narrowing that
 /// reaches zero exits 0 forever while looking exactly like agreement.
 #[test]
-fn the_tape_scan_found_a_plausible_tree() {
-    let all = tapes();
+fn the_tape_scan_found_a_plausible_tree() -> Result<(), TestError> {
+    let all = tapes()?;
     assert!(
         all.len() >= 8,
         "only {} tape(s) found under demos/; the walk is wrong",
@@ -304,11 +311,12 @@ fn the_tape_scan_found_a_plausible_tree() {
          something it should not -- the mcp-example tapes open none"
     );
     assert!(
-        !analyze_sample().is_empty(),
+        !analyze_sample()?.is_empty(),
         "the analyze sample path came back empty"
     );
     assert!(
-        !hero_animation_asset().is_empty(),
+        !hero_animation_asset()?.is_empty(),
         "the hero animation asset came back empty"
     );
+    Ok(())
 }

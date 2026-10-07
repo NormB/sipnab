@@ -29,6 +29,8 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The capture both dialog tests read. Two INVITE dialogs, one completed and
 /// one still in call, so "a different dialog" is a real second dialog out of
 /// one file rather than a second file.
@@ -39,21 +41,20 @@ const CALL_A: &str = "1-1966@10.0.2.20";
 
 /// A temp directory unique to this PROCESS, so two harnesses running at once
 /// do not delete each other's output mid-assertion.
-fn tmp_dir(name: &str) -> PathBuf {
+fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
     let dir = std::env::temp_dir().join(format!("sipnab-vcon-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    dir
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 /// Run the real binary with `--export-vcon`, plus whatever else is given.
-fn run(args: &[&str]) -> Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+fn run(args: &[&str]) -> Result<Output, TestError> {
+    Ok(std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab")
+        .output()?)
 }
 
 /// Everything that needs a binary carrying the exporter.
@@ -63,7 +64,7 @@ fn run(args: &[&str]) -> Output {
 /// than no assertion, because it reports green either way.
 #[cfg(feature = "vcon")]
 mod exporting {
-    use super::{CALL_A, SAMPLE, run, tmp_dir};
+    use super::{CALL_A, SAMPLE, TestError, run, tmp_dir};
     use std::path::{Path, PathBuf};
 
     /// The OTHER Call-ID `SAMPLE` holds.
@@ -75,20 +76,20 @@ mod exporting {
     }
 
     /// Export one Call-ID from `SAMPLE` to stdout and parse what came back.
-    fn export_to_stdout(call_id: &str) -> serde_json::Value {
-        let out = run(&["-N", "-I", SAMPLE, "--export-vcon", call_id, "--quiet"]);
+    fn export_to_stdout(call_id: &str) -> Result<serde_json::Value, TestError> {
+        let out = run(&["-N", "-I", SAMPLE, "--export-vcon", call_id, "--quiet"])?;
         assert!(
             out.status.success(),
             "exporting a known Call-ID failed ({:?}): {}",
             out.status.code(),
             String::from_utf8_lossy(&out.stderr)
         );
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-            panic!(
+        Ok(serde_json::from_slice(&out.stdout).map_err(|e| {
+            format!(
                 "--export-vcon wrote something that is not a vCon container: {e}\n{}",
                 String::from_utf8_lossy(&out.stdout)
             )
-        })
+        })?)
     }
 
     // ── Success ─────────────────────────────────────────────────────────────
@@ -99,8 +100,8 @@ mod exporting {
     /// version it parses against, the parties it renders, and the `Call-ID` that
     /// ties the container back to a capture somebody still holds.
     #[test]
-    fn a_known_call_id_exports_a_container_naming_that_dialog() {
-        let v = export_to_stdout(CALL_A);
+    fn a_known_call_id_exports_a_container_naming_that_dialog() -> Result<(), TestError> {
+        let v = export_to_stdout(CALL_A)?;
 
         assert_eq!(
             v["vcon"], "0.4.0",
@@ -114,7 +115,7 @@ mod exporting {
 
         // Two observed parties, then the sipnab observer, and no `name` on any of
         // them: a From/To display name is what the sender wrote, not an identity.
-        let parties = v["parties"].as_array().expect("parties is an array");
+        let parties = v["parties"].as_array().ok_or("parties is an array")?;
         assert_eq!(
             parties.len(),
             3,
@@ -167,7 +168,7 @@ mod exporting {
                 "an observer vCon must carry no {banned}"
             );
         }
-        let subject = v["subject"].as_str().expect("a subject is present");
+        let subject = v["subject"].as_str().ok_or("a subject is present")?;
         assert!(
             subject.contains(CALL_A),
             "the subject must identify the dialog: {subject:?}"
@@ -179,6 +180,7 @@ mod exporting {
                  the completeness surfaces built for it: {subject:?}"
             );
         }
+        Ok(())
     }
 
     /// `--vcon-out` writes the container to a file INSTEAD of stdout.
@@ -187,8 +189,8 @@ mod exporting {
     /// would put a second copy into whatever pipe the operator was already
     /// watching, and the two would diverge the moment either surface changed.
     #[test]
-    fn vcon_out_writes_the_container_to_the_named_path() {
-        let dir = tmp_dir("out");
+    fn vcon_out_writes_the_container_to_the_named_path() -> Result<(), TestError> {
+        let dir = tmp_dir("out")?;
         let path = dir.join("call.vcon");
         let out = run(&[
             "-N",
@@ -197,13 +199,13 @@ mod exporting {
             "--export-vcon",
             CALL_A,
             "--vcon-out",
-            path.to_str().expect("utf8 temp path"),
+            path.to_str().ok_or("utf8 temp path")?,
             // `--vcon-out` deliberately leaves the per-message stream alone -- the
             // container is not on stdout, so nothing there can corrupt it. Silence
             // it here so the emptiness assertion below means what it says.
             "--no-cli-print",
             "--quiet",
-        ]);
+        ])?;
         assert!(
             out.status.success(),
             "writing to a writable path failed: {}",
@@ -211,9 +213,8 @@ mod exporting {
         );
 
         let written = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("--export-vcon wrote no file at {}: {e}", path.display()));
-        let v: serde_json::Value =
-            serde_json::from_str(&written).expect("the written file is a JSON container");
+            .map_err(|e| format!("--export-vcon wrote no file at {}: {e}", path.display()))?;
+        let v: serde_json::Value = serde_json::from_str(&written)?;
         assert_eq!(v["dialog"][0]["sip_call_id"], CALL_A);
         assert_eq!(v["vcon"], "0.4.0");
 
@@ -225,6 +226,7 @@ mod exporting {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     // ── Discrimination ──────────────────────────────────────────────────────
@@ -236,9 +238,9 @@ mod exporting {
     /// as well as the Call-ID: the identifier is what a consumer deduplicates on,
     /// so two conversations sharing one would silently collapse into one record.
     #[test]
-    fn two_dialogs_export_two_different_containers() {
-        let a = export_to_stdout(CALL_A);
-        let b = export_to_stdout(CALL_B);
+    fn two_dialogs_export_two_different_containers() -> Result<(), TestError> {
+        let a = export_to_stdout(CALL_A)?;
+        let b = export_to_stdout(CALL_B)?;
 
         assert_ne!(
             a["dialog"][0]["sip_call_id"], b["dialog"][0]["sip_call_id"],
@@ -255,10 +257,11 @@ mod exporting {
         );
 
         assert_ne!(
-            super::body_of(&a["attachments"][0])["sip_call_id"],
-            super::body_of(&b["attachments"][0])["sip_call_id"],
+            super::body_of(&a["attachments"][0])?["sip_call_id"],
+            super::body_of(&b["attachments"][0])?["sip_call_id"],
             "the message trace describes the same call for both dialogs"
         );
+        Ok(())
     }
 
     /// Re-exporting one dialog out of one capture keeps its identifier.
@@ -268,21 +271,22 @@ mod exporting {
     /// `two_dialogs_export_two_different_containers` and breaks every consumer
     /// that deduplicates.
     #[test]
-    fn re_exporting_one_dialog_keeps_its_identifier() {
-        let first = export_to_stdout(CALL_A);
-        let second = export_to_stdout(CALL_A);
+    fn re_exporting_one_dialog_keeps_its_identifier() -> Result<(), TestError> {
+        let first = export_to_stdout(CALL_A)?;
+        let second = export_to_stdout(CALL_A)?;
         assert_eq!(
             first["uuid"], second["uuid"],
             "two exports of one dialog from one capture minted two identifiers, so \
              a consumer accumulates copies of one conversation"
         );
+        Ok(())
     }
 
     // ── Refusals ────────────────────────────────────────────────────────────
 
     /// An unknown Call-ID exits non-zero and says what to run to find a real one.
     #[test]
-    fn an_unknown_call_id_is_refused_and_names_the_remedy() {
+    fn an_unknown_call_id_is_refused_and_names_the_remedy() -> Result<(), TestError> {
         let out = run(&[
             "-N",
             "-I",
@@ -290,7 +294,7 @@ mod exporting {
             "--export-vcon",
             "no-such-call@nowhere",
             "--quiet",
-        ]);
+        ])?;
         assert!(
             !out.status.success(),
             "an unknown Call-ID exported nothing and exited 0, which a script \
@@ -310,12 +314,13 @@ mod exporting {
             "a refused export wrote {} bytes to stdout",
             out.stdout.len()
         );
+        Ok(())
     }
 
     /// An unwritable output path exits non-zero and names the path.
     #[test]
-    fn an_unwritable_vcon_out_is_refused_and_names_the_path() {
-        let dir = tmp_dir("unwritable");
+    fn an_unwritable_vcon_out_is_refused_and_names_the_path() -> Result<(), TestError> {
+        let dir = tmp_dir("unwritable")?;
         // A directory that does not exist, so `fs::write` cannot create the file
         // inside it. Deliberately not a permission trick: this suite runs as root
         // on the self-hosted runner, where a read-only mode bit proves nothing.
@@ -327,9 +332,9 @@ mod exporting {
             "--export-vcon",
             CALL_A,
             "--vcon-out",
-            path.to_str().expect("utf8 temp path"),
+            path.to_str().ok_or("utf8 temp path")?,
             "--quiet",
-        ]);
+        ])?;
         assert!(
             !out.status.success(),
             "a vCon that could not be written exited 0, so an operator believes a \
@@ -346,6 +351,7 @@ mod exporting {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// `--vcon-out` naming a capture this run reads is refused before anything
@@ -356,49 +362,50 @@ mod exporting {
     /// first. The assertion is on the input's BYTES, because "the run errored" is
     /// satisfied by a guard that fires after truncating the file.
     #[test]
-    fn a_vcon_out_that_names_the_input_capture_is_refused() {
-        let dir = tmp_dir("clobber");
+    fn a_vcon_out_that_names_the_input_capture_is_refused() -> Result<(), TestError> {
+        let dir = tmp_dir("clobber")?;
         let input = dir.join("capture.pcap");
-        std::fs::copy(repo(SAMPLE), &input).expect("copy the sample capture");
-        let before = std::fs::read(&input).expect("read the copied capture");
+        std::fs::copy(repo(SAMPLE), &input)?;
+        let before = std::fs::read(&input)?;
 
         let out = run(&[
             "-N",
             "-I",
-            input.to_str().expect("utf8 temp path"),
+            input.to_str().ok_or("utf8 temp path")?,
             "--export-vcon",
             CALL_A,
             "--vcon-out",
-            input.to_str().expect("utf8 temp path"),
+            input.to_str().ok_or("utf8 temp path")?,
             "--quiet",
-        ]);
+        ])?;
         assert!(
             !out.status.success(),
             "sipnab agreed to write a vCon over the capture it was reading"
         );
-        let after = std::fs::read(&input).expect("the input capture is gone");
+        let after = std::fs::read(&input)?;
         assert_eq!(
             before, after,
             "the input capture changed — the guard fired after opening the writer"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }
 
 /// `--vcon-out` on its own is refused: it has nothing to write.
 #[test]
-fn vcon_out_without_export_vcon_is_refused() {
-    let dir = tmp_dir("orphan");
+fn vcon_out_without_export_vcon_is_refused() -> Result<(), TestError> {
+    let dir = tmp_dir("orphan")?;
     let path = dir.join("call.vcon");
     let out = run(&[
         "-N",
         "-I",
         SAMPLE,
         "--vcon-out",
-        path.to_str().expect("utf8 temp path"),
+        path.to_str().ok_or("utf8 temp path")?,
         "--quiet",
-    ]);
+    ])?;
     assert!(
         !out.status.success(),
         "--vcon-out with no --export-vcon exited 0, so a typo'd Call-ID flag \
@@ -410,6 +417,7 @@ fn vcon_out_without_export_vcon_is_refused() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 // ── The feature gate ────────────────────────────────────────────────────
@@ -421,8 +429,8 @@ fn vcon_out_without_export_vcon_is_refused() {
 /// describes, so neither can rot into an assertion nothing exercises.
 #[cfg(feature = "vcon")]
 #[test]
-fn a_build_with_the_vcon_feature_accepts_the_flag() {
-    let out = run(&["-N", "-I", SAMPLE, "--export-vcon", CALL_A, "--quiet"]);
+fn a_build_with_the_vcon_feature_accepts_the_flag() -> Result<(), TestError> {
+    let out = run(&["-N", "-I", SAMPLE, "--export-vcon", CALL_A, "--quiet"])?;
     assert!(
         out.status.success(),
         "this build carries the vcon feature and still refused: {}",
@@ -432,6 +440,7 @@ fn a_build_with_the_vcon_feature_accepts_the_flag() {
         !out.stdout.is_empty(),
         "the flag was accepted and wrote nothing"
     );
+    Ok(())
 }
 
 /// A build without the exporter refuses the flag by name and exits 2.
@@ -441,8 +450,8 @@ fn a_build_with_the_vcon_feature_accepts_the_flag() {
 /// the second one is answered by installing a different build.
 #[cfg(not(feature = "vcon"))]
 #[test]
-fn a_build_without_the_vcon_feature_refuses_the_flag() {
-    let out = run(&["-N", "-I", SAMPLE, "--export-vcon", CALL_A, "--quiet"]);
+fn a_build_without_the_vcon_feature_refuses_the_flag() -> Result<(), TestError> {
+    let out = run(&["-N", "-I", SAMPLE, "--export-vcon", CALL_A, "--quiet"])?;
     assert_eq!(
         out.status.code(),
         Some(2),
@@ -463,6 +472,7 @@ fn a_build_without_the_vcon_feature_refuses_the_flag() {
         "a build with no exporter wrote {} bytes to stdout",
         out.stdout.len()
     );
+    Ok(())
 }
 
 /// A `json`-encoded body, parsed.
@@ -477,9 +487,9 @@ fn a_build_without_the_vcon_feature_refuses_the_flag() {
 /// says the same in a comment: a caller handing it a dict gets it JSON-encoded
 /// before anything else touches the attachment.
 #[cfg(feature = "vcon")]
-fn body_of(node: &serde_json::Value) -> serde_json::Value {
+fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
     let text = node["body"]
         .as_str()
-        .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
-    serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
+        .ok_or_else(|| format!("a json body must be a string: {node}"))?;
+    Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
 }

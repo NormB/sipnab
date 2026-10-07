@@ -26,10 +26,12 @@ use std::sync::Arc;
 include!("support/timeout.rs");
 include!("support/teardown.rs");
 
+type TestError = Box<dyn std::error::Error>;
+
 /// The selection a `--mcp-tools` list resolves to.
-fn sel(list: &str) -> ToolSelection {
+fn sel(list: &str) -> Result<ToolSelection, TestError> {
     let asked: Vec<String> = list.split(',').map(str::to_string).collect();
-    resolve(&asked, &std::collections::BTreeMap::new()).expect("known names")
+    Ok(resolve(&asked, &std::collections::BTreeMap::new())?)
 }
 
 /// A server with the given selection applied.
@@ -47,9 +49,9 @@ fn server(selection: ToolSelection) -> SipnabMcp {
 /// than of two lists: both numbers come from asking a built server what it
 /// would advertise.
 #[test]
-fn core_registers_fewer_tools_than_full() {
+fn core_registers_fewer_tools_than_full() -> Result<(), TestError> {
     let full = server(ToolSelection::Full).registered_tool_names();
-    let core = server(sel("core")).registered_tool_names();
+    let core = server(sel("core")?).registered_tool_names();
 
     assert!(
         full.len() > 20,
@@ -69,12 +71,13 @@ fn core_registers_fewer_tools_than_full() {
         CORE_TOOLS.len(),
         "core must register exactly the core set: {core:?}"
     );
+    Ok(())
 }
 
 /// `full` is what a server registers when nothing asks otherwise, so an
 /// upgrade does not silently take tools away.
 #[test]
-fn full_is_the_default_and_removes_nothing() {
+fn full_is_the_default_and_removes_nothing() -> Result<(), TestError> {
     let untouched = SipnabMcp::new(
         Arc::new(RwLock::new(DialogStore::new(64, false))),
         Arc::new(RwLock::new(StreamStore::new(64))),
@@ -92,6 +95,7 @@ fn full_is_the_default_and_removes_nothing() {
         ToolSelection::Full,
         "a server built with no selection registers everything"
     );
+    Ok(())
 }
 
 /// Every name in the core set is a tool the server actually has.
@@ -101,7 +105,7 @@ fn full_is_the_default_and_removes_nothing() {
 /// comparison still passes, and `core` has quietly lost a step of the path it
 /// was built around.
 #[test]
-fn every_core_tool_is_a_registered_tool() {
+fn every_core_tool_is_a_registered_tool() -> Result<(), TestError> {
     let full = server(ToolSelection::Full).registered_tool_names();
     assert!(
         orphaned_core_tools(&full).is_empty(),
@@ -110,12 +114,13 @@ fn every_core_tool_is_a_registered_tool() {
          leaves an agent improvising",
         orphaned_core_tools(&full)
     );
+    Ok(())
 }
 
 /// A `core` server carries every core tool and nothing else.
 #[test]
-fn the_core_router_holds_exactly_the_core_set() {
-    let core = server(sel("core")).registered_tool_names();
+fn the_core_router_holds_exactly_the_core_set() -> Result<(), TestError> {
+    let core = server(sel("core")?).registered_tool_names();
     for name in CORE_TOOLS {
         assert!(
             core.iter().any(|r| r == name),
@@ -128,6 +133,7 @@ fn the_core_router_holds_exactly_the_core_set() {
             "core registered {name}, which is not in the core set"
         );
     }
+    Ok(())
 }
 
 /// The tools `core` drops are gone from the router, not merely absent from a
@@ -135,8 +141,8 @@ fn the_core_router_holds_exactly_the_core_set() {
 /// that advertised it while claiming to be minimal would be handing a small
 /// client the largest hazard on the surface.
 #[test]
-fn core_drops_the_state_changing_tools() {
-    let core = server(sel("core")).registered_tool_names();
+fn core_drops_the_state_changing_tools() -> Result<(), TestError> {
+    let core = server(sel("core")?).registered_tool_names();
     for name in [
         "shutdown_server",
         "open_capture",
@@ -148,6 +154,7 @@ fn core_drops_the_state_changing_tools() {
             "core must not register {name}: {core:?}"
         );
     }
+    Ok(())
 }
 
 // ── The flag reaches the router ──────────────────────────────────────
@@ -159,7 +166,7 @@ fn core_drops_the_state_changing_tools() {
 /// above proves the builder works and would keep passing on a build where
 /// `--mcp-tools` was parsed, stored, and never read.
 #[cfg(unix)]
-fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
+fn tools_list(extra: &[&str]) -> Result<Vec<serde_json::Value>, TestError> {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
@@ -184,11 +191,10 @@ fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --mcp");
+        .spawn()?;
 
     {
-        let stdin = child.stdin.as_mut().expect("stdin");
+        let stdin = child.stdin.as_mut().ok_or("stdin")?;
         for msg in [
             serde_json::json!({
                 "jsonrpc": "2.0",
@@ -203,12 +209,12 @@ fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
             serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
             serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
         ] {
-            writeln!(stdin, "{}", serde_json::to_string(&msg).expect("serialize")).expect("write");
+            writeln!(stdin, "{}", serde_json::to_string(&msg)?)?;
         }
-        stdin.flush().expect("flush");
+        stdin.flush()?;
     }
 
-    let mut stdout = child.stdout.take().expect("stdout");
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut names = None;
@@ -223,12 +229,12 @@ fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
                     continue;
                 }
                 let v: serde_json::Value = serde_json::from_str(trimmed)
-                    .unwrap_or_else(|e| panic!("stdout is the JSON-RPC wire: {e}\n{trimmed}"));
+                    .map_err(|e| format!("stdout is the JSON-RPC wire: {e}\n{trimmed}"))?;
                 if v.get("id").and_then(serde_json::Value::as_i64) == Some(2) {
                     names = Some(
                         v["result"]["tools"]
                             .as_array()
-                            .unwrap_or_else(|| panic!("tools/list returns an array: {v}"))
+                            .ok_or_else(|| format!("tools/list returns an array: {v}"))?
                             .clone(),
                     );
                     break;
@@ -239,16 +245,16 @@ fn tools_list(extra: &[&str]) -> Vec<serde_json::Value> {
     }
     let _ = terminate(&mut child);
 
-    names.unwrap_or_else(|| panic!("`sipnab --mcp {extra:?}` never answered tools/list"))
+    Ok(names.ok_or_else(|| format!("`sipnab --mcp {extra:?}` never answered tools/list"))?)
 }
 
 /// Tool names a spawned server advertises for one `--mcp-tools` list.
 #[cfg(unix)]
-fn advertised_tools(list: &str) -> Vec<String> {
-    tools_list(&["--mcp-tools", list])
+fn advertised_tools(list: &str) -> Result<Vec<String>, TestError> {
+    Ok(tools_list(&["--mcp-tools", list])?
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_string))
-        .collect()
+        .collect())
 }
 
 /// `--mcp-tools core` reaches the router: a real client sees fewer tools.
@@ -257,9 +263,9 @@ fn advertised_tools(list: &str) -> Vec<String> {
 /// parsed and was never read fails here.
 #[cfg(unix)]
 #[test]
-fn the_flag_changes_what_a_client_is_offered() {
-    let full = advertised_tools("full");
-    let core = advertised_tools("core");
+fn the_flag_changes_what_a_client_is_offered() -> Result<(), TestError> {
+    let full = advertised_tools("full")?;
+    let core = advertised_tools("core")?;
 
     assert!(
         full.len() > 20,
@@ -279,14 +285,15 @@ fn the_flag_changes_what_a_client_is_offered() {
         CORE_TOOLS.len(),
         "a core client is offered exactly the core set: {core:?}"
     );
+    Ok(())
 }
 
 /// A bundle and a single tool name combine on the command line, and the
 /// client is offered exactly their union.
 #[cfg(unix)]
 #[test]
-fn a_bundle_and_a_tool_name_reach_the_router() {
-    let mut got = advertised_tools("relay,get_sdp_timeline");
+fn a_bundle_and_a_tool_name_reach_the_router() -> Result<(), TestError> {
+    let mut got = advertised_tools("relay,get_sdp_timeline")?;
     got.sort();
     assert_eq!(
         got,
@@ -298,22 +305,24 @@ fn a_bundle_and_a_tool_name_reach_the_router() {
             "relay_stats"
         ]
     );
+    Ok(())
 }
 
 /// By default no tool advertises an output schema; `--mcp-output-schemas`
 /// brings them back. Counted off the wire, from a spawned server.
 #[cfg(unix)]
 #[test]
-fn output_schemas_are_off_by_default_and_the_flag_restores_them() {
-    let off = tools_list(&["--mcp-tools", "core"]);
+fn output_schemas_are_off_by_default_and_the_flag_restores_them() -> Result<(), TestError> {
+    let off = tools_list(&["--mcp-tools", "core"])?;
     assert!(!off.is_empty());
     assert!(
         off.iter().all(|t| t.get("outputSchema").is_none()),
         "no output schema by default"
     );
-    let on = tools_list(&["--mcp-tools", "core", "--mcp-output-schemas"]);
+    let on = tools_list(&["--mcp-tools", "core", "--mcp-output-schemas"])?;
     assert!(
         on.iter().any(|t| t.get("outputSchema").is_some()),
         "the flag restores them"
     );
+    Ok(())
 }

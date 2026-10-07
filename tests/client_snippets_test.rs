@@ -31,6 +31,9 @@ mod markdown;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The pages whose client snippets are held to their programs.
 const DOCS: &[&str] = &[
     "docs/rest-api.md",
@@ -80,9 +83,9 @@ const CLIENT_TREES: &[&str] = &[
 const MARKER_OPEN: &str = "<!-- snippet: ";
 const MARKER_CLOSE: &str = " -->";
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(markdown::repo_root().join(rel))
-        .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(markdown::repo_root().join(rel))
+        .map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// One client-language fence, with the marker line that precedes it.
@@ -224,17 +227,16 @@ fn region(source: &str, name: &str) -> Result<String, String> {
 }
 
 /// Every region name declared in the client trees, as `(file, region)`.
-fn declared_regions() -> BTreeSet<(String, String)> {
+fn declared_regions() -> Result<BTreeSet<(String, String)>, TestError> {
     let root = markdown::repo_root();
     let mut out = BTreeSet::new();
     for tree in CLIENT_TREES {
         walk(&root.join(tree), &mut |path| {
             let Ok(text) = std::fs::read_to_string(path) else {
-                return;
+                return Ok(());
             };
             let rel = path
-                .strip_prefix(root)
-                .expect("walk stays under the root")
+                .strip_prefix(root)?
                 .to_string_lossy()
                 .replace('\\', "/");
             for line in text.lines() {
@@ -242,14 +244,15 @@ fn declared_regions() -> BTreeSet<(String, String)> {
                     out.insert((rel.clone(), name.to_string()));
                 }
             }
-        });
+            Ok(())
+        })?;
     }
-    out
+    Ok(out)
 }
 
-fn walk(dir: &Path, f: &mut dyn FnMut(&Path)) {
+fn walk(dir: &Path, f: &mut dyn FnMut(&Path) -> Result<(), TestError>) -> Result<(), TestError> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+        return Ok(());
     };
     for entry in entries.flatten() {
         let path = entry.path();
@@ -262,25 +265,28 @@ fn walk(dir: &Path, f: &mut dyn FnMut(&Path)) {
             continue;
         }
         if path.is_dir() {
-            walk(&path, f);
+            walk(&path, f)?;
         } else {
-            f(&path);
+            f(&path)?;
         }
     }
+    Ok(())
 }
 
-fn all_client_fences() -> Vec<ClientFence> {
-    DOCS.iter()
-        .flat_map(|doc| client_fences(doc, &read(doc)))
-        .collect()
+fn all_client_fences() -> Result<Vec<ClientFence>, TestError> {
+    let mut out = Vec::new();
+    for doc in DOCS {
+        out.extend(client_fences(doc, &read(doc)?));
+    }
+    Ok(out)
 }
 
 // ── the gates ─────────────────────────────────────────────────────────────
 
 /// A client fence with no marker is text nothing compiles.
 #[test]
-fn every_client_fence_names_the_program_it_is_cut_from() {
-    let unmarked: Vec<String> = all_client_fences()
+fn every_client_fence_names_the_program_it_is_cut_from() -> Result<(), TestError> {
+    let unmarked: Vec<String> = all_client_fences()?
         .iter()
         .filter(|f| f.source.is_none())
         .filter(|f| !NOT_YET_HELD.contains(&(f.doc, f.lang.as_str())))
@@ -295,13 +301,14 @@ fn every_client_fence_names_the_program_it_is_cut_from() {
         unmarked.len(),
         unmarked.join("\n")
     );
+    Ok(())
 }
 
 /// The fence is the region, byte for byte after dedent.
 #[test]
-fn every_client_fence_is_its_program_region_byte_for_byte() {
+fn every_client_fence_is_its_program_region_byte_for_byte() -> Result<(), TestError> {
     let mut drift = Vec::new();
-    for f in all_client_fences() {
+    for f in all_client_fences()? {
         let Some((file, name)) = &f.source else {
             continue;
         };
@@ -329,19 +336,20 @@ fn every_client_fence_is_its_program_region_byte_for_byte() {
         }
     }
     assert!(drift.is_empty(), "{}", drift.join("\n"));
+    Ok(())
 }
 
 /// A marker that names a missing file or region, or that sits above no
 /// client fence, points a reader at nothing.
 #[test]
-fn every_snippet_marker_resolves_to_one_region() {
+fn every_snippet_marker_resolves_to_one_region() -> Result<(), TestError> {
     let mut bad = Vec::new();
     for doc in DOCS {
         for Marker {
             line,
             source: parsed,
             next_fence: next,
-        } in markers(&read(doc))
+        } in markers(&read(doc)?)
         {
             let Some((file, name)) = parsed else {
                 bad.push(format!(
@@ -375,17 +383,18 @@ fn every_snippet_marker_resolves_to_one_region() {
         }
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+    Ok(())
 }
 
 /// A region no page shows is a program the pages have stopped describing, or a
 /// marker typo that left the fence pointing elsewhere.
 #[test]
-fn every_client_region_is_shown_on_a_page() {
-    let shown: BTreeSet<(String, String)> = all_client_fences()
+fn every_client_region_is_shown_on_a_page() -> Result<(), TestError> {
+    let shown: BTreeSet<(String, String)> = all_client_fences()?
         .into_iter()
         .filter_map(|f| f.source)
         .collect();
-    let declared = declared_regions();
+    let declared = declared_regions()?;
     let orphans: Vec<String> = declared
         .difference(&shown)
         .map(|(f, r)| format!("  {f}#{r}"))
@@ -395,15 +404,16 @@ fn every_client_region_is_shown_on_a_page() {
         "these regions are declared in clients/ but no page in {DOCS:?} shows them:\n{}",
         orphans.join("\n")
     );
+    Ok(())
 }
 
 /// The inventory measured when the gate was written. If the reader stopped
 /// seeing fences, every gate above would pass on nothing; a count that moves
 /// must be moved here on purpose.
 #[test]
-fn the_reader_sees_every_client_fence_the_pages_hold() {
+fn the_reader_sees_every_client_fence_the_pages_hold() -> Result<(), TestError> {
     let mut counts: BTreeMap<(&str, String), usize> = BTreeMap::new();
-    for f in all_client_fences() {
+    for f in all_client_fences()? {
         *counts.entry((f.doc, f.lang)).or_default() += 1;
     }
     let expected: BTreeMap<(&str, String), usize> = [
@@ -434,14 +444,15 @@ fn the_reader_sees_every_client_fence_the_pages_hold() {
     .map(|(d, l, n)| ((d, l.to_string()), n))
     .collect();
     assert_eq!(counts, expected);
+    Ok(())
 }
 
 /// The bar each language is held to lives in CI. These are the commands that
 /// make the programs load-bearing; losing one turns its language back into
 /// claims.
 #[test]
-fn ci_holds_every_client_language_to_its_bar() {
-    let ci = read(".github/workflows/ci.yml");
+fn ci_holds_every_client_language_to_its_bar() -> Result<(), TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
     let missing: Vec<&str> = [
         "gofmt -l .",
         "go vet ./...",
@@ -464,6 +475,7 @@ fn ci_holds_every_client_language_to_its_bar() {
         missing.is_empty(),
         ".github/workflows/ci.yml no longer runs: {missing:?}"
     );
+    Ok(())
 }
 
 /// The site's client page: each program it shows in full, and how
@@ -481,13 +493,13 @@ const SITE_CLIENTS: &[(&str, &str)] = &[
 /// run starts each one. A program that compiles but never meets a server
 /// could still print a zero value on a wrong token.
 #[test]
-fn every_site_client_runs_against_a_replayed_capture() {
-    let smoke: String = read("scripts/smoke-clients.sh")
+fn every_site_client_runs_against_a_replayed_capture() -> Result<(), TestError> {
+    let smoke: String = read("scripts/smoke-clients.sh")?
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
         .map(|l| format!("{l}\n"))
         .collect();
-    let page = read("website/content/docs/api-clients.md");
+    let page = read("website/content/docs/api-clients.md")?;
     let mut missing = Vec::new();
     for (program, run) in SITE_CLIENTS {
         if !page.contains(&format!("{MARKER_OPEN}{program}#")) {
@@ -502,6 +514,7 @@ fn every_site_client_runs_against_a_replayed_capture() {
         }
     }
     assert!(missing.is_empty(), "{}", missing.join("\n"));
+    Ok(())
 }
 
 /// The Rust program is a member of the workspace, which is what puts it under
@@ -509,28 +522,28 @@ fn every_site_client_runs_against_a_replayed_capture() {
 /// region tells a reader to add are the ones its manifest declares. The page
 /// once listed three crates and the program used five.
 #[test]
-fn the_rust_client_is_a_workspace_member_and_its_region_names_its_dependencies() {
-    let root = read("Cargo.toml");
+fn the_rust_client_is_a_workspace_member_and_its_region_names_its_dependencies()
+-> Result<(), TestError> {
+    let root = read("Cargo.toml")?;
     let members = root
         .lines()
         .find(|l| l.starts_with("members = "))
-        .expect("the root Cargo.toml lists its workspace members");
+        .ok_or("the root Cargo.toml lists its workspace members")?;
     assert!(
         members.contains("\"clients/rust\""),
         "clients/rust is not a workspace member: {members}"
     );
-    let manifest = read("clients/rust/Cargo.toml");
+    let manifest = read("clients/rust/Cargo.toml")?;
     let deps: BTreeSet<String> = manifest
         .split("[dependencies]")
         .nth(1)
-        .expect("clients/rust/Cargo.toml has a [dependencies] table")
+        .ok_or("clients/rust/Cargo.toml has a [dependencies] table")?
         .lines()
         .take_while(|l| !l.starts_with('['))
         .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
         .map(|l| l.trim().to_string())
         .collect();
-    let program = region(&read("clients/rust/src/main.rs"), "sipnab-client")
-        .expect("clients/rust/src/main.rs has the sipnab-client region");
+    let program = region(&read("clients/rust/src/main.rs")?, "sipnab-client")?;
     let shown: BTreeSet<String> = program
         .lines()
         .take_while(|l| l.starts_with("//"))
@@ -542,6 +555,7 @@ fn the_rust_client_is_a_workspace_member_and_its_region_names_its_dependencies()
         "the dependency lines at the top of the region must be \
          clients/rust/Cargo.toml's [dependencies], one per `//   ` line"
     );
+    Ok(())
 }
 
 /// Whether `needle` occurs in `text` as a whole token: not followed by a
@@ -563,9 +577,9 @@ fn contains_token(text: &str, needle: &str) -> bool {
 /// Each line here is a piece that, removed from the smoke run or the build,
 /// turns its example back into a claim.
 #[test]
-fn every_capability_example_runs_in_ci() {
+fn every_capability_example_runs_in_ci() -> Result<(), TestError> {
     // Code only: a comment naming a flag is not a command running it.
-    let smoke: String = read("scripts/smoke-clients.sh")
+    let smoke: String = read("scripts/smoke-clients.sh")?
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
         .map(|l| format!("{l}\n"))
@@ -593,13 +607,13 @@ fn every_capability_example_runs_in_ci() {
         missing.is_empty(),
         "scripts/smoke-clients.sh no longer runs: {missing:?}"
     );
-    let ci = read(".github/workflows/ci.yml");
+    let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("cargo build --all-features --bins --examples"),
         "ci.yml's Build step must build the examples, or the smoke run has no \
          tls_plaintext_records to run"
     );
-    let page = read("docs/client-examples.md");
+    let page = read("docs/client-examples.md")?;
     for program in [
         "leg_correlate.py",
         "vcon_validate.py",
@@ -611,6 +625,7 @@ fn every_capability_example_runs_in_ci() {
             "docs/client-examples.md does not tell an operator about {program}"
         );
     }
+    Ok(())
 }
 
 /// The operator tasks: one program per multi-step cookbook recipe, each
@@ -664,8 +679,8 @@ fn cookbook_section(cookbook: &str, n: u32) -> Option<String> {
 /// a program nobody runs, a program nobody finds, or a recipe that stops at
 /// the first command.
 #[test]
-fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() {
-    let smoke: String = read("scripts/smoke-clients.sh")
+fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() -> Result<(), TestError> {
+    let smoke: String = read("scripts/smoke-clients.sh")?
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
         .map(|l| format!("{l}\n"))
@@ -699,18 +714,18 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() {
         "scripts/smoke-clients.sh no longer runs: {missing:?}"
     );
 
-    let ci = read(".github/workflows/ci.yml");
+    let ci = read(".github/workflows/ci.yml")?;
     assert!(
         ci.contains("packages: tshark"),
         "ci.yml must install tshark before the smoke run, or recipe 40's check has \
          nothing to open the export with"
     );
 
-    let page = read("docs/client-examples.md");
-    let cookbook = read("docs/examples.md");
+    let page = read("docs/client-examples.md")?;
+    let cookbook = read("docs/examples.md")?;
     let mut unlinked = Vec::new();
     for (program, anchor, recipes) in OPERATOR_TASKS {
-        let name = program.rsplit('/').next().expect("a file name");
+        let name = program.rsplit('/').next().ok_or("a file name")?;
         let heading_slug_present = page
             .lines()
             .filter(|l| l.starts_with("### "))
@@ -732,6 +747,7 @@ fn every_operator_task_runs_in_ci_and_is_linked_from_its_recipes() {
         }
     }
     assert!(unlinked.is_empty(), "{}", unlinked.join("\n"));
+    Ok(())
 }
 
 /// The AI tasks: what an agent does with sipnab over MCP, each a program CI
@@ -764,8 +780,8 @@ const AI_TASKS: &[(&str, &str)] = &[
 /// recipe 55 deploys), and a file root for the evidence package. Without
 /// them the HTTP check would be a stdio check with a different name.
 #[test]
-fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() {
-    let smoke: String = read("scripts/smoke-clients.sh")
+fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() -> Result<(), TestError> {
+    let smoke: String = read("scripts/smoke-clients.sh")?
         .lines()
         .filter(|l| !l.trim_start().starts_with('#'))
         .map(|l| format!("{l}\n"))
@@ -786,7 +802,7 @@ fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() {
             missing.push((*program).to_string());
         }
     }
-    if !read("clients/python/evidence_handoff.py").contains("\"--mcp-file-root\"") {
+    if !read("clients/python/evidence_handoff.py")?.contains("\"--mcp-file-root\"") {
         missing.push("evidence_handoff.py starting sipnab with --mcp-file-root".to_string());
     }
     missing.dedup();
@@ -795,11 +811,11 @@ fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() {
         "scripts/smoke-clients.sh no longer runs: {missing:?}"
     );
 
-    let page = read("docs/client-examples.md");
-    let guide = read("docs/mcp.md");
+    let page = read("docs/client-examples.md")?;
+    let guide = read("docs/mcp.md")?;
     let mut unlinked = Vec::new();
     for (program, anchor) in AI_TASKS {
-        let name = program.rsplit('/').next().expect("a file name");
+        let name = program.rsplit('/').next().ok_or("a file name")?;
         let section_present = page
             .lines()
             .filter(|l| l.starts_with("### "))
@@ -815,6 +831,7 @@ fn every_ai_task_runs_in_ci_and_is_linked_from_the_mcp_guide() {
         }
     }
     assert!(unlinked.is_empty(), "{}", unlinked.join("\n"));
+    Ok(())
 }
 
 /// The anchor a heading gets: lowercase, spaces to hyphens, and every other
@@ -834,31 +851,32 @@ fn markdown_slug(heading: &str) -> String {
 // ── the reader itself ─────────────────────────────────────────────────────
 
 #[test]
-fn the_region_reader_finds_regions_under_either_comment_style() {
+fn the_region_reader_finds_regions_under_either_comment_style() -> Result<(), TestError> {
     let go = "func run() error {\n\t// snippet:start a\n\tx := 1\n\n\tif x > 0 {\n\t\treturn nil\n\t}\n\t// snippet:end a\n\treturn nil\n}\n";
-    assert_eq!(
-        region(go, "a").unwrap(),
-        "x := 1\n\nif x > 0 {\n\treturn nil\n}\n"
-    );
+    assert_eq!(region(go, "a")?, "x := 1\n\nif x > 0 {\n\treturn nil\n}\n");
     let py = "def f():\n    # snippet:start b\n    return 1\n    # snippet:end b\n";
-    assert_eq!(region(py, "b").unwrap(), "return 1\n");
+    assert_eq!(region(py, "b")?, "return 1\n");
+    Ok(())
 }
 
 #[test]
-fn the_region_reader_refuses_missing_duplicate_and_inverted_regions() {
+fn the_region_reader_refuses_missing_duplicate_and_inverted_regions() -> Result<(), TestError> {
     assert!(
         region("x\n", "a")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .contains("no `snippet:start a`")
     );
     assert!(
         region("# snippet:start a\n", "a")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .contains("no `snippet:end a`")
     );
     assert!(
         region("# snippet:end a\n# snippet:start a\n", "a")
-            .unwrap_err()
+            .err()
+            .ok_or("expected an error, got Ok")?
             .contains("before its start")
     );
     assert!(
@@ -866,15 +884,17 @@ fn the_region_reader_refuses_missing_duplicate_and_inverted_regions() {
             "# snippet:start a\n# snippet:end a\n# snippet:start a\n# snippet:end a\n",
             "a"
         )
-        .unwrap_err()
+        .err()
+        .ok_or("expected an error, got Ok")?
         .contains("exactly once")
     );
     // A name is matched whole: region `a` is not region `ab`.
     assert!(region("# snippet:start ab\n# snippet:end ab\n", "a").is_err());
+    Ok(())
 }
 
 #[test]
-fn the_fence_reader_takes_the_marker_directly_above_only() {
+fn the_fence_reader_takes_the_marker_directly_above_only() -> Result<(), TestError> {
     let doc = "<!-- snippet: clients/go/x/main.go#x -->\n```go\nx\n```\n\n\
                <!-- snippet: clients/go/y/main.go#y -->\n\n```go\ny\n```\n";
     let fences = client_fences("t.md", doc);
@@ -888,20 +908,22 @@ fn the_fence_reader_takes_the_marker_directly_above_only() {
     let m = markers(doc);
     assert_eq!(m[0].next_fence.as_deref(), Some("go"));
     assert_eq!(m[1].next_fence, None);
+    Ok(())
 }
 
 #[test]
-fn a_token_is_matched_whole() {
+fn a_token_is_matched_whole() -> Result<(), TestError> {
     assert!(contains_token("x --hep-send 127.0.0.1", "--hep-send"));
     assert!(contains_token("ends with --hep-send", "--hep-send"));
     assert!(!contains_token("x --hep-sendX y", "--hep-send"));
     assert!(!contains_token("x --hep-send-transport tcp", "--hep-send"));
     assert!(contains_token("a/b.pcap\"", "a/b.pcap"));
     assert!(!contains_token("a/b.pcapng", "a/b.pcap"));
+    Ok(())
 }
 
 #[test]
-fn a_heading_slugs_the_way_the_page_anchors_it() {
+fn a_heading_slugs_the_way_the_page_anchors_it() -> Result<(), TestError> {
     assert_eq!(
         markdown_slug("Export one customer's calls, whole"),
         "export-one-customers-calls-whole"
@@ -910,22 +932,25 @@ fn a_heading_slugs_the_way_the_page_anchors_it() {
         markdown_slug("Ban a scanner through TFPS, and verify it"),
         "ban-a-scanner-through-tfps-and-verify-it"
     );
+    Ok(())
 }
 
 #[test]
-fn a_cookbook_section_runs_to_the_next_second_level_heading() {
+fn a_cookbook_section_runs_to_the_next_second_level_heading() -> Result<(), TestError> {
     let doc = "## 9. Nine\nnine\n## 10. Ten\nten\n### 10a. Sub\nsub\n## 11. Eleven\n";
     assert_eq!(
         cookbook_section(doc, 10).as_deref(),
         Some("ten\n### 10a. Sub\nsub")
     );
     assert_eq!(cookbook_section(doc, 1), None);
+    Ok(())
 }
 
 #[test]
-fn dedent_strips_only_the_shared_prefix() {
+fn dedent_strips_only_the_shared_prefix() -> Result<(), TestError> {
     assert_eq!(dedent("    a\n      b\n\n    c\n"), "a\n  b\n\nc\n");
     assert_eq!(dedent("\ta\n\t\tb\n"), "a\n\tb\n");
     // Mixed tabs and spaces share no prefix, so nothing is removed.
     assert_eq!(dedent("\ta\n  b\n"), "\ta\n  b\n");
+    Ok(())
 }

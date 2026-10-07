@@ -22,6 +22,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use sipnab::capture::PacketProcessor;
 use sipnab::capture::packet::{HepOrigin, Packet, PreParsed};
 
+type TestError = Box<dyn std::error::Error>;
+
 /// TCP, as a TLS session is.
 const TCP: u8 = 6;
 
@@ -53,7 +55,7 @@ fn uprobe_packet(interface: &str, src_port: u16, dst_port: u16) -> Packet {
 /// **The regression.** With reassembly on — the default — a uprobe read must
 /// come straight out again.
 #[test]
-fn a_uprobe_read_is_not_held_by_the_tcp_reassembler() {
+fn a_uprobe_read_is_not_held_by_the_tcp_reassembler() -> Result<(), TestError> {
     let mut processor = PacketProcessor::new();
     let out = processor.process(&uprobe_packet("uprobe:opensips/4242", 36160, 15061));
 
@@ -67,24 +69,26 @@ fn a_uprobe_read_is_not_held_by_the_tcp_reassembler() {
     assert_eq!(out[0].payload.as_ref(), REGISTER);
     assert_eq!(out[0].src_port, 36160);
     assert_eq!(out[0].dst_port, 15061);
+    Ok(())
 }
 
 /// The BPF backend's addresses must survive the same path, since carrying them
 /// is the only reason that backend exists.
 #[test]
-fn the_peer_a_uprobe_read_carries_survives_the_pipeline() {
+fn the_peer_a_uprobe_read_carries_survives_the_pipeline() -> Result<(), TestError> {
     let mut processor = PacketProcessor::new();
     let out = processor.process(&uprobe_packet("uprobe:python3/4242", 36160, 15061));
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].src_addr.to_string(), "127.0.0.1");
     assert_eq!(out[0].dst_addr.to_string(), "127.0.0.1");
+    Ok(())
 }
 
 /// A tuple-less read — the tracefs backend, or a BPF write whose send never
 /// paired — must also pass through. It is the more common shape, and holding
 /// it would silence the default backend entirely.
 #[test]
-fn a_uprobe_read_with_no_peer_passes_through_too() {
+fn a_uprobe_read_with_no_peer_passes_through_too() -> Result<(), TestError> {
     let mut processor = PacketProcessor::new();
     let out = processor.process(&uprobe_packet("uprobe:opensips/99", 0, 0));
     assert_eq!(
@@ -93,6 +97,7 @@ fn a_uprobe_read_with_no_peer_passes_through_too() {
         "no addresses is normal for a uprobe, not a fault"
     );
     assert_eq!(out[0].payload.as_ref(), REGISTER);
+    Ok(())
 }
 
 /// A HEP message is not a segment either (issue #301).
@@ -103,10 +108,10 @@ fn a_uprobe_read_with_no_peer_passes_through_too() {
 /// message a sender marked TCP (IP protocol 6) vanished: not decoded, not
 /// counted as undecodable, simply gone.
 #[test]
-fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() {
+fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() -> Result<(), TestError> {
     let mut processor = PacketProcessor::new();
     let mut packet = uprobe_packet("hep:10.0.0.5:9060", 5060, 5060);
-    packet.pre_parsed.as_mut().expect("pre-parsed").hep = Some(HepOrigin {
+    packet.pre_parsed.as_mut().ok_or("pre-parsed")?.hep = Some(HepOrigin {
         protocol: 1,
         correlation_id: None,
     });
@@ -119,13 +124,14 @@ fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() {
     );
     assert_eq!(out[0].payload.as_ref(), REGISTER);
     assert_eq!(out[0].transport, sipnab::net::TransportProto::Tcp);
+    Ok(())
 }
 
 /// The bypass is by origin, not by missing sequence numbers alone: a real
 /// TCP segment read from a capture still goes through the reassembler, which
 /// holds a segment until the one before it arrives.
 #[test]
-fn a_captured_tcp_segment_still_belongs_to_the_reassembler() {
+fn a_captured_tcp_segment_still_belongs_to_the_reassembler() -> Result<(), TestError> {
     let mut processor = PacketProcessor::new();
     // A segment whose predecessor never arrived: SYN at 1000, data at 2000.
     let syn = eth_ipv4_tcp(1000, 0x02, b"");
@@ -139,6 +145,7 @@ fn a_captured_tcp_segment_still_belongs_to_the_reassembler() {
         "a segment past a hole is held for the missing bytes, which is what \
          reassembly is; the HEP bypass must not reach captured frames"
     );
+    Ok(())
 }
 
 /// An Ethernet + IPv4 + TCP frame from 192.0.2.1:40000 to 192.0.2.2:5060.
@@ -177,7 +184,8 @@ fn eth_ipv4_tcp(seq: u32, flags: u8, payload: &[u8]) -> Packet {
 /// leave all of them green while every label silently reported nothing. That
 /// is the assignment this test exists for.
 #[test]
-fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
+fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses()
+-> Result<(), TestError> {
     use sipnab::capture::packet::FrameSource;
     use sipnab::capture::parse::InputOrigin;
     use sipnab::pipeline::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
@@ -210,7 +218,7 @@ fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
         &mut decrypt,
     );
     let PacketAction::Sip { msg, .. } = action else {
-        panic!("a uprobe read carrying a REGISTER must classify as SIP");
+        return Err("a uprobe read carrying a REGISTER must classify as SIP".into());
     };
 
     assert_eq!(
@@ -223,8 +231,7 @@ fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
     // The machine surface: `--json`, and through it MCP `get_message` and the
     // vCon message trace, which share this projection.
     let line = sipnab::output::json::message_to_json(&msg);
-    let json: serde_json::Value =
-        serde_json::from_str(line.trim_end()).expect("the NDJSON line parses");
+    let json: serde_json::Value = serde_json::from_str(line.trim_end())?;
     assert_eq!(
         json["input_origin"], "uprobe",
         "the JSON line must name the source that delivered it: {line}"
@@ -263,7 +270,7 @@ fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
     // followed to whatever sits at ordinal 3 of some file.
     let pointer = msg
         .frame
-        .expect("a uprobe read still says WHICH read it was");
+        .ok_or("a uprobe read still says WHICH read it was")?;
     assert!(
         matches!(pointer.source_kind(), FrameSource::Uprobe { pid: 4242, .. }),
         "the pointer must carry the kind, not merely a source string that \
@@ -279,4 +286,5 @@ fn a_uprobe_read_reaches_the_output_surfaces_labeled_and_its_pointer_refuses() {
              pointer stays useful as provenance: {refusal}"
         );
     }
+    Ok(())
 }

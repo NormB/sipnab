@@ -50,6 +50,8 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 #[path = "support/absence_scan.rs"]
 mod absence_scan;
 
@@ -99,7 +101,7 @@ fn marker_lines(src: &str) -> Vec<String> {
 /// laid out this way REACHES it, which is what makes the bare-marker rule
 /// below structural instead of stylistic.
 #[test]
-fn a_marker_beginning_a_string_continuation_reaches_the_extractor() {
+fn a_marker_beginning_a_string_continuation_reaches_the_extractor() -> Result<(), TestError> {
     // The shape that was in scanner_calibration_test: a Rust string
     // continuation whose second physical line begins with the marker.
     let fixture = "let s = \"...\\n\\\n               #[test]\nfn phantom_gate() {}\n";
@@ -110,6 +112,7 @@ fn a_marker_beginning_a_string_continuation_reaches_the_extractor() {
          line. If that is now true the bare-marker rule below has lost its \
          subject, and the demonstration this file rests on is stale."
     );
+    Ok(())
 }
 
 /// A whole test definition inside a raw string is counted as real.
@@ -118,7 +121,7 @@ fn a_marker_beginning_a_string_continuation_reaches_the_extractor() {
 /// syntactically a test — it is a string — and the extractor counts it,
 /// because a line-oriented scanner has no notion of quoting.
 #[test]
-fn a_definition_inside_a_raw_string_is_counted_as_real() {
+fn a_definition_inside_a_raw_string_is_counted_as_real() -> Result<(), TestError> {
     let fixture = "fn helper() {\n    let f = r#\"\n#[test]\nfn phantom_gate() {\n    assert!(true);\n}\n\"#;\n}\n";
     assert_eq!(
         defines(fixture, "phantom_gate"),
@@ -127,6 +130,7 @@ fn a_definition_inside_a_raw_string_is_counted_as_real() {
          a better extractor, and it would also mean the tree-wide equality \
          below is guarding a hole that has closed -- check before deleting it."
     );
+    Ok(())
 }
 
 /// Real definitions beside a fixture are still found.
@@ -135,7 +139,7 @@ fn a_definition_inside_a_raw_string_is_counted_as_real() {
 /// more text generally would satisfy the two tests above and break everything
 /// built on it.
 #[test]
-fn real_definitions_beside_a_fixture_are_still_found() {
+fn real_definitions_beside_a_fixture_are_still_found() -> Result<(), TestError> {
     let src = "#[test]\nfn real_one() {\n    let f = \"#[test]\";\n    let _ = f;\n}\n\n#[test]\nfn real_two() {\n    assert!(true);\n}\n";
     let found = test_fns(src);
     assert!(
@@ -143,6 +147,7 @@ fn real_definitions_beside_a_fixture_are_still_found() {
         "the extractor lost a real definition sitting next to fixture text: \
          found {found:?}"
     );
+    Ok(())
 }
 
 /// A `#[cfg]` between marker and function is still a definition.
@@ -150,7 +155,7 @@ fn real_definitions_beside_a_fixture_are_still_found() {
 /// Most gated tests in this tree are written that way, and an extractor that
 /// dropped them would shrink every count built on it without failing anything.
 #[test]
-fn a_gated_definition_survives_the_attribute_run() {
+fn a_gated_definition_survives_the_attribute_run() -> Result<(), TestError> {
     let src =
         "#[test]\n#[cfg(feature = \"full\")]\n#[ignore]\nfn gated_one() {\n    assert!(true);\n}\n";
     assert_eq!(
@@ -160,6 +165,7 @@ fn a_gated_definition_survives_the_attribute_run() {
          extractor, so every rule reading definitions is blind to the gated \
          half of the tree"
     );
+    Ok(())
 }
 
 // ── B. the structural invariants that keep fixtures out ─────────────
@@ -175,10 +181,14 @@ fn a_gated_definition_survives_the_attribute_run() {
 /// extractor. Teaching a line-oriented scanner about quoting to accommodate
 /// test data is how it stops being able to read the tree.
 #[test]
-fn every_marker_line_in_the_tree_is_bare() {
+fn every_marker_line_in_the_tree_is_bare() -> Result<(), TestError> {
     let mut bad = Vec::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         for (i, line) in read(&path).lines().enumerate() {
             let t = line.trim();
             if t.starts_with("#[test]") && t != "#[test]" {
@@ -193,6 +203,7 @@ fn every_marker_line_in_the_tree_is_bare() {
          physical line starts with `#[test]`.",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// Marker count and definition count agree, file by file.
@@ -208,10 +219,14 @@ fn every_marker_line_in_the_tree_is_bare() {
 /// line, which is instance six — and a marker with no definition, meaning the
 /// extractor has stopped reading.
 #[test]
-fn the_marker_count_and_the_definition_count_agree_in_every_file() {
+fn the_marker_count_and_the_definition_count_agree_in_every_file() -> Result<(), TestError> {
     let mut off = Vec::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         let src = read(&path);
         let markers = marker_lines(&src).len();
         let defs = test_fns(&src).len();
@@ -228,6 +243,7 @@ fn the_marker_count_and_the_definition_count_agree_in_every_file() {
          a definition is an extractor that has stopped reading.",
         off.join("\n")
     );
+    Ok(())
 }
 
 /// Stripping raw strings is what separates a phantom from a real definition.
@@ -238,7 +254,7 @@ fn the_marker_count_and_the_definition_count_agree_in_every_file() {
 /// the working one is the only way the next reader learns which rule covers
 /// which direction.
 #[test]
-fn stripping_raw_strings_separates_a_phantom_from_a_real_definition() {
+fn stripping_raw_strings_separates_a_phantom_from_a_real_definition() -> Result<(), TestError> {
     let clean = "#[test]\nfn real_one() {\n    assert!(true);\n}\n";
     let phantom = "#[test]\nfn phantom_gate() {\n    assert!(true);\n}";
     let poisoned =
@@ -275,6 +291,7 @@ fn stripping_raw_strings_separates_a_phantom_from_a_real_definition() {
         "the stripped content was discarded rather than returned; the rules \
          below need to look INSIDE the strings, not just remove them"
     );
+    Ok(())
 }
 
 /// No raw string in the test tree declares a test.
@@ -284,10 +301,14 @@ fn stripping_raw_strings_separates_a_phantom_from_a_real_definition() {
 /// scanner in this tree, which is the silent direction in its purest form:
 /// nothing fails, and a count quietly includes something I made up.
 #[test]
-fn no_raw_string_in_the_tree_declares_a_test() {
+fn no_raw_string_in_the_tree_declares_a_test() -> Result<(), TestError> {
     let mut bad = Vec::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         let (_, inner) = split_raw_strings(&read(&path));
         for chunk in inner {
             for line in chunk.lines() {
@@ -306,6 +327,7 @@ fn no_raw_string_in_the_tree_declares_a_test() {
          compiler never sees it and every scanner counts it.",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// No raw string in the test tree declares a ratchet.
@@ -316,10 +338,14 @@ fn no_raw_string_in_the_tree_declares_a_test() {
 /// function, which is ordinary Rust. Indentation never distinguished fixture
 /// from real — being inside a string is what does.
 #[test]
-fn no_raw_string_in_the_tree_declares_a_ratchet() {
+fn no_raw_string_in_the_tree_declares_a_ratchet() -> Result<(), TestError> {
     let mut bad = Vec::new();
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         let (_, inner) = split_raw_strings(&read(&path));
         for chunk in inner {
             for line in chunk.lines() {
@@ -335,6 +361,7 @@ fn no_raw_string_in_the_tree_declares_a_ratchet() {
          rule cannot tell them from a real pin.",
         bad.join("\n")
     );
+    Ok(())
 }
 
 /// The raw-string split leaves ordinary code alone.
@@ -344,7 +371,7 @@ fn no_raw_string_in_the_tree_declares_a_ratchet() {
 /// the rest of the file from there — blanking real definitions and turning
 /// every rule above into a scan of nothing.
 #[test]
-fn the_raw_string_split_leaves_ordinary_code_alone() {
+fn the_raw_string_split_leaves_ordinary_code_alone() -> Result<(), TestError> {
     // Two string literals, deliberately. With only one there is no second
     // quote for a bogus raw string to close on, so disabling the boundary rule
     // changes nothing and this control passes while testing nothing -- which
@@ -361,6 +388,7 @@ fn the_raw_string_split_leaves_ordinary_code_alone() {
         "the split removed part of ordinary code, so every rule reading the \
          stripped text is scanning less than the file"
     );
+    Ok(())
 }
 
 /// The invariants hold for the file that defines them.
@@ -369,7 +397,7 @@ fn the_raw_string_split_leaves_ordinary_code_alone() {
 /// is the most likely place for the next instance. Self-application is not
 /// decoration — instance six was in the file written to guard instance five.
 #[test]
-fn the_invariants_hold_for_the_file_that_defines_them() {
+fn the_invariants_hold_for_the_file_that_defines_them() -> Result<(), TestError> {
     let src = read(&repo().join("tests/fixture_isolation_test.rs"));
     assert!(!src.is_empty(), "this file must be readable by name");
     for t in src.lines().map(str::trim) {
@@ -383,6 +411,7 @@ fn the_invariants_hold_for_the_file_that_defines_them() {
         test_fns(&src).len(),
         "this file breaks its own marker/definition equality"
     );
+    Ok(())
 }
 
 // ── C. the other scanners' inputs, same treatment ───────────────────
@@ -392,7 +421,7 @@ fn the_invariants_hold_for_the_file_that_defines_them() {
 /// The same silent direction, in the scanner that decides whether two files
 /// have copied a ratchet. Demonstrated, not assumed.
 #[test]
-fn a_ratchet_pin_inside_a_raw_string_is_read_as_a_pin() {
+fn a_ratchet_pin_inside_a_raw_string_is_read_as_a_pin() -> Result<(), TestError> {
     let fixture = "fn helper() {\n    let f = r#\"\nconst EXPECTED_TABLES: usize = 756;\n\"#;\n}\n";
     let pins = ratchet_pins(fixture);
     assert_eq!(
@@ -403,13 +432,14 @@ fn a_ratchet_pin_inside_a_raw_string_is_read_as_a_pin() {
     );
     assert_eq!(pins[0].0, "EXPECTED_TABLES");
     assert_eq!(pins[0].1, "756");
+    Ok(())
 }
 
 /// The ratchet parser still finds a real pin.
 ///
 /// The control for the rule above.
 #[test]
-fn the_ratchet_parser_still_finds_a_real_pin() {
+fn the_ratchet_parser_still_finds_a_real_pin() -> Result<(), TestError> {
     let real = "const EXPECTED_TABLES: usize = 756;\n";
     assert_eq!(
         ratchet_pins(real),
@@ -417,6 +447,7 @@ fn the_ratchet_parser_still_finds_a_real_pin() {
         "the ratchet parser no longer reads an ordinary pin, so the duplicate \
          rule built on it is examining nothing"
     );
+    Ok(())
 }
 
 // ── D. the loud direction stays loud ────────────────────────────────
@@ -432,7 +463,7 @@ fn the_ratchet_parser_still_finds_a_real_pin() {
 /// This test exists so that nobody closes that failure by narrowing the
 /// scanner, which is the move `scanner_calibration_test` was written about.
 #[test]
-fn a_cross_reference_written_into_a_fixture_is_still_a_claim() {
+fn a_cross_reference_written_into_a_fixture_is_still_a_claim() -> Result<(), TestError> {
     let exists = |name: &str| repo().join("tests").join(format!("{name}.rs")).exists();
     let token = format!("release_completeness_test{}a_gate_that_was_renamed", "::");
     assert!(
@@ -442,6 +473,7 @@ fn a_cross_reference_written_into_a_fixture_is_still_a_claim() {
          narrowing the scanner instead would make every genuine dangling \
          reference invisible too."
     );
+    Ok(())
 }
 
 /// The calibration fixture builds its dangling token at runtime.
@@ -450,7 +482,7 @@ fn a_cross_reference_written_into_a_fixture_is_still_a_claim() {
 /// token out fails here — next to the explanation — rather than in a scanner
 /// three files away whose message is about renamed gates.
 #[test]
-fn the_calibration_fixture_builds_its_dangling_token_at_runtime() {
+fn the_calibration_fixture_builds_its_dangling_token_at_runtime() -> Result<(), TestError> {
     let src = read(&repo().join("tests/scanner_calibration_test.rs"));
     assert!(
         !src.is_empty(),
@@ -464,6 +496,7 @@ fn the_calibration_fixture_builds_its_dangling_token_at_runtime() {
          literal again. That is a claim about this repository naming a test \
          that does not exist, and the real scan reads that file like any other."
     );
+    Ok(())
 }
 
 /// No scanner predicate exempts a file by name.
@@ -472,7 +505,7 @@ fn the_calibration_fixture_builds_its_dangling_token_at_runtime() {
 /// skip, and it is the one narrowing that can never be justified: a scanner
 /// blind to the file that tests it cannot report its own blind spot.
 #[test]
-fn no_scanner_predicate_exempts_a_file_by_name() {
+fn no_scanner_predicate_exempts_a_file_by_name() -> Result<(), TestError> {
     let src = read(&repo().join("tests/support/absence_scan.rs"));
     assert!(!src.is_empty(), "the shared predicates must be readable");
     for banned in [
@@ -491,6 +524,7 @@ fn no_scanner_predicate_exempts_a_file_by_name() {
              any of them."
         );
     }
+    Ok(())
 }
 
 /// The scanners really do read the files that test them.
@@ -499,7 +533,7 @@ fn no_scanner_predicate_exempts_a_file_by_name() {
 /// exclusion is one way to be blind; simply never walking the file is another,
 /// and it leaves no line of code to grep for.
 #[test]
-fn the_scanners_read_the_files_that_test_them() {
+fn the_scanners_read_the_files_that_test_them() -> Result<(), TestError> {
     let files = test_files();
     assert!(
         files.len() >= 40,
@@ -513,11 +547,14 @@ fn the_scanners_read_the_files_that_test_them() {
         "fixture_isolation_test.rs",
     ] {
         assert!(
-            files.iter().any(|p| p.file_name().unwrap() == required),
+            files
+                .iter()
+                .any(|p| p.file_name().is_some_and(|n| n == required)),
             "{required} is not in the walked set, so every rule that claims to \
              cover it covers nothing"
         );
     }
+    Ok(())
 }
 
 /// A self-exemption states its reason.
@@ -528,9 +565,13 @@ fn the_scanners_read_the_files_that_test_them() {
 /// that exemptions are forbidden — it is that an unexplained one is
 /// indistinguishable from a red someone silenced.
 #[test]
-fn a_self_exemption_states_its_reason() {
+fn a_self_exemption_states_its_reason() -> Result<(), TestError> {
     for path in test_files() {
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+        let file = path
+            .file_name()
+            .ok_or("path has no file name")?
+            .to_string_lossy()
+            .to_string();
         let src = read(&path);
         // Does the file name itself in code (not prose)?
         let self_named = src
@@ -547,6 +588,7 @@ fn a_self_exemption_states_its_reason() {
              unexplained self-exemption reads the same as a silenced failure."
         );
     }
+    Ok(())
 }
 
 /// A name in a doc comment is not a definition.
@@ -556,7 +598,7 @@ fn a_self_exemption_states_its_reason() {
 /// exist because the gate does, and counting them was what made the
 /// exactly-once rule fail on a tree containing exactly one.
 #[test]
-fn a_name_in_a_doc_comment_is_not_a_definition() {
+fn a_name_in_a_doc_comment_is_not_a_definition() -> Result<(), TestError> {
     let src = "//! See `phantom_gate` for the real check.\n\n/// Unlike `phantom_gate`, this one runs.\n#[test]\nfn real_one() {\n    assert!(true);\n}\n";
     assert_eq!(
         defines(src, "phantom_gate"),
@@ -569,4 +611,5 @@ fn a_name_in_a_doc_comment_is_not_a_definition() {
         1,
         "the real definition beside those mentions was lost"
     );
+    Ok(())
 }

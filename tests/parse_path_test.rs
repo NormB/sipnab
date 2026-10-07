@@ -16,6 +16,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use support::TestError;
 
 #[path = "support/mod.rs"]
 mod support;
@@ -35,18 +36,17 @@ fn fixtures_dir() -> PathBuf {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
-fn run_sipnab(args: &[&str]) -> (String, String, i32) {
+fn run_sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let output = Command::new(binary)
         .args(args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&output.stdout).to_string(),
         String::from_utf8_lossy(&output.stderr).to_string(),
         output.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// Strip volatile JSON fields (timestamps, durations) so two runs of the same
@@ -88,11 +88,11 @@ fn canonicalize_ndjson(s: &str) -> Vec<String> {
 /// and batch+API modes for the same fixture pcap. This proves the refactor
 /// did not lose or duplicate any messages.
 #[test]
-fn batch_json_output_matches_batch_with_api_json_output() {
+fn batch_json_output_matches_batch_with_api_json_output() -> Result<(), TestError> {
     let pcap = fixtures_dir().join("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
 
-    let (stdout_no_api, _, code_a) = run_sipnab(&["-N", "-I", &pcap_str, "--json"]);
+    let (stdout_no_api, _, code_a) = run_sipnab(&["-N", "-I", &pcap_str, "--json"])?;
     assert_eq!(code_a, 0, "batch-only run failed");
 
     // With --api on a random port; the server starts but we never query it.
@@ -116,7 +116,7 @@ fn batch_json_output_matches_batch_with_api_json_output() {
             "duration:1",
         ],
         std::time::Duration::from_secs(15),
-    );
+    )?;
     // The `--autostop duration:1` run must exit cleanly on its own. A
     // non-zero code means it crashed (e.g. a panic after flushing stdout)
     // or had to be SIGTERM/SIGKILLed at the timeout (-9) — either way the
@@ -135,6 +135,7 @@ fn batch_json_output_matches_batch_with_api_json_output() {
         "JSON output differs between --api and no-api runs:\n  no-api: {:#?}\n  api:    {:#?}",
         canon_a, canon_b
     );
+    Ok(())
 }
 
 /// Run sipnab with a wall-clock timeout. Sends SIGTERM first (graceful)
@@ -149,7 +150,10 @@ fn batch_json_output_matches_batch_with_api_json_output() {
 ///
 /// # Side effects
 /// Spawns the compiled `sipnab` binary and may signal/kill it.
-fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (String, String, i32) {
+fn run_sipnab_with_timeout(
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<(String, String, i32), TestError> {
     use std::io::Read;
 
     let binary = env!("CARGO_BIN_EXE_sipnab");
@@ -161,8 +165,7 @@ fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (Stri
         .env("SIPNAB_LOG", "warn")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn sipnab");
+        .spawn()?;
 
     let pid = child.id() as i32;
 
@@ -208,16 +211,17 @@ fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (Stri
         .flatten()
         .and_then(|s| s.code())
         .unwrap_or(-9);
-    (stdout, stderr, code)
+    Ok((stdout, stderr, code))
 }
 
 /// Sanity check: the same pcap, same flags, two runs produce identical
 /// canonicalized JSON. If this fails, parse_path tests aren't meaningful.
 #[test]
-fn batch_json_output_is_deterministic() {
+fn batch_json_output_is_deterministic() -> Result<(), TestError> {
     let pcap = fixtures_dir().join("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
-    let (a, _, _) = run_sipnab(&["-N", "-I", &pcap_str, "--json"]);
-    let (b, _, _) = run_sipnab(&["-N", "-I", &pcap_str, "--json"]);
+    let (a, _, _) = run_sipnab(&["-N", "-I", &pcap_str, "--json"])?;
+    let (b, _, _) = run_sipnab(&["-N", "-I", &pcap_str, "--json"])?;
     assert_eq!(canonicalize_ndjson(&a), canonicalize_ndjson(&b));
+    Ok(())
 }

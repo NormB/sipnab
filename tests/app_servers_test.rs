@@ -15,6 +15,10 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::security::AlertEngine;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// Shorthand for the `Arc<RwLock<T>>` shape `start_servers` expects for its
 /// shared stores.
 type Shared<T> = Arc<RwLock<T>>;
@@ -39,7 +43,7 @@ fn stores() -> (
 /// Nothing enabled → no thread is spawned and the call succeeds. This is the
 /// common path for every plain capture invocation.
 #[test]
-fn nothing_enabled_spawns_nothing() {
+fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
     let cli = Cli::parse_from_args(["sipnab"]);
     let (ds, ss, alerts) = stores();
     let handle = servers::start_servers(
@@ -76,16 +80,16 @@ fn nothing_enabled_spawns_nothing() {
         #[cfg(any(feature = "api", feature = "mcp"))]
         None,
         None,
-    )
-    .expect("no servers requested must succeed");
+    )?;
     assert!(handle.is_none(), "no --api/--mcp flags ⇒ no servers thread");
+    Ok(())
 }
 
 /// A selection that excludes a configured server must not start it: the TUI
 /// path requests API only (MCP stdio would fight the TUI for stdio).
 #[cfg(feature = "mcp")]
 #[test]
-fn selection_gates_configured_servers() {
+fn selection_gates_configured_servers() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true; // configured…
     let (ds, ss, alerts) = stores();
@@ -123,9 +127,9 @@ fn selection_gates_configured_servers() {
         #[cfg(any(feature = "api", feature = "mcp"))]
         None,
         None,
-    )
-    .expect("must succeed");
+    )?;
     assert!(handle.is_none(), "unselected MCP must not start a thread");
+    Ok(())
 }
 
 /// An invalid --api bind address is a startup error the caller can turn into
@@ -133,7 +137,7 @@ fn selection_gates_configured_servers() {
 /// buried in a helper.
 #[cfg(feature = "api")]
 #[test]
-fn invalid_api_addr_is_an_error() {
+fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api = Some("not-a-bind-addr".into());
     let (ds, ss, alerts) = stores();
@@ -173,12 +177,13 @@ fn invalid_api_addr_is_an_error() {
         None,
     );
     assert!(err.is_err(), "junk --api address must be a startup error");
+    Ok(())
 }
 
 /// A valid API request starts the (single) servers thread.
 #[cfg(feature = "api")]
 #[test]
-fn api_on_ephemeral_port_starts_servers_thread() {
+fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api = Some("127.0.0.1:0".into());
     let (ds, ss, alerts) = stores();
@@ -216,14 +221,14 @@ fn api_on_ephemeral_port_starts_servers_thread() {
         #[cfg(any(feature = "api", feature = "mcp"))]
         None,
         None,
-    )
-    .expect("valid --api must start");
-    let handle = handle.expect("an enabled server must spawn the thread");
+    )?;
+    let handle = handle.ok_or("an enabled server must spawn the thread")?;
     // Only an MCP stdio client owns the process lifetime; an API-only run
     // must not hand the caller a flag to wait on.
     assert!(handle.mcp_stdio_done.is_none());
     // The thread runs the servers for the life of the process; it is
     // intentionally detached here (the test process exits and reaps it).
+    Ok(())
 }
 
 /// A busy --api port must fail `start_servers` synchronously — once the TUI
@@ -231,9 +236,9 @@ fn api_on_ephemeral_port_starts_servers_thread() {
 /// invisible and the user gets a running TUI with no API.
 #[cfg(feature = "api")]
 #[test]
-fn api_port_in_use_is_a_startup_error() {
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe port");
-    let port = occupied.local_addr().expect("local_addr").port();
+fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = occupied.local_addr()?.port();
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api = Some(format!("127.0.0.1:{port}"));
     let (ds, ss, alerts) = stores();
@@ -273,12 +278,13 @@ fn api_port_in_use_is_a_startup_error() {
         None,
     )
     .err()
-    .expect("busy --api port must be a startup error, not a detached-thread log");
+    .ok_or("busy --api port must be a startup error, not a detached-thread log")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains("bind"),
         "error must name the bind failure: {msg}"
     );
+    Ok(())
 }
 
 /// Non-loopback --api without auth must be refused at startup for the same
@@ -286,7 +292,7 @@ fn api_port_in_use_is_a_startup_error() {
 /// the TUI alternate screen.
 #[cfg(feature = "api")]
 #[test]
-fn api_non_loopback_without_auth_is_a_startup_error() {
+fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
     let (ds, ss, alerts) = stores();
@@ -326,20 +332,21 @@ fn api_non_loopback_without_auth_is_a_startup_error() {
         None,
     )
     .err()
-    .expect("unauthenticated non-loopback --api must be a startup error");
+    .ok_or("unauthenticated non-loopback --api must be a startup error")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains("non-loopback"),
         "error must explain the auth policy: {msg}"
     );
+    Ok(())
 }
 
 /// An API TLS file that cannot be read must surface as a startup error
 /// naming it, rather than as an async log from the servers thread.
 #[cfg(feature = "api")]
 #[test]
-fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let missing = dir.path().join("absent-cert.pem");
     let missing = missing.to_string_lossy().into_owned();
     let mut cli = Cli::parse_from_args(["sipnab"]);
@@ -385,12 +392,13 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() {
         None,
     )
     .err()
-    .expect("an API TLS file that cannot be read must be a startup error");
+    .ok_or("an API TLS file that cannot be read must be a startup error")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains(&missing),
         "the error must name the file it could not read: {msg}"
     );
+    Ok(())
 }
 
 /// `--mcp-transport http` in a build without the mcp-http feature must be a
@@ -398,7 +406,7 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() {
 /// and no server, silently.
 #[cfg(all(feature = "mcp", not(feature = "mcp-http")))]
 #[test]
-fn mcp_http_transport_without_feature_is_a_startup_error() {
+fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
     cli.mcp_args.mcp_transport = "http".into();
@@ -439,18 +447,19 @@ fn mcp_http_transport_without_feature_is_a_startup_error() {
         None,
     )
     .err()
-    .expect("http transport without mcp-http must be a startup error");
+    .ok_or("http transport without mcp-http must be a startup error")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains("mcp-http"),
         "error must name the missing feature: {msg}"
     );
+    Ok(())
 }
 
 /// An unknown --mcp-transport is a configuration error, not a log-and-skip.
 #[cfg(feature = "mcp")]
 #[test]
-fn unknown_mcp_transport_is_a_startup_error() {
+fn unknown_mcp_transport_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
     cli.mcp_args.mcp_transport = "carrier-pigeon".into();
@@ -491,18 +500,19 @@ fn unknown_mcp_transport_is_a_startup_error() {
         None,
     )
     .err()
-    .expect("unknown --mcp-transport must be a startup error");
+    .ok_or("unknown --mcp-transport must be a startup error")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains("carrier-pigeon"),
         "error must echo the bad transport: {msg}"
     );
+    Ok(())
 }
 
 /// A malformed --mcp-bind is a configuration error, not a log-and-skip.
 #[cfg(feature = "mcp-http")]
 #[test]
-fn invalid_mcp_bind_is_a_startup_error() {
+fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.mcp_args.mcp = true;
     cli.mcp_args.mcp_transport = "http".into();
@@ -547,13 +557,14 @@ fn invalid_mcp_bind_is_a_startup_error() {
         err.is_err(),
         "junk --mcp-bind must be a startup error, not log-and-skip"
     );
+    Ok(())
 }
 
 /// The API verifier resolution (signing keys + static keys + revocation
 /// file) must be a pure, unit-testable Cli→VerifierConfig mapping.
 #[cfg(feature = "api")]
 #[test]
-fn api_verifier_config_resolution_matrix() {
+fn api_verifier_config_resolution_matrix() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.api_signing_key = vec!["k1".into(), "".into(), "k2".into()];
     cli.listener_args.api_key = Some("static1".into());
@@ -569,16 +580,17 @@ fn api_verifier_config_resolution_matrix() {
         cfg.revoked_file.as_deref(),
         Some(std::path::Path::new("/tmp/revoked.txt"))
     );
+    Ok(())
 }
 
 /// MCP static-secret precedence: --mcp-token wins over --mcp-token-file,
 /// values are trimmed, and an empty token yields no static key.
 #[cfg(feature = "mcp")]
 #[test]
-fn mcp_verifier_token_precedence_and_trim() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn mcp_verifier_token_precedence_and_trim() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let token_file = dir.path().join("token.txt");
-    std::fs::write(&token_file, "  file-secret \n").expect("write");
+    std::fs::write(&token_file, "  file-secret \n")?;
 
     // File only → trimmed file secret.
     let mut cli = Cli::parse_from_args(["sipnab"]);
@@ -600,6 +612,7 @@ fn mcp_verifier_token_precedence_and_trim() {
     cli.mcp_args.mcp_token_file = None;
     let cfg = servers::resolve_mcp_verifier_config(&cli);
     assert!(cfg.static_keys.is_empty());
+    Ok(())
 }
 
 /// An unauthenticated non-loopback `--metrics` is a startup ERROR, not a log
@@ -617,7 +630,7 @@ fn mcp_verifier_token_precedence_and_trim() {
 /// expected to know.
 #[cfg(feature = "metrics")]
 #[test]
-fn metrics_non_loopback_without_auth_is_a_startup_error() {
+fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.metrics = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
     let (ds, ss, alerts) = stores();
@@ -655,12 +668,13 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
         None,
     )
     .err()
-    .expect("unauthenticated non-loopback --metrics must be a startup error");
+    .ok_or("unauthenticated non-loopback --metrics must be a startup error")?;
     let msg = format!("{err:#}");
     assert!(
         msg.contains("non-loopback"),
         "error must explain the auth policy: {msg}"
     );
+    Ok(())
 }
 
 /// A loopback `--metrics` on an ephemeral port still starts.
@@ -669,7 +683,7 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() {
 /// would satisfy the test above.
 #[cfg(feature = "metrics")]
 #[test]
-fn metrics_on_loopback_ephemeral_port_starts() {
+fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
     let mut cli = Cli::parse_from_args(["sipnab"]);
     cli.listener_args.metrics = Some("127.0.0.1:0".into());
     let (ds, ss, alerts) = stores();
@@ -711,4 +725,5 @@ fn metrics_on_loopback_ephemeral_port_starts() {
         "a loopback metrics bind must still start: {:?}",
         out.err().map(|e| format!("{e:#}"))
     );
+    Ok(())
 }

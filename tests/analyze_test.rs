@@ -27,6 +27,8 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Absolute path to a file under `tests/`.
 fn fixture(dir: &str, name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -57,49 +59,48 @@ fn clean_call() -> String {
     fixture("fixtures", "sip_call.pcap")
 }
 
-fn run(args: &[&str]) -> (String, String, i32) {
+fn run(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
         .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
+        .output()?;
+    Ok((
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
         output.status.code().unwrap_or(-1),
-    )
+    ))
 }
 
 /// `--analyze` on a capture, stdout only.
-fn analyze(path: &str, extra: &[&str]) -> String {
+fn analyze(path: &str, extra: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["-N", "-I", path, "--analyze", "--no-cli-print"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run(&args);
+    let (stdout, stderr, code) = run(&args)?;
     assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
-    stdout
+    Ok(stdout)
 }
 
 /// The `--json-analyze` object for a capture.
-fn analyze_json(path: &str, extra: &[&str]) -> serde_json::Value {
+fn analyze_json(path: &str, extra: &[&str]) -> Result<serde_json::Value, TestError> {
     let mut args = vec!["-N", "-I", path, "--json-analyze", "--no-cli-print"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run(&args);
+    let (stdout, stderr, code) = run(&args)?;
     assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .unwrap_or_else(|| panic!("--json-analyze must emit one object, got:\n{stdout}"));
-    serde_json::from_str(line).expect("the analysis must be valid JSON")
+        .ok_or_else(|| format!("--json-analyze must emit one object, got:\n{stdout}"))?;
+    Ok(serde_json::from_str(line)?)
 }
 
 /// The kinds in a JSON analysis, in the order they were ranked.
-fn kinds(analysis: &serde_json::Value) -> Vec<String> {
-    analysis["findings"]
+fn kinds(analysis: &serde_json::Value) -> Result<Vec<String>, TestError> {
+    Ok(analysis["findings"]
         .as_array()
-        .expect("findings is an array")
+        .ok_or("findings is an array")?
         .iter()
         .map(|f| f["kind"].as_str().unwrap_or_default().to_string())
-        .collect()
+        .collect())
 }
 
 // ── The user's question: what is wrong with this file? ─────────────────
@@ -108,23 +109,24 @@ fn kinds(analysis: &serde_json::Value) -> Vec<String> {
 /// has to be at the top — a ranked list that buries the fault the operator
 /// called about is a list nobody reads twice.
 #[test]
-fn one_way_audio_is_reported_first_and_as_critical() {
-    let out = analyze(&mismatch(), &[]);
+fn one_way_audio_is_reported_first_and_as_critical() -> Result<(), TestError> {
+    let out = analyze(&mismatch(), &[])?;
     assert!(out.contains("One-way audio"), "{out}");
     let first = out
         .lines()
         .find(|l| l.starts_with("1. "))
-        .unwrap_or_else(|| panic!("no ranked findings in:\n{out}"));
+        .ok_or_else(|| format!("no ranked findings in:\n{out}"))?;
     assert!(first.contains("[CRITICAL]"), "{first}");
     assert!(first.contains("One-way audio"), "{first}");
+    Ok(())
 }
 
 /// The finding must carry the cause beside the symptom. STUN failing is what
 /// made the SDP wrong, and both belong in the same ranked list.
 #[test]
-fn the_stun_versus_sdp_cause_is_ranked_beside_the_one_way_audio() {
-    let json = analyze_json(&mismatch(), &[]);
-    let ranked = kinds(&json);
+fn the_stun_versus_sdp_cause_is_ranked_beside_the_one_way_audio() -> Result<(), TestError> {
+    let json = analyze_json(&mismatch(), &[])?;
+    let ranked = kinds(&json)?;
     assert!(
         ranked.contains(&"one_way_audio".to_string()),
         "expected one-way audio in {ranked:?}"
@@ -136,25 +138,26 @@ fn the_stun_versus_sdp_cause_is_ranked_beside_the_one_way_audio() {
     // Both are Critical, so they sit above the NAT mismatch and the probe.
     let critical: Vec<&str> = json["findings"]
         .as_array()
-        .expect("findings is an array")
+        .ok_or("findings is an array")?
         .iter()
         .filter(|f| f["severity"] == "critical")
         .map(|f| f["kind"].as_str().unwrap_or_default())
         .collect();
     assert_eq!(critical, vec!["one_way_audio", "stun_sdp_mismatch"]);
+    Ok(())
 }
 
 /// Requirement: a finding an operator cannot verify against the pcap is
 /// worthless. Every finding must name the call, the addresses and the counts.
 #[test]
-fn every_finding_carries_evidence_that_points_back_at_the_capture() {
-    let json = analyze_json(&mismatch(), &[]);
-    let findings = json["findings"].as_array().expect("findings is an array");
+fn every_finding_carries_evidence_that_points_back_at_the_capture() -> Result<(), TestError> {
+    let json = analyze_json(&mismatch(), &[])?;
+    let findings = json["findings"].as_array().ok_or("findings is an array")?;
     assert!(!findings.is_empty(), "{json}");
     for f in findings {
         let evidence = f["evidence"]
             .as_array()
-            .unwrap_or_else(|| panic!("{} has no evidence array", f["kind"]));
+            .ok_or_else(|| format!("{} has no evidence array", f["kind"]))?;
         assert!(
             !evidence.is_empty(),
             "{} has no evidence at all: {f}",
@@ -165,7 +168,7 @@ fn every_finding_carries_evidence_that_points_back_at_the_capture() {
         assert!(has_anchor, "{} evidence names nothing: {first}", f["kind"]);
     }
 
-    let text = analyze(&mismatch(), &[]);
+    let text = analyze(&mismatch(), &[])?;
     assert!(
         text.contains("Call-ID stun-sdp-mismatch-1@192.168.10.50"),
         "the text report must name the call: {text}"
@@ -178,6 +181,7 @@ fn every_finding_carries_evidence_that_points_back_at_the_capture() {
         text.contains("rtp_packets="),
         "the text report must carry packet counts: {text}"
     );
+    Ok(())
 }
 
 // ── A capture with no SIP in it at all ─────────────────────────────────
@@ -186,8 +190,8 @@ fn every_finding_carries_evidence_that_points_back_at_the_capture() {
 /// analyzer must work without a single dialog — this is the same defect class
 /// as reporting a STUN-only file as "No SIP traffic found."
 #[test]
-fn a_capture_with_no_sip_at_all_still_reports() {
-    let out = analyze(&stun_only(), &[]);
+fn a_capture_with_no_sip_at_all_still_reports() -> Result<(), TestError> {
+    let out = analyze(&stun_only(), &[])?;
     assert!(
         out.contains("STUN Binding Request unanswered"),
         "a STUN-only capture holds a real finding: {out}"
@@ -204,6 +208,7 @@ fn a_capture_with_no_sip_at_all_still_reports() {
         !out.contains("No problems found"),
         "an unanswered probe is a problem: {out}"
     );
+    Ok(())
 }
 
 // ── Honesty: what sipnab did not read ──────────────────────────────────
@@ -212,21 +217,22 @@ fn a_capture_with_no_sip_at_all_still_reports() {
 /// "No problems found." alone is a claim about the traffic that sipnab is not
 /// entitled to make.
 #[test]
-fn a_clean_capture_gets_one_line_naming_its_denominators() {
-    let out = analyze(&clean_call(), &[]);
+fn a_clean_capture_gets_one_line_naming_its_denominators() -> Result<(), TestError> {
+    let out = analyze(&clean_call(), &[])?;
     let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "one honest line, not a scaffold:\n{out}");
     assert!(lines[0].contains("No problems found"), "{out}");
     assert!(lines[0].contains("frame(s)"), "{out}");
     assert!(lines[0].contains("dialog(s)"), "{out}");
+    Ok(())
 }
 
 /// The rule this repo enforces: sipnab's totals describe what it UNDERSTOOD.
 /// A port gate that discarded real SIP must make "no problems found"
 /// unreachable, because the messages it threw away are in no count below.
 #[test]
-fn sip_thrown_away_by_a_port_gate_prevents_a_clean_verdict() {
-    let out = analyze(&problem_calls(), &["--portrange", "6000-6001"]);
+fn sip_thrown_away_by_a_port_gate_prevents_a_clean_verdict() -> Result<(), TestError> {
+    let out = analyze(&problem_calls(), &["--portrange", "6000-6001"])?;
     assert!(
         !out.contains("No problems found"),
         "a capture whose SIP was gated away is not a clean one:\n{out}"
@@ -240,13 +246,14 @@ fn sip_thrown_away_by_a_port_gate_prevents_a_clean_verdict() {
         out.contains("port 5060"),
         "the evidence must name the port that was gated out: {out}"
     );
+    Ok(())
 }
 
 /// The machine-readable form has to carry the same verdict, or a pipeline and
 /// a human reading the same capture disagree about it.
 #[test]
-fn the_json_form_marks_an_incomplete_read_as_incomplete() {
-    let json = analyze_json(&problem_calls(), &["--portrange", "6000-6001"]);
+fn the_json_form_marks_an_incomplete_read_as_incomplete() -> Result<(), TestError> {
+    let json = analyze_json(&problem_calls(), &["--portrange", "6000-6001"])?;
     assert_eq!(json["complete"], false, "{json}");
     assert_eq!(
         json["findings"][0]["severity"], "blind",
@@ -254,12 +261,12 @@ fn the_json_form_marks_an_incomplete_read_as_incomplete() {
     );
     assert_eq!(json["findings"][0]["kind"], "sip_discarded_by_portrange");
 
-    let clean = analyze_json(&clean_call(), &[]);
+    let clean = analyze_json(&clean_call(), &[])?;
     assert_eq!(clean["complete"], true, "{clean}");
     assert!(
         clean["findings"]
             .as_array()
-            .expect("findings is an array")
+            .ok_or("findings is an array")?
             .is_empty(),
         "{clean}"
     );
@@ -267,6 +274,7 @@ fn the_json_form_marks_an_incomplete_read_as_incomplete() {
         clean["frames_read"].as_u64().unwrap_or(0) > 0,
         "a clean verdict must still state its denominator: {clean}"
     );
+    Ok(())
 }
 
 // ── Ranking ────────────────────────────────────────────────────────────
@@ -274,27 +282,29 @@ fn the_json_form_marks_an_incomplete_read_as_incomplete() {
 /// A 5xx is never an ordinary call outcome and a 4xx routinely is, so they get
 /// different severities and the 5xx sorts above.
 #[test]
-fn server_failures_outrank_request_failures() {
-    let json = analyze_json(&problem_calls(), &[]);
-    let ranked = kinds(&json);
+fn server_failures_outrank_request_failures() -> Result<(), TestError> {
+    let json = analyze_json(&problem_calls(), &[])?;
+    let ranked = kinds(&json)?;
     let server = ranked
         .iter()
         .position(|k| k == "server_failure")
-        .unwrap_or_else(|| panic!("expected a 5xx/6xx finding in {ranked:?}"));
+        .ok_or_else(|| format!("expected a 5xx/6xx finding in {ranked:?}"))?;
     let request = ranked
         .iter()
         .position(|k| k == "request_failure")
-        .unwrap_or_else(|| panic!("expected a 4xx finding in {ranked:?}"));
+        .ok_or_else(|| format!("expected a 4xx finding in {ranked:?}"))?;
     assert!(server < request, "5xx must rank above 4xx: {ranked:?}");
+    Ok(())
 }
 
 /// The order must be byte-stable across runs, or two analyzes of the same
 /// capture cannot be diffed and a count that moved is invisible.
 #[test]
-fn the_ranked_output_is_identical_across_runs() {
-    let first = analyze(&mismatch(), &[]);
-    let second = analyze(&mismatch(), &[]);
+fn the_ranked_output_is_identical_across_runs() -> Result<(), TestError> {
+    let first = analyze(&mismatch(), &[])?;
+    let second = analyze(&mismatch(), &[])?;
     assert_eq!(first, second, "the report must be deterministic");
+    Ok(())
 }
 
 // ── Flag plumbing ──────────────────────────────────────────────────────
@@ -303,9 +313,9 @@ fn the_ranked_output_is_identical_across_runs() {
 /// requires `-N`. A flag missing from it produces a report the TUI then
 /// scribbles over — silently, because the report was still generated.
 #[test]
-fn the_analyze_flags_require_non_interactive_mode() {
+fn the_analyze_flags_require_non_interactive_mode() -> Result<(), TestError> {
     for flag in ["--analyze", "--json-analyze", "--yang-analyze"] {
-        let (_, stderr, code) = run(&["-I", &clean_call(), flag]);
+        let (_, stderr, code) = run(&["-I", &clean_call(), flag])?;
         assert_ne!(code, 0, "{flag} without -N must be refused");
         assert!(
             stderr.contains(flag),
@@ -316,6 +326,7 @@ fn the_analyze_flags_require_non_interactive_mode() {
             "and must say why: {stderr}"
         );
     }
+    Ok(())
 }
 
 /// MCP owns stdout for the JSON-RPC wire, so both flags must also be in the
@@ -324,20 +335,21 @@ fn the_analyze_flags_require_non_interactive_mode() {
 /// being refused.
 #[cfg(feature = "mcp")]
 #[test]
-fn the_analyze_flags_are_refused_under_mcp() {
+fn the_analyze_flags_are_refused_under_mcp() -> Result<(), TestError> {
     for flag in ["--analyze", "--json-analyze", "--yang-analyze"] {
-        let (_, stderr, code) = run(&["-N", "--mcp", "-I", &clean_call(), flag]);
+        let (_, stderr, code) = run(&["-N", "--mcp", "-I", &clean_call(), flag])?;
         assert_ne!(code, 0, "{flag} under --mcp must be refused");
         assert!(
             stderr.contains(flag),
             "the error must name {flag}: {stderr}"
         );
     }
+    Ok(())
 }
 
 /// Both forms can be asked for at once and must describe the same capture.
 #[test]
-fn text_and_json_forms_agree_about_the_same_capture() {
+fn text_and_json_forms_agree_about_the_same_capture() -> Result<(), TestError> {
     let (stdout, stderr, code) = run(&[
         "-N",
         "-I",
@@ -345,45 +357,47 @@ fn text_and_json_forms_agree_about_the_same_capture() {
         "--analyze",
         "--json-analyze",
         "--no-cli-print",
-    ]);
+    ])?;
     assert_eq!(code, 0, "stderr:\n{stderr}");
     let line = stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .unwrap_or_else(|| panic!("no JSON object in:\n{stdout}"));
-    let json: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        .ok_or_else(|| format!("no JSON object in:\n{stdout}"))?;
+    let json: serde_json::Value = serde_json::from_str(line)?;
     let count = json["findings"]
         .as_array()
-        .expect("findings is an array")
+        .ok_or("findings is an array")?
         .len();
     assert!(
         stdout.contains(&format!("{count} finding(s)")),
         "the text header must agree with the JSON array: {count} vs\n{stdout}"
     );
+    Ok(())
 }
 
 /// `--markdown` must actually change the shape — the defect #89 recorded for
 /// `--report`, where the flag was read, documented and ignored.
 #[test]
-fn markdown_changes_the_rendering() {
-    let text = analyze(&mismatch(), &[]);
-    let md = analyze(&mismatch(), &["--markdown"]);
+fn markdown_changes_the_rendering() -> Result<(), TestError> {
+    let text = analyze(&mismatch(), &[])?;
+    let md = analyze(&mismatch(), &["--markdown"])?;
     assert_ne!(text, md, "--markdown must not be a no-op");
     assert!(md.contains("## Capture analysis"), "{md}");
     assert!(md.contains("### 1. [CRITICAL]"), "{md}");
+    Ok(())
 }
 
 /// `--filter` narrows the dialogs and nothing else: a NAT-discovery probe
 /// belongs to no dialog, so narrowing it away would delete the evidence that
 /// explains why the selected dialogs are broken.
 #[test]
-fn a_filter_narrows_dialogs_without_deleting_capture_level_evidence() {
-    let json = analyze_json(&mismatch(), &["--filter", "call_id == 'nothing-matches'"]);
+fn a_filter_narrows_dialogs_without_deleting_capture_level_evidence() -> Result<(), TestError> {
+    let json = analyze_json(&mismatch(), &["--filter", "call_id == 'nothing-matches'"])?;
     assert_eq!(
         json["dialogs_examined"], 0,
         "the filter must select no dialogs: {json}"
     );
-    let ranked = kinds(&json);
+    let ranked = kinds(&json)?;
     assert!(
         ranked.contains(&"unanswered_stun_probe".to_string()),
         "the STUN evidence must survive a dialog filter: {ranked:?}"
@@ -392,21 +406,22 @@ fn a_filter_narrows_dialogs_without_deleting_capture_level_evidence() {
         !ranked.contains(&"one_way_audio".to_string()),
         "the filtered-out dialog's findings must be gone: {ranked:?}"
     );
+    Ok(())
 }
 
 // ── The JSON bytes, pinned ─────────────────────────────────────────────
 
 /// The raw `--json-analyze` line for one capture.
-fn analyze_json_line(path: &str, extra: &[&str]) -> String {
+fn analyze_json_line(path: &str, extra: &[&str]) -> Result<String, TestError> {
     let mut args = vec!["-N", "-I", path, "--json-analyze", "--no-cli-print"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run(&args);
+    let (stdout, stderr, code) = run(&args)?;
     assert_eq!(code, 0, "sipnab should exit cleanly; stderr:\n{stderr}");
-    stdout
+    Ok(stdout
         .lines()
         .find(|l| l.starts_with('{'))
-        .unwrap_or_else(|| panic!("--json-analyze must emit one object, got:\n{stdout}"))
-        .to_string()
+        .ok_or_else(|| format!("--json-analyze must emit one object, got:\n{stdout}"))?
+        .to_string())
 }
 
 /// The exact bytes of every fixture's analysis, pinned.
@@ -418,7 +433,7 @@ fn analyze_json_line(path: &str, extra: &[&str]) -> String {
 /// would forgive a reordered key, and diffability across runs is a property
 /// the analysis promises.
 #[test]
-fn the_json_analysis_of_every_fixture_is_pinned() {
+fn the_json_analysis_of_every_fixture_is_pinned() -> Result<(), TestError> {
     for (name, path, extra) in [
         ("stun_nat_probe", stun_only(), &[][..]),
         ("stun_sdp_mismatch", mismatch(), &[][..]),
@@ -432,9 +447,10 @@ fn the_json_analysis_of_every_fixture_is_pinned() {
     ] {
         insta::assert_snapshot!(
             format!("json_analyze__{name}"),
-            analyze_json_line(&path, extra)
+            analyze_json_line(&path, extra)?
         );
     }
+    Ok(())
 }
 
 /// A narrowed analysis says it was narrowed, and by what.
@@ -447,22 +463,23 @@ fn the_json_analysis_of_every_fixture_is_pinned() {
 /// can paste back into `--filter` to reproduce it. An unfiltered run carries
 /// no `filter` at all rather than an empty one.
 #[test]
-fn a_filtered_analysis_names_the_filter_and_an_unfiltered_one_does_not() {
-    let narrowed = analyze_json(&mismatch(), &["--filter", "call_id == 'nothing-matches'"]);
+fn a_filtered_analysis_names_the_filter_and_an_unfiltered_one_does_not() -> Result<(), TestError> {
+    let narrowed = analyze_json(&mismatch(), &["--filter", "call_id == 'nothing-matches'"])?;
     assert_eq!(
         narrowed["filter"], "call_id == 'nothing-matches'",
         "the filter that narrowed the dialogs must be named: {narrowed}"
     );
 
-    let alias = analyze_json(&mismatch(), &["--filter", "one-way"]);
+    let alias = analyze_json(&mismatch(), &["--filter", "one-way"])?;
     assert_eq!(
         alias["filter"], "one_way == true",
         "an alias is recorded as the expression it expanded to: {alias}"
     );
 
-    let whole = analyze_json(&mismatch(), &[]);
+    let whole = analyze_json(&mismatch(), &[])?;
     assert!(
         whole.get("filter").is_none(),
         "an unfiltered analysis must not carry a filter at all: {whole}"
     );
+    Ok(())
 }

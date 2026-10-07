@@ -9,6 +9,11 @@
 #[cfg(any(not(feature = "mcp"), not(feature = "hep")))]
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+#[cfg(any(not(feature = "mcp"), not(feature = "hep")))]
+type TestError = Box<dyn std::error::Error>;
+
 /// Crate-root-relative path to the standard SIP call fixture.
 #[cfg(not(feature = "mcp"))]
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
@@ -23,14 +28,13 @@ const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
 #[cfg(any(not(feature = "mcp"), not(feature = "hep")))]
-fn assert_gate_failure(args: &[&str], needle: &str) {
+fn assert_gate_failure(args: &[&str], needle: &str) -> Result<(), TestError> {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .args(args)
         .env("SIPNAB_LOG", "error")
         .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
+        .output()?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         out.status.code(),
@@ -42,6 +46,7 @@ fn assert_gate_failure(args: &[&str], needle: &str) {
         stderr.contains(needle),
         "stderr must mention '{needle}':\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--mcp` in a build without the mcp feature used to run a plain batch
@@ -49,14 +54,16 @@ fn assert_gate_failure(args: &[&str], needle: &str) {
 /// believes is the JSON-RPC channel.
 #[cfg(not(feature = "mcp"))]
 #[test]
-fn mcp_flag_without_mcp_feature_fails_fast() {
-    assert_gate_failure(&["--mcp", "-N", "-I", FIXTURE], "mcp");
+fn mcp_flag_without_mcp_feature_fails_fast() -> Result<(), TestError> {
+    assert_gate_failure(&["--mcp", "-N", "-I", FIXTURE], "mcp")?;
+    Ok(())
 }
 
 /// `--hep-listen` used to gate only at capture spawn, after config/privilege
 /// setup; it must gate early beside --hep-send/--hep-parse with exit 2.
 #[cfg(not(feature = "hep"))]
 #[test]
-fn hep_listen_without_hep_feature_fails_fast() {
-    assert_gate_failure(&["-N", "-L", "127.0.0.1:9060"], "hep");
+fn hep_listen_without_hep_feature_fails_fast() -> Result<(), TestError> {
+    assert_gate_failure(&["-N", "-L", "127.0.0.1:9060"], "hep")?;
+    Ok(())
 }

@@ -23,6 +23,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+type TestError = Box<dyn std::error::Error>;
+
 include!("support/timeout.rs");
 
 /// Absolute path to a file under `tests/fixtures/`.
@@ -33,10 +35,11 @@ fn fixture(path: &str) -> std::path::PathBuf {
 }
 
 /// One JSON-RPC line to the child.
-fn send(child: &mut std::process::Child, msg: &serde_json::Value) {
-    let stdin = child.stdin.as_mut().expect("stdin");
-    writeln!(stdin, "{}", serde_json::to_string(msg).expect("serialize")).expect("write");
-    stdin.flush().expect("flush");
+fn send(child: &mut std::process::Child, msg: &serde_json::Value) -> Result<(), TestError> {
+    let stdin = child.stdin.as_mut().ok_or("stdin")?;
+    writeln!(stdin, "{}", serde_json::to_string(msg)?)?;
+    stdin.flush()?;
+    Ok(())
 }
 
 /// Read until the response with `id` arrives.
@@ -44,28 +47,28 @@ fn read_response(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     id: i64,
     timeout: Duration,
-) -> Option<serde_json::Value> {
+) -> Result<Option<serde_json::Value>, TestError> {
     let deadline = Instant::now() + timeout;
     let mut line = String::new();
     while Instant::now() < deadline {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => return None,
+            Ok(0) => return Ok(None),
             Ok(_) => {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
                 let v: serde_json::Value = serde_json::from_str(trimmed)
-                    .unwrap_or_else(|e| panic!("stdout is the JSON-RPC wire: {e}\n{trimmed}"));
+                    .map_err(|e| format!("stdout is the JSON-RPC wire: {e}\n{trimmed}"))?;
                 if v.get("id").and_then(serde_json::Value::as_i64) == Some(id) {
-                    return Some(v);
+                    return Ok(Some(v));
                 }
             }
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         }
     }
-    None
+    Ok(None)
 }
 
 /// Run one MCP session against `audit_path`, calling each `(tool, arguments)`
@@ -76,7 +79,7 @@ fn read_response(
 fn session(
     audit_path: &std::path::Path,
     calls: &[(&str, serde_json::Value)],
-) -> Vec<serde_json::Value> {
+) -> Result<Vec<serde_json::Value>, TestError> {
     let pcap = fixture("sip_call.pcap");
     let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
@@ -93,9 +96,8 @@ fn session(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --mcp");
-    let mut stdout = child.stdout.take().expect("stdout");
+        .spawn()?;
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut responses = Vec::new();
     {
         let mut reader = BufReader::new(&mut stdout);
@@ -108,12 +110,12 @@ fn session(
                     "clientInfo": {"name": "pb10-test", "version": "0"}
                 }
             }),
-        );
-        read_response(&mut reader, 1, test_timeout(10)).expect("initialize");
+        )?;
+        read_response(&mut reader, 1, test_timeout(10))?.ok_or("initialize")?;
         send(
             &mut child,
             &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        );
+        )?;
         for (i, (tool, args)) in calls.iter().enumerate() {
             let id = 2 + i as i64;
             send(
@@ -122,10 +124,10 @@ fn session(
                     "jsonrpc": "2.0", "id": id, "method": "tools/call",
                     "params": {"name": tool, "arguments": args}
                 }),
-            );
+            )?;
             responses.push(
-                read_response(&mut reader, id, test_timeout(10))
-                    .unwrap_or_else(|| panic!("no response for {tool}")),
+                read_response(&mut reader, id, test_timeout(10))?
+                    .ok_or_else(|| format!("no response for {tool}"))?,
             );
         }
     }
@@ -138,27 +140,27 @@ fn session(
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
     let _ = child.wait();
-    responses
+    Ok(responses)
 }
 
 /// Parse the audit file into one JSON value per line, failing loudly on a
 /// line that does not parse — a split line is the concurrency defect, and it
 /// must not be quietly skipped.
-fn records(path: &std::path::Path) -> Vec<serde_json::Value> {
+fn records(path: &std::path::Path) -> Result<Vec<serde_json::Value>, TestError> {
     let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("the audit file was never created: {e}"));
-    text.lines()
-        .map(|l| {
-            serde_json::from_str(l).unwrap_or_else(|e| panic!("audit line is not JSON: {e}\n{l}"))
-        })
-        .collect()
+        .map_err(|e| format!("the audit file was never created: {e}"))?;
+    let records = text
+        .lines()
+        .map(|l| serde_json::from_str(l).map_err(|e| format!("audit line is not JSON: {e}\n{l}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
 }
 
 /// The whole point of the sink: the record exists under `--quiet` with no
 /// `SIPNAB_LOG`, which is exactly where the tracing line does not.
 #[test]
-fn every_call_is_recorded_even_with_the_log_suppressed() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn every_call_is_recorded_even_with_the_log_suppressed() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("audit.jsonl");
 
     session(
@@ -167,9 +169,9 @@ fn every_call_is_recorded_even_with_the_log_suppressed() {
             ("capture_status", serde_json::json!({})),
             ("list_dialogs", serde_json::json!({"limit": 5})),
         ],
-    );
+    )?;
 
-    let recs = records(&path);
+    let recs = records(&path)?;
     assert_eq!(
         recs.len(),
         2,
@@ -177,8 +179,8 @@ fn every_call_is_recorded_even_with_the_log_suppressed() {
     );
     let tools: Vec<&str> = recs
         .iter()
-        .map(|r| r["tool"].as_str().expect("tool"))
-        .collect();
+        .map(|r| r["tool"].as_str().ok_or("tool"))
+        .collect::<Result<_, _>>()?;
     assert_eq!(tools, vec!["capture_status", "list_dialogs"]);
 
     for (i, r) in recs.iter().enumerate() {
@@ -189,19 +191,20 @@ fn every_call_is_recorded_even_with_the_log_suppressed() {
         );
         assert_eq!(r["outcome"], "ok");
         assert_eq!(r["caller"], "stdio", "stdio names the boundary honestly");
-        assert!(r["ts"].as_str().expect("ts").contains('T'));
+        assert!(r["ts"].as_str().ok_or("ts")?.contains('T'));
         assert!(r["elapsed_ms"].is_u64());
         assert!(r["error"].is_null());
     }
     assert!(
         recs[1]["args"]
             .as_str()
-            .expect("args")
+            .ok_or("args")?
             .contains("\"limit\":5"),
         "\"read dialog X\" and \"read something\" answer different questions \
          later, so the arguments are the record: {}",
         recs[1]
     );
+    Ok(())
 }
 
 /// A refused call is recorded, with its reason.
@@ -210,8 +213,8 @@ fn every_call_is_recorded_even_with_the_log_suppressed() {
 /// record is kept for, and an audit that only kept successes would answer the
 /// opposite question.
 #[test]
-fn a_refused_call_is_recorded_with_its_reason() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_refused_call_is_recorded_with_its_reason() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("audit.jsonl");
 
     let responses = session(
@@ -220,25 +223,26 @@ fn a_refused_call_is_recorded_with_its_reason() {
             ("capture_status", serde_json::json!({})),
             ("no_such_tool", serde_json::json!({})),
         ],
-    );
+    )?;
     assert!(
         responses[1]["error"].is_object(),
         "the unknown tool must be refused on the wire: {}",
         responses[1]
     );
 
-    let recs = records(&path);
+    let recs = records(&path)?;
     let refused = recs
         .iter()
         .find(|r| r["tool"] == "no_such_tool")
-        .unwrap_or_else(|| panic!("the probe left no record: {recs:#?}"));
+        .ok_or_else(|| format!("the probe left no record: {recs:#?}"))?;
     assert_eq!(refused["outcome"], "refused");
     assert!(
         !refused["error"]
             .as_str()
-            .expect("a refusal must say why")
+            .ok_or("a refusal must say why")?
             .is_empty()
     );
+    Ok(())
 }
 
 /// A second run APPENDS. The first run's records are still there, first, and
@@ -247,16 +251,16 @@ fn a_refused_call_is_recorded_with_its_reason() {
 /// This is the property that makes the file an audit trail rather than a
 /// scratch pad, and it is one `OpenOptions` flag away from being false.
 #[test]
-fn a_second_run_appends_rather_than_replacing_the_file() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_second_run_appends_rather_than_replacing_the_file() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("audit.jsonl");
 
-    session(&path, &[("capture_status", serde_json::json!({}))]);
-    let after_first = records(&path);
+    session(&path, &[("capture_status", serde_json::json!({}))])?;
+    let after_first = records(&path)?;
     assert_eq!(after_first.len(), 1);
 
-    session(&path, &[("list_dialogs", serde_json::json!({}))]);
-    let after_second = records(&path);
+    session(&path, &[("list_dialogs", serde_json::json!({}))])?;
+    let after_second = records(&path)?;
 
     assert_eq!(
         after_second.len(),
@@ -269,6 +273,7 @@ fn a_second_run_appends_rather_than_replacing_the_file() {
         "the earlier run's record must still be FIRST and intact"
     );
     assert_eq!(after_second[1]["tool"], "list_dialogs");
+    Ok(())
 }
 
 /// A call that cannot be written to the audit file is REFUSED, not answered.
@@ -280,12 +285,12 @@ fn a_second_run_appends_rather_than_replacing_the_file() {
 /// rather than that the recording failed.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_call_that_cannot_be_recorded_is_refused_rather_than_answered() {
+fn a_call_that_cannot_be_recorded_is_refused_rather_than_answered() -> Result<(), TestError> {
     let dev_full = std::path::Path::new("/dev/full");
     if !dev_full.exists() {
-        return;
+        return Ok(());
     }
-    let responses = session(dev_full, &[("capture_status", serde_json::json!({}))]);
+    let responses = session(dev_full, &[("capture_status", serde_json::json!({}))])?;
     let resp = &responses[0];
 
     assert!(
@@ -299,6 +304,7 @@ fn a_call_that_cannot_be_recorded_is_refused_rather_than_answered() {
         "the caller has to be told WHY, or a full disk reads as a broken \
          tool: {resp}"
     );
+    Ok(())
 }
 
 /// Without the flag, nothing changes: no file, and the calls still answer.
@@ -306,8 +312,8 @@ fn a_call_that_cannot_be_recorded_is_refused_rather_than_answered() {
 /// The guard against a fix that makes every existing deployment depend on a
 /// file it never asked for.
 #[test]
-fn without_the_flag_no_file_is_written_and_calls_still_answer() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn without_the_flag_no_file_is_written_and_calls_still_answer() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("never-created.jsonl");
     let pcap = fixture("sip_call.pcap");
 
@@ -324,9 +330,8 @@ fn without_the_flag_no_file_is_written_and_calls_still_answer() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn sipnab --mcp");
-    let mut stdout = child.stdout.take().expect("stdout");
+        .spawn()?;
+    let mut stdout = child.stdout.take().ok_or("stdout")?;
     {
         let mut reader = BufReader::new(&mut stdout);
         send(
@@ -338,20 +343,20 @@ fn without_the_flag_no_file_is_written_and_calls_still_answer() {
                     "clientInfo": {"name": "pb10-test", "version": "0"}
                 }
             }),
-        );
-        read_response(&mut reader, 1, test_timeout(10)).expect("initialize");
+        )?;
+        read_response(&mut reader, 1, test_timeout(10))?.ok_or("initialize")?;
         send(
             &mut child,
             &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        );
+        )?;
         send(
             &mut child,
             &serde_json::json!({
                 "jsonrpc": "2.0", "id": 2, "method": "tools/call",
                 "params": {"name": "capture_status", "arguments": {}}
             }),
-        );
-        let resp = read_response(&mut reader, 2, test_timeout(10)).expect("response");
+        )?;
+        let resp = read_response(&mut reader, 2, test_timeout(10))?.ok_or("response")?;
         assert!(
             resp["result"].is_object(),
             "an unflagged run must answer exactly as before: {resp}"
@@ -372,6 +377,7 @@ fn without_the_flag_no_file_is_written_and_calls_still_answer() {
         "a file nobody asked for was created at {}",
         path.display()
     );
+    Ok(())
 }
 
 /// An audit file that cannot be opened stops the run at STARTUP.
@@ -381,8 +387,8 @@ fn without_the_flag_no_file_is_written_and_calls_still_answer() {
 /// they went looking for the record, which is the one moment it cannot be
 /// recreated.
 #[test]
-fn an_unopenable_audit_path_fails_the_run_at_startup() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn an_unopenable_audit_path_fails_the_run_at_startup() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("no-such-dir").join("audit.jsonl");
     let pcap = fixture("sip_call.pcap");
 
@@ -398,8 +404,7 @@ fn an_unopenable_audit_path_fails_the_run_at_startup() {
             &path.to_string_lossy(),
         ])
         .stdin(Stdio::null())
-        .output()
-        .expect("run sipnab");
+        .output()?;
 
     assert!(
         !out.status.success(),
@@ -410,4 +415,5 @@ fn an_unopenable_audit_path_fails_the_run_at_startup() {
         stderr.contains("mcp-audit-file"),
         "the failure must name the flag that caused it: {stderr}"
     );
+    Ok(())
 }

@@ -20,6 +20,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 /// What this repository currently declares about `main`, in ONE place.
 ///
 /// Changing protection means changing this constant and the prose in
@@ -35,8 +39,8 @@ fn repo() -> &'static Path {
     ONCE.get_or_init(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("cannot read {rel}: {e}"))
+fn read(rel: &str) -> Result<String, TestError> {
+    Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("cannot read {rel}: {e}"))?)
 }
 
 /// The live protection, or `None` when `gh` genuinely cannot answer.
@@ -65,13 +69,13 @@ fn why_gh_cannot_answer() -> String {
 
 /// 1. The live `enforce_admins` matches what this repository declares.
 #[test]
-fn the_enforce_admins_switch_matches_what_the_repository_declares() {
+fn the_enforce_admins_switch_matches_what_the_repository_declares() -> Result<(), TestError> {
     let Some(p) = live_protection() else {
         eprintln!(
             "branch-protection-drift: cannot read protection — {}",
             why_gh_cannot_answer()
         );
-        return;
+        return Ok(());
     };
     let live = p["enforce_admins"]["enabled"].as_bool();
     assert_eq!(
@@ -85,17 +89,18 @@ fn the_enforce_admins_switch_matches_what_the_repository_declares() {
          - the protection section of docs/internals/build-ci-release.md\n  \
          - the GATE2 entry in docs/design/backlog.md, which records WHY"
     );
+    Ok(())
 }
 
 /// 2. The required status check is still the one the release flow depends on.
 #[test]
-fn the_required_status_check_is_still_the_aggregate_ci_gate() {
+fn the_required_status_check_is_still_the_aggregate_ci_gate() -> Result<(), TestError> {
     let Some(p) = live_protection() else {
         eprintln!(
             "branch-protection-drift: cannot read protection — {}",
             why_gh_cannot_answer()
         );
-        return;
+        return Ok(());
     };
     let contexts: Vec<String> = p["required_status_checks"]["contexts"]
         .as_array()
@@ -112,17 +117,18 @@ fn the_required_status_check_is_still_the_aggregate_ci_gate() {
          CI job feeds, so dropping it silently removes the only check that \
          speaks for the whole matrix."
     );
+    Ok(())
 }
 
 /// 3. The pull-request requirement matches what is declared.
 #[test]
-fn the_pull_request_requirement_matches_what_is_declared() {
+fn the_pull_request_requirement_matches_what_is_declared() -> Result<(), TestError> {
     let Some(p) = live_protection() else {
         eprintln!(
             "branch-protection-drift: cannot read protection — {}",
             why_gh_cannot_answer()
         );
-        return;
+        return Ok(());
     };
     let live = p.get("required_pull_request_reviews").is_some();
     assert_eq!(
@@ -141,6 +147,7 @@ fn the_pull_request_requirement_matches_what_is_declared() {
             "does not"
         }
     );
+    Ok(())
 }
 
 /// 4. The documentation states the same `enforce_admins` value as the constant.
@@ -148,8 +155,8 @@ fn the_pull_request_requirement_matches_what_is_declared() {
 /// Without this, the two halves of the declaration drift from each other and
 /// the test above keeps passing while the page a reader consults is wrong.
 #[test]
-fn the_documentation_states_the_same_enforce_admins_value() {
-    let doc = read("docs/internals/build-ci-release.md");
+fn the_documentation_states_the_same_enforce_admins_value() -> Result<(), TestError> {
+    let doc = read("docs/internals/build-ci-release.md")?;
     assert!(
         doc.contains("enforce_admins"),
         "docs/internals/build-ci-release.md no longer mentions \
@@ -186,6 +193,7 @@ fn the_documentation_states_the_same_enforce_admins_value() {
          These are the two halves of one declaration and must move together.",
         if says_on { "ON" } else { "OFF" }
     );
+    Ok(())
 }
 
 /// 5. `license/cla` is a required check, and the docs say so.
@@ -195,9 +203,9 @@ fn the_documentation_states_the_same_enforce_admins_value() {
 /// required it and five Dependabot pull requests merged with it pending. Bots
 /// are allowlisted in CLA Assistant and the check is required on `main`.
 #[test]
-fn the_cla_check_is_required_and_documented_as_required() {
+fn the_cla_check_is_required_and_documented_as_required() -> Result<(), TestError> {
     for rel in ["MAINTAINERS.md", "CONTRIBUTING.md"] {
-        let doc = read(rel);
+        let doc = read(rel)?;
         assert!(
             !doc.contains("Nothing enforces `license/cla` yet")
                 && !doc.contains("does not block a merge on `license/cla`"),
@@ -210,7 +218,7 @@ fn the_cla_check_is_required_and_documented_as_required() {
             "branch-protection-drift: cannot read protection — {}",
             why_gh_cannot_answer()
         );
-        return;
+        return Ok(());
     };
     let contexts = p["required_status_checks"]["contexts"].to_string();
     assert!(
@@ -218,4 +226,5 @@ fn the_cla_check_is_required_and_documented_as_required() {
         "main does not require `{DECLARED_CLA_CHECK}` (it requires {contexts}), \
          but MAINTAINERS.md and CONTRIBUTING.md describe it as required"
     );
+    Ok(())
 }

@@ -15,18 +15,22 @@
 
 use std::path::PathBuf;
 
-fn harness(file: &str) -> String {
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
+fn harness(file: &str) -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("harness")
         .join(file);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
-fn compose() -> String {
+fn compose() -> Result<String, TestError> {
     harness("docker-compose.yml")
 }
 
-fn entrypoint() -> String {
+fn entrypoint() -> Result<String, TestError> {
     harness("opensips/entrypoint.sh")
 }
 
@@ -36,19 +40,19 @@ fn entrypoint() -> String {
 /// not track it, so tests reading it pass on a developer's machine and panic in
 /// CI. The compose defaults are what ship, which makes them the honest source
 /// for a rule about what the two anchors do.
-fn compose_default(key: &str) -> u16 {
-    let c = compose();
+fn compose_default(key: &str) -> Result<u16, TestError> {
+    let c = compose()?;
     let needle = format!("${{{key}:-");
     let at = c
         .find(&needle)
-        .unwrap_or_else(|| panic!("{key} has no default in docker-compose.yml"));
+        .ok_or_else(|| format!("{key} has no default in docker-compose.yml"))?;
     let rest = &c[at + needle.len()..];
     let end = rest
         .find('}')
-        .unwrap_or_else(|| panic!("{key}'s default is unterminated"));
-    rest[..end]
+        .ok_or_else(|| format!("{key}'s default is unterminated"))?;
+    Ok(rest[..end]
         .parse()
-        .unwrap_or_else(|e| panic!("{key} default is not a port: {e}"))
+        .map_err(|e| format!("{key} default is not a port: {e}"))?)
 }
 
 // ── The anchor is a choice, and every value is real ──────────────────────────
@@ -57,8 +61,8 @@ fn compose_default(key: &str) -> u16 {
 /// WHEN an anchor is selected
 /// THEN all three values load a different relay module, or none at all.
 #[test]
-fn every_anchor_value_selects_a_real_configuration() {
-    let e = entrypoint();
+fn every_anchor_value_selects_a_real_configuration() -> Result<(), TestError> {
+    let e = entrypoint()?;
     assert!(e.contains(r#"loadmodule "rtpengine.so""#));
     assert!(e.contains(r#"loadmodule "rtpproxy.so""#));
     assert!(
@@ -66,18 +70,20 @@ fn every_anchor_value_selects_a_real_configuration() {
         "`none` must be a first-class value: it is the control the anchored \
          runs are measured against"
     );
+    Ok(())
 }
 
 /// GIVEN an unknown anchor name
 /// WHEN the entrypoint runs
 /// THEN it refuses loudly rather than defaulting to one silently.
 #[test]
-fn an_unknown_anchor_is_refused_not_defaulted() {
-    let e = entrypoint();
+fn an_unknown_anchor_is_refused_not_defaulted() -> Result<(), TestError> {
+    let e = entrypoint()?;
     assert!(
         e.contains("FATAL: MEDIA_ANCHOR=") && e.contains("exit 1"),
         "a typo in the anchor name must not quietly run rtpengine"
     );
+    Ok(())
 }
 
 /// GIVEN each anchor
@@ -88,8 +94,8 @@ fn an_unknown_anchor_is_refused_not_defaulted() {
 /// sessions on one relay forever, and the capture shows a call that never
 /// tears down.
 #[test]
-fn an_anchor_offers_answers_and_tears_down_with_one_module() {
-    let e = entrypoint();
+fn an_anchor_offers_answers_and_tears_down_with_one_module() -> Result<(), TestError> {
+    let e = entrypoint()?;
     for verb in ["offer", "answer"] {
         assert!(
             e.contains(&format!("rtpengine_{verb}()")),
@@ -106,19 +112,21 @@ fn an_anchor_offers_answers_and_tears_down_with_one_module() {
         "rtpproxy tears down with unforce, not delete -- a different module's \
          spelling would not compile in the script"
     );
+    Ok(())
 }
 
 /// GIVEN the `none` anchor
 /// WHEN a reply carrying SDP arrives
 /// THEN the script still has a statement, because an empty route is rejected.
 #[test]
-fn the_control_anchor_still_produces_a_valid_script() {
-    let e = entrypoint();
+fn the_control_anchor_still_produces_a_valid_script() -> Result<(), TestError> {
+    let e = entrypoint()?;
     assert!(
         e.contains("return;   # MEDIA_ANCHOR=none"),
         "OpenSIPS rejects an EMPTY onreply_route; the control run needs a real \
          statement rather than a comment"
     );
+    Ok(())
 }
 
 // ── One anchor at a time ─────────────────────────────────────────────────────
@@ -127,34 +135,36 @@ fn the_control_anchor_still_produces_a_valid_script() {
 /// WHEN both relays are defined
 /// THEN each sits behind its own profile, so only one runs.
 #[test]
-fn each_anchor_sits_behind_its_own_profile() {
-    let c = compose();
+fn each_anchor_sits_behind_its_own_profile() -> Result<(), TestError> {
+    let c = compose()?;
     assert!(c.contains(r#"profiles: ["rtpengine"]"#));
     assert!(c.contains(r#"profiles: ["rtpproxy"]"#));
+    Ok(())
 }
 
 /// GIVEN a stack already running one anchor
 /// WHEN another is selected
 /// THEN the Makefile removes the previous anchor's containers.
 #[test]
-fn selecting_an_anchor_removes_the_other_ones_containers() {
-    let m = harness("Makefile");
+fn selecting_an_anchor_removes_the_other_ones_containers() -> Result<(), TestError> {
+    let m = harness("Makefile")?;
     assert!(
         m.contains("stop-other-anchors"),
         "without this the old relay keeps running and the capture has two"
     );
     assert!(m.contains("sipnab-relay-rtpproxy") && m.contains("rtpproxy"));
+    Ok(())
 }
 
 /// Every `host:container` port publication in one service block.
 ///
 /// Reads the compose file's own defaults, never `harness/.env`: that file is
 /// generated by `make up` and git does not track it.
-fn published_host_ports(service: &str) -> Vec<String> {
-    let c = compose();
+fn published_host_ports(service: &str) -> Result<Vec<String>, TestError> {
+    let c = compose()?;
     let at = c
         .find(&format!("\n  {service}:\n"))
-        .unwrap_or_else(|| panic!("no service `{service}` in docker-compose.yml"));
+        .ok_or_else(|| format!("no service `{service}` in docker-compose.yml"))?;
     let rest = &c[at + 1..];
     // The block runs to the next top-level (two-space) service key.
     let end = rest
@@ -172,12 +182,13 @@ fn published_host_ports(service: &str) -> Vec<String> {
     // default: comparing the VARIABLE names would call two different names
     // with the same number disjoint, which is exactly the collision this is
     // here to catch.
-    let resolve = regex::Regex::new(r"\$\{[A-Z_]+:-([^}]+)\}").expect("regex");
-    regex::Regex::new(r#"- "\$\{HARNESS_BIND:-[^}]+\}:(.+?):\d"#)
-        .expect("regex")
-        .captures_iter(&rest[..end])
-        .map(|m| resolve.replace_all(&m[1], "$1").into_owned())
-        .collect()
+    let resolve = regex::Regex::new(r"\$\{[A-Z_]+:-([^}]+)\}")?;
+    Ok(
+        regex::Regex::new(r#"- "\$\{HARNESS_BIND:-[^}]+\}:(.+?):\d"#)?
+            .captures_iter(&rest[..end])
+            .map(|m| resolve.replace_all(&m[1], "$1").into_owned())
+            .collect(),
+    )
 }
 
 /// GIVEN rtpengine and rtpproxy, installed on the same host
@@ -199,9 +210,9 @@ fn published_host_ports(service: &str) -> Vec<String> {
 /// a fix: the range separation only buys anything if both can run, and they
 /// could not.
 #[test]
-fn the_two_relays_publish_no_host_port_in_common() {
-    let engine = published_host_ports("rtpengine");
-    let proxy = published_host_ports("rtpproxy");
+fn the_two_relays_publish_no_host_port_in_common() -> Result<(), TestError> {
+    let engine = published_host_ports("rtpengine")?;
+    let proxy = published_host_ports("rtpproxy")?;
     assert!(
         engine.len() >= 3 && proxy.len() >= 3,
         "the port extraction found {} rtpengine and {} rtpproxy publication(s) \
@@ -217,6 +228,7 @@ fn the_two_relays_publish_no_host_port_in_common() {
          refuses the second bind, so only one relay can run and the two cannot \
          be compared against one stack.\n  rtpengine: {engine:?}\n  rtpproxy:  {proxy:?}"
     );
+    Ok(())
 }
 
 /// GIVEN each relay's sidecar doors
@@ -227,8 +239,8 @@ fn the_two_relays_publish_no_host_port_in_common() {
 /// collided. A name that does not distinguish them invites the next edit to
 /// point both at one number again.
 #[test]
-fn each_relays_doors_are_named_after_the_relay_that_owns_them() {
-    let c = compose();
+fn each_relays_doors_are_named_after_the_relay_that_owns_them() -> Result<(), TestError> {
+    let c = compose()?;
     for (var, relay) in [
         ("RTPENGINE_API_PORT", "rtpengine"),
         ("RTPENGINE_MCP_PORT", "rtpengine"),
@@ -241,6 +253,7 @@ fn each_relays_doors_are_named_after_the_relay_that_owns_them() {
              door is either unnamed or shares another relay's variable"
         );
     }
+    Ok(())
 }
 
 /// GIVEN a relay's published door
@@ -251,31 +264,32 @@ fn each_relays_doors_are_named_after_the_relay_that_owns_them() {
 /// same image with the same configuration, so a publication whose container
 /// side drifted from `API_BIND` would publish a closed port and report success.
 #[test]
-fn each_published_door_reaches_the_port_its_sidecar_binds() {
-    let c = compose();
-    let pairs = |service: &str| -> Vec<(String, String)> {
+fn each_published_door_reaches_the_port_its_sidecar_binds() -> Result<(), TestError> {
+    let c = compose()?;
+    let pairs = |service: &str| -> Result<Vec<(String, String)>, TestError> {
         let at = c
             .find(&format!("\n  {service}:\n"))
-            .unwrap_or_else(|| panic!("no service `{service}`"));
+            .ok_or_else(|| format!("no service `{service}`"))?;
         let rest = &c[at + 1..];
         let end = rest.find("\n    networks:").unwrap_or(rest.len());
-        let resolve = regex::Regex::new(r"\$\{[A-Z_]+:-([^}]+)\}").expect("regex");
-        regex::Regex::new(r#"- "\$\{HARNESS_BIND:-[^}]+\}:(.+?):([0-9-]+)/"#)
-            .expect("regex")
-            .captures_iter(&rest[..end])
-            .map(|m| {
-                (
-                    resolve.replace_all(&m[1], "$1").into_owned(),
-                    m[2].to_string(),
-                )
-            })
-            .collect()
+        let resolve = regex::Regex::new(r"\$\{[A-Z_]+:-([^}]+)\}")?;
+        Ok(
+            regex::Regex::new(r#"- "\$\{HARNESS_BIND:-[^}]+\}:(.+?):([0-9-]+)/"#)?
+                .captures_iter(&rest[..end])
+                .map(|m| {
+                    (
+                        resolve.replace_all(&m[1], "$1").into_owned(),
+                        m[2].to_string(),
+                    )
+                })
+                .collect(),
+        )
     };
     for (service, sidecar) in [
         ("rtpengine", "sipnab-relay"),
         ("rtpproxy", "sipnab-relay-rtpproxy"),
     ] {
-        let published = pairs(service);
+        let published = pairs(service)?;
         assert!(
             published.len() >= 3,
             "only {} publication(s) parsed for {service}: {published:?}",
@@ -283,7 +297,7 @@ fn each_published_door_reaches_the_port_its_sidecar_binds() {
         );
         let at = c
             .find(&format!("\n  {sidecar}:\n"))
-            .unwrap_or_else(|| panic!("no sidecar service `{sidecar}`"));
+            .ok_or_else(|| format!("no sidecar service `{sidecar}`"))?;
         let block = &c[at..];
         let block = &block[..block[1..].find("\n  s").map_or(block.len(), |i| i + 1)];
         for (host, container) in &published {
@@ -298,11 +312,14 @@ fn each_published_door_reaches_the_port_its_sidecar_binds() {
             let bind = match container.as_str() {
                 "8081" => "API_BIND: 0.0.0.0:8081",
                 "8732" => "MCP_BIND: 0.0.0.0:8732",
-                other => panic!(
-                    "{service} publishes host {host} to container port {other}, \
+                other => {
+                    return Err(format!(
+                        "{service} publishes host {host} to container port {other}, \
                      which is neither a media range nor either of the sidecar's \
                      two doors (8081 REST, 8732 MCP). Nothing binds it."
-                ),
+                    )
+                    .into());
+                }
             };
             assert!(
                 block.contains(bind),
@@ -311,6 +328,7 @@ fn each_published_door_reaches_the_port_its_sidecar_binds() {
             );
         }
     }
+    Ok(())
 }
 
 /// GIVEN the end-to-end script
@@ -322,7 +340,7 @@ fn each_published_door_reaches_the_port_its_sidecar_binds() {
 /// which reads as a capture defect rather than as a script talking to the
 /// wrong door.
 #[test]
-fn the_e2e_script_finds_the_door_of_whichever_relay_is_anchoring() {
+fn the_e2e_script_finds_the_door_of_whichever_relay_is_anchoring() -> Result<(), TestError> {
     // Read by its repo-relative path rather than through `harness()`, which
     // prefixes `harness/`: `every_cited_script_exists` resolves a cited script
     // from the repo root, and the helper's argument spells one that is not
@@ -330,8 +348,7 @@ fn the_e2e_script_finds_the_door_of_whichever_relay_is_anchoring() {
     // from a gate that is right.
     let sh = std::fs::read_to_string(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("harness/scripts/run-e2e.sh"),
-    )
-    .expect("harness/scripts/run-e2e.sh");
+    )?;
     assert!(
         sh.contains("MEDIA_ANCHOR="),
         "harness/scripts/run-e2e.sh does not ask the running stack which relay \
@@ -344,6 +361,7 @@ fn the_e2e_script_finds_the_door_of_whichever_relay_is_anchoring() {
              reach one of the two relays"
         );
     }
+    Ok(())
 }
 
 // ── sipnab watches the control plane of whichever anchor runs ────────────────
@@ -355,21 +373,22 @@ fn the_e2e_script_finds_the_door_of_whichever_relay_is_anchoring() {
 /// This was written into the harness BEFORE a decoder existed, so the evidence
 /// would be in the pcap when one arrived. It has arrived.
 #[test]
-fn sipnab_captures_the_rtpproxy_control_port() {
-    let c = compose();
+fn sipnab_captures_the_rtpproxy_control_port() -> Result<(), TestError> {
+    let c = compose()?;
     assert!(
         c.contains(r#"CONTROL_PORTS: "22223""#),
         "the rtpproxy relay instance must watch the control socket, or the \
          command exchange is not in the capture at all"
     );
+    Ok(())
 }
 
 /// GIVEN the rtpproxy container
 /// WHEN OpenSIPS is configured to reach it
 /// THEN both name the SAME control socket.
 #[test]
-fn opensips_and_rtpproxy_agree_on_the_control_socket() {
-    let c = compose();
+fn opensips_and_rtpproxy_agree_on_the_control_socket() -> Result<(), TestError> {
+    let c = compose()?;
     assert!(
         c.contains("RTPPROXY_CTL_BIND: ${RTPPROXY_IP:-172.28.0.12}:22223"),
         "the relay binds its control socket here"
@@ -378,14 +397,15 @@ fn opensips_and_rtpproxy_agree_on_the_control_socket() {
         c.contains("22223"),
         "and OpenSIPS must be pointed at the same one"
     );
+    Ok(())
 }
 
 /// GIVEN rtpproxy anchoring media
 /// WHEN sipnab runs beside it
 /// THEN it does not expect HEP, because rtpproxy mirrors nothing.
 #[test]
-fn the_rtpproxy_instance_does_not_expect_hep() {
-    let c = compose();
+fn the_rtpproxy_instance_does_not_expect_hep() -> Result<(), TestError> {
+    let c = compose()?;
     // Read the service block by INDENTATION, not by a character count. A fixed
     // window expires the moment the block grows, and it would have been read
     // as a pass here rather than as a stale test.
@@ -423,6 +443,7 @@ fn the_rtpproxy_instance_does_not_expect_hep() {
         "and the block must really have been read, or this proves nothing: \
          {keys:?}"
     );
+    Ok(())
 }
 
 // ── The two anchors never contend for a port ─────────────────────────────────
@@ -436,10 +457,10 @@ fn the_rtpproxy_instance_does_not_expect_hep() {
 /// rule enforced somewhere other than the numbers, and a capture holding two
 /// anchors on one port pair is one nobody can interpret.
 #[test]
-fn the_two_anchors_media_ranges_do_not_overlap() {
+fn the_two_anchors_media_ranges_do_not_overlap() -> Result<(), TestError> {
     let value = compose_default;
-    let (engine_lo, engine_hi) = (value("RTP_MIN"), value("RTP_MAX"));
-    let (proxy_lo, proxy_hi) = (value("RTPPROXY_RTP_MIN"), value("RTPPROXY_RTP_MAX"));
+    let (engine_lo, engine_hi) = (value("RTP_MIN")?, value("RTP_MAX")?);
+    let (proxy_lo, proxy_hi) = (value("RTPPROXY_RTP_MIN")?, value("RTPPROXY_RTP_MAX")?);
 
     assert!(engine_lo <= engine_hi, "rtpengine range is inverted");
     assert!(proxy_lo <= proxy_hi, "rtpproxy range is inverted");
@@ -449,6 +470,7 @@ fn the_two_anchors_media_ranges_do_not_overlap() {
          {proxy_lo}-{proxy_hi}. A call anchored by one would land on ports the \
          other claims."
     );
+    Ok(())
 }
 
 /// GIVEN the two ranges
@@ -459,24 +481,25 @@ fn the_two_anchors_media_ranges_do_not_overlap() {
 /// one collides, and a one-port collision shows up as a single one-way call
 /// nobody connects to a configuration change.
 #[test]
-fn the_gap_between_the_ranges_is_visible_not_incidental() {
+fn the_gap_between_the_ranges_is_visible_not_incidental() -> Result<(), TestError> {
     let value = compose_default;
-    let engine_hi = value("RTP_MAX");
-    let proxy_lo = value("RTPPROXY_RTP_MIN");
+    let engine_hi = value("RTP_MAX")?;
+    let proxy_lo = value("RTPPROXY_RTP_MIN")?;
     let gap = proxy_lo.saturating_sub(engine_hi);
     assert!(
         gap >= 100,
         "only {gap} port(s) between the ranges; a boundary edited by hand \
          should not be able to collide without somebody noticing"
     );
+    Ok(())
 }
 
 /// GIVEN the rtpproxy container
 /// WHEN it publishes media ports
 /// THEN it publishes its OWN range and not the other anchor's.
 #[test]
-fn each_anchor_publishes_the_range_it_actually_uses() {
-    let c = compose();
+fn each_anchor_publishes_the_range_it_actually_uses() -> Result<(), TestError> {
+    let c = compose()?;
     assert!(
         c.contains("${RTPPROXY_RTP_MIN:-31000}-${RTPPROXY_RTP_MAX:-31050}:31000-31050/udp"),
         "rtpproxy must publish its own range, or the container allocates ports \
@@ -486,14 +509,15 @@ fn each_anchor_publishes_the_range_it_actually_uses() {
         c.contains("${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"),
         "and rtpengine must keep publishing its own"
     );
+    Ok(())
 }
 
 /// GIVEN the rtpproxy container
 /// WHEN it is told which ports to allocate from
 /// THEN it is told its own range, not the shared default.
 #[test]
-fn the_relay_is_told_the_same_range_that_is_published() {
-    let c = compose();
+fn the_relay_is_told_the_same_range_that_is_published() -> Result<(), TestError> {
+    let c = compose()?;
     let mut in_block = false;
     let mut min = None;
     let mut max = None;
@@ -522,4 +546,5 @@ fn the_relay_is_told_the_same_range_that_is_published() {
          while allocating from another is a silent one-way call"
     );
     assert_eq!(max.as_deref(), Some("${RTPPROXY_RTP_MAX:-31050}"));
+    Ok(())
 }

@@ -12,6 +12,8 @@
 //! So the script reads the floor out of the workflow instead of repeating it.
 //! These tests hold that arrangement in place.
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Read a repo-relative file.
 ///
 /// Runtime reads rather than `include_str!`, so the paths in this file are
@@ -19,18 +21,18 @@
 /// them. `include_str!` resolves relative to this source file, which would put
 /// a parent-directory hop in front of every path and leave each one pointing
 /// at nothing the repo root recognizes.
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {rel}: {e}"))?)
 }
 
 /// The workflow that owns the coverage job.
-fn workflow() -> String {
+fn workflow() -> Result<String, TestError> {
     read(".github/workflows/quality.yml")
 }
 
 /// The local rehearsal.
-fn script() -> String {
+fn script() -> Result<String, TestError> {
     read("scripts/coverage.sh")
 }
 
@@ -41,21 +43,21 @@ fn script() -> String {
 /// floor moved. What must be true is that the script contains no literal floor
 /// at all.
 #[test]
-fn the_local_rehearsal_reads_the_floor_rather_than_repeating_it() {
+fn the_local_rehearsal_reads_the_floor_rather_than_repeating_it() -> Result<(), TestError> {
     assert!(
-        script().contains("--fail-under-lines [0-9]+"),
+        script()?.contains("--fail-under-lines [0-9]+"),
         "scripts/coverage.sh must extract the floor from the workflow; \
          without that the two can disagree and the local one wins the \
          developer's trust"
     );
     assert!(
-        script().contains("$FLOOR"),
+        script()?.contains("$FLOOR"),
         "and must enforce the value it extracted"
     );
 
     // No inlined floor. `--fail-under-lines` followed by a literal digit is
     // exactly the drift this arrangement exists to prevent.
-    let script = script();
+    let script = script()?;
     let inlined = script
         .split("--fail-under-lines ")
         .skip(1)
@@ -65,6 +67,7 @@ fn the_local_rehearsal_reads_the_floor_rather_than_repeating_it() {
         "scripts/coverage.sh hard-codes a coverage floor. It must read the \
          workflow's, or the rehearsal and the gate will diverge silently"
     );
+    Ok(())
 }
 
 /// The workflow still declares a floor for the script to find.
@@ -73,15 +76,15 @@ fn the_local_rehearsal_reads_the_floor_rather_than_repeating_it() {
 /// invent a number — but nothing would say the gate had gone. This is what
 /// says it.
 #[test]
-fn the_workflow_still_enforces_a_coverage_floor() {
-    let floor = workflow()
+fn the_workflow_still_enforces_a_coverage_floor() -> Result<(), TestError> {
+    let floor = workflow()?
         .split("--fail-under-lines ")
         .nth(1)
         .and_then(|rest| {
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             digits.parse::<u32>().ok()
         })
-        .expect("quality.yml declares a --fail-under-lines floor");
+        .ok_or("quality.yml declares a --fail-under-lines floor")?;
 
     assert!(
         (50..=100).contains(&floor),
@@ -95,6 +98,7 @@ fn the_workflow_still_enforces_a_coverage_floor() {
          raise it when the real number rises, never lower it to make a build \
          pass. Found {floor}"
     );
+    Ok(())
 }
 
 /// The script skips exactly the tests the coverage job skips.
@@ -107,15 +111,15 @@ fn the_workflow_still_enforces_a_coverage_floor() {
 /// floor as though they were the same number. So the script READS the scope
 /// the workflow states rather than keeping a copy that agrees today.
 #[test]
-fn the_rehearsal_skips_what_the_coverage_job_skips() {
+fn the_rehearsal_skips_what_the_coverage_job_skips() -> Result<(), TestError> {
     for skip in ["cli_goldens", "wasm_plugin_"] {
         assert!(
-            workflow().contains(&format!("--skip {skip}")),
+            workflow()?.contains(&format!("--skip {skip}")),
             "the coverage scope no longer skips {skip}; if that is deliberate, \
              the reason it was skipped has to have gone too"
         );
     }
-    let script = script();
+    let script = script()?;
     for var in ["COVERAGE_TEST_SKIPS", "COVERAGE_IGNORE_REGEX"] {
         assert!(
             script.contains(var),
@@ -130,15 +134,16 @@ fn the_rehearsal_skips_what_the_coverage_job_skips() {
              read the scope from quality.yml, or the two drift apart"
         );
     }
+    Ok(())
 }
 
 /// The body of one top-level job in quality.yml, up to the next job.
-fn job(name: &str) -> String {
-    let wf = workflow();
+fn job(name: &str) -> Result<String, TestError> {
+    let wf = workflow()?;
     let header = format!("\n  {name}:\n");
     let start = wf
         .find(&header)
-        .unwrap_or_else(|| panic!("quality.yml has no `{name}` job"));
+        .ok_or_else(|| format!("quality.yml has no `{name}` job"))?;
     let body = &wf[start + header.len()..];
     // The next line at exactly two spaces of indent that is not a comment
     // opens the next job.
@@ -153,7 +158,7 @@ fn job(name: &str) -> String {
                 && !rest[2..].starts_with('\n')
         })
         .unwrap_or(body.len());
-    body[..end].to_string()
+    Ok(body[..end].to_string())
 }
 
 /// The coverage scope is stated once, and every llvm-cov call uses it.
@@ -167,8 +172,8 @@ fn job(name: &str) -> String {
 /// Mutation-checked by writing the regex back inline on one report line: the
 /// count of the literal goes to two and this fails.
 #[test]
-fn the_coverage_scope_is_stated_once_and_every_llvm_cov_call_uses_it() {
-    let wf = workflow();
+fn the_coverage_scope_is_stated_once_and_every_llvm_cov_call_uses_it() -> Result<(), TestError> {
+    let wf = workflow()?;
     for literal in [
         "--skip cli_goldens",
         "--skip wasm_plugin_",
@@ -209,6 +214,7 @@ fn the_coverage_scope_is_stated_once_and_every_llvm_cov_call_uses_it() {
          branch jobs between them make at least 2 and 4, so this scan is \
          reading the wrong thing"
     );
+    Ok(())
 }
 
 /// Branch coverage is measured, on a schedule, and reported under its own flag.
@@ -220,19 +226,19 @@ fn the_coverage_scope_is_stated_once_and_every_llvm_cov_call_uses_it() {
 /// same nightly pin fuzz.yml and sanitizers.yml use as a TOOL, and it uploads
 /// under a Codecov flag of its own so it does not overwrite the line report.
 #[test]
-fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() {
-    let wf = workflow();
+fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() -> Result<(), TestError> {
+    let wf = workflow()?;
     let on = wf
         .split("\non:\n")
         .nth(1)
         .and_then(|rest| rest.split("\n\n").next())
-        .expect("quality.yml has an `on:` block");
+        .ok_or("quality.yml has an `on:` block")?;
     assert!(
         on.contains("schedule:") && on.contains("workflow_dispatch:"),
         "quality.yml must trigger on a schedule and by hand for the branch job:\n{on}"
     );
 
-    let branch = job("coverage-branch");
+    let branch = job("coverage-branch")?;
     assert!(
         branch.contains("github.event_name == 'schedule'")
             && branch.contains("github.event_name == 'workflow_dispatch'"),
@@ -254,12 +260,12 @@ fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() {
          line report"
     );
 
-    let fuzz = read(".github/workflows/fuzz.yml");
+    let fuzz = read(".github/workflows/fuzz.yml")?;
     let pin = fuzz
         .lines()
         .map(str::trim)
         .find(|l| l.contains("dtolnay/rust-toolchain@") && l.ends_with("# nightly"))
-        .expect("fuzz.yml pins a nightly toolchain");
+        .ok_or("fuzz.yml pins a nightly toolchain")?;
     assert!(
         branch.contains(pin),
         "the branch job must use the nightly pin fuzz.yml uses (`{pin}`), \
@@ -271,10 +277,11 @@ fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() {
     let others = ["bench", "coverage", "clippy-sarif", "docs", "accessibility"];
     for name in others {
         assert!(
-            job(name).contains("if: github.event_name != 'schedule'"),
+            job(name)?.contains("if: github.event_name != 'schedule'"),
             "the `{name}` job runs on the weekly schedule too; it should not"
         );
     }
+    Ok(())
 }
 
 /// The rehearsal is not wired into the pre-push hook.
@@ -284,8 +291,8 @@ fn branch_coverage_runs_weekly_on_the_shared_nightly_pin() {
 /// claimed: the claim is what stops someone adding a real check later. The
 /// script says so in its own header, and this holds it to that.
 #[test]
-fn the_rehearsal_is_not_bolted_onto_the_pre_push_hook() {
-    let hook = read(".githooks/pre-push");
+fn the_rehearsal_is_not_bolted_onto_the_pre_push_hook() -> Result<(), TestError> {
+    let hook = read(".githooks/pre-push")?;
     assert!(
         !hook.contains("coverage.sh") && !hook.contains("llvm-cov"),
         "scripts/coverage.sh has been added to the pre-push hook. An \
@@ -293,4 +300,5 @@ fn the_rehearsal_is_not_bolted_onto_the_pre_push_hook() {
          already ~15. If this is deliberate, delete this test and say why in \
          the same commit"
     );
+    Ok(())
 }

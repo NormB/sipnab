@@ -36,6 +36,9 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// The tools a stock server registers, which is what `tools/list` returns.
 fn registered() -> Vec<String> {
     SipnabMcp::new(
@@ -45,14 +48,14 @@ fn registered() -> Vec<String> {
     .registered_tool_names()
 }
 
-fn repo(rel: &str) -> String {
+fn repo(rel: &str) -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 /// Every feature name `Cargo.toml` declares.
-fn declared_features() -> BTreeSet<String> {
-    let src = repo("Cargo.toml");
+fn declared_features() -> Result<BTreeSet<String>, TestError> {
+    let src = repo("Cargo.toml")?;
     let mut out = BTreeSet::new();
     let mut inside = false;
     for line in src.lines() {
@@ -68,7 +71,7 @@ fn declared_features() -> BTreeSet<String> {
             out.insert(name.trim().to_string());
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every feature name `server_capabilities` is able to report.
@@ -80,15 +83,15 @@ fn declared_features() -> BTreeSet<String> {
 /// than a live call, because a live call can only ever show the features THIS
 /// build turned on, and the bug being gated is an omission — invisible in any
 /// single build's output.
-fn reportable_features() -> BTreeSet<String> {
-    let src = repo("src/cli.rs");
+fn reportable_features() -> Result<BTreeSet<String>, TestError> {
+    let src = repo("src/cli.rs")?;
     let at = src
         .find("pub fn compiled_features")
-        .expect("cli.rs has no compiled_features");
+        .ok_or("cli.rs has no compiled_features")?;
     let body = &src[at..];
     let end = body
         .find("\n}")
-        .expect("compiled_features has no close brace; this scan is reading the wrong code");
+        .ok_or("compiled_features has no close brace; this scan is reading the wrong code")?;
     let section = &body[..end];
     let mut out = BTreeSet::new();
     // Each name is read from a `cfg!(feature = "name")` check, so the report is
@@ -100,7 +103,7 @@ fn reportable_features() -> BTreeSet<String> {
             out.insert(after[..q].to_string());
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every `.rs` file under `src/`.
@@ -159,8 +162,8 @@ fn rebuild_targets(line: &str) -> Vec<Vec<String>> {
 /// Read from the source rather than from the router, because the router can
 /// only show what THIS build registered -- and the property under test is
 /// about the relationship between the two.
-fn gated_tool_modules() -> Vec<(String, Vec<String>)> {
-    let modsrc = repo("src/mcp/tools/mod.rs");
+fn gated_tool_modules() -> Result<Vec<(String, Vec<String>)>, TestError> {
+    let modsrc = repo("src/mcp/tools/mod.rs")?;
     let lines: Vec<&str> = modsrc.lines().collect();
     let mut out = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -180,7 +183,7 @@ fn gated_tool_modules() -> Vec<(String, Vec<String>)> {
             continue;
         };
         let path = format!("src/mcp/tools/{name}.rs");
-        let body = repo(&path);
+        let body = repo(&path)?;
         let mut tools = Vec::new();
         for l in body.lines() {
             let l = l.trim();
@@ -194,12 +197,12 @@ fn gated_tool_modules() -> Vec<(String, Vec<String>)> {
             out.push((path, tools));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every feature named in a tool module's gate.
-fn gating_features() -> BTreeSet<String> {
-    let modsrc = repo("src/mcp/tools/mod.rs");
+fn gating_features() -> Result<BTreeSet<String>, TestError> {
+    let modsrc = repo("src/mcp/tools/mod.rs")?;
     let lines: Vec<&str> = modsrc.lines().collect();
     let mut out = BTreeSet::new();
     for (i, line) in lines.iter().enumerate() {
@@ -224,7 +227,7 @@ fn gating_features() -> BTreeSet<String> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Aggregates, excluded with the reason each one is not a capability.
@@ -254,7 +257,7 @@ const VCON_TOOLS: &[&str] = &["export_vcon", "validate_vcon"];
 /// the tools from a build that HAS the exporter would silently remove a
 /// published surface, which is the opposite failure and just as quiet.
 #[test]
-fn the_vcon_tools_are_registered_exactly_when_the_build_can_run_them() {
+fn the_vcon_tools_are_registered_exactly_when_the_build_can_run_them() -> Result<(), TestError> {
     let names: BTreeSet<String> = registered().into_iter().collect();
     let have_exporter = cfg!(feature = "vcon");
 
@@ -269,6 +272,7 @@ fn the_vcon_tools_are_registered_exactly_when_the_build_can_run_them() {
             names.contains(*tool)
         );
     }
+    Ok(())
 }
 
 /// The capability report can NAME every feature the crate declares.
@@ -278,9 +282,9 @@ fn the_vcon_tools_are_registered_exactly_when_the_build_can_run_them() {
 /// looking for it. Reading the pair list catches it in every build, including
 /// the `full` one used locally.
 #[test]
-fn the_capability_report_can_name_every_feature_the_crate_declares() {
-    let declared = declared_features();
-    let reportable = reportable_features();
+fn the_capability_report_can_name_every_feature_the_crate_declares() -> Result<(), TestError> {
+    let declared = declared_features()?;
+    let reportable = reportable_features()?;
     let excluded: BTreeSet<&str> = NOT_A_CAPABILITY.iter().map(|(n, _)| *n).collect();
 
     let missing: Vec<&String> = declared
@@ -296,6 +300,7 @@ fn the_capability_report_can_name_every_feature_the_crate_declares() {
          an answer that is true about what it lists and silent about the \
          rest -- and sipnab's own refusals send them to that report."
     );
+    Ok(())
 }
 
 /// Every exclusion names a feature that still exists.
@@ -303,8 +308,8 @@ fn the_capability_report_can_name_every_feature_the_crate_declares() {
 /// The other direction on the allowlist. Without this an entry outlives the
 /// feature it excuses and quietly widens the hole it was cut for.
 #[test]
-fn every_capability_exclusion_names_a_declared_feature() {
-    let declared = declared_features();
+fn every_capability_exclusion_names_a_declared_feature() -> Result<(), TestError> {
+    let declared = declared_features()?;
     for (name, reason) in NOT_A_CAPABILITY {
         assert!(
             declared.contains(*name),
@@ -317,6 +322,7 @@ fn every_capability_exclusion_names_a_declared_feature() {
              it is inconvenient to report"
         );
     }
+    Ok(())
 }
 
 /// The report does not claim a feature this build lacks.
@@ -325,9 +331,9 @@ fn every_capability_exclusion_names_a_declared_feature() {
 /// pair is in one place: a report that over-claims sends an operator looking
 /// for a surface that is not there.
 #[test]
-fn the_capability_report_names_only_features_the_crate_declares() {
-    let declared = declared_features();
-    let reportable = reportable_features();
+fn the_capability_report_names_only_features_the_crate_declares() -> Result<(), TestError> {
+    let declared = declared_features()?;
+    let reportable = reportable_features()?;
     let invented: Vec<&String> = reportable
         .iter()
         .filter(|f| !declared.contains(*f))
@@ -337,6 +343,7 @@ fn the_capability_report_names_only_features_the_crate_declares() {
         "server_capabilities can report {invented:?}, which Cargo.toml does \
          not declare; the name is misspelled or the feature is gone"
     );
+    Ok(())
 }
 
 /// Every feature a rebuild instruction names is real, and answerable.
@@ -352,9 +359,9 @@ fn the_capability_report_names_only_features_the_crate_declares() {
 /// Scanned across `src/` rather than the two files the bug happened to touch,
 /// because the next one will be somewhere else.
 #[test]
-fn every_feature_a_rebuild_instruction_names_is_real_and_answerable() {
-    let declared = declared_features();
-    let reportable = reportable_features();
+fn every_feature_a_rebuild_instruction_names_is_real_and_answerable() -> Result<(), TestError> {
+    let declared = declared_features()?;
+    let reportable = reportable_features()?;
     let aggregates: BTreeSet<&str> = NOT_A_CAPABILITY.iter().map(|(n, _)| *n).collect();
 
     let mut checked = 0;
@@ -403,6 +410,7 @@ fn every_feature_a_rebuild_instruction_names_is_real_and_answerable() {
          is told nothing about the thing they are missing:\n{}",
         unanswerable.join("\n")
     );
+    Ok(())
 }
 
 /// A build without the exporter advertises no vCon surface at all.
@@ -412,7 +420,7 @@ fn every_feature_a_rebuild_instruction_names_is_real_and_answerable() {
 /// A third vCon tool added later without a feature gate fails here.
 #[cfg(not(feature = "vcon"))]
 #[test]
-fn a_build_without_the_exporter_advertises_no_vcon_tool() {
+fn a_build_without_the_exporter_advertises_no_vcon_tool() -> Result<(), TestError> {
     let offered: Vec<String> = registered()
         .into_iter()
         .filter(|t| t.to_ascii_lowercase().contains("vcon"))
@@ -421,6 +429,7 @@ fn a_build_without_the_exporter_advertises_no_vcon_tool() {
         offered.is_empty(),
         "this build has no vCon exporter and advertises {offered:?}"
     );
+    Ok(())
 }
 
 /// A build WITH the exporter advertises both tools.
@@ -429,7 +438,7 @@ fn a_build_without_the_exporter_advertises_no_vcon_tool() {
 /// tools ever", which passes the negative and deletes the feature.
 #[cfg(feature = "vcon")]
 #[test]
-fn a_build_with_the_exporter_advertises_both_vcon_tools() {
+fn a_build_with_the_exporter_advertises_both_vcon_tools() -> Result<(), TestError> {
     let names: BTreeSet<String> = registered().into_iter().collect();
     for tool in VCON_TOOLS {
         assert!(
@@ -438,6 +447,7 @@ fn a_build_with_the_exporter_advertises_both_vcon_tools() {
              {tool}; the feature is unreachable over MCP"
         );
     }
+    Ok(())
 }
 
 /// The scanners read real files.
@@ -445,9 +455,9 @@ fn a_build_with_the_exporter_advertises_both_vcon_tools() {
 /// Anti-vacuity for every filter above. Each one narrows, and a narrowing
 /// that reaches zero exits 0 forever while looking exactly like agreement.
 #[test]
-fn the_capability_scans_found_plausible_sources() {
-    let declared = declared_features();
-    let reportable = reportable_features();
+fn the_capability_scans_found_plausible_sources() -> Result<(), TestError> {
+    let declared = declared_features()?;
+    let reportable = reportable_features()?;
 
     assert!(
         declared.len() >= 10,
@@ -476,6 +486,7 @@ fn the_capability_scans_found_plausible_sources() {
         "the router registered no tools at all; every tool assertion above is \
          vacuous"
     );
+    Ok(())
 }
 
 // ── the debt from `stdio_mcp_full_tool_set_and_remaining_tools` ─────────
@@ -499,11 +510,11 @@ fn the_capability_scans_found_plausible_sources() {
 /// without knowing which features are on, so it cannot rot into a test that
 /// only means something under `full`.
 #[test]
-fn a_feature_gated_tool_module_registers_all_or_none_of_its_tools() {
+fn a_feature_gated_tool_module_registers_all_or_none_of_its_tools() -> Result<(), TestError> {
     let registered: BTreeSet<String> = registered().into_iter().collect();
     let mut modules = 0;
 
-    for (module, tools) in gated_tool_modules() {
+    for (module, tools) in gated_tool_modules()? {
         modules += 1;
         let present = tools.iter().filter(|t| registered.contains(*t)).count();
         assert!(
@@ -521,6 +532,7 @@ fn a_feature_gated_tool_module_registers_all_or_none_of_its_tools() {
         "no feature-gated tool module found; the scan of \
          src/mcp/tools/mod.rs is wrong and this gate proves nothing"
     );
+    Ok(())
 }
 
 /// Every feature gating a tool module is one the report can name.
@@ -529,10 +541,10 @@ fn a_feature_gated_tool_module_registers_all_or_none_of_its_tools() {
 /// of its tools is a question an agent will ask, and `server_capabilities` is
 /// the only place that can answer it.
 #[test]
-fn every_feature_gating_a_tool_module_is_one_the_report_can_name() {
-    let reportable = reportable_features();
+fn every_feature_gating_a_tool_module_is_one_the_report_can_name() -> Result<(), TestError> {
+    let reportable = reportable_features()?;
     let mut checked = 0;
-    for feature in gating_features() {
+    for feature in gating_features()? {
         checked += 1;
         assert!(
             reportable.contains(&feature),
@@ -545,6 +557,7 @@ fn every_feature_gating_a_tool_module_is_one_the_report_can_name() {
         checked >= 1,
         "no gating feature found; the scan is wrong and this proves nothing"
     );
+    Ok(())
 }
 
 /// The stdio test's expected tool set is derived from the build.
@@ -553,12 +566,12 @@ fn every_feature_gating_a_tool_module_is_one_the_report_can_name() {
 /// being a flat list: it has to consult `cfg!` for the feature-gated tools, or
 /// it asserts a tool set that only one build has while running in all of them.
 #[test]
-fn the_stdio_tool_set_expectation_is_feature_aware() {
-    let src = repo("tests/mcp_stdio_test.rs");
-    let at = src.find("MCP tool set drifted").expect(
+fn the_stdio_tool_set_expectation_is_feature_aware() -> Result<(), TestError> {
+    let src = repo("tests/mcp_stdio_test.rs")?;
+    let at = src.find("MCP tool set drifted").ok_or(
         "mcp_stdio_test.rs no longer asserts the tool set; this guard \
                  is reading the wrong file",
-    );
+    )?;
     // The window above the assertion, where the expectation is built.
     let window = &src[at.saturating_sub(3000)..at];
     assert!(
@@ -570,11 +583,12 @@ fn the_stdio_tool_set_expectation_is_feature_aware() {
     );
     let count_at = src
         .find("MCP tools\"")
-        .expect("the tool-count assertion is gone");
+        .ok_or("the tool-count assertion is gone")?;
     let count_window = &src[count_at.saturating_sub(400)..count_at];
     assert!(
         count_window.contains("cfg!(feature =") || count_window.contains("want"),
         "the expected tool COUNT is a bare literal; it has to move with the \
          feature set the same way the names do"
     );
+    Ok(())
 }

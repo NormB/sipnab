@@ -35,6 +35,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 /// Repository root, as cargo knows it.
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -45,10 +48,10 @@ fn repo_root() -> PathBuf {
 /// Reads the `[package]` section only: the workspace preamble and the
 /// dependency tables also contain `version = "..."` lines, and taking the
 /// first match in the file would pick up whichever one moved.
-fn cargo_toml_version() -> String {
+fn cargo_toml_version() -> Result<String, TestError> {
     let path = repo_root().join("Cargo.toml");
     let text =
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
 
     let mut in_package = false;
     for line in text.lines() {
@@ -60,15 +63,16 @@ fn cargo_toml_version() -> String {
         if in_package && let Some(rest) = trimmed.strip_prefix("version") {
             let rest = rest.trim_start();
             if let Some(rest) = rest.strip_prefix('=') {
-                return rest.trim().trim_matches('"').to_string();
+                return Ok(rest.trim().trim_matches('"').to_string());
             }
         }
     }
-    panic!(
+    Err(format!(
         "no `version = \"...\"` under [package] in {} -- every gate in this file \
          compares against that value, so it cannot be allowed to go missing",
         path.display()
-    );
+    )
+    .into())
 }
 
 /// The semver triple in a `sipnab --version` line.
@@ -76,14 +80,16 @@ fn cargo_toml_version() -> String {
 /// The line looks like `sipnab 0.5.134 (ef843d86-dirty) features: native,...`,
 /// so this takes the first `MAJOR.MINOR.PATCH` and ignores the build metadata
 /// and feature list that follow.
-fn parse_version(output: &str) -> Option<String> {
-    let re = regex::Regex::new(r"\bsipnab\s+(\d+\.\d+\.\d+)").expect("static regex must compile");
-    re.captures(output).map(|c| {
-        c.get(1)
-            .expect("group 1 is not optional")
-            .as_str()
-            .to_string()
-    })
+fn parse_version(output: &str) -> Result<Option<String>, TestError> {
+    let re = regex::Regex::new(r"\bsipnab\s+(\d+\.\d+\.\d+)")?;
+    re.captures(output)
+        .map(|c| -> Result<String, TestError> {
+            Ok(c.get(1)
+                .ok_or("group 1 is not optional")?
+                .as_str()
+                .to_string())
+        })
+        .transpose()
 }
 
 /// Run `<bin> --version` and return its combined stdout, or `None` if the
@@ -105,9 +111,9 @@ fn sipnab_on_path() -> Vec<PathBuf> {
 }
 
 /// Read a file under the repository root, panicking with its path on failure.
-fn read_repo_file(rel: &str) -> String {
+fn read_repo_file(rel: &str) -> Result<String, TestError> {
     let path = repo_root().join(rel);
-    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+    Ok(std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?)
 }
 
 /// `demos/mcp-stdio.sh` must let the caller name the binary it drives.
@@ -121,9 +127,9 @@ fn read_repo_file(rel: &str) -> String {
 /// is the whole incident: a run that cannot state which binary spoke cannot
 /// have its conclusion checked by anyone, including its author.
 #[test]
-fn mcp_stdio_helper_lets_the_caller_name_the_binary() {
+fn mcp_stdio_helper_lets_the_caller_name_the_binary() -> Result<(), TestError> {
     let rel = "demos/mcp-stdio.sh";
-    let text = read_repo_file(rel);
+    let text = read_repo_file(rel)?;
 
     assert!(
         text.contains(r#"SIPNAB_BIN="${SIPNAB_BIN:-sipnab}""#),
@@ -140,8 +146,7 @@ fn mcp_stdio_helper_lets_the_caller_name_the_binary() {
          the override looks honored and is not."
     );
 
-    let bare = regex::Regex::new(r"(?m)^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s")
-        .expect("static regex must compile");
+    let bare = regex::Regex::new(r"(?m)^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s")?;
     assert!(
         !bare.is_match(&text),
         "{rel} still invokes a bare `sipnab` at the start of a command: {:?}. Every invocation \
@@ -162,6 +167,7 @@ fn mcp_stdio_helper_lets_the_caller_name_the_binary() {
         "{rel} must explain in prose that the default is PATH resolution. The hazard is the \
          DEFAULT, not the override."
     );
+    Ok(())
 }
 
 /// A `sipnab` on PATH is reported, never required and never compared for equality.
@@ -176,17 +182,22 @@ fn mcp_stdio_helper_lets_the_caller_name_the_binary() {
 /// where a finding looks strange states, in one line, which binary PATH would
 /// have answered with.
 #[test]
-fn a_path_sipnab_is_visible_and_overridable() {
-    let tree = cargo_toml_version();
+fn a_path_sipnab_is_visible_and_overridable() -> Result<(), TestError> {
+    let tree = cargo_toml_version()?;
     let found = sipnab_on_path();
 
     if found.is_empty() {
         println!("no `sipnab` on PATH; tree builds {tree}");
-        return;
+        return Ok(());
     }
 
     for bin in &found {
-        match version_output(bin).as_deref().and_then(parse_version) {
+        match version_output(bin)
+            .as_deref()
+            .map(parse_version)
+            .transpose()?
+            .flatten()
+        {
             Some(v) if v == tree => {
                 println!("PATH {}: {v} (same as tree)", bin.display());
             }
@@ -208,7 +219,7 @@ fn a_path_sipnab_is_visible_and_overridable() {
     }
 
     // The override mechanism the presence of a PATH binary makes mandatory.
-    let script = read_repo_file("demos/mcp-stdio.sh");
+    let script = read_repo_file("demos/mcp-stdio.sh")?;
     assert!(
         script.contains("SIPNAB_BIN"),
         "a `sipnab` exists on PATH ({}) but demos/mcp-stdio.sh has no SIPNAB_BIN override, so \
@@ -217,13 +228,14 @@ fn a_path_sipnab_is_visible_and_overridable() {
         found[0].display()
     );
 
-    let makefile = read_repo_file("demos/Makefile");
+    let makefile = read_repo_file("demos/Makefile")?;
     assert!(
         makefile.contains("SIPNAB_BIN"),
         "a `sipnab` exists on PATH ({}) but demos/Makefile does not pin SIPNAB_BIN, so a \
          published render could come from it rather than from this tree.",
         found[0].display()
     );
+    Ok(())
 }
 
 /// The positive control: `env!("CARGO_BIN_EXE_sipnab")` is the tree's binary.
@@ -236,7 +248,7 @@ fn a_path_sipnab_is_visible_and_overridable() {
 /// If this ever fails, every other binary-touching test in the suite is
 /// suspect, because they all reach the program the same way.
 #[test]
-fn cargo_bin_exe_is_the_binary_this_tree_builds() {
+fn cargo_bin_exe_is_the_binary_this_tree_builds() -> Result<(), TestError> {
     let bin = Path::new(env!("CARGO_BIN_EXE_sipnab"));
 
     assert!(
@@ -250,7 +262,7 @@ fn cargo_bin_exe_is_the_binary_this_tree_builds() {
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(bin)
-            .unwrap_or_else(|e| panic!("stat {}: {e}", bin.display()))
+            .map_err(|e| format!("stat {}: {e}", bin.display()))?
             .permissions()
             .mode();
         assert!(
@@ -262,16 +274,16 @@ fn cargo_bin_exe_is_the_binary_this_tree_builds() {
     }
 
     let out =
-        version_output(bin).unwrap_or_else(|| panic!("could not run {} --version", bin.display()));
-    let got = parse_version(&out).unwrap_or_else(|| {
-        panic!(
+        version_output(bin).ok_or_else(|| format!("could not run {} --version", bin.display()))?;
+    let got = parse_version(&out)?.ok_or_else(|| {
+        format!(
             "no `sipnab MAJOR.MINOR.PATCH` in `{} --version` output: {out:?}. Every attribution \
              in this repository -- demos/gen-mcp-examples.sh included -- reads the version out \
              of this line.",
             bin.display()
         )
-    });
-    let want = cargo_toml_version();
+    })?;
+    let want = cargo_toml_version()?;
 
     assert_eq!(
         got,
@@ -280,6 +292,7 @@ fn cargo_bin_exe_is_the_binary_this_tree_builds() {
          one this tree describes, or CARGO_BIN_EXE_sipnab is no safer than PATH.",
         bin.display()
     );
+    Ok(())
 }
 
 /// No integration test may reach sipnab through PATH.
@@ -292,23 +305,23 @@ fn cargo_bin_exe_is_the_binary_this_tree_builds() {
 /// Reports every offender by path, because the fix is per-call-site and a
 /// count would not say where.
 #[test]
-fn no_test_reaches_sipnab_through_path() {
+fn no_test_reaches_sipnab_through_path() -> Result<(), TestError> {
     let dir = repo_root().join("tests");
-    let bare = regex::Regex::new(r#"Command::new\(\s*"sipnab"\s*\)"#).expect("static regex");
+    let bare = regex::Regex::new(r#"Command::new\(\s*"sipnab"\s*\)"#)?;
 
     let mut scanned = 0usize;
     let mut offenders: Vec<String> = Vec::new();
 
-    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
     for entry in entries {
         let path = entry
-            .unwrap_or_else(|e| panic!("walk {}: {e}", dir.display()))
+            .map_err(|e| format!("walk {}: {e}", dir.display()))?
             .path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         scanned += 1;
         // This file quotes the forbidden pattern inside its own regex literal;
         // matching itself would make the gate unfixable.
@@ -333,6 +346,7 @@ fn no_test_reaches_sipnab_through_path() {
          that one, and say so nowhere.",
         offenders.join(", ")
     );
+    Ok(())
 }
 
 /// The demo scripts that execute sipnab are enumerable, and there is at least one.
@@ -348,32 +362,31 @@ fn no_test_reaches_sipnab_through_path() {
 /// drives the docker harness over HTTP) execute no binary and are correctly
 /// absent from the list.
 #[test]
-fn demo_scripts_that_execute_sipnab_are_enumerated_and_pinned() {
+fn demo_scripts_that_execute_sipnab_are_enumerated_and_pinned() -> Result<(), TestError> {
     let dir = repo_root().join("demos");
     // Either an explicit override, or a bare command invocation at the head of
     // a line -- the shape `demos/mcp-stdio.sh` had before it was fixed.
-    let runs = regex::Regex::new(r"(?m)SIPNAB_BIN|^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s+-")
-        .expect("static regex");
+    let runs = regex::Regex::new(r"(?m)SIPNAB_BIN|^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s+-")?;
 
     let mut shell_scripts = 0usize;
     let mut runners: Vec<(String, String)> = Vec::new();
 
-    let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
     for entry in entries {
         let path = entry
-            .unwrap_or_else(|e| panic!("walk {}: {e}", dir.display()))
+            .map_err(|e| format!("walk {}: {e}", dir.display()))?
             .path();
         if path.extension().and_then(|e| e.to_str()) != Some("sh") {
             continue;
         }
         shell_scripts += 1;
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let text =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         if runs.is_match(&text) {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .expect("dir entry has a name")
+                .ok_or("dir entry has a name")?
                 .to_string();
             runners.push((name, text));
         }
@@ -397,8 +410,7 @@ fn demo_scripts_that_execute_sipnab_are_enumerated_and_pinned() {
     // enumerated script still starts a command with a bare `sipnab`, because a
     // script can declare the override in a comment and then resolve from PATH
     // anyway -- which reads as fixed and is not.
-    let bare = regex::Regex::new(r"(?m)^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s+-")
-        .expect("static regex must compile");
+    let bare = regex::Regex::new(r"(?m)^\s*(?:coproc\s+\w+\s*\{\s*)?sipnab\s+-")?;
     let unpinned: Vec<&str> = runners
         .iter()
         .filter(|(_, text)| !text.contains("SIPNAB_BIN") || bare.is_match(text))
@@ -411,6 +423,7 @@ fn demo_scripts_that_execute_sipnab_are_enumerated_and_pinned() {
          caller cannot point them at this tree. demos/gen-mcp-examples.sh and demos/Makefile set \
          the convention; demos/mcp-stdio.sh is the one that ignored it and answered from 0.5.78."
     );
+    Ok(())
 }
 
 /// Self-check: the version parser this file relies on actually parses.
@@ -422,17 +435,17 @@ fn demo_scripts_that_execute_sipnab_are_enumerated_and_pinned() {
 /// nothing and pass. So this pins the parser against a real `--version` line
 /// from the freshly built binary, and against the shapes it must reject.
 #[test]
-fn the_parsed_version_is_a_non_empty_semver_triple() {
+fn the_parsed_version_is_a_non_empty_semver_triple() -> Result<(), TestError> {
     let bin = Path::new(env!("CARGO_BIN_EXE_sipnab"));
     let out =
-        version_output(bin).unwrap_or_else(|| panic!("could not run {} --version", bin.display()));
+        version_output(bin).ok_or_else(|| format!("could not run {} --version", bin.display()))?;
 
-    let v = parse_version(&out).unwrap_or_else(|| {
-        panic!(
+    let v = parse_version(&out)?.ok_or_else(|| {
+        format!(
             "`{} --version` produced no parseable version: {out:?}",
             bin.display()
         )
-    });
+    })?;
 
     assert!(!v.is_empty(), "parsed version from {out:?} is empty");
 
@@ -455,18 +468,19 @@ fn the_parsed_version_is_a_non_empty_semver_triple() {
     // "succeed" against any text at all, and its callers would compare
     // whatever it returned.
     assert_eq!(
-        parse_version("sipnab 1.2.3 (abc) features: native"),
+        parse_version("sipnab 1.2.3 (abc) features: native")?,
         Some("1.2.3".to_string()),
         "parser must take the triple from a normal --version line"
     );
     assert_eq!(
-        parse_version("sipnab is a SIP capture tool"),
+        parse_version("sipnab is a SIP capture tool")?,
         None,
         "parser must not report a version for text that carries none"
     );
     assert_eq!(
-        parse_version("sipnab 0.5"),
+        parse_version("sipnab 0.5")?,
         None,
         "parser must reject a two-component version rather than pad it"
     );
+    Ok(())
 }

@@ -32,6 +32,8 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 /// Set by a parent on every child role it spawns. A child that finds it unset
 /// was started by hand and must not confine whatever process is hosting it.
 const CHILD_ENV: &str = "SIPNAB_SANDBOX_CHILD";
@@ -67,32 +69,35 @@ fn landlock_available() -> bool {
 
 /// Two directories: one the ruleset will grant, one it will not, each holding
 /// a readable marker file.
-fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let tmp = tempfile::tempdir().expect("tempdir");
+fn fixture() -> Result<(tempfile::TempDir, PathBuf, PathBuf), TestError> {
+    let tmp = tempfile::tempdir()?;
     let inside = tmp.path().join("inside");
     let outside = tmp.path().join("outside");
-    std::fs::create_dir_all(&inside).expect("create inside");
-    std::fs::create_dir_all(&outside).expect("create outside");
+    std::fs::create_dir_all(&inside)?;
+    std::fs::create_dir_all(&outside)?;
     let inside_file = inside.join("readable");
     let outside_file = outside.join("secret");
-    std::fs::write(&inside_file, b"granted").expect("write inside");
-    std::fs::write(&outside_file, b"ungranted").expect("write outside");
-    (tmp, inside_file, outside_file)
+    std::fs::write(&inside_file, b"granted")?;
+    std::fs::write(&outside_file, b"ungranted")?;
+    Ok((tmp, inside_file, outside_file))
 }
 
 /// Run one `#[ignore]`d child role in a fresh process.
-fn run_child(role: &str, inside: &std::path::Path, outside: &std::path::Path) -> (bool, String) {
-    let exe = std::env::current_exe().expect("this test binary");
+fn run_child(
+    role: &str,
+    inside: &std::path::Path,
+    outside: &std::path::Path,
+) -> Result<(bool, String), TestError> {
+    let exe = std::env::current_exe()?;
     let out = Command::new(exe)
         .args(["--exact", role, "--ignored", "--nocapture"])
         .env(CHILD_ENV, role)
         .env(INSIDE_ENV, inside)
         .env(OUTSIDE_ENV, outside)
-        .output()
-        .expect("spawn the child role");
+        .output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.success() && text.contains(CHILD_COMPLETE), text)
+    Ok((out.status.success() && text.contains(CHILD_COMPLETE), text))
 }
 
 /// The parent-supplied paths, or a refusal to run outside a parent.
@@ -141,13 +146,13 @@ fn denied(path: &std::path::Path) -> Result<bool, String> {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a Landlock domain that cannot be removed"]
-fn child_enforced_grants_inside_and_denies_outside() {
+fn child_enforced_grants_inside_and_denies_outside() -> Result<(), TestError> {
     let Some((inside, outside)) = child_paths() else {
-        return;
+        return Ok(());
     };
     assert!(set_no_new_privs(), "PR_SET_NO_NEW_PRIVS failed");
 
-    let granted_dir = inside.parent().expect("inside has a parent").to_path_buf();
+    let granted_dir = inside.parent().ok_or("inside has a parent")?.to_path_buf();
     let status = sandbox::install(&SandboxPaths {
         inputs: vec![granted_dir],
         ..SandboxPaths::default()
@@ -167,6 +172,7 @@ fn child_enforced_grants_inside_and_denies_outside() {
         "a path outside the ruleset must come back EACCES"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Without the sandbox, the same outside path opens.
@@ -175,9 +181,9 @@ fn child_enforced_grants_inside_and_denies_outside() {
 /// testing something other than the sandbox.
 #[test]
 #[ignore = "child role: the unsandboxed control for the gate above"]
-fn child_unsandboxed_reaches_both_paths() {
+fn child_unsandboxed_reaches_both_paths() -> Result<(), TestError> {
     let Some((inside, outside)) = child_paths() else {
-        return;
+        return Ok(());
     };
     assert!(
         std::fs::read(&inside).is_ok(),
@@ -189,6 +195,7 @@ fn child_unsandboxed_reaches_both_paths() {
          the denial gate would pass without a sandbox"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// Without `PR_SET_NO_NEW_PRIVS` the install refuses, and says which control
@@ -201,11 +208,11 @@ fn child_unsandboxed_reaches_both_paths() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: deliberately omits no-new-privs"]
-fn child_without_no_new_privs_is_refused_by_name() {
+fn child_without_no_new_privs_is_refused_by_name() -> Result<(), TestError> {
     let Some((inside, _outside)) = child_paths() else {
-        return;
+        return Ok(());
     };
-    let granted_dir = inside.parent().expect("inside has a parent").to_path_buf();
+    let granted_dir = inside.parent().ok_or("inside has a parent")?.to_path_buf();
     let status = sandbox::install(&SandboxPaths {
         inputs: vec![granted_dir],
         ..SandboxPaths::default()
@@ -217,7 +224,9 @@ fn child_without_no_new_privs_is_refused_by_name() {
                 "the refusal must name the missing control: {reason}"
             );
         }
-        other => panic!("expected a refusal naming no-new-privs, got {other:?}"),
+        other => {
+            return Err(format!("expected a refusal naming no-new-privs, got {other:?}").into());
+        }
     }
     // And nothing was confined: the outside path is still reachable.
     assert!(
@@ -225,6 +234,7 @@ fn child_without_no_new_privs_is_refused_by_name() {
         "a refused install must leave the process unconfined"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// A plan naming nothing that exists is refused rather than installed.
@@ -235,12 +245,12 @@ fn child_without_no_new_privs_is_refused_by_name() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs nothing and must say so"]
-fn child_with_an_empty_plan_is_refused_rather_than_confined() {
+fn child_with_an_empty_plan_is_refused_rather_than_confined() -> Result<(), TestError> {
     let Some((inside, _outside)) = child_paths() else {
-        return;
+        return Ok(());
     };
     assert!(set_no_new_privs(), "PR_SET_NO_NEW_PRIVS failed");
-    let absent = inside.parent().expect("parent").join("does-not-exist");
+    let absent = inside.parent().ok_or("parent")?.join("does-not-exist");
     let status = sandbox::install(&SandboxPaths {
         inputs: vec![absent],
         ..SandboxPaths::default()
@@ -249,13 +259,14 @@ fn child_with_an_empty_plan_is_refused_rather_than_confined() {
         LandlockStatus::Failed { reason } => {
             assert!(reason.contains("deny every file"), "{reason}");
         }
-        other => panic!("expected a refusal, got {other:?}"),
+        other => return Err(format!("expected a refusal, got {other:?}").into()),
     }
     assert!(
         std::fs::read(inside).is_ok(),
         "a refused install must leave the process unconfined"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 /// A write outside the ruleset is denied too, not only a read.
@@ -266,12 +277,12 @@ fn child_with_an_empty_plan_is_refused_rather_than_confined() {
 #[cfg(target_os = "linux")]
 #[test]
 #[ignore = "child role: installs a Landlock domain that cannot be removed"]
-fn child_enforced_denies_a_write_outside_the_ruleset() {
+fn child_enforced_denies_a_write_outside_the_ruleset() -> Result<(), TestError> {
     let Some((inside, outside)) = child_paths() else {
-        return;
+        return Ok(());
     };
     assert!(set_no_new_privs(), "PR_SET_NO_NEW_PRIVS failed");
-    let granted_dir = inside.parent().expect("parent").to_path_buf();
+    let granted_dir = inside.parent().ok_or("parent")?.to_path_buf();
     let status = sandbox::install(&SandboxPaths {
         output_dirs: vec![granted_dir.clone()],
         ..SandboxPaths::default()
@@ -282,33 +293,39 @@ fn child_enforced_denies_a_write_outside_the_ruleset() {
         std::fs::write(granted_dir.join("new-file"), b"ok").is_ok(),
         "a granted directory must stay writable"
     );
-    let outside_dir = outside.parent().expect("parent");
+    let outside_dir = outside.parent().ok_or("parent")?;
     match std::fs::write(outside_dir.join("payload"), b"x") {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
-        other => panic!("a write outside the ruleset must be denied, got {other:?}"),
+        other => {
+            return Err(
+                format!("a write outside the ruleset must be denied, got {other:?}").into(),
+            );
+        }
     }
     println!("{CHILD_COMPLETE}");
+    Ok(())
 }
 
 // ── Parents. These run in the runner and spawn the roles above. ─────────────
 
 /// The gate: a granted path opens and an ungranted one does not.
 #[test]
-fn a_path_outside_the_ruleset_is_denied_and_one_inside_is_not() {
+fn a_path_outside_the_ruleset_is_denied_and_one_inside_is_not() -> Result<(), TestError> {
     if !landlock_available() {
         announce_skip(
             "a_path_outside_the_ruleset_is_denied_and_one_inside_is_not",
             "this kernel has no Landlock",
         );
-        return;
+        return Ok(());
     }
-    let (_tmp, inside, outside) = fixture();
+    let (_tmp, inside, outside) = fixture()?;
     let (ok, log) = run_child(
         "child_enforced_grants_inside_and_denies_outside",
         &inside,
         &outside,
-    );
+    )?;
     assert!(ok, "the enforced child did not complete:\n{log}");
+    Ok(())
 }
 
 /// The same assertion with the sandbox removed must fail the other way.
@@ -317,67 +334,71 @@ fn a_path_outside_the_ruleset_is_denied_and_one_inside_is_not() {
 /// fixture is reachable to begin with, so a denial elsewhere is the sandbox
 /// and not a broken temp directory.
 #[test]
-fn without_the_sandbox_the_same_paths_are_reachable() {
-    let (_tmp, inside, outside) = fixture();
-    let (ok, log) = run_child("child_unsandboxed_reaches_both_paths", &inside, &outside);
+fn without_the_sandbox_the_same_paths_are_reachable() -> Result<(), TestError> {
+    let (_tmp, inside, outside) = fixture()?;
+    let (ok, log) = run_child("child_unsandboxed_reaches_both_paths", &inside, &outside)?;
     assert!(ok, "the unsandboxed control did not complete:\n{log}");
+    Ok(())
 }
 
 /// An install without no-new-privs is refused by name.
 #[test]
-fn an_install_without_no_new_privs_is_refused_by_name() {
+fn an_install_without_no_new_privs_is_refused_by_name() -> Result<(), TestError> {
     if !landlock_available() {
         announce_skip(
             "an_install_without_no_new_privs_is_refused_by_name",
             "this kernel has no Landlock",
         );
-        return;
+        return Ok(());
     }
-    let (_tmp, inside, outside) = fixture();
+    let (_tmp, inside, outside) = fixture()?;
     let (ok, log) = run_child(
         "child_without_no_new_privs_is_refused_by_name",
         &inside,
         &outside,
-    );
+    )?;
     assert!(ok, "the no-new-privs child did not complete:\n{log}");
+    Ok(())
 }
 
 /// An empty plan is refused rather than installed.
 #[test]
-fn an_empty_plan_is_refused_rather_than_confining_the_process() {
+fn an_empty_plan_is_refused_rather_than_confining_the_process() -> Result<(), TestError> {
     if !landlock_available() {
         announce_skip(
             "an_empty_plan_is_refused_rather_than_confining_the_process",
             "this kernel has no Landlock",
         );
-        return;
+        return Ok(());
     }
-    let (_tmp, inside, outside) = fixture();
+    let (_tmp, inside, outside) = fixture()?;
     let (ok, log) = run_child(
         "child_with_an_empty_plan_is_refused_rather_than_confined",
         &inside,
         &outside,
-    );
+    )?;
     assert!(ok, "the empty-plan child did not complete:\n{log}");
+    Ok(())
 }
 
 /// Writes are bounded as well as reads.
 #[test]
-fn a_write_outside_the_ruleset_is_denied() {
+fn a_write_outside_the_ruleset_is_denied() -> Result<(), TestError> {
     if !landlock_available() {
         announce_skip(
             "a_write_outside_the_ruleset_is_denied",
             "this kernel has no Landlock",
         );
-        return;
+        return Ok(());
     }
-    let (_tmp, inside, outside) = fixture();
+    let (_tmp, inside, outside) = fixture()?;
     let (ok, log) = run_child(
         "child_enforced_denies_a_write_outside_the_ruleset",
         &inside,
         &outside,
-    );
+    )?;
     assert!(ok, "the write-denial child did not complete:\n{log}");
+    Ok(())
 }
 
 /// The ABI query answers, and its refusal is worded for an operator.
@@ -386,7 +407,7 @@ fn a_write_outside_the_ruleset_is_denied() {
 /// degradation path is the one most machines take and an empty reason there
 /// would be the silence this module exists to prevent.
 #[test]
-fn the_kernel_query_answers_with_an_abi_or_a_reason() {
+fn the_kernel_query_answers_with_an_abi_or_a_reason() -> Result<(), TestError> {
     match sandbox::kernel_abi() {
         Ok(abi) => {
             assert!(abi >= 1, "a supported kernel reports at least ABI 1");
@@ -402,8 +423,13 @@ fn the_kernel_query_answers_with_an_abi_or_a_reason() {
                 "the reason must be a sentence an operator can act on: {reason}"
             );
         }
-        Err(other) => panic!("the query must answer or report unsupported, got {other:?}"),
+        Err(other) => {
+            return Err(
+                format!("the query must answer or report unsupported, got {other:?}").into(),
+            );
+        }
     }
+    Ok(())
 }
 
 /// This host's own posture, reported rather than assumed.
@@ -412,13 +438,13 @@ fn the_kernel_query_answers_with_an_abi_or_a_reason() {
 /// matches the kernel's own LSM list, so a query returning a stale or invented
 /// answer is caught on whichever host the suite runs.
 #[test]
-fn the_query_agrees_with_the_kernels_own_lsm_list() {
+fn the_query_agrees_with_the_kernels_own_lsm_list() -> Result<(), TestError> {
     let Ok(lsm) = std::fs::read_to_string("/sys/kernel/security/lsm") else {
         announce_skip(
             "the_query_agrees_with_the_kernels_own_lsm_list",
             "this kernel exposes no LSM list to compare against",
         );
-        return;
+        return Ok(());
     };
     let listed = lsm.split(',').any(|s| s.trim() == "landlock");
     assert_eq!(
@@ -428,18 +454,19 @@ fn the_query_agrees_with_the_kernels_own_lsm_list() {
         lsm.trim(),
         landlock_available()
     );
+    Ok(())
 }
 
 // ── The flag, driven through the real binary ────────────────────────────────
 
 /// The compiled `sipnab` beside this test binary.
-fn sipnab_bin() -> PathBuf {
-    let mut p = std::env::current_exe().expect("test binary path");
+fn sipnab_bin() -> Result<PathBuf, TestError> {
+    let mut p = std::env::current_exe()?;
     p.pop();
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join("sipnab")
+    Ok(p.join("sipnab"))
 }
 
 /// A fixture capture every one of these can read.
@@ -448,18 +475,18 @@ fn fixture_capture() -> PathBuf {
 }
 
 /// Run the binary over the fixture with the given sandbox argument.
-fn run_sipnab(args: &[&str]) -> (bool, String) {
-    let bin = sipnab_bin();
+fn run_sipnab(args: &[&str]) -> Result<(bool, String), TestError> {
+    let bin = sipnab_bin()?;
     if !bin.is_file() {
-        return (true, String::from("BINARY-ABSENT"));
+        return Ok((true, String::from("BINARY-ABSENT")));
     }
     let capture = fixture_capture();
     let mut cmd = Command::new(bin);
     cmd.args(["-N", "-I"]).arg(&capture).args(args);
-    let out = cmd.output().expect("run sipnab");
+    let out = cmd.output()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
-    (out.status.success(), text)
+    Ok((out.status.success(), text))
 }
 
 /// Without the flag, nothing is installed and nothing is said about it.
@@ -467,20 +494,21 @@ fn run_sipnab(args: &[&str]) -> (bool, String) {
 /// The default must not change any existing run. A line on every capture
 /// would train an operator to skip the one that matters.
 #[test]
-fn the_default_run_installs_nothing_and_reports_nothing() {
-    let (ok, log) = run_sipnab(&[]);
+fn the_default_run_installs_nothing_and_reports_nothing() -> Result<(), TestError> {
+    let (ok, log) = run_sipnab(&[])?;
     if log == "BINARY-ABSENT" {
         announce_skip(
             "the_default_run_installs_nothing_and_reports_nothing",
             "the sipnab binary is not built beside this test",
         );
-        return;
+        return Ok(());
     }
     assert!(ok, "the default run must succeed:\n{log}");
     assert!(
         !log.contains("path sandbox"),
         "a run that asked for nothing must say nothing about a sandbox:\n{log}"
     );
+    Ok(())
 }
 
 /// `--sandbox best-effort` captures whatever the kernel offers, and says which.
@@ -490,14 +518,14 @@ fn the_default_run_installs_nothing_and_reports_nothing() {
 /// in both cases the capture completes. Never refusing to capture because a
 /// hardening feature was unavailable is the standing rule this follows.
 #[test]
-fn best_effort_captures_and_reports_either_way() {
-    let (ok, log) = run_sipnab(&["--sandbox", "best-effort"]);
+fn best_effort_captures_and_reports_either_way() -> Result<(), TestError> {
+    let (ok, log) = run_sipnab(&["--sandbox", "best-effort"])?;
     if log == "BINARY-ABSENT" {
         announce_skip(
             "best_effort_captures_and_reports_either_way",
             "the sipnab binary is not built beside this test",
         );
-        return;
+        return Ok(());
     }
     assert!(ok, "best-effort must never stop a capture:\n{log}");
     assert!(
@@ -519,6 +547,7 @@ fn best_effort_captures_and_reports_either_way() {
             "on this kernel it cannot be:\n{log}"
         );
     }
+    Ok(())
 }
 
 /// `--sandbox required` refuses on a kernel that cannot, and captures on one
@@ -528,14 +557,14 @@ fn best_effort_captures_and_reports_either_way() {
 /// refusal would pass on every machine without Landlock while saying nothing
 /// about the machines the flag exists for.
 #[test]
-fn required_refuses_only_when_no_sandbox_is_in_force() {
-    let (ok, log) = run_sipnab(&["--sandbox", "required"]);
+fn required_refuses_only_when_no_sandbox_is_in_force() -> Result<(), TestError> {
+    let (ok, log) = run_sipnab(&["--sandbox", "required"])?;
     if log == "BINARY-ABSENT" {
         announce_skip(
             "required_refuses_only_when_no_sandbox_is_in_force",
             "the sipnab binary is not built beside this test",
         );
-        return;
+        return Ok(());
     }
     if landlock_available() {
         assert!(ok, "a kernel that can sandbox must still capture:\n{log}");
@@ -551,4 +580,5 @@ fn required_refuses_only_when_no_sandbox_is_in_force() {
             "a refused run must not have captured anything:\n{log}"
         );
     }
+    Ok(())
 }

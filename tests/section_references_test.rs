@@ -21,22 +21,24 @@
 use std::path::Path;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn tracked(pattern: &str) -> Vec<String> {
+fn tracked(pattern: &str) -> Result<Vec<String>, TestError> {
     let out = Command::new("git")
         .args(["ls-files", "-z", "--", pattern])
         .current_dir(repo())
         .output()
-        .expect("git ls-files");
+        .map_err(|e| format!("git ls-files: {e}"))?;
     assert!(out.status.success(), "git ls-files {pattern}");
-    String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .split('\0')
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 /// `line` with its inline code spans removed.
@@ -87,9 +89,9 @@ fn prose(text: &str) -> Vec<(usize, String)> {
 }
 
 /// Where a bare "§" sits in the documentation, as `path:line: text`.
-fn offenders() -> Vec<String> {
+fn offenders() -> Result<Vec<String>, TestError> {
     let mut found = Vec::new();
-    for path in tracked("*.md") {
+    for path in tracked("*.md")? {
         let text = std::fs::read_to_string(repo().join(&path)).unwrap_or_default();
         for (n, line) in prose(&text) {
             if line.contains('§') {
@@ -99,7 +101,7 @@ fn offenders() -> Vec<String> {
     }
     // rustdoc is published on docs.rs: the `///` and `//!` lines of src/ are
     // documentation by the same standard.
-    for path in tracked(":(glob)src/**/*.rs") {
+    for path in tracked(":(glob)src/**/*.rs")? {
         let text = std::fs::read_to_string(repo().join(&path)).unwrap_or_default();
         let doc: String = text
             .lines()
@@ -117,12 +119,12 @@ fn offenders() -> Vec<String> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 #[test]
-fn no_documentation_cites_a_section_as_a_bare_section_sign() {
-    let found = offenders();
+fn no_documentation_cites_a_section_as_a_bare_section_sign() -> Result<(), TestError> {
+    let found = offenders()?;
     assert!(
         found.is_empty(),
         "{} documentation lines cite a section with a bare \"§\". Name what the \
@@ -138,16 +140,18 @@ fn no_documentation_cites_a_section_as_a_bare_section_sign() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the reader sees a bare sign in prose, and not in a code
 /// span or a fenced block, where it is part of a quote.
 #[test]
-fn the_reader_finds_a_section_sign_in_prose_and_only_there() {
+fn the_reader_finds_a_section_sign_in_prose_and_only_there() -> Result<(), TestError> {
     let text = "see §7 above\n`(RFC 3261 §8.1.1)` is output\n```\nRFC 3261 §21.5\n```\nplain\n";
     let hits: Vec<(usize, String)> = prose(text)
         .into_iter()
         .filter(|(_, l)| l.contains('§'))
         .collect();
     assert_eq!(hits, [(1, "see §7 above".to_string())]);
+    Ok(())
 }

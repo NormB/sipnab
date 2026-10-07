@@ -69,6 +69,10 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+/// The error a test returns: any error, boxed, so `?` works on I/O,
+/// parse and JSON errors alike.
+type TestError = Box<dyn std::error::Error>;
+
 // ── the model: what a whole invocation proved ───────────────────────
 
 /// What a WHOLE cargo invocation proved, as opposed to what one line said.
@@ -119,9 +123,10 @@ impl SuiteVerdict {
 }
 
 /// A `test result:` line, with its verdict word and its two counts.
-fn result_line_pattern() -> Regex {
-    Regex::new(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed")
-        .expect("the cargo summary pattern must compile")
+fn result_line_pattern() -> Result<Regex, TestError> {
+    Ok(Regex::new(
+        r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed",
+    )?)
 }
 
 /// A line on which the compiler refused to produce a target.
@@ -131,9 +136,8 @@ fn result_line_pattern() -> Regex {
 /// binary was lost. `error: aborting due to N previous errors` is deliberately
 /// NOT matched — it restates a count already carried by the lines above it, and
 /// counting it would inflate `errors` without naming anything new.
-fn compile_refusal_pattern() -> Regex {
-    Regex::new(r"^(error\[E\d{4}\]|error: could not compile)")
-        .expect("the compile-refusal pattern must compile")
+fn compile_refusal_pattern() -> Result<Regex, TestError> {
+    Ok(Regex::new(r"^(error\[E\d{4}\]|error: could not compile)")?)
 }
 
 /// Classify a whole cargo invocation.
@@ -142,9 +146,9 @@ fn compile_refusal_pattern() -> Regex {
 /// result lines, because a target that did not build reported nothing and its
 /// silence is invisible in the sum. Only then does the absence of result lines
 /// become `NotVerified`, and only then does the sum get read.
-fn classify_run(output: &str) -> SuiteVerdict {
-    let result = result_line_pattern();
-    let refusal = compile_refusal_pattern();
+fn classify_run(output: &str) -> Result<SuiteVerdict, TestError> {
+    let result = result_line_pattern()?;
+    let refusal = compile_refusal_pattern()?;
 
     let mut lines = 0usize;
     let mut passed = 0usize;
@@ -169,24 +173,24 @@ fn classify_run(output: &str) -> SuiteVerdict {
     }
 
     if errors > 0 {
-        return SuiteVerdict::CompileFailed { lines, errors };
+        return Ok(SuiteVerdict::CompileFailed { lines, errors });
     }
     if lines == 0 {
-        return SuiteVerdict::NotVerified;
+        return Ok(SuiteVerdict::NotVerified);
     }
     if failed > 0 || failed_word {
-        return SuiteVerdict::TestsFailed {
+        return Ok(SuiteVerdict::TestsFailed {
             lines,
             passed,
             failed,
-        };
+        });
     }
-    SuiteVerdict::Clean { lines, passed }
+    Ok(SuiteVerdict::Clean { lines, passed })
 }
 
 /// The sum, carrying how many result lines produced it: `(passed, failed, lines)`.
-fn sum_with_count(output: &str) -> (usize, usize, usize) {
-    let result = result_line_pattern();
+fn sum_with_count(output: &str) -> Result<(usize, usize, usize), TestError> {
+    let result = result_line_pattern()?;
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut lines = 0usize;
@@ -197,7 +201,7 @@ fn sum_with_count(output: &str) -> (usize, usize, usize) {
             failed += caps[3].parse::<usize>().unwrap_or(0);
         }
     }
-    (passed, failed, lines)
+    Ok((passed, failed, lines))
 }
 
 /// The parser from the incident: the same sum with the count thrown away.
@@ -207,9 +211,9 @@ fn sum_with_count(output: &str) -> (usize, usize, usize) {
 /// building it this way means the tests below compare a value against itself
 /// minus the field rather than against a second implementation that might
 /// differ for some other reason.
-fn sum_without_count(output: &str) -> (usize, usize) {
-    let (passed, failed, _lines) = sum_with_count(output);
-    (passed, failed)
+fn sum_without_count(output: &str) -> Result<(usize, usize), TestError> {
+    let (passed, failed, _lines) = sum_with_count(output)?;
+    Ok((passed, failed))
 }
 
 // ── the fixtures ────────────────────────────────────────────────────
@@ -339,16 +343,16 @@ fn repo() -> PathBuf {
 /// Every `.rs` file directly under `tests/` — one integration target each.
 ///
 /// `cargo build` compiles none of these.
-fn integration_targets() -> Vec<PathBuf> {
+fn integration_targets() -> Result<Vec<PathBuf>, TestError> {
     let dir = repo().join("tests");
     let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)
-        .unwrap_or_else(|e| panic!("tests/ must be readable: {}: {e}", dir.display()))
+        .map_err(|e| format!("tests/ must be readable: {}: {e}", dir.display()))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "rs"))
         .collect();
     out.sort();
-    out
+    Ok(out)
 }
 
 /// Every `.rs` file under `src/`, recursively.
@@ -437,7 +441,7 @@ const MIN_INTEGRATION_TARGETS: usize = 100;
 /// clean run. Consequence if this regresses: a run that never happened is
 /// reported as a run that succeeded.
 #[test]
-fn output_with_no_result_line_is_not_verified_rather_than_zero_passing() {
+fn output_with_no_result_line_is_not_verified_rather_than_zero_passing() -> Result<(), TestError> {
     let clean = clean_run_output();
     let silent = silent_output();
     let cases: Vec<(&str, &str, SuiteVerdict)> = vec![
@@ -474,7 +478,7 @@ fn output_with_no_result_line_is_not_verified_rather_than_zero_passing() {
 
     for (what, output, expected) in &cases {
         assert_eq!(
-            &classify_run(output),
+            &classify_run(output)?,
             expected,
             "misclassified {what}; a verdict this classifier gets wrong is a \
              verdict the caller reports as fact"
@@ -482,24 +486,25 @@ fn output_with_no_result_line_is_not_verified_rather_than_zero_passing() {
     }
 
     assert_ne!(
-        classify_run(&clean),
-        classify_run(&silent),
+        classify_run(&clean)?,
+        classify_run(&silent)?,
         "a run that passed 57 tests and a run that reported nothing reached \
          the same verdict. That collapse is the incident: the parser summed an \
          empty list, printed the same zeroes a real empty suite prints, and I \
          nearly reported a compile failure as a clean suite."
     );
     assert!(
-        !classify_run(&silent).is_evidence(),
+        !classify_run(&silent)?.is_evidence(),
         "output containing no result line was accepted as evidence of a pass, \
          so a suite that never ran can be cited as a suite that succeeded"
     );
     assert!(
-        classify_run(&clean).is_evidence(),
+        classify_run(&clean)?.is_evidence(),
         "a genuine three-target pass was not accepted as evidence; a \
          classifier that refuses real runs gets switched off, and then nothing \
          is checked at all"
     );
+    Ok(())
 }
 
 /// A compile failure is its own verdict, distinct from clean and from failing.
@@ -512,14 +517,15 @@ fn output_with_no_result_line_is_not_verified_rather_than_zero_passing() {
 /// cannot tell "the code is broken" from "the tests are broken" from "the
 /// tests are fine", which are three different next actions.
 #[test]
-fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests() {
+fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests()
+-> Result<(), TestError> {
     let broken = compile_failure_output();
     let clean = clean_run_output();
     let failing = failing_run_output();
 
     // The premise first: the fixture must genuinely lack result lines, or this
     // test is about a fixture I mistyped rather than about compile output.
-    let (_, _, result_lines) = sum_with_count(&broken);
+    let (_, _, result_lines) = sum_with_count(&broken)?;
     assert_eq!(
         result_lines, 0,
         "the compile-failure fixture contains {result_lines} result line(s); \
@@ -533,7 +539,7 @@ fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests() {
     );
 
     assert_eq!(
-        classify_run(&broken),
+        classify_run(&broken)?,
         SuiteVerdict::CompileFailed {
             lines: 0,
             errors: 2
@@ -543,20 +549,20 @@ fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests() {
          reported was arithmetic over nothing."
     );
     assert_ne!(
-        classify_run(&broken),
-        classify_run(&clean),
+        classify_run(&broken)?,
+        classify_run(&clean)?,
         "a compile failure and a clean run share a verdict, so `it built and \
          passed` and `it never built` are the same sentence to the caller"
     );
     assert_ne!(
-        classify_run(&broken),
-        classify_run(&failing),
+        classify_run(&broken)?,
+        classify_run(&failing)?,
         "a compile failure and a failing test share a verdict. They need \
          different next actions -- fix the build, or read the failure -- and a \
          single verdict sends the reader to the wrong one."
     );
     assert_eq!(
-        classify_run(&failing),
+        classify_run(&failing)?,
         SuiteVerdict::TestsFailed {
             lines: 2,
             passed: 51,
@@ -566,10 +572,11 @@ fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests() {
          count a failure will not report one"
     );
     assert!(
-        !classify_run(&broken).is_evidence(),
+        !classify_run(&broken)?.is_evidence(),
         "compile-failure output was accepted as evidence of a pass, which is \
          the exact claim I nearly made"
     );
+    Ok(())
 }
 
 /// A sum over result lines carries how many lines it summed.
@@ -583,7 +590,7 @@ fn a_compile_failure_is_a_distinct_verdict_from_clean_and_from_failing_tests() {
 /// Consequence if this regresses: the printed total is once again a number
 /// whose denominator nobody knows.
 #[test]
-fn a_summed_result_carries_how_many_result_lines_it_summed() {
+fn a_summed_result_carries_how_many_result_lines_it_summed() -> Result<(), TestError> {
     let busy = many_reporting_targets(INCIDENT_RUN_RESULT_LINES, 3);
     let all_zero = many_reporting_targets(INCIDENT_RUN_RESULT_LINES, 0);
     let none = compile_failure_output();
@@ -599,20 +606,20 @@ fn a_summed_result_carries_how_many_result_lines_it_summed() {
          lines cannot be shown on none of them"
     );
     assert_eq!(
-        sum_with_count(&busy),
+        sum_with_count(&busy)?,
         (INCIDENT_RUN_RESULT_LINES * 3, 0, INCIDENT_RUN_RESULT_LINES),
         "the counted sum lost either its total or its line count over a \
          {INCIDENT_RUN_RESULT_LINES}-target run"
     );
     assert_eq!(
-        sum_with_count(&all_zero),
+        sum_with_count(&all_zero)?,
         (0, 0, INCIDENT_RUN_RESULT_LINES),
         "a run in which {INCIDENT_RUN_RESULT_LINES} targets each reported zero \
          passes must still report {INCIDENT_RUN_RESULT_LINES} lines summed; \
          without that the reader cannot see that the binaries did report"
     );
     assert_eq!(
-        sum_with_count(&none),
+        sum_with_count(&none)?,
         (0, 0, 0),
         "output with no result line reported a non-zero line count, so the \
          count itself is no longer evidence of anything"
@@ -620,26 +627,27 @@ fn a_summed_result_carries_how_many_result_lines_it_summed() {
 
     // The distinction, and then its loss.
     assert_ne!(
-        sum_with_count(&all_zero),
-        sum_with_count(&none),
+        sum_with_count(&all_zero)?,
+        sum_with_count(&none)?,
         "47 binaries reporting nothing and no binary reporting at all reached \
          the same counted answer, so the count is not doing the work it is \
          here to do"
     );
     assert_eq!(
-        sum_without_count(&all_zero),
-        sum_without_count(&none),
+        sum_without_count(&all_zero)?,
+        sum_without_count(&none)?,
         "dropping the line count no longer collapses the two inputs. If that \
          is now true the incident's parser was not the defect described here \
          -- re-derive this file before deleting it."
     );
     assert_eq!(
-        sum_without_count(&none),
+        sum_without_count(&none)?,
         (0, 0),
         "the incident's parser printed something other than `0 passed, 0 \
          failed` for a compile failure; the sentence this whole file exists \
          for is that one"
     );
+    Ok(())
 }
 
 /// A partial compile is not a successful run, however green the total.
@@ -653,10 +661,10 @@ fn a_summed_result_carries_how_many_result_lines_it_summed() {
 /// regresses: a big green number is reported for a suite that skipped whichever
 /// binary the broken import belonged to.
 #[test]
-fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() {
+fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() -> Result<(), TestError> {
     let partial = partial_compile_output();
 
-    let (passed, failed, lines) = sum_with_count(&partial);
+    let (passed, failed, lines) = sum_with_count(&partial)?;
     assert_eq!(
         (passed, failed, lines),
         (57, 0, 3),
@@ -666,7 +674,7 @@ fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() {
     );
 
     assert_eq!(
-        classify_run(&partial),
+        classify_run(&partial)?,
         SuiteVerdict::CompileFailed {
             lines: 3,
             errors: 2
@@ -677,7 +685,7 @@ fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() {
          from the sum entirely."
     );
     assert_ne!(
-        classify_run(&partial),
+        classify_run(&partial)?,
         SuiteVerdict::Clean {
             lines: 3,
             passed: 57
@@ -686,18 +694,19 @@ fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() {
          run, so a suite missing a whole binary reports as a suite that passed"
     );
     assert!(
-        !classify_run(&partial).is_evidence(),
+        !classify_run(&partial)?.is_evidence(),
         "a partial compile was accepted as evidence of a pass; 57 real passes \
          beside a target that never built is precisely how a regression ships \
          behind a green number"
     );
     assert_eq!(
-        sum_without_count(&partial),
+        sum_without_count(&partial)?,
         (57, 0),
         "the uncounted parser no longer prints a green total for a partial \
          compile. That would be an improvement, and it would also mean this \
          demonstration has lost its subject -- check before deleting it."
     );
+    Ok(())
 }
 
 /// This tree really does emit many result lines, so a zero is never ordinary.
@@ -709,8 +718,8 @@ fn a_partial_compile_beside_passing_binaries_is_not_a_successful_run() {
 /// itself. Consequence if this regresses: `0 passed` becomes a plausible
 /// reading of a healthy run, and the whole distinction above stops mattering.
 #[test]
-fn the_test_marker_count_in_this_tree_is_far_above_zero() {
-    let targets = integration_targets();
+fn the_test_marker_count_in_this_tree_is_far_above_zero() -> Result<(), TestError> {
+    let targets = integration_targets()?;
     assert!(
         !targets.is_empty(),
         "the walk over tests/ found no integration target at all; every count \
@@ -744,6 +753,7 @@ fn the_test_marker_count_in_this_tree_is_far_above_zero() {
          -- and in the second case every parser tested only against fixtures \
          is unanchored."
     );
+    Ok(())
 }
 
 /// `cargo build` succeeding says nothing about whether the tests compile.
@@ -756,7 +766,7 @@ fn the_test_marker_count_in_this_tree_is_far_above_zero() {
 /// this regresses: a green build gets cited as a green suite, which is the
 /// state the compile failure went unnoticed in.
 #[test]
-fn the_tree_holds_test_only_code_that_cargo_build_never_compiles() {
+fn the_tree_holds_test_only_code_that_cargo_build_never_compiles() -> Result<(), TestError> {
     let sources = src_files();
     assert!(
         !sources.is_empty(),
@@ -774,7 +784,7 @@ fn the_tree_holds_test_only_code_that_cargo_build_never_compiles() {
         sources.len()
     );
 
-    let targets = integration_targets();
+    let targets = integration_targets()?;
     assert!(
         targets.len() >= MIN_INTEGRATION_TARGETS,
         "found {} integration target(s) under tests/, below the floor of \
@@ -794,6 +804,7 @@ fn the_tree_holds_test_only_code_that_cargo_build_never_compiles() {
          being real",
         targets.len()
     );
+    Ok(())
 }
 
 /// Every fixture and every scan behind these rules examined something.
@@ -807,7 +818,7 @@ fn the_tree_holds_test_only_code_that_cargo_build_never_compiles() {
 /// assertion message so a future failure reports what was actually found
 /// instead of only that something was wrong.
 #[test]
-fn every_fixture_and_every_scan_behind_these_rules_is_non_empty() {
+fn every_fixture_and_every_scan_behind_these_rules_is_non_empty() -> Result<(), TestError> {
     let generated = many_reporting_targets(INCIDENT_RUN_RESULT_LINES, 3);
     let fixtures: Vec<(&str, String)> = vec![
         ("clean_run_output", clean_run_output()),
@@ -854,9 +865,9 @@ fn every_fixture_and_every_scan_behind_these_rules_is_non_empty() {
             &fixtures
                 .iter()
                 .find(|(n, _)| *n == name)
-                .unwrap_or_else(|| panic!("fixture `{name}` is not in the fixture list"))
+                .ok_or_else(|| format!("fixture `{name}` is not in the fixture list"))?
                 .1,
-        );
+        )?;
         assert!(
             lines > 0,
             "fixture `{name}` carries {lines} result line(s); a fixture meant \
@@ -865,7 +876,7 @@ fn every_fixture_and_every_scan_behind_these_rules_is_non_empty() {
     }
 
     // The tree scans, each reporting what it found.
-    let targets = integration_targets();
+    let targets = integration_targets()?;
     let sources = src_files();
     assert!(
         !targets.is_empty() && !sources.is_empty(),
@@ -889,4 +900,5 @@ fn every_fixture_and_every_scan_behind_these_rules_is_non_empty() {
          only because nothing was examined.",
         targets.len() + sources.len()
     );
+    Ok(())
 }

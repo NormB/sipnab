@@ -37,20 +37,22 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+type TestError = Box<dyn std::error::Error>;
+
 const FIXTURE: &str = "website/static/demos/sample-call.pcap";
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn bin() -> PathBuf {
+fn bin() -> Result<PathBuf, TestError> {
     // The test binary lives beside the built `sipnab`.
-    let mut p = std::env::current_exe().expect("current exe");
+    let mut p = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     p.pop();
     if p.ends_with("deps") {
         p.pop();
     }
-    p.join("sipnab")
+    Ok(p.join("sipnab"))
 }
 
 /// One redacted export: the containers, and the map that should reverse them.
@@ -61,40 +63,40 @@ struct Export {
 }
 
 impl Export {
-    fn run(name: &str) -> Self {
+    fn run(name: &str) -> Result<Self, TestError> {
         Self::run_with_key(name, [0x5au8; 32])
     }
 
     /// The same export under a caller-chosen key.
-    fn run_with_key(name: &str, key_bytes: [u8; 32]) -> Self {
+    fn run_with_key(name: &str, key_bytes: [u8; 32]) -> Result<Self, TestError> {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("out")).expect("fixture dir");
+        std::fs::create_dir_all(dir.join("out")).map_err(|e| format!("fixture dir: {e}"))?;
 
         // A FIXED key, so the run is reproducible and a failure can be read.
         let key = dir.join("key");
-        std::fs::write(&key, key_bytes).expect("write key");
+        std::fs::write(&key, key_bytes).map_err(|e| format!("write key: {e}"))?;
 
         let map = dir.join("map.tsv");
-        let out = Command::new(bin())
+        let out = Command::new(bin()?)
             .args([
                 "-N",
                 "-I",
-                repo().join(FIXTURE).to_str().expect("fixture path"),
+                repo().join(FIXTURE).to_str().ok_or("fixture path")?,
                 "--export-vcon-when",
                 "state == 'Completed'",
                 "--export-vcon-dir",
-                dir.join("out").to_str().expect("out dir"),
+                dir.join("out").to_str().ok_or("out dir")?,
                 "--redact",
                 "--redact-key-file",
-                key.to_str().expect("key path"),
+                key.to_str().ok_or("key path")?,
                 "--redact-map",
-                map.to_str().expect("map path"),
+                map.to_str().ok_or("map path")?,
                 "--no-cli-print",
             ])
             .current_dir(repo())
             .output()
-            .expect("run sipnab");
+            .map_err(|e| format!("run sipnab: {e}"))?;
         assert!(
             out.status.success(),
             "the redacted export failed: {}",
@@ -102,7 +104,7 @@ impl Export {
         );
 
         let mappings = std::fs::read_to_string(&map)
-            .expect("read the redaction map")
+            .map_err(|e| format!("read the redaction map: {e}"))?
             .lines()
             .filter_map(|l| l.split_once('\t'))
             .map(|(a, b)| (a.to_string(), b.to_string()))
@@ -110,7 +112,7 @@ impl Export {
 
         let mut containers = Vec::new();
         for e in std::fs::read_dir(dir.join("out"))
-            .expect("read out dir")
+            .map_err(|e| format!("read out dir: {e}"))?
             .flatten()
         {
             if e.path().extension().is_some_and(|x| x == "json") {
@@ -120,11 +122,11 @@ impl Export {
                 }
             }
         }
-        Self {
+        Ok(Self {
             dir,
             mappings,
             containers,
-        }
+        })
     }
 
     fn discard(self) {
@@ -138,8 +140,8 @@ impl Export {
 /// means the value was redacted twice, and whoever reverses it gets a token
 /// back believing it is the real thing.
 #[test]
-fn no_mapping_reverses_to_another_token() {
-    let export = Export::run("redact_map_chain");
+fn no_mapping_reverses_to_another_token() -> Result<(), TestError> {
+    let export = Export::run("redact_map_chain")?;
     let keys: BTreeSet<&str> = export.mappings.iter().map(|(k, _)| k.as_str()).collect();
 
     let chained: Vec<String> = export
@@ -165,6 +167,7 @@ fn no_mapping_reverses_to_another_token() {
         chained.len(),
         chained.join("\n")
     );
+    Ok(())
 }
 
 /// The subject reverses through the map.
@@ -172,8 +175,8 @@ fn no_mapping_reverses_to_another_token() {
 /// The operator-visible half. `subject` is what a store searches on, so a
 /// container whose subject no row can reverse is one nobody can trace back.
 #[test]
-fn the_container_subject_reverses_through_the_map() {
-    let export = Export::run("redact_map_subject");
+fn the_container_subject_reverses_through_the_map() -> Result<(), TestError> {
+    let export = Export::run("redact_map_subject")?;
     let keys: BTreeSet<&str> = export.mappings.iter().map(|(k, _)| k.as_str()).collect();
 
     let mut unreversible = Vec::new();
@@ -216,6 +219,7 @@ fn the_container_subject_reverses_through_the_map() {
          it was:\n{}",
         unreversible.join("\n")
     );
+    Ok(())
 }
 
 /// Reversing the whole container leaves no token behind.
@@ -223,8 +227,8 @@ fn the_container_subject_reverses_through_the_map() {
 /// The end-to-end statement of what the map is for: apply every row and the
 /// result should contain nothing that still needs reversing.
 #[test]
-fn applying_every_mapping_leaves_no_token_in_the_container() {
-    let export = Export::run("redact_map_roundtrip");
+fn applying_every_mapping_leaves_no_token_in_the_container() -> Result<(), TestError> {
+    let export = Export::run("redact_map_roundtrip")?;
     let mut leftover = Vec::new();
     let containers = export.containers.len();
 
@@ -252,6 +256,7 @@ fn applying_every_mapping_leaves_no_token_in_the_container() {
          map is not a complete reversal of the export:\n{}",
         leftover.join("\n")
     );
+    Ok(())
 }
 
 // ── the six owed for the three that failed ──────────────────────────
@@ -268,8 +273,8 @@ fn applying_every_mapping_leaves_no_token_in_the_container() {
 /// while the map claims something was. Reversing it is a no-op, and the reader
 /// concludes the original was already a pseudonym.
 #[test]
-fn no_mapping_reverses_a_token_to_itself() {
-    let export = Export::run("redact_map_identity");
+fn no_mapping_reverses_a_token_to_itself() -> Result<(), TestError> {
+    let export = Export::run("redact_map_identity")?;
     let identity: Vec<String> = export
         .mappings
         .iter()
@@ -289,6 +294,7 @@ fn no_mapping_reverses_a_token_to_itself() {
          that did not happen:\n{}",
         identity.join("\n")
     );
+    Ok(())
 }
 
 /// No token appears twice with different originals.
@@ -296,8 +302,8 @@ fn no_mapping_reverses_a_token_to_itself() {
 /// Two rows keying one token is an ambiguous reversal: whoever applies the map
 /// gets whichever row they read first, and nothing says the other exists.
 #[test]
-fn no_token_is_mapped_to_two_different_originals() {
-    let export = Export::run("redact_map_ambiguous");
+fn no_token_is_mapped_to_two_different_originals() -> Result<(), TestError> {
+    let export = Export::run("redact_map_ambiguous")?;
     let mut seen: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
     let mut clashes = Vec::new();
     for (k, v) in &export.mappings {
@@ -324,6 +330,7 @@ fn no_token_is_mapped_to_two_different_originals() {
          coin toss:\n{}",
         clashes.join("\n")
     );
+    Ok(())
 }
 
 /// No original survives unredacted in the container.
@@ -333,8 +340,8 @@ fn no_token_is_mapped_to_two_different_originals() {
 /// appears in the exported container, redaction missed it. That is the failure
 /// that puts a customer's address in a file somebody mailed to a vendor.
 #[test]
-fn no_original_survives_in_the_exported_container() {
-    let export = Export::run("redact_map_leak");
+fn no_original_survives_in_the_exported_container() -> Result<(), TestError> {
+    let export = Export::run("redact_map_leak")?;
     let mut leaks = Vec::new();
     let containers = export.containers.len();
 
@@ -364,6 +371,7 @@ fn no_original_survives_in_the_exported_container() {
         "these originals survived into the redacted export:\n{}",
         leaks.join("\n")
     );
+    Ok(())
 }
 
 /// The same key produces the same map, twice.
@@ -373,9 +381,9 @@ fn no_original_survives_in_the_exported_container() {
 /// a different pseudonym in each file and the correlation the operator needs
 /// would be destroyed by the tool meant to preserve it.
 #[test]
-fn one_key_produces_the_same_mapping_twice() {
-    let a = Export::run("redact_det_a");
-    let b = Export::run("redact_det_b");
+fn one_key_produces_the_same_mapping_twice() -> Result<(), TestError> {
+    let a = Export::run("redact_det_a")?;
+    let b = Export::run("redact_det_b")?;
     let (ma, mb) = (a.mappings.clone(), b.mappings.clone());
     let count = ma.len();
     a.discard();
@@ -390,6 +398,7 @@ fn one_key_produces_the_same_mapping_twice() {
         "two runs with the same key produced different maps, so one endpoint \
          carries two pseudonyms across two captures of one incident"
     );
+    Ok(())
 }
 
 /// A different key produces different tokens.
@@ -398,12 +407,12 @@ fn one_key_produces_the_same_mapping_twice() {
 /// are a fixed function of the input — reversible by anyone who runs sipnab
 /// once, which is not a pseudonym at all.
 #[test]
-fn a_different_key_produces_different_tokens() {
-    let a = Export::run("redact_key_a");
+fn a_different_key_produces_different_tokens() -> Result<(), TestError> {
+    let a = Export::run("redact_key_a")?;
     let tokens_a: BTreeSet<String> = a.mappings.iter().map(|(k, _)| k.clone()).collect();
     a.discard();
 
-    let b = Export::run_with_key("redact_key_b", [0xa5u8; 32]);
+    let b = Export::run_with_key("redact_key_b", [0xa5u8; 32])?;
     let tokens_b: BTreeSet<String> = b.mappings.iter().map(|(k, _)| k.clone()).collect();
     let count = tokens_b.len();
     b.discard();
@@ -414,6 +423,7 @@ fn a_different_key_produces_different_tokens() {
         "two different keys produced overlapping tokens, so the key is not \
          what determines the pseudonym"
     );
+    Ok(())
 }
 
 /// The map is written 0600.
@@ -423,11 +433,11 @@ fn a_different_key_produces_different_tokens() {
 /// redaction for anyone on the box.
 #[test]
 #[cfg(unix)]
-fn the_map_file_is_written_owner_only() {
+fn the_map_file_is_written_owner_only() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt;
-    let export = Export::run("redact_map_mode");
+    let export = Export::run("redact_map_mode")?;
     let mode = std::fs::metadata(export.dir.join("map.tsv"))
-        .expect("stat the map")
+        .map_err(|e| format!("stat the map: {e}"))?
         .permissions()
         .mode()
         & 0o777;
@@ -437,4 +447,5 @@ fn the_map_file_is_written_owner_only() {
         "the redaction map is mode {mode:o}, not 0600. It reverses every token \
          in the export, so it is as sensitive as the capture it came from."
     );
+    Ok(())
 }

@@ -25,9 +25,11 @@
 
 use std::path::PathBuf;
 
-fn repo(rel: &str) -> String {
+type TestError = Box<dyn std::error::Error>;
+
+fn repo(rel: &str) -> Result<String, TestError> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
+    Ok(std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))?)
 }
 
 const WORKFLOWS: &[&str] = &[".github/workflows/ci.yml", ".github/workflows/quality.yml"];
@@ -39,10 +41,10 @@ const ACTION: &str = ".github/actions/free-disk/action.yml";
 /// An inline `run:` block beside the action is a second copy, and the second
 /// copy is the one that goes stale.
 #[test]
-fn every_free_disk_step_uses_the_shared_action() {
+fn every_free_disk_step_uses_the_shared_action() -> Result<(), TestError> {
     let mut steps = 0;
     for wf in WORKFLOWS {
-        let src = repo(wf);
+        let src = repo(wf)?;
         let lines: Vec<&str> = src.lines().collect();
         for (i, line) in lines.iter().enumerate() {
             if !line.trim_start().starts_with("- name: Free disk space") {
@@ -74,6 +76,7 @@ fn every_free_disk_step_uses_the_shared_action() {
         "only {steps} disk-reclaiming step(s) found; the scan is wrong and \
          this gate proves nothing"
     );
+    Ok(())
 }
 
 /// The shared action reclaims everything the four copies between them did.
@@ -81,8 +84,8 @@ fn every_free_disk_step_uses_the_shared_action() {
 /// The union, not the weaker of the two. Losing an entry here is silent: the
 /// job still runs, just with less room, until one day it does not.
 #[test]
-fn the_shared_action_reclaims_every_path_the_copies_did() {
-    let action = repo(ACTION);
+fn the_shared_action_reclaims_every_path_the_copies_did() -> Result<(), TestError> {
+    let action = repo(ACTION)?;
     for path in [
         "/usr/share/dotnet",
         "/usr/local/lib/android",
@@ -103,6 +106,7 @@ fn the_shared_action_reclaims_every_path_the_copies_did() {
         "the shared action no longer prunes docker images; the quality.yml \
          copies did, and that is several GB on a hosted runner"
     );
+    Ok(())
 }
 
 /// The action reports the margin it leaves.
@@ -112,8 +116,8 @@ fn the_shared_action_reclaims_every_path_the_copies_did() {
 /// said the margin had been shrinking. A number that is reported can be read
 /// later; one that is not is a surprise waiting.
 #[test]
-fn the_shared_action_reports_the_margin_it_leaves() {
-    let action = repo(ACTION);
+fn the_shared_action_reports_the_margin_it_leaves() -> Result<(), TestError> {
+    let action = repo(ACTION)?;
     assert!(
         action.contains("reclaimed") && action.contains("free after"),
         "the action must report how much it freed AND how much is left; the \
@@ -124,6 +128,7 @@ fn the_shared_action_reports_the_margin_it_leaves() {
         "the action must measure free space before and after, not merely \
          print df at the end"
     );
+    Ok(())
 }
 
 /// Every job that builds the whole matrix reclaims space first.
@@ -132,9 +137,9 @@ fn the_shared_action_reports_the_margin_it_leaves() {
 /// without a reclaim step is the next one to run out, and it will fail the
 /// same unreadable way.
 #[test]
-fn every_heavy_linux_job_reclaims_space_first() {
+fn every_heavy_linux_job_reclaims_space_first() -> Result<(), TestError> {
     for wf in WORKFLOWS {
-        let src = repo(wf);
+        let src = repo(wf)?;
         let heavy = src.matches("--all-features").count() + src.matches("llvm-cov").count();
         let reclaims = src.matches("./.github/actions/free-disk").count();
         assert!(
@@ -149,4 +154,5 @@ fn every_heavy_linux_job_reclaims_space_first() {
              failure at all."
         );
     }
+    Ok(())
 }

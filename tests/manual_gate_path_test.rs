@@ -24,13 +24,15 @@
 
 use std::path::{Path, PathBuf};
 
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn read(rel: &str) -> String {
+fn read(rel: &str) -> Result<String, TestError> {
     let p: PathBuf = repo().join(rel);
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+    std::fs::read_to_string(&p).map_err(|e| format!("{}: {e}", p.display()).into())
 }
 
 /// Lines that open a `while read` loop, trimmed of leading whitespace.
@@ -47,8 +49,8 @@ fn while_read_lines(body: &str) -> Vec<&str> {
 /// pass. If it grew a `while read` refspec loop it would block on an open
 /// stdin exactly as the hook did, and the one safe manual path would be gone.
 #[test]
-fn the_manual_predictor_never_blocks_on_a_refspec_read() {
-    let body = read("scripts/preflight.sh");
+fn the_manual_predictor_never_blocks_on_a_refspec_read() -> Result<(), TestError> {
+    let body = read("scripts/preflight.sh")?;
     let loops = while_read_lines(&body);
     assert!(
         loops.is_empty(),
@@ -56,16 +58,18 @@ fn the_manual_predictor_never_blocks_on_a_refspec_read() {
          predictor must read no refspec, or it blocks on an open stdin the way \
          `.githooks/pre-push` does when run by hand."
     );
+    Ok(())
 }
 
 /// The predictor has to actually exist to be the safe path.
 #[test]
-fn the_manual_predictor_exists() {
+fn the_manual_predictor_exists() -> Result<(), TestError> {
     let p = repo().join("scripts/preflight.sh");
     assert!(
         p.is_file(),
         "scripts/preflight.sh is missing: there is no stdin-free manual path"
     );
+    Ok(())
 }
 
 /// The hook's ONLY stdin read is the refspec loop.
@@ -77,8 +81,8 @@ fn the_manual_predictor_exists() {
 /// supplies, so the block (when it happens) is always the last thing, never the
 /// first.
 #[test]
-fn the_hook_reads_stdin_only_in_the_refspec_loop() {
-    let body = read(".githooks/pre-push");
+fn the_hook_reads_stdin_only_in_the_refspec_loop() -> Result<(), TestError> {
+    let body = read(".githooks/pre-push")?;
     let loops = while_read_lines(&body);
     assert_eq!(
         loops.len(),
@@ -93,6 +97,7 @@ fn the_hook_reads_stdin_only_in_the_refspec_loop() {
         "the one `while read` must be the refspec loop (binding the push refs git \
          supplies); found {refspec:?}"
     );
+    Ok(())
 }
 
 /// POSITIVE CONTROL: the detector must see the loop it is meant to judge.
@@ -101,8 +106,8 @@ fn the_hook_reads_stdin_only_in_the_refspec_loop() {
 /// pattern, a moved file — would make every test above pass over an empty list,
 /// which is the vacuous-green failure this project keeps finding.
 #[test]
-fn the_read_loop_detector_finds_the_known_loop() {
-    let hook = read(".githooks/pre-push");
+fn the_read_loop_detector_finds_the_known_loop() -> Result<(), TestError> {
+    let hook = read(".githooks/pre-push")?;
     assert_eq!(
         while_read_lines(&hook).len(),
         1,
@@ -119,4 +124,5 @@ fn the_read_loop_detector_finds_the_known_loop() {
         while_read_lines("no loops here\n").is_empty(),
         "detector invents a loop"
     );
+    Ok(())
 }

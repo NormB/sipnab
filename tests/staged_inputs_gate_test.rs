@@ -19,6 +19,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Any error a test can return; `?` converts into it.
+type TestError = Box<dyn std::error::Error>;
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -27,7 +30,7 @@ fn script() -> PathBuf {
     repo().join("scripts/check-generated-inputs-staged.py")
 }
 
-fn run_in(dir: &Path) -> (i32, String) {
+fn run_in(dir: &Path) -> Result<(i32, String), TestError> {
     // Scrubbed for the same reason `scrubbed_git` is, one layer further out.
     // The script under test shells out to git itself, so under `git commit`
     // it inherited the hook's `GIT_DIR` and `GIT_INDEX_FILE` and read the
@@ -41,13 +44,13 @@ fn run_in(dir: &Path) -> (i32, String) {
     for var in HOOK_GIT_ENV {
         cmd.env_remove(var);
     }
-    let out = cmd.output().expect("run check-generated-inputs-staged.py");
+    let out = cmd.output()?;
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    (out.status.code().unwrap_or(-1), text)
+    Ok((out.status.code().unwrap_or(-1), text))
 }
 
 /// A scratch repository with one generated artifact and one input.
@@ -93,7 +96,7 @@ const HOOK_GIT_ENV: &[&str] = &[
 
 /// The scrub must actually be applied, or the fixtures write to the real repo.
 #[test]
-fn fixture_git_scrubs_the_hooks_environment() {
+fn fixture_git_scrubs_the_hooks_environment() -> Result<(), TestError> {
     let c = scrubbed_git(std::path::Path::new("."));
     let removed: Vec<&std::ffi::OsStr> = c
         .get_envs()
@@ -107,6 +110,7 @@ fn fixture_git_scrubs_the_hooks_environment() {
              into the repository being committed to"
         );
     }
+    Ok(())
 }
 
 /// **First of two tests owed** for the commit that failed only under a real
@@ -116,7 +120,7 @@ fn fixture_git_scrubs_the_hooks_environment() {
 /// clean and proved nothing about the child PYTHON, which is the process that
 /// actually reads the index in every test here.
 #[test]
-fn the_script_runner_scrubs_the_hooks_environment() {
+fn the_script_runner_scrubs_the_hooks_environment() -> Result<(), TestError> {
     let mut cmd = Command::new("python3");
     cmd.arg(script()).current_dir(Path::new("."));
     for var in HOOK_GIT_ENV {
@@ -135,6 +139,7 @@ fn the_script_runner_scrubs_the_hooks_environment() {
              fixture"
         );
     }
+    Ok(())
 }
 
 /// **Second of two.** Both children scrub the SAME list.
@@ -143,7 +148,7 @@ fn the_script_runner_scrubs_the_hooks_environment() {
 /// two as sets is what stops the next variable from being added to one of them
 /// and not the other — which fails, again, only under a real commit.
 #[test]
-fn every_child_that_talks_to_git_scrubs_the_same_variables() {
+fn every_child_that_talks_to_git_scrubs_the_same_variables() -> Result<(), TestError> {
     let from_git: std::collections::BTreeSet<String> = scrubbed_git(Path::new("."))
         .get_envs()
         .filter(|(_, v)| v.is_none())
@@ -161,30 +166,34 @@ fn every_child_that_talks_to_git_scrubs_the_same_variables() {
         "GIT_INDEX_FILE is the one a partial commit sets, and the one that \
          sent a fixture's staging into the real repository"
     );
+    Ok(())
 }
 
 impl Scratch {
-    fn new(name: &str) -> Self {
+    fn new(name: &str) -> Result<Self, TestError> {
         let dir = std::env::temp_dir().join(format!("sipnab-staged-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("src")).expect("mkdir");
-        let git = |args: &[&str]| {
-            scrubbed_git(&dir).args(args).output().expect("git");
+        std::fs::create_dir_all(dir.join("src"))?;
+        let git = |args: &[&str]| -> Result<(), TestError> {
+            scrubbed_git(&dir).args(args).output()?;
+            Ok(())
         };
-        git(&["init", "-q"]);
-        git(&["config", "user.email", "t@example.invalid"]);
-        git(&["config", "user.name", "t"]);
-        std::fs::write(dir.join("Cargo.toml"), "[package]\nversion = \"1\"\n").expect("w");
-        std::fs::write(dir.join("Cargo.lock"), "sipnab 1\n").expect("w");
-        git(&["add", "-A"]);
-        git(&["commit", "-qm", "base"]);
-        Self(dir)
+        git(&["init", "-q"])?;
+        git(&["config", "user.email", "t@example.invalid"])?;
+        git(&["config", "user.name", "t"])?;
+        std::fs::write(dir.join("Cargo.toml"), "[package]\nversion = \"1\"\n")?;
+        std::fs::write(dir.join("Cargo.lock"), "sipnab 1\n")?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "base"])?;
+        Ok(Self(dir))
     }
-    fn git(&self, args: &[&str]) {
-        scrubbed_git(&self.0).args(args).output().expect("git");
+    fn git(&self, args: &[&str]) -> Result<(), TestError> {
+        scrubbed_git(&self.0).args(args).output()?;
+        Ok(())
     }
-    fn write(&self, rel: &str, body: &str) {
-        std::fs::write(self.0.join(rel), body).expect("write");
+    fn write(&self, rel: &str, body: &str) -> Result<(), TestError> {
+        std::fs::write(self.0.join(rel), body)?;
+        Ok(())
     }
 }
 
@@ -196,8 +205,8 @@ impl Drop for Scratch {
 
 /// 1. The real repository satisfies the rule.
 #[test]
-fn this_repository_stages_generated_files_with_their_inputs() {
-    let (code, text) = run_in(&repo());
+fn this_repository_stages_generated_files_with_their_inputs() -> Result<(), TestError> {
+    let (code, text) = run_in(&repo())?;
     assert!(
         code == 0 || code == 1,
         "the checker did not run cleanly (exit {code}):\n{text}"
@@ -208,18 +217,19 @@ fn this_repository_stages_generated_files_with_their_inputs() {
         // against the index at the moment it matters.
         eprintln!("staged/unstaged mismatch present in the worktree:\n{text}");
     }
+    Ok(())
 }
 
 /// 2. Staging an artifact while its input stays behind is refused.
 ///
 /// This is the exact shape of all four breakages.
 #[test]
-fn staging_a_generated_file_without_its_input_is_refused() {
-    let s = Scratch::new("mismatch");
-    s.write("Cargo.toml", "[package]\nversion = \"2\"\n");
-    s.write("Cargo.lock", "sipnab 2\n");
-    s.git(&["add", "Cargo.lock"]); // output staged, input left behind
-    let (code, text) = run_in(&s.0);
+fn staging_a_generated_file_without_its_input_is_refused() -> Result<(), TestError> {
+    let s = Scratch::new("mismatch")?;
+    s.write("Cargo.toml", "[package]\nversion = \"2\"\n")?;
+    s.write("Cargo.lock", "sipnab 2\n")?;
+    s.git(&["add", "Cargo.lock"])?; // output staged, input left behind
+    let (code, text) = run_in(&s.0)?;
     assert_eq!(
         code, 1,
         "staging Cargo.lock while Cargo.toml is modified and unstaged must be \
@@ -230,6 +240,7 @@ fn staging_a_generated_file_without_its_input_is_refused() {
         "the refusal must NAME the input left behind, or it cannot be acted \
          on:\n{text}"
     );
+    Ok(())
 }
 
 /// 3. Staging both together is accepted.
@@ -237,16 +248,17 @@ fn staging_a_generated_file_without_its_input_is_refused() {
 /// Without this the rule is satisfiable by refusing everything, which would
 /// make the gate unusable and get it removed.
 #[test]
-fn staging_the_input_alongside_the_artifact_is_accepted() {
-    let s = Scratch::new("together");
-    s.write("Cargo.toml", "[package]\nversion = \"2\"\n");
-    s.write("Cargo.lock", "sipnab 2\n");
-    s.git(&["add", "Cargo.toml", "Cargo.lock"]);
-    let (code, text) = run_in(&s.0);
+fn staging_the_input_alongside_the_artifact_is_accepted() -> Result<(), TestError> {
+    let s = Scratch::new("together")?;
+    s.write("Cargo.toml", "[package]\nversion = \"2\"\n")?;
+    s.write("Cargo.lock", "sipnab 2\n")?;
+    s.git(&["add", "Cargo.toml", "Cargo.lock"])?;
+    let (code, text) = run_in(&s.0)?;
     assert_eq!(
         code, 0,
         "input and artifact staged together must pass:\n{text}"
     );
+    Ok(())
 }
 
 /// 4. A dirty input with nothing staged is not the gate's business.
@@ -254,12 +266,13 @@ fn staging_the_input_alongside_the_artifact_is_accepted() {
 /// Ordinary mid-edit state. A gate that fired here would fire constantly and
 /// get bypassed, which is how a real gate dies.
 #[test]
-fn a_dirty_worktree_with_an_empty_index_is_left_alone() {
-    let s = Scratch::new("dirty");
-    s.write("Cargo.toml", "[package]\nversion = \"2\"\n");
-    let (code, text) = run_in(&s.0);
+fn a_dirty_worktree_with_an_empty_index_is_left_alone() -> Result<(), TestError> {
+    let s = Scratch::new("dirty")?;
+    s.write("Cargo.toml", "[package]\nversion = \"2\"\n")?;
+    let (code, text) = run_in(&s.0)?;
     assert_eq!(code, 0, "nothing staged means nothing to judge:\n{text}");
     assert!(text.contains("nothing staged"), "{text}");
+    Ok(())
 }
 
 /// 5. An UNTRACKED input counts.
@@ -268,14 +281,14 @@ fn a_dirty_worktree_with_an_empty_index_is_left_alone() {
 /// is an input to the testing matrix exactly as much as an edited one, and
 /// `git diff --name-only` alone does not report it.
 #[test]
-fn an_untracked_input_is_treated_as_a_modified_one() {
-    let s = Scratch::new("untracked");
-    std::fs::create_dir_all(s.0.join("src/mcp")).expect("mkdir");
-    std::fs::create_dir_all(s.0.join("docs/design")).expect("mkdir");
-    s.write("src/mcp/brand_new.rs", "// a new module\n");
-    s.write("docs/design/testing-matrix.md", "| flag |\n");
-    s.git(&["add", "docs/design/testing-matrix.md"]);
-    let (code, text) = run_in(&s.0);
+fn an_untracked_input_is_treated_as_a_modified_one() -> Result<(), TestError> {
+    let s = Scratch::new("untracked")?;
+    std::fs::create_dir_all(s.0.join("src/mcp"))?;
+    std::fs::create_dir_all(s.0.join("docs/design"))?;
+    s.write("src/mcp/brand_new.rs", "// a new module\n")?;
+    s.write("docs/design/testing-matrix.md", "| flag |\n")?;
+    s.git(&["add", "docs/design/testing-matrix.md"])?;
+    let (code, text) = run_in(&s.0)?;
     assert_eq!(
         code, 1,
         "a new untracked module under src/mcp/ is an input to the testing \
@@ -283,6 +296,7 @@ fn an_untracked_input_is_treated_as_a_modified_one() {
          program the commit does not contain.\n{text}"
     );
     assert!(text.contains("brand_new.rs"), "{text}");
+    Ok(())
 }
 
 /// 6. Outside a git work tree it REFUSES rather than passing.
@@ -291,16 +305,17 @@ fn an_untracked_input_is_treated_as_a_modified_one() {
 /// that exits 0 when it cannot look is the failure this repository keeps
 /// rediscovering.
 #[test]
-fn outside_a_work_tree_it_refuses_instead_of_passing() {
+fn outside_a_work_tree_it_refuses_instead_of_passing() -> Result<(), TestError> {
     let dir = std::env::temp_dir().join(format!("sipnab-nogit-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    let (code, text) = run_in(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let (code, text) = run_in(&dir)?;
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(
         code, 2,
         "outside a work tree the answer is 'cannot check', not 'clean':\n{text}"
     );
+    Ok(())
 }
 
 /// 7. The artifact map is not empty and names real paths.
@@ -308,10 +323,10 @@ fn outside_a_work_tree_it_refuses_instead_of_passing() {
 /// A map that drifted to nothing would let every test above pass while the gate
 /// examined no artifact at all.
 #[test]
-fn the_generated_artifact_map_names_paths_that_exist() {
-    let body = std::fs::read_to_string(script()).expect("read the script");
-    let start = body.find("DERIVED = {").expect("the DERIVED map");
-    let end = body[start..].find("\n}").expect("map end") + start;
+fn the_generated_artifact_map_names_paths_that_exist() -> Result<(), TestError> {
+    let body = std::fs::read_to_string(script())?;
+    let start = body.find("DERIVED = {").ok_or("the DERIVED map")?;
+    let end = body[start..].find("\n}").ok_or("map end")? + start;
     let map = &body[start..end];
     let artifacts: Vec<&str> = map
         .lines()
@@ -331,6 +346,7 @@ fn the_generated_artifact_map_names_paths_that_exist() {
              nothing silently protects nothing"
         );
     }
+    Ok(())
 }
 
 /// 8. `pre-commit` runs it.
@@ -338,14 +354,14 @@ fn the_generated_artifact_map_names_paths_that_exist() {
 /// The script only helps at staging time, and only if something invokes it
 /// there. Unrun, it rots while the hook keeps printing OK for the rest.
 #[test]
-fn the_pre_commit_hook_runs_the_staged_inputs_check() {
-    let hook = std::fs::read_to_string(repo().join(".githooks/pre-commit"))
-        .expect("read .githooks/pre-commit");
+fn the_pre_commit_hook_runs_the_staged_inputs_check() -> Result<(), TestError> {
+    let hook = std::fs::read_to_string(repo().join(".githooks/pre-commit"))?;
     assert!(
         hook.contains("scripts/check-generated-inputs-staged.py"),
         ".githooks/pre-commit does not run the staged-inputs check, so the rule \
          that would have caught four separate breakages is enforced by nothing"
     );
+    Ok(())
 }
 
 // ── The leak, as a rule over the whole test tree ────────────────────────
@@ -398,7 +414,8 @@ fn builds_its_own_repository(src: &str) -> bool {
 /// the ones a hook can hijack, and each of those has to have decided what to
 /// do about it.
 #[test]
-fn every_test_that_runs_git_in_its_own_fixture_handles_the_hook_environment() {
+fn every_test_that_runs_git_in_its_own_fixture_handles_the_hook_environment()
+-> Result<(), TestError> {
     let dir = repo().join("tests");
     let mut at_risk = Vec::new();
     let mut careless = Vec::new();
@@ -459,6 +476,7 @@ fn every_test_that_runs_git_in_its_own_fixture_handles_the_hook_environment() {
          whenever the hook is run by hand, which is where those variables are \
          unset."
     );
+    Ok(())
 }
 
 /// **Tenth of ten.** The rule distinguishes the three cases.
@@ -468,7 +486,7 @@ fn every_test_that_runs_git_in_its_own_fixture_handles_the_hook_environment() {
 /// exactly the kind that rot silently when a helper is renamed. Both
 /// predicates are driven directly, on all three shapes.
 #[test]
-fn the_hook_environment_rule_tells_the_three_cases_apart() {
+fn the_hook_environment_rule_tells_the_three_cases_apart() -> Result<(), TestError> {
     // Scrubbing, in both the direct and the list-driven spelling this tree
     // uses.
     assert!(handles_the_hook_environment(r#"c.env_remove("GIT_DIR");"#));
@@ -498,8 +516,7 @@ fn the_hook_environment_rule_tells_the_three_cases_apart() {
 
     // This file is itself in the at-risk population, which is what makes the
     // scan above non-vacuous.
-    let own = std::fs::read_to_string(repo().join("tests/staged_inputs_gate_test.rs"))
-        .expect("read this file");
+    let own = std::fs::read_to_string(repo().join("tests/staged_inputs_gate_test.rs"))?;
     assert!(
         builds_its_own_repository(&own),
         "this file builds a fixture"
@@ -508,4 +525,5 @@ fn the_hook_environment_rule_tells_the_three_cases_apart() {
         handles_the_hook_environment(&own),
         "and it must be its own first passing case"
     );
+    Ok(())
 }

@@ -43,6 +43,7 @@ mod support;
 use sipnab::analysis::CaptureFacts;
 use sipnab::output::vcon::{ExportContext, VCON_SYNTAX_VERSION, export_dialog};
 use sipnab::sip::dialog_store::DialogStore;
+use support::TestError;
 
 /// Path to a checked-in capture fixture.
 fn fixture(name: &str) -> std::path::PathBuf {
@@ -60,7 +61,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// The STORE is returned rather than the dialog: `SipDialog` is deliberately
 /// not `Clone` (it owns every retained message), so a borrow is the only way
 /// out of the store that does not copy a ladder.
-fn capture_of(capture: &str) -> (DialogStore, String) {
+fn capture_of(capture: &str) -> Result<(DialogStore, String), TestError> {
     use sipnab::capture::parse::parse_packet;
     use sipnab::pipeline::{self, PacketAction, PipelineOptions};
     use sipnab::rtp::heuristic::RtpHeuristic;
@@ -92,8 +93,8 @@ fn capture_of(capture: &str) -> (DialogStore, String) {
         .iter()
         .next()
         .map(|d| d.call_id.clone())
-        .expect("the fixture carries at least one dialog");
-    (store, call_id)
+        .ok_or("the fixture carries at least one dialog")?;
+    Ok((store, call_id))
 }
 
 /// The largest encoded container the probed store accepted into EVERY backend.
@@ -111,9 +112,9 @@ const STORE_CEILING_BYTES: usize = 10_485_760;
 /// a populated field that serde skips is a struct that satisfies a Rust
 /// assertion and fails at ingest.
 #[test]
-fn every_container_carries_the_two_fields_the_store_requires() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn every_container_carries_the_two_fields_the_store_requires() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -125,10 +126,16 @@ fn every_container_carries_the_two_fields_the_store_requires() {
             media: &[],
         },
     );
-    let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("a container serializes")).expect("valid JSON");
+    let json: serde_json::Value = serde_json::from_str(
+        &vcon
+            .to_json()
+            .map_err(|e| format!("a container serializes: {e}"))?,
+    )
+    .map_err(|e| format!("valid JSON: {e}"))?;
 
-    let uuid = json["uuid"].as_str().expect("uuid is present and a string");
+    let uuid = json["uuid"]
+        .as_str()
+        .ok_or("uuid is present and a string")?;
     // "Must parse as a UUID" is the store's rule, so check the SHAPE rather
     // than merely that the key exists. 8-4-4-4-12 hex, and a version nibble
     // that says 8 -- a uuid the store rejects is a container that never lands.
@@ -151,7 +158,7 @@ fn every_container_carries_the_two_fields_the_store_requires() {
 
     let created = json["created_at"]
         .as_str()
-        .expect("created_at is present and a string");
+        .ok_or("created_at is present and a string")?;
     assert!(
         !created.is_empty(),
         "an empty created_at is a 422 at ingest, and an empty string satisfies \
@@ -164,6 +171,7 @@ fn every_container_carries_the_two_fields_the_store_requires() {
         json["vcon"], VCON_SYNTAX_VERSION,
         "the syntax version is required and must be the one this build emits: {json}"
     );
+    Ok(())
 }
 
 /// Two dialogs get two uuids, and one dialog gets one.
@@ -177,9 +185,9 @@ fn every_container_carries_the_two_fields_the_store_requires() {
 /// one dialog from one capture is idempotent. An emitter minting a fresh uuid
 /// per call would make every re-export a new record.
 #[test]
-fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let ctx = |capture: &'static str| ExportContext {
         capture_id: capture,
@@ -188,16 +196,17 @@ fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() {
         analysis: None,
         media: &[],
     };
-    let uuid_of = |v: &sipnab::output::vcon::Vcon| {
-        serde_json::from_str::<serde_json::Value>(&v.to_json().expect("serializes"))
-            .expect("valid JSON")["uuid"]
-            .as_str()
-            .expect("uuid")
-            .to_string()
+    let uuid_of = |v: &sipnab::output::vcon::Vcon| -> Result<String, TestError> {
+        Ok(
+            serde_json::from_str::<serde_json::Value>(&v.to_json()?)?["uuid"]
+                .as_str()
+                .ok_or("uuid")?
+                .to_string(),
+        )
     };
 
-    let once = uuid_of(&export_dialog(dialog, &ctx("sip_call.pcap")));
-    let again = uuid_of(&export_dialog(dialog, &ctx("sip_call.pcap")));
+    let once = uuid_of(&export_dialog(dialog, &ctx("sip_call.pcap")))?;
+    let again = uuid_of(&export_dialog(dialog, &ctx("sip_call.pcap")))?;
     assert_eq!(
         once, again,
         "one dialog from one capture must export under one uuid, or every \
@@ -206,12 +215,13 @@ fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() {
 
     // A different capture is a different observation of the same call, and the
     // store must be able to hold both.
-    let elsewhere = uuid_of(&export_dialog(dialog, &ctx("some-other-capture.pcap")));
+    let elsewhere = uuid_of(&export_dialog(dialog, &ctx("some-other-capture.pcap")))?;
     assert_ne!(
         once, elsewhere,
         "two captures of one call must not collide on one uuid: the second to \
          arrive would overwrite or be refused, and one record would be lost"
     );
+    Ok(())
 }
 
 /// A signaling-only container is far beneath the store's silent ceiling.
@@ -225,9 +235,9 @@ fn the_uuid_identifies_the_dialog_and_not_the_moment_of_export() {
 /// ceiling discovered after that lands is a ceiling discovered from a support
 /// ticket.
 #[test]
-fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn a_signaling_only_container_is_far_beneath_the_store_ceiling() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -239,7 +249,9 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
             media: &[],
         },
     );
-    let encoded = vcon.to_json().expect("a container serializes");
+    let encoded = vcon
+        .to_json()
+        .map_err(|e| format!("a container serializes: {e}"))?;
 
     assert!(
         encoded.len() < STORE_CEILING_BYTES,
@@ -258,6 +270,7 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
          ceiling assertion above would pass for the wrong reason",
         encoded.len()
     );
+    Ok(())
 }
 
 /// An `encoding: "json"` body is a STRING, the way `base64url` bodies are.
@@ -280,9 +293,9 @@ fn a_signaling_only_container_is_far_beneath_the_store_ceiling() {
 /// must not miss, so a shape that silently fails the obvious access is the
 /// worst possible field to be wrong about.
 #[test]
-fn a_json_body_is_a_string_a_consumer_parses() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn a_json_body_is_a_string_a_consumer_parses() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -295,7 +308,8 @@ fn a_json_body_is_a_string_a_consumer_parses() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
 
     // Every array that can carry a body, `dialog` included: §2.3.2 makes `body`
     // a String whatever the encoding, so a media body must satisfy the rule
@@ -334,8 +348,8 @@ fn a_json_body_is_a_string_a_consumer_parses() {
             }
             checked += 1;
             let body = &item["body"];
-            let text = body.as_str().unwrap_or_else(|| {
-                panic!(
+            let text = body.as_str().ok_or_else(|| {
+                format!(
                     "{label} body declares `encoding: \"json\"` and is a {}, not a string. \
                      A store normalizes it to a string on the way in, so a consumer that \
                      reads it back gets a shape sipnab never sent: {item}",
@@ -345,12 +359,11 @@ fn a_json_body_is_a_string_a_consumer_parses() {
                         "non-string"
                     }
                 )
-            });
+            })?;
             // A string that is not parseable JSON would satisfy the assertion
             // above and be useless to the consumer it exists for.
-            serde_json::from_str::<serde_json::Value>(text).unwrap_or_else(|e| {
-                panic!("a `json`-encoded body must parse as JSON: {e}: {text}")
-            });
+            serde_json::from_str::<serde_json::Value>(text)
+                .map_err(|e| format!("a `json`-encoded body must parse as JSON: {e}: {text}"))?;
         }
     }
     assert!(
@@ -359,6 +372,7 @@ fn a_json_body_is_a_string_a_consumer_parses() {
          expected to carry the message trace, the completeness caveat and the \
          report, so the scan found less than it claims to check"
     );
+    Ok(())
 }
 
 /// Every container sipnab emits validates against the WORKING GROUP's schema.
@@ -380,9 +394,9 @@ fn a_json_body_is_a_string_a_consumer_parses() {
 /// actually rejects it, and being right about the prose is no comfort when the
 /// container bounces.
 #[test]
-fn a_container_validates_against_the_working_group_schema() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn a_container_validates_against_the_working_group_schema() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -395,10 +409,12 @@ fn a_container_validates_against_the_working_group_schema() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
 
-    let validator = support::schema::load_validator_or_panic("vcon.schema.json");
+    let validator = support::schema::load_validator("vcon.schema.json")?;
     support::schema::assert_valid(&validator, &json, "signaling-only vCon");
+    Ok(())
 }
 
 /// An object typed `recording` always carries content a consumer can reach.
@@ -415,9 +431,9 @@ fn a_container_validates_against_the_working_group_schema() {
 /// inside the link, and the conserver moves the WHOLE container to the
 /// dead-letter queue — not just the step that raised.
 #[test]
-fn nothing_is_typed_a_recording_without_content_to_reach() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn nothing_is_typed_a_recording_without_content_to_reach() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -430,9 +446,10 @@ fn nothing_is_typed_a_recording_without_content_to_reach() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
 
-    let objects = json["dialog"].as_array().expect("dialog is an array");
+    let objects = json["dialog"].as_array().ok_or("dialog is an array")?;
     assert!(
         !objects.is_empty(),
         "no dialog object at all, so this test would pass against a container \
@@ -448,13 +465,14 @@ fn nothing_is_typed_a_recording_without_content_to_reach() {
             );
         }
     }
+    Ok(())
 }
 
 /// The caller party's `sip` and `tel`, for one synthetic `From` user part.
 ///
 /// Goes through the public export rather than calling the URI helper, so a
 /// helper that is right while nothing wires it up cannot pass.
-fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
+fn party_sip_and_tel(from_user: &str) -> Result<(Option<String>, Option<String>), TestError> {
     use sipnab::net::TransportProto;
     use sipnab::sip::parser::parse_sip;
 
@@ -471,15 +489,19 @@ fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
         parse_sip(
             raw.as_bytes(),
             chrono::Utc::now(),
-            "10.0.0.1".parse().expect("a caller address"),
-            "10.0.0.2".parse().expect("a callee address"),
+            "10.0.0.1"
+                .parse()
+                .map_err(|e| format!("a caller address: {e}"))?,
+            "10.0.0.2"
+                .parse()
+                .map_err(|e| format!("a callee address: {e}"))?,
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("the INVITE fixture parses"),
+        .map_err(|e| format!("the INVITE fixture parses: {e}"))?,
     );
-    let dialog = store.iter().next().expect("the fixture produced a dialog");
+    let dialog = store.iter().next().ok_or("the fixture produced a dialog")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -492,15 +514,16 @@ fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
     let caller = &json["parties"][0];
-    (
+    Ok((
         caller["sip"].as_str().map(str::to_string),
         caller
             .get("tel")
             .and_then(|t| t.as_str())
             .map(str::to_string),
-    )
+    ))
 }
 
 /// A global number reaches the conserver's party index; an extension does not.
@@ -511,9 +534,10 @@ fn party_sip_and_tel(from_user: &str) -> (Option<String>, Option<String>) {
 /// not a telephone number, and indexing it as one puts a WRONG answer in a
 /// search index rather than no answer.
 #[test]
-fn a_tel_is_emitted_for_a_global_number_and_never_invented_from_an_extension() {
+fn a_tel_is_emitted_for_a_global_number_and_never_invented_from_an_extension()
+-> Result<(), TestError> {
     // Success: a global number, and the container becomes findable.
-    let global = party_sip_and_tel("+14155550123");
+    let global = party_sip_and_tel("+14155550123")?;
     assert_eq!(
         global.1,
         Some("tel:+14155550123".to_string()),
@@ -522,20 +546,21 @@ fn a_tel_is_emitted_for_a_global_number_and_never_invented_from_an_extension() {
 
     // Failure: everything that is not unambiguously a telephone number.
     for not_a_number in ["1001", "alice", "+", "+1415call", "+1-415-555-0123"] {
-        let (sip, tel) = party_sip_and_tel(not_a_number);
+        let (sip, tel) = party_sip_and_tel(not_a_number)?;
         assert_eq!(
             tel, None,
             "`{not_a_number}` is not an RFC 3966 global number; emitting a \
              `tel` for it indexes a wrong answer. sip was {sip:?}"
         );
     }
+    Ok(())
 }
 
 /// The observer is never indexable as a party to the call.
 #[test]
-fn the_observer_carries_no_tel() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn the_observer_carries_no_tel() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -548,17 +573,19 @@ fn the_observer_carries_no_tel() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
-    let parties = json["parties"].as_array().expect("parties is an array");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
+    let parties = json["parties"].as_array().ok_or("parties is an array")?;
     let observer = parties
         .iter()
         .find(|p| p.get("role").is_some())
-        .expect("the observer party is present");
+        .ok_or("the observer party is present")?;
     assert!(
         observer.get("tel").is_none(),
         "the observer is not reachable at a number, and supplying one enters \
          sipnab in the conserver's party index as a participant: {observer}"
     );
+    Ok(())
 }
 
 /// The dialog object names the tags that tell forked legs apart.
@@ -566,9 +593,9 @@ fn the_observer_carries_no_tel() {
 /// A Call-ID does not: every fork of one INVITE shares it. sipnab has held
 /// both tags all along.
 #[test]
-fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let expected_from = dialog.from_tag.clone();
     let expected_to = dialog.to_tag.clone();
     let facts = CaptureFacts::default();
@@ -583,7 +610,8 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
     let object = &json["dialog"][0];
 
     assert!(
@@ -601,6 +629,7 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
         expected_to,
         "the container must carry the To tag the capture observed: {object}"
     );
+    Ok(())
 }
 
 /// Two dialogs opening in the same millisecond on one node get DIFFERENT uuids.
@@ -619,7 +648,7 @@ fn the_dialog_object_names_the_tags_that_distinguish_a_forked_leg() {
 /// so these two stop sharing a bucket, this test would pass while testing
 /// nothing, so it fails loudly instead.
 #[test]
-fn two_dialogs_in_one_millisecond_on_one_node_get_different_uuids() {
+fn two_dialogs_in_one_millisecond_on_one_node_get_different_uuids() -> Result<(), TestError> {
     const CAPTURE: &str = "collision.pcap";
     const A: &str = "call-82@example.com";
     const B: &str = "call-110@example.com";
@@ -633,14 +662,15 @@ fn two_dialogs_in_one_millisecond_on_one_node_get_different_uuids() {
          deleting the assertion."
     );
 
-    let at = one_instant();
-    let a = uuid_of(A, CAPTURE, at);
-    let b = uuid_of(B, CAPTURE, at);
+    let at = one_instant()?;
+    let a = uuid_of(A, CAPTURE, at)?;
+    let b = uuid_of(B, CAPTURE, at)?;
     assert_ne!(
         a, b,
         "two dialogs, one node, one millisecond, one identifier: a store \
          keyed on it keeps ONE of these captures and reports no error"
     );
+    Ok(())
 }
 
 /// The identifier is still a function of the dialog, not of the moment.
@@ -649,18 +679,19 @@ fn two_dialogs_in_one_millisecond_on_one_node_get_different_uuids() {
 /// has to keep its identifier, or a store sees a second copy rather than the
 /// same record.
 #[test]
-fn one_dialog_exported_twice_keeps_one_uuid() {
-    let at = one_instant();
+fn one_dialog_exported_twice_keeps_one_uuid() -> Result<(), TestError> {
+    let at = one_instant()?;
     assert_eq!(
-        uuid_of("stable@example.com", "same.pcap", at),
-        uuid_of("stable@example.com", "same.pcap", at),
+        uuid_of("stable@example.com", "same.pcap", at)?,
+        uuid_of("stable@example.com", "same.pcap", at)?,
         "the identifier must be derived, never minted"
     );
     assert_ne!(
-        uuid_of("stable@example.com", "same.pcap", at),
-        uuid_of("stable@example.com", "other.pcap", at),
+        uuid_of("stable@example.com", "same.pcap", at)?,
+        uuid_of("stable@example.com", "other.pcap", at)?,
         "the capture the dialog came from is part of its identity"
     );
+    Ok(())
 }
 
 /// The 12-bit bucket the identifier used to depend on, computed independently.
@@ -678,16 +709,20 @@ fn legacy_bucket(call_id: &str, capture_id: &str) -> u16 {
 }
 
 /// One fixed instant, so every dialog in these tests shares a millisecond.
-fn one_instant() -> chrono::DateTime<chrono::Utc> {
+fn one_instant() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
     use chrono::TimeZone;
     chrono::Utc
         .timestamp_millis_opt(1_700_000_000_123)
         .single()
-        .expect("a valid instant")
+        .ok_or_else(|| "a valid instant".into())
 }
 
 /// The uuid of a one-message dialog, through the public export.
-fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -> String {
+fn uuid_of(
+    call_id: &str,
+    capture_id: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Result<String, TestError> {
     use sipnab::net::TransportProto;
     use sipnab::sip::parser::parse_sip;
 
@@ -704,15 +739,19 @@ fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -
         parse_sip(
             raw.as_bytes(),
             at,
-            "10.0.0.1".parse().expect("a caller address"),
-            "10.0.0.2".parse().expect("a callee address"),
+            "10.0.0.1"
+                .parse()
+                .map_err(|e| format!("a caller address: {e}"))?,
+            "10.0.0.2"
+                .parse()
+                .map_err(|e| format!("a callee address: {e}"))?,
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("the INVITE fixture parses"),
+        .map_err(|e| format!("the INVITE fixture parses: {e}"))?,
     );
-    let dialog = store.iter().next().expect("the fixture produced a dialog");
+    let dialog = store.iter().next().ok_or("the fixture produced a dialog")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -725,8 +764,9 @@ fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
-    json["uuid"].as_str().expect("a uuid").to_string()
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
+    Ok(json["uuid"].as_str().ok_or("a uuid")?.to_string())
 }
 
 /// "An absent field, never a null" — the contract `docs/internals/vcon.md`
@@ -744,9 +784,9 @@ fn uuid_of(call_id: &str, capture_id: &str, at: chrono::DateTime<chrono::Utc>) -
 /// one line too high puts the new field between the previous field's attribute
 /// and the field it was written for, and the previous field silently loses it.
 #[test]
-fn no_field_is_ever_emitted_as_an_explicit_null() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn no_field_is_ever_emitted_as_an_explicit_null() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
 
     // Both analysis arms: `None` exercises the fields a skipped analysis
     // leaves unset, which is where an absent-vs-null difference shows first.
@@ -763,7 +803,8 @@ fn no_field_is_ever_emitted_as_an_explicit_null() {
             },
         );
         let json: serde_json::Value =
-            serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+            serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+                .map_err(|e| format!("valid JSON: {e}"))?;
 
         // Bodies are JSON-encoded strings; their CONTENTS are a separate
         // projection with its own rules, so the container is what is checked.
@@ -783,6 +824,7 @@ fn no_field_is_ever_emitted_as_an_explicit_null() {
              optional fields, so an empty walk would pass on nothing: {json}"
         );
     }
+    Ok(())
 }
 
 /// No container asserts a setup failure for a call that connected.
@@ -796,9 +838,9 @@ fn no_field_is_ever_emitted_as_an_explicit_null() {
 /// credibility -- and every signaling-only export of a successful call took
 /// that shape until the type became optional.
 #[test]
-fn no_container_asserts_a_setup_failure_for_a_call_that_connected() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn no_container_asserts_a_setup_failure_for_a_call_that_connected() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     assert_eq!(
         dialog.final_status_code(),
         Some(200),
@@ -818,9 +860,10 @@ fn no_container_asserts_a_setup_failure_for_a_call_that_connected() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
 
-    let objects = json["dialog"].as_array().expect("dialog is an array");
+    let objects = json["dialog"].as_array().ok_or("dialog is an array")?;
     assert!(!objects.is_empty(), "the export produced no dialog object");
     for (i, object) in objects.iter().enumerate() {
         assert_ne!(
@@ -835,6 +878,7 @@ fn no_container_asserts_a_setup_failure_for_a_call_that_connected() {
              {object}"
         );
     }
+    Ok(())
 }
 
 /// PV3: how a sipnab container fares against a SECOND consumer's schema.
@@ -851,9 +895,9 @@ fn no_container_asserts_a_setup_failure_for_a_call_that_connected() {
 /// store, so the value here is that a change on either side — ours or theirs,
 /// on the next re-fetch — lands on this test with the reasoning attached.
 #[test]
-fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
-    let (store, call_id) = capture_of("sip_call.pcap");
-    let dialog = store.get(&call_id).expect("the dialog is retrievable");
+fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() -> Result<(), TestError> {
+    let (store, call_id) = capture_of("sip_call.pcap")?;
+    let dialog = store.get(&call_id).ok_or("the dialog is retrievable")?;
     let facts = CaptureFacts::default();
     let vcon = export_dialog(
         dialog,
@@ -866,9 +910,10 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
         },
     );
     let json: serde_json::Value =
-        serde_json::from_str(&vcon.to_json().expect("serializes")).expect("valid JSON");
+        serde_json::from_str(&vcon.to_json().map_err(|e| format!("serializes: {e}"))?)
+            .map_err(|e| format!("valid JSON: {e}"))?;
 
-    let errors = support::schema::openapi_errors_or_panic("vcon-store-openapi.json", "VCon", &json);
+    let errors = support::schema::openapi_errors("vcon-store-openapi.json", "VCon", &json)?;
 
     // Divergence 1: their Dialog requires `type`, and a signaling-only object
     // has no truthful value for it. This is the PV1 decision, and it is the
@@ -901,6 +946,7 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
          ways; a third is either a regression here or a change there: \
          {errors:#?}"
     );
+    Ok(())
 }
 
 /// The field-name divergence their schema cannot catch.
@@ -913,10 +959,11 @@ fn a_container_meets_or_knowingly_diverges_from_the_second_consumer() {
 ///
 /// A schema gate cannot see this, so it is asserted directly.
 #[test]
-fn the_second_consumer_names_the_media_type_field_differently() {
+fn the_second_consumer_names_the_media_type_field_differently() -> Result<(), TestError> {
     let text = std::fs::read_to_string(support::schema::schema_path("vcon-store-openapi.json"))
-        .expect("the vendored schema is readable");
-    let doc: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        .map_err(|e| format!("the vendored schema is readable: {e}"))?;
+    let doc: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("valid JSON: {e}"))?;
     let props = &doc["components"]["schemas"]["Dialog"]["properties"];
 
     assert!(
@@ -935,4 +982,5 @@ fn the_second_consumer_names_the_media_type_field_differently() {
         "their permissiveness is what makes this silent: a container carrying \
          `mediatype` validates against them and still reads as having no media"
     );
+    Ok(())
 }

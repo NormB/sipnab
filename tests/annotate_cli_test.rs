@@ -18,6 +18,7 @@
 
 #![cfg(all(unix, feature = "mcp"))] // `mcp` implies `native`; MCP is half of L4.
 
+use mcp::TestError;
 use std::path::{Path, PathBuf};
 
 #[path = "support/run.rs"]
@@ -38,68 +39,72 @@ fn repo(rel: &str) -> PathBuf {
 }
 
 /// Run sipnab with no config file and logging off; `(stdout, stderr, code)`.
-fn sipnab(args: &[&str]) -> (String, String, i32) {
+fn sipnab(args: &[&str]) -> Result<(String, String, i32), TestError> {
     let mut argv = vec!["-F"];
     argv.extend_from_slice(args);
-    let (out, err, code) = run_support::run_or_panic(&argv, Some("warn"));
-    (out, err, code.unwrap_or(-1))
+    let (out, err, code) = run_support::run(&argv, Some("warn"))?;
+    Ok((out, err, code.unwrap_or(-1)))
 }
 
 /// `--json` over `capture`, asserting it succeeded.
-fn json_of(capture: &Path) -> String {
-    let (out, err, code) = sipnab(&["-N", "-I", capture.to_str().expect("utf-8"), "--json"]);
+fn json_of(capture: &Path) -> Result<String, TestError> {
+    let (out, err, code) = sipnab(&["-N", "-I", capture.to_str().ok_or("utf-8")?, "--json"])?;
     assert_eq!(code, 0, "--json over {} failed:\n{err}", capture.display());
-    out
+    Ok(out)
 }
 
 /// Every distinct `frame` pointer in `--json` output, in first-seen order.
-fn frames_in(json: &str) -> Vec<String> {
+fn frames_in(json: &str) -> Result<Vec<String>, TestError> {
     let mut out: Vec<String> = Vec::new();
     for line in json.lines().filter(|l| l.starts_with('{')) {
-        let v: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+        let v: serde_json::Value = serde_json::from_str(line)?;
         if let Some(f) = v["frame"].as_str()
             && !out.iter().any(|x| x == f)
         {
             out.push(f.to_string());
         }
     }
-    out
+    Ok(out)
 }
 
 /// Write a notes file putting `note` on each of `frames`.
-fn write_notes(path: &Path, frames: &[String], note: &str) {
+fn write_notes(path: &Path, frames: &[String], note: &str) -> Result<(), TestError> {
     let mut text = String::new();
     for f in frames {
         text.push_str(&serde_json::json!({"frame": f, "note": note}).to_string());
         text.push('\n');
     }
-    std::fs::write(path, text).expect("write notes");
+    std::fs::write(path, text)?;
+    Ok(())
 }
 
 /// `--write-annotated` from `notes` over `input` into `out`.
-fn annotate(input: &Path, notes: &Path, out: &Path) -> (String, i32) {
+fn annotate(input: &Path, notes: &Path, out: &Path) -> Result<(String, i32), TestError> {
     let (_o, err, code) = sipnab(&[
         "-N",
         "--notes",
-        notes.to_str().expect("utf-8"),
+        notes.to_str().ok_or("utf-8")?,
         "--write-annotated",
-        out.to_str().expect("utf-8"),
+        out.to_str().ok_or("utf-8")?,
         "-I",
-        input.to_str().expect("utf-8"),
-    ]);
-    (err, code)
+        input.to_str().ok_or("utf-8")?,
+    ])?;
+    Ok((err, code))
 }
+
+/// One pcapng frame: its packet comments and its bytes.
+type Frame = (Vec<String>, Vec<u8>);
 
 /// The packet comments of every frame of a pcapng, in frame order, with each
 /// frame's bytes.
-fn comments_and_frames(path: &Path) -> Vec<(Vec<String>, Vec<u8>)> {
+fn comments_and_frames(path: &Path) -> Result<Vec<Frame>, TestError> {
     use pcap_file::pcapng::PcapNgReader;
     use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketOption;
-    let bytes = std::fs::read(path).expect("read the copy");
-    let mut reader = PcapNgReader::new(&bytes[..]).expect("a pcapng");
+    let bytes = std::fs::read(path)?;
+    let mut reader = PcapNgReader::new(&bytes[..])?;
     let mut out = Vec::new();
     while let Some(block) = reader.next_block() {
-        if let Some(epb) = block.expect("every block parses").into_enhanced_packet() {
+        if let Some(epb) = block?.into_enhanced_packet() {
             let comments = epb
                 .options
                 .iter()
@@ -111,14 +116,13 @@ fn comments_and_frames(path: &Path) -> Vec<(Vec<String>, Vec<u8>)> {
             out.push((comments, epb.data.to_vec()));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The captures the invisibility check runs over: every checked-in pcapng
 /// sample, and the classic-pcap fixture most of the suite reads.
-fn invisibility_captures() -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = std::fs::read_dir(repo("tests/pcap-samples"))
-        .expect("tests/pcap-samples")
+fn invisibility_captures() -> Result<Vec<PathBuf>, TestError> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(repo("tests/pcap-samples"))?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "pcapng"))
@@ -130,7 +134,7 @@ fn invisibility_captures() -> Vec<PathBuf> {
         out.len()
     );
     out.push(repo("tests/fixtures/sip_call.pcap"));
-    out
+    Ok(out)
 }
 
 // ── L4: sipnab never reads a packet comment ─────────────────────────────
@@ -144,11 +148,11 @@ fn invisibility_captures() -> Vec<PathBuf> {
 /// either the copy altering a frame or sipnab reading a comment, and both are
 /// the failure this exists for.
 #[test]
-fn an_annotated_copy_reads_exactly_as_its_original() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    for (i, original) in invisibility_captures().iter().enumerate() {
-        let before = json_of(original);
-        let frames = frames_in(&before);
+fn an_annotated_copy_reads_exactly_as_its_original() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    for (i, original) in invisibility_captures()?.iter().enumerate() {
+        let before = json_of(original)?;
+        let frames = frames_in(&before)?;
         assert!(
             !frames.is_empty(),
             "{} yields no framed message, so annotating it proves nothing",
@@ -156,13 +160,13 @@ fn an_annotated_copy_reads_exactly_as_its_original() {
         );
         let notes = dir.path().join(format!("notes-{i}.jsonl"));
         let copy = dir.path().join(format!("copy-{i}.pcapng"));
-        write_notes(&notes, &frames, SENTINEL);
+        write_notes(&notes, &frames, SENTINEL)?;
 
-        let (err, code) = annotate(original, &notes, &copy);
+        let (err, code) = annotate(original, &notes, &copy)?;
         assert_eq!(code, 0, "annotating {} failed:\n{err}", original.display());
 
         // Non-vacuity: the sentinel IS in the file, once per note.
-        let in_file: usize = comments_and_frames(&copy)
+        let in_file: usize = comments_and_frames(&copy)?
             .iter()
             .flat_map(|(c, _)| c)
             .filter(|c| c.contains(SENTINEL))
@@ -174,14 +178,14 @@ fn an_annotated_copy_reads_exactly_as_its_original() {
             original.display()
         );
 
-        let after = json_of(&copy);
+        let after = json_of(&copy)?;
         assert!(
             !after.contains(SENTINEL),
             "sipnab read a packet comment back into --json over the copy of {}",
             original.display()
         );
-        let orig_path = original.to_str().expect("utf-8");
-        let copy_path = copy.to_str().expect("utf-8");
+        let orig_path = original.to_str().ok_or("utf-8")?;
+        let copy_path = copy.to_str().ok_or("utf-8")?;
         assert_eq!(
             after.replace(copy_path, "<CAPTURE>"),
             before.replace(orig_path, "<CAPTURE>"),
@@ -189,6 +193,7 @@ fn an_annotated_copy_reads_exactly_as_its_original() {
             original.display()
         );
     }
+    Ok(())
 }
 
 /// No MCP answer over an annotated copy carries the note.
@@ -197,36 +202,36 @@ fn an_annotated_copy_reads_exactly_as_its_original() {
 /// for the sentinel's own words and for a method every call has. An agent
 /// reading the copy sees exactly what it would see reading the original.
 #[test]
-fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn no_mcp_answer_over_an_annotated_copy_carries_the_note() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
-    let frames = frames_in(&json_of(&original));
+    let frames = frames_in(&json_of(&original)?)?;
     let notes = dir.path().join("notes.jsonl");
     let copy = dir.path().join("copy.pcapng");
-    write_notes(&notes, &frames, SENTINEL);
-    let (err, code) = annotate(&original, &notes, &copy);
+    write_notes(&notes, &frames, SENTINEL)?;
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_eq!(code, 0, "annotate failed:\n{err}");
     assert!(
-        comments_and_frames(&copy)
+        comments_and_frames(&copy)?
             .iter()
             .any(|(c, _)| c.iter().any(|x| x.contains(SENTINEL))),
         "the copy must carry the note, or this test proves nothing"
     );
 
-    let mut session = mcp::McpSession::start_or_panic(copy.to_str().expect("utf-8"), &["-F"]);
-    let dialogs = session.ok_or_panic("list_dialogs", serde_json::json!({}));
-    let rows = dialogs["dialogs"].as_array().expect("dialogs").clone();
+    let mut session = mcp::McpSession::start(copy.to_str().ok_or("utf-8")?, &["-F"])?;
+    let dialogs = session.ok("list_dialogs", serde_json::json!({}))?;
+    let rows = dialogs["dialogs"].as_array().ok_or("dialogs")?.clone();
     assert!(!rows.is_empty(), "the copy must load dialogs: {dialogs}");
     let mut answers = Vec::new();
     let mut messages = 0usize;
     for row in &rows {
-        let call_id = row["call_id"].as_str().expect("call_id").to_string();
-        let count = row["msg_count"].as_u64().expect("msg_count");
+        let call_id = row["call_id"].as_str().ok_or("call_id")?.to_string();
+        let count = row["msg_count"].as_u64().ok_or("msg_count")?;
         for index in 0..count {
-            let reply = session.call_or_panic(
+            let reply = session.call(
                 "get_message",
                 serde_json::json!({"call_id": call_id, "index": index}),
-            );
+            )?;
             assert!(reply["result"].is_object(), "get_message failed: {reply}");
             answers.push(reply.to_string());
             messages += 1;
@@ -234,7 +239,7 @@ fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
     }
     assert!(messages >= 5, "only {messages} messages were read back");
     for query in ["SENTINEL", "operator note", "INVITE"] {
-        let reply = session.call_or_panic("search_messages", serde_json::json!({"query": query}));
+        let reply = session.call("search_messages", serde_json::json!({"query": query}))?;
         assert!(
             reply["result"].is_object(),
             "search_messages failed: {reply}"
@@ -247,16 +252,17 @@ fn no_mcp_answer_over_an_annotated_copy_carries_the_note() {
             "an MCP answer over the annotated copy carried the note: {answer}"
         );
     }
+    Ok(())
 }
 
 // ── A note lands on its frame, or nothing is written ────────────────────
 
 /// Every note lands on the frame whose digest it names, and on no other.
 #[test]
-fn every_note_lands_on_the_frame_whose_digest_it_names() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn every_note_lands_on_the_frame_whose_digest_it_names() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
-    let frames = frames_in(&json_of(&original));
+    let frames = frames_in(&json_of(&original)?)?;
     assert!(frames.len() >= 3, "the fixture must have several frames");
     let chosen = [frames[0].clone(), frames[2].clone()];
     let notes = dir.path().join("notes.jsonl");
@@ -265,15 +271,15 @@ fn every_note_lands_on_the_frame_whose_digest_it_names() {
         text.push_str(&serde_json::json!({"frame": f, "note": format!("note {n}")}).to_string());
         text.push('\n');
     }
-    std::fs::write(&notes, text).expect("notes");
+    std::fs::write(&notes, text)?;
     let copy = dir.path().join("copy.pcapng");
-    let (err, code) = annotate(&original, &notes, &copy);
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_eq!(code, 0, "annotate failed:\n{err}");
 
-    let written = comments_and_frames(&copy);
+    let written = comments_and_frames(&copy)?;
     for (n, pointer) in chosen.iter().enumerate() {
-        let parsed = sipnab::capture::resolve::parse_pointer(pointer).expect("pointer");
-        let ordinal = usize::try_from(parsed.origin.ordinal).expect("small");
+        let parsed = sipnab::capture::resolve::parse_pointer(pointer)?;
+        let ordinal = usize::try_from(parsed.origin.ordinal)?;
         let (comments, data) = &written[ordinal];
         assert_eq!(
             comments,
@@ -288,26 +294,27 @@ fn every_note_lands_on_the_frame_whose_digest_it_names() {
     }
     let annotated: usize = written.iter().filter(|(c, _)| !c.is_empty()).count();
     assert_eq!(annotated, 2, "no other frame carries a comment");
+    Ok(())
 }
 
 /// A frame whose bytes no longer match the note's digest refuses the whole
 /// copy: non-zero exit, a reason, and no file.
 #[test]
-fn a_changed_frame_refuses_the_copy_and_writes_nothing() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_changed_frame_refuses_the_copy_and_writes_nothing() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
-    let frames = frames_in(&json_of(&original));
-    let (head, _) = frames[0].rsplit_once('@').expect("a digest");
+    let frames = frames_in(&json_of(&original)?)?;
+    let (head, _) = frames[0].rsplit_once('@').ok_or("a digest")?;
     let wrong = format!("{head}@0000000000000001");
     let notes = dir.path().join("notes.jsonl");
     write_notes(
         &notes,
         std::slice::from_ref(&wrong),
         "about a frame that changed",
-    );
+    )?;
     let copy = dir.path().join("copy.pcapng");
 
-    let (err, code) = annotate(&original, &notes, &copy);
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_ne!(code, 0, "a changed frame must be refused");
     assert!(
         err.contains(&wrong),
@@ -315,8 +322,7 @@ fn a_changed_frame_refuses_the_copy_and_writes_nothing() {
     );
     assert!(err.contains("digest"), "and says why:\n{err}");
     assert!(!copy.exists(), "a refused copy must leave no file behind");
-    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-        .expect("list")
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())?
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.starts_with(".sipnab-tmp-"))
@@ -325,33 +331,35 @@ fn a_changed_frame_refuses_the_copy_and_writes_nothing() {
         leftovers.is_empty(),
         "no temporary file either: {leftovers:?}"
     );
+    Ok(())
 }
 
 /// A pointer with no digest cannot be bound to bytes, so it is refused.
 #[test]
-fn a_pointer_without_a_digest_is_refused() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_pointer_without_a_digest_is_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
     let notes = dir.path().join("notes.jsonl");
     let bare = format!("{}#0", original.display());
-    write_notes(&notes, &[bare], "typed by hand");
+    write_notes(&notes, &[bare], "typed by hand")?;
     let copy = dir.path().join("copy.pcapng");
-    let (err, code) = annotate(&original, &notes, &copy);
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_ne!(code, 0, "a note with no digest must be refused");
     assert!(err.contains("no digest"), "{err}");
     assert!(!copy.exists());
+    Ok(())
 }
 
 /// A note naming another capture is refused, and the refusal names it.
 #[test]
-fn a_note_naming_another_capture_is_refused_and_named() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_note_naming_another_capture_is_refused_and_named() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
-    let other = frames_in(&json_of(&repo("tests/fixtures/udp_5060.pcap")));
+    let other = frames_in(&json_of(&repo("tests/fixtures/udp_5060.pcap"))?)?;
     let notes = dir.path().join("notes.jsonl");
-    write_notes(&notes, &other[..1], "about udp_5060");
+    write_notes(&notes, &other[..1], "about udp_5060")?;
     let copy = dir.path().join("copy.pcapng");
-    let (err, code) = annotate(&original, &notes, &copy);
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_ne!(code, 0, "a note on another capture must be refused");
     assert!(
         err.contains("udp_5060.pcap"),
@@ -359,24 +367,26 @@ fn a_note_naming_another_capture_is_refused_and_named() {
     );
     assert!(err.contains("another capture"), "{err}");
     assert!(!copy.exists());
+    Ok(())
 }
 
 /// A classic-pcap output name is refused: it has nowhere to put a comment.
 #[test]
-fn a_classic_pcap_output_is_refused() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_classic_pcap_output_is_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
-    let frames = frames_in(&json_of(&original));
+    let frames = frames_in(&json_of(&original)?)?;
     let notes = dir.path().join("notes.jsonl");
-    write_notes(&notes, &frames[..1], "n");
+    write_notes(&notes, &frames[..1], "n")?;
     let copy = dir.path().join("copy.pcap");
-    let (err, code) = annotate(&original, &notes, &copy);
+    let (err, code) = annotate(&original, &notes, &copy)?;
     assert_ne!(code, 0, "{err}");
     assert!(
         err.contains(".pcapng"),
         "the refusal names the remedy:\n{err}"
     );
     assert!(!copy.exists());
+    Ok(())
 }
 
 /// A decryption secret in the input never reaches the copy.
@@ -385,9 +395,9 @@ fn a_classic_pcap_output_is_refused() {
 /// wrote with its key log embedded. Re-encoding through libpcap drops every
 /// DSB, and the section comment says it did.
 #[test]
-fn a_decryption_secret_in_the_input_is_not_in_the_copy() {
+fn a_decryption_secret_in_the_input_is_not_in_the_copy() -> Result<(), TestError> {
     const DSB: u32 = 0x0000_000a;
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempfile::tempdir()?;
     let input = dir.path().join("with-secrets.pcapng");
     let frame = pcap_build::udp_frame(
         [10, 1, 0, 1],
@@ -398,68 +408,70 @@ fn a_decryption_secret_in_the_input_is_not_in_the_copy() {
     );
     // A key-log line built from repeated bytes, not pasted material.
     let dsb_text = format!("CLIENT_RANDOM {} {}\n", "0a".repeat(32), "0b".repeat(48));
-    pcap_build::write_pcapng_with_dsb_or_panic(&input, &dsb_text, &frame);
+    pcap_build::write_pcapng_with_dsb(&input, &dsb_text, &frame)?;
     assert_eq!(
-        pcap_build::count_pcapng_blocks_or_panic(&input, DSB),
+        pcap_build::count_pcapng_blocks(&input, DSB)?,
         1,
         "fixture has a DSB"
     );
 
-    let frames = frames_in(&json_of(&input));
+    let frames = frames_in(&json_of(&input)?)?;
     let notes = dir.path().join("notes.jsonl");
-    write_notes(&notes, &frames[..1], "the OPTIONS");
+    write_notes(&notes, &frames[..1], "the OPTIONS")?;
     let copy = dir.path().join("copy.pcapng");
-    let (err, code) = annotate(&input, &notes, &copy);
+    let (err, code) = annotate(&input, &notes, &copy)?;
     assert_eq!(code, 0, "annotate failed:\n{err}");
 
     assert_eq!(
-        pcap_build::count_pcapng_blocks_or_panic(&copy, DSB),
+        pcap_build::count_pcapng_blocks(&copy, DSB)?,
         0,
         "the annotated copy must carry no Decryption Secrets Block"
     );
-    let bytes = std::fs::read(&copy).expect("read copy");
+    let bytes = std::fs::read(&copy)?;
     let marker = "0b".repeat(48);
     assert!(
         !bytes.windows(marker.len()).any(|w| w == marker.as_bytes()),
         "the key-log material must not appear anywhere in the copy"
     );
     assert_eq!(
-        comments_and_frames(&copy).len(),
+        comments_and_frames(&copy)?.len(),
         1,
         "the frame itself is copied"
     );
+    Ok(())
 }
 
 /// `--write-annotated` without `--notes` is a usage error, and `--notes`
 /// alone in a headless run has nothing to act on.
 #[test]
-fn the_two_flags_need_each_other_in_a_headless_run() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn the_two_flags_need_each_other_in_a_headless_run() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
     let original = repo("tests/fixtures/sip_call.pcap");
     let copy = dir.path().join("copy.pcapng");
     let (_o, err, code) = sipnab(&[
         "-N",
         "--write-annotated",
-        copy.to_str().expect("utf-8"),
+        copy.to_str().ok_or("utf-8")?,
         "-I",
-        original.to_str().expect("utf-8"),
-    ]);
+        original.to_str().ok_or("utf-8")?,
+    ])?;
     assert_ne!(code, 0, "--write-annotated needs --notes");
     assert!(err.contains("--notes"), "{err}");
     assert!(!copy.exists());
 
     let notes = dir.path().join("notes.jsonl");
-    write_notes(&notes, &frames_in(&json_of(&original))[..1], "n");
+    write_notes(&notes, &frames_in(&json_of(&original)?)?[..1], "n")?;
     let (_o, err, code) = sipnab(&[
         "-N",
         "--notes",
-        notes.to_str().expect("utf-8"),
+        notes.to_str().ok_or("utf-8")?,
         "-I",
-        original.to_str().expect("utf-8"),
-    ]);
+        original.to_str().ok_or("utf-8")?,
+    ])?;
     assert_ne!(
         code, 0,
         "--notes alone does nothing headless and must say so"
     );
     assert!(err.contains("--write-annotated"), "{err}");
+    Ok(())
 }
