@@ -286,7 +286,9 @@ you give less: the kind adds the ingest path
 sends a bare key as `x-conserver-api-token: <key>`. Run these in the demo
 directory, before you remove it.
 
-<!-- NOT YET RUN: parent session runs these steps -->
+These three runs ran on 2026-10-07 against the same vCon server as the
+section above, with sipnab 0.5.206 built from source and that server's
+configuration file in place of `/opt/vcon/config.yml`.
 
 With the bare key in a file:
 
