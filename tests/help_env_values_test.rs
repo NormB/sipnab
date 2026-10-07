@@ -9,6 +9,8 @@
 //! clap, so a flag added later with an `env` is covered without editing this
 //! file.
 
+#![cfg(feature = "native")]
+
 use std::process::Command;
 
 use clap::CommandFactory as _;
