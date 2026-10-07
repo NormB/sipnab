@@ -144,6 +144,17 @@ hep_parse = true
 bpf_filter = "udp dst port 9063"
 ```
 
+sipnab reads the copies without any process listening on UDP/9063, but a port
+with no listener costs messages with some senders. The kernel answers each
+datagram sent to a closed port with an ICMP port-unreachable message, and a
+sender that uses a connected UDP socket then fails its next send. Measured on
+2026-10-07: `sipnab -H 127.0.0.1:19063` sent a 7-message call to a port with no
+listener, 3 of the 7 sends failed, and a reader on `lo` saw 4 messages. With a
+process bound to the port, the sender delivered all 7 and the reader saw 7. Keep a receiver bound to
+the port while you sniff it: `sipnab -L 127.0.0.1:9063` is one, and it reads the
+copies itself. Whether a proxy loses copies this way depends on whether its HEP
+sender uses a connected socket.
+
 ### [display]
 
 Output and TUI display settings.

@@ -2049,6 +2049,10 @@ pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error
     unwrapped.dst_addr = hep.dst_addr;
     unwrapped.src_port = hep.src_port;
     unwrapped.dst_port = hep.dst_port;
+    // The time the HEP sender stamped, as `--hep-listen` uses it
+    // (`hep_to_packet`), not the time the wrapper was sniffed: a feed sniffed
+    // after a relay or a replay otherwise times every message by the sniffer.
+    unwrapped.timestamp = hep.timestamp;
     unwrapped.hep = Some(crate::capture::packet::HepOrigin {
         protocol: hep.protocol.to_byte(),
         correlation_id: hep.correlation_id.clone(),
@@ -2901,6 +2905,47 @@ mod quiet_bad_parse_tests {
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
         }
+    }
+
+    /// `-E` stamps an unwrapped message with the time inside the HEP packet,
+    /// as `-L` does (`hep_to_packet`). It kept the time the wrapper was
+    /// sniffed, so a HEP feed sniffed on `lo` on 2026-10-07 showed a 60 s
+    /// call as seven messages in the same millisecond, and every duration,
+    /// setup delay and ladder offset came from the sniffer's clock.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn hep_parse_keeps_the_time_the_hep_packet_carries() -> Result<(), TestError> {
+        use crate::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+        use chrono::TimeZone as _;
+
+        let carried = Utc
+            .with_ymd_and_hms(2023, 11, 14, 22, 13, 20)
+            .single()
+            .ok_or("fixture time")?;
+        let ep = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        let hep = build_hep_v3(
+            &ep,
+            carried,
+            HepProtocol::Sip,
+            0,
+            None,
+            b"OPTIONS sip:x SIP/2.0\r\n\r\n",
+        );
+        let wrapper = packet(&hep);
+        assert_ne!(
+            wrapper.timestamp, carried,
+            "the fixture must tell the two times apart"
+        );
+        let inner = unwrap_hep(&wrapper).ok_or("not read as HEP")??;
+        assert_eq!(inner.timestamp, carried);
+        assert_eq!(inner.src_addr, ep.src_addr);
+        Ok(())
     }
 
     /// A cleartext AMI login on TCP, which is what the wire really carries.
