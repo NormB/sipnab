@@ -75,6 +75,19 @@ entry that carries them.
   are now denied. The 23 `use crate::tui::*` and `use super::*` imports in the
   TUI list their names, and the three functions with single-letter bindings
   name them for what they hold. The gate refuses an allow for either lint.
+- **No function exceeds clippy's cognitive-complexity threshold (LINT6).**
+  `clippy::cognitive_complexity` is now enabled at its default threshold of 25,
+  and clippy runs with `-D warnings` in CI and the pre-push hook, so a
+  function over it fails the build. Every function that was over it is split along its decisions into
+  named steps, each testable alone, and the gate refuses an allow for the lint.
+  The split found and fixed two defects. The SIP parser stored the header
+  before an over-long last line twice when that line had no CRLF after it
+  (`an_oversize_unterminated_last_line_does_not_repeat_the_header_before_it`).
+  The call-flow ladder matched IPv6 endpoints against the bracketed
+  participant labels with an unbracketed address, so every IPv6 message was
+  drawn from the first column to the second whichever way it went; columns
+  are now matched on the address and port
+  (`ipv6_messages_are_drawn_between_their_own_columns`).
 
 ## [0.5.204] - 2026-10-06
 

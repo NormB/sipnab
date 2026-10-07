@@ -39,6 +39,10 @@ const REFUSED: &[(&str, &str)] = &[
         "name the bindings for what they hold",
     ),
     (
+        "clippy::cognitive_complexity",
+        "split the function along its decisions, each one testable alone",
+    ),
+    (
         "unused_mut",
         "compute the value in one expression per feature set instead of \
          mutating it inside cfg blocks",

@@ -2147,6 +2147,17 @@ pub struct LoadedConfig {
     pub shadowed: Vec<PathBuf>,
 }
 
+impl LoadedConfig {
+    /// The defaults, read from no file.
+    fn defaults() -> Self {
+        Self {
+            config: Config::default(),
+            source: None,
+            shadowed: Vec::new(),
+        }
+    }
+}
+
 /// Where this run's config came from: the file it read, and the default-location
 /// files that exist but were not read. The two halves of [`LoadedConfig`] a
 /// session needs after the [`Config`] itself has been handed on.
@@ -2193,65 +2204,90 @@ impl Config {
     ) -> Result<LoadedConfig, crate::Error> {
         if skip_default {
             tracing::debug!("Config loading skipped (--no-config)");
-            return Ok(LoadedConfig {
-                config: Config::default(),
-                source: None,
-                shadowed: Vec::new(),
-            });
+            return Ok(LoadedConfig::defaults());
         }
 
         // 1. Explicit path — must exist
         if let Some(path) = explicit_path {
-            let p = PathBuf::from(path);
-            if !p.exists() {
-                return Err(crate::Error::ConfigNotFound {
-                    path: p.display().to_string(),
-                });
-            }
-            let config = Self::load_file(&p)?;
-            return Ok(LoadedConfig {
-                config,
-                source: Some(p),
-                shadowed: Vec::new(),
-            });
+            return Self::load_explicit(PathBuf::from(path));
         }
 
         // 2. $SIPNAB_CONFIG
-        if let Ok(env_path) = std::env::var("SIPNAB_CONFIG") {
-            let p = PathBuf::from(&env_path);
-            if p.exists() {
-                let config = Self::load_file(&p)?;
-                return Ok(LoadedConfig {
-                    config,
-                    source: Some(p),
-                    shadowed: Vec::new(),
-                });
-            }
-            tracing::debug!(
-                "SIPNAB_CONFIG={} does not exist, continuing search",
-                env_path
-            );
+        if let Some(loaded) = Self::load_from_env(std::env::var("SIPNAB_CONFIG").ok())? {
+            return Ok(loaded);
         }
 
         // 3-5. Default locations
-        let candidates = default_config_paths();
-        let (used, shadowed) = pick_config(&candidates, Path::exists);
-        if let Some(p) = used {
-            let config = Self::load_file(&p)?;
-            if !shadowed.is_empty() {
-                tracing::warn!("{}", shadowing_note(&p, &shadowed));
-            }
-            return Ok(LoadedConfig {
-                config,
-                source: Some(p),
-                shadowed,
+        Self::load_default_location(&default_config_paths())
+    }
+
+    /// Load the file `--config` named, which must exist.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigNotFound` when `p` does not exist; otherwise as
+    /// for `load_file`.
+    fn load_explicit(p: PathBuf) -> Result<LoadedConfig, crate::Error> {
+        if !p.exists() {
+            return Err(crate::Error::ConfigNotFound {
+                path: p.display().to_string(),
             });
         }
+        Self::load_unshadowed(p)
+    }
 
-        tracing::debug!("No config file found, using defaults");
+    /// Load the file `$SIPNAB_CONFIG` names, given as `env_path`. `Ok(None)`
+    /// when the variable is unset or names a file that does not exist, so the
+    /// search continues.
+    ///
+    /// # Errors
+    /// As for `load_file`.
+    fn load_from_env(env_path: Option<String>) -> Result<Option<LoadedConfig>, crate::Error> {
+        let Some(env_path) = env_path else {
+            return Ok(None);
+        };
+        let p = PathBuf::from(&env_path);
+        if p.exists() {
+            return Self::load_unshadowed(p).map(Some);
+        }
+        tracing::debug!(
+            "SIPNAB_CONFIG={} does not exist, continuing search",
+            env_path
+        );
+        Ok(None)
+    }
+
+    /// Load the first of `candidates` that exists, warning about any later
+    /// one it shadows; the defaults when none exists.
+    ///
+    /// # Errors
+    /// As for `load_file`.
+    fn load_default_location(candidates: &[PathBuf]) -> Result<LoadedConfig, crate::Error> {
+        let (used, shadowed) = pick_config(candidates, Path::exists);
+        let Some(p) = used else {
+            tracing::debug!("No config file found, using defaults");
+            return Ok(LoadedConfig::defaults());
+        };
+        let config = Self::load_file(&p)?;
+        if !shadowed.is_empty() {
+            tracing::warn!("{}", shadowing_note(&p, &shadowed));
+        }
         Ok(LoadedConfig {
-            config: Config::default(),
-            source: None,
+            config,
+            source: Some(p),
+            shadowed,
+        })
+    }
+
+    /// Load `p` as a source that shadows nothing: one named by `--config`
+    /// or `$SIPNAB_CONFIG`.
+    ///
+    /// # Errors
+    /// As for `load_file`.
+    fn load_unshadowed(p: PathBuf) -> Result<LoadedConfig, crate::Error> {
+        let config = Self::load_file(&p)?;
+        Ok(LoadedConfig {
+            config,
+            source: Some(p),
             shadowed: Vec::new(),
         })
     }
@@ -2706,6 +2742,9 @@ pub fn write_manual_mappings_file(
 /// updates, unknown-key detection, and limits validation.
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The process environment, for the tests that mean the real one.
     ///
     /// Reading it is safe to do beside any other test; only WRITING it would
@@ -3151,6 +3190,58 @@ filter = "/"
         let result = Config::load(Some("/nonexistent/sipnab.toml"), false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    /// `--no-config` wins over `--config`: nothing is read, not even the
+    /// file that was named.
+    #[test]
+    fn no_config_wins_over_an_explicit_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("named.toml");
+        std::fs::write(&path, "[capture]\ndevice = \"lo\"\n")?;
+        let loaded = Config::load(Some(path.to_str().ok_or("utf-8 path")?), true)?;
+        assert_eq!(loaded.source, None);
+        assert_eq!(loaded.config, Config::default());
+        Ok(())
+    }
+
+    /// `$SIPNAB_CONFIG` naming a file that exists loads it, shadowing
+    /// nothing; naming one that does not exist lets the search continue.
+    #[test]
+    fn the_env_path_is_loaded_only_when_its_file_exists() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("env.toml");
+        std::fs::write(&path, "[capture]\ndevice = \"lo\"\n")?;
+        let loaded = Config::load_from_env(Some(path.display().to_string()))?
+            .ok_or("an existing file is loaded")?;
+        assert_eq!(loaded.source.as_deref(), Some(path.as_path()));
+        assert!(loaded.shadowed.is_empty());
+
+        let missing = dir.path().join("absent.toml");
+        assert!(Config::load_from_env(Some(missing.display().to_string()))?.is_none());
+        assert!(Config::load_from_env(None)?.is_none());
+        Ok(())
+    }
+
+    /// The first default location that exists is loaded, and every later one
+    /// that exists is reported as shadowed; with none, the defaults.
+    #[test]
+    fn the_first_default_location_wins_and_reports_what_it_shadows() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let first = dir.path().join("first.toml");
+        let missing = dir.path().join("missing.toml");
+        let second = dir.path().join("second.toml");
+        std::fs::write(&first, "[capture]\ndevice = \"lo\"\n")?;
+        std::fs::write(&second, "[capture]\ndevice = \"eth0\"\n")?;
+        let loaded =
+            Config::load_default_location(&[missing.clone(), first.clone(), second.clone()])?;
+        assert_eq!(loaded.source.as_deref(), Some(first.as_path()));
+        assert_eq!(loaded.shadowed, vec![second]);
+
+        let none = Config::load_default_location(&[missing])?;
+        assert_eq!(none.source, None);
+        assert_eq!(none.config, Config::default());
+        Ok(())
     }
 
     /// An explicit existing path loads and is reported as the source.

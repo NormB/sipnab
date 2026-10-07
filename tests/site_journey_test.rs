@@ -2430,6 +2430,26 @@ fn standard_card_violations(
     file_has: &dyn Fn(&str, &str) -> bool,
 ) -> Result<Vec<Violation>, TestError> {
     let mut out = Vec::new();
+    duplicate_title_violations(cards, &mut out)?;
+    for card in cards {
+        let who = format!("#{} card {:?}", card.section, card.label);
+        card_link_violations(card, &who, &mut out)?;
+        card_citation_violations(card, &who, corpora, &mut out)?;
+        card_claim_violations(card, &who, canon, file_has, &mut out)?;
+    }
+    for row in canon {
+        let who = format!("HOMEPAGE_STANDARDS row #{} {:?}", row.section, row.label);
+        row_violations(row, &who, cards, &mut out)?;
+        row_item_violations(row, &who, corpora, file_has, &mut out);
+    }
+    Ok(out)
+}
+
+/// Check 1: one card per standard.
+fn duplicate_title_violations(
+    cards: &[StandardCard],
+    out: &mut Vec<Violation>,
+) -> Result<(), TestError> {
     let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
 
     // 1. One card per standard.
@@ -2448,230 +2468,280 @@ fn standard_card_violations(
             ),
         );
     }
+    Ok(())
+}
 
-    for card in cards {
-        let who = format!("#{} card {:?}", card.section, card.label);
+/// Checks 2 and 3: the card links to the standard's own host, and to the
+/// document its title names.
+fn card_link_violations(
+    card: &StandardCard,
+    who: &str,
+    out: &mut Vec<Violation>,
+) -> Result<(), TestError> {
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
 
-        // 2. The standard's own host.
-        if !STANDARD_HOSTS.iter().any(|h| card.href.starts_with(h)) {
+    // 2. The standard's own host.
+    if !STANDARD_HOSTS.iter().any(|h| card.href.starts_with(h)) {
+        push(
+            Kind::BadHost,
+            format!(
+                "{who} links to {:?}, which is not the standard's own home",
+                card.href
+            ),
+        );
+    }
+
+    // 3. Title <-> link target.
+    let title_id = standard_identifiers(&card.label)?.into_iter().next();
+    let title_url = match title_id.as_deref() {
+        Some(id) => canonical_url(id)?,
+        None => None,
+    };
+    match title_url {
+        None => push(
+            Kind::TitleUrlMismatch,
+            format!("{who} names no standard this gate can resolve to a URL"),
+        ),
+        Some(expected) if expected != card.href => push(
+            Kind::TitleUrlMismatch,
+            format!(
+                "{who} links to {:?}; the document it names lives at {expected:?}",
+                card.href
+            ),
+        ),
+        Some(_) => {}
+    }
+    Ok(())
+}
+
+/// Checks 6 and 7: every standard the card cites, in the title or an item,
+/// is cited by the docs and by the built site mirror.
+fn card_citation_violations(
+    card: &StandardCard,
+    who: &str,
+    corpora: &Corpora<'_>,
+    out: &mut Vec<Violation>,
+) -> Result<(), TestError> {
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
+
+    // 6 and 7. Every standard the card cites, in the title or an item.
+    let mut cited: Vec<String> = standard_identifiers(&card.label)?;
+    for item in &card.items {
+        cited.extend(standard_identifiers(&item.desc)?);
+    }
+    cited.sort();
+    cited.dedup();
+    for id in &cited {
+        if !corpora.docs.contains(id.as_str()) {
             push(
-                Kind::BadHost,
+                Kind::Uncited,
                 format!(
-                    "{who} links to {:?}, which is not the standard's own home",
-                    card.href
+                    "{who} cites {id}, which no file under docs/ cites — the homepage \
+                     claims what the documentation does not"
                 ),
             );
         }
-
-        // 3. Title <-> link target.
-        let title_id = standard_identifiers(&card.label)?.into_iter().next();
-        let title_url = match title_id.as_deref() {
-            Some(id) => canonical_url(id)?,
-            None => None,
-        };
-        match title_url {
-            None => push(
-                Kind::TitleUrlMismatch,
-                format!("{who} names no standard this gate can resolve to a URL"),
-            ),
-            Some(expected) if expected != card.href => push(
-                Kind::TitleUrlMismatch,
+        if !corpora.mirror.contains(id.as_str()) {
+            push(
+                Kind::MirrorDrift,
                 format!(
-                    "{who} links to {:?}; the document it names lives at {expected:?}",
-                    card.href
+                    "{who} cites {id}, which the built site mirror (website/content, \
+                     llms-full.txt) does not — rerun scripts/build-site-pages.py, or \
+                     the site-only page never got the citation"
                 ),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Checks 4 and 9: every item maps to a row, and claims no more than it.
+fn card_claim_violations(
+    card: &StandardCard,
+    who: &str,
+    canon: &[CanonicalStandard],
+    file_has: &dyn Fn(&str, &str) -> bool,
+    out: &mut Vec<Violation>,
+) -> Result<(), TestError> {
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
+
+    // 4 and 9. Every item maps to a row, and claims no more than it.
+    let rows: Vec<&CanonicalStandard> = canon
+        .iter()
+        .filter(|c| c.section == card.section && c.label == card.label)
+        .collect();
+    let Some(row) = rows.first() else {
+        push(
+            Kind::UnmappedItem,
+            format!(
+                "{who} is not in HOMEPAGE_STANDARDS — a card needs a row naming the \
+                 code that implements each thing it lists"
             ),
-            Some(_) => {}
-        }
-
-        // 6 and 7. Every standard the card cites, in the title or an item.
-        let mut cited: Vec<String> = standard_identifiers(&card.label)?;
-        for item in &card.items {
-            cited.extend(standard_identifiers(&item.desc)?);
-        }
-        cited.sort();
-        cited.dedup();
-        for id in &cited {
-            if !corpora.docs.contains(id.as_str()) {
-                push(
-                    Kind::Uncited,
-                    format!(
-                        "{who} cites {id}, which no file under docs/ cites — the homepage \
-                         claims what the documentation does not"
-                    ),
-                );
-            }
-            if !corpora.mirror.contains(id.as_str()) {
-                push(
-                    Kind::MirrorDrift,
-                    format!(
-                        "{who} cites {id}, which the built site mirror (website/content, \
-                         llms-full.txt) does not — rerun scripts/build-site-pages.py, or \
-                         the site-only page never got the citation"
-                    ),
-                );
-            }
-        }
-
-        // 4 and 9. Every item maps to a row, and claims no more than it.
-        let rows: Vec<&CanonicalStandard> = canon
-            .iter()
-            .filter(|c| c.section == card.section && c.label == card.label)
-            .collect();
-        let Some(row) = rows.first() else {
+        );
+        return Ok(());
+    };
+    for item in &card.items {
+        let Some(spec) = row.items.iter().find(|i| i.title == item.title) else {
             push(
                 Kind::UnmappedItem,
                 format!(
-                    "{who} is not in HOMEPAGE_STANDARDS — a card needs a row naming the \
-                     code that implements each thing it lists"
+                    "{who} lists {:?}, which no HOMEPAGE_STANDARDS item maps to a code \
+                     symbol — a badge never names what the code does not do",
+                    item.title
                 ),
             );
             continue;
         };
-        for item in &card.items {
-            let Some(spec) = row.items.iter().find(|i| i.title == item.title) else {
+        // The title is part of the claim: "TLS 1.3" names a version.
+        let said = format!("{} {}", item.title, item.desc);
+        for claim in specific_claims(&said)? {
+            if !spec.claims.iter().any(|(c, _)| c.contains(claim.as_str())) {
                 push(
-                    Kind::UnmappedItem,
+                    Kind::OverSpecificClaim,
                     format!(
-                        "{who} lists {:?}, which no HOMEPAGE_STANDARDS item maps to a code \
-                         symbol — a badge never names what the code does not do",
+                        "{who} item {:?} claims {claim:?}, which its HOMEPAGE_STANDARDS \
+                         row does not map to a file — a claim that specific needs the \
+                         exact string in the code or doc it rests on",
                         item.title
                     ),
                 );
-                continue;
-            };
-            // The title is part of the claim: "TLS 1.3" names a version.
-            let said = format!("{} {}", item.title, item.desc);
-            for claim in specific_claims(&said)? {
-                if !spec.claims.iter().any(|(c, _)| c.contains(claim.as_str())) {
-                    push(
-                        Kind::OverSpecificClaim,
-                        format!(
-                            "{who} item {:?} claims {claim:?}, which its HOMEPAGE_STANDARDS \
-                             row does not map to a file — a claim that specific needs the \
-                             exact string in the code or doc it rests on",
-                            item.title
-                        ),
-                    );
-                }
-            }
-            for (claim, file) in spec.claims {
-                if !said.contains(claim) {
-                    push(
-                        Kind::OverSpecificClaim,
-                        format!(
-                            "{who} item {:?} no longer says {claim:?}, which its row maps \
-                             to {file} — drop the claim from the row or restore it",
-                            item.title
-                        ),
-                    );
-                }
-                if !file_has(file, claim) {
-                    push(
-                        Kind::OverSpecificClaim,
-                        format!(
-                            "{who} item {:?} claims {claim:?} and {file} does not contain \
-                             that exact string — the page is more specific than the \
-                             implementation",
-                            item.title
-                        ),
-                    );
-                }
             }
         }
-    }
-
-    for row in canon {
-        let who = format!("HOMEPAGE_STANDARDS row #{} {:?}", row.section, row.label);
-
-        // 3, table side: the row's own URL is the canonical one.
-        let expected = match standard_identifiers(row.label)?.into_iter().next() {
-            Some(id) => canonical_url(&id)?,
-            None => None,
-        };
-        if expected.as_deref() != Some(row.href) {
-            push(
-                Kind::TitleUrlMismatch,
-                format!(
-                    "{who} carries href {:?}; the document it names lives at {expected:?}",
-                    row.href
-                ),
-            );
-        }
-
-        // 5. Every row, and every item of it, is on the page.
-        let on_page: Vec<&StandardCard> = cards
-            .iter()
-            .filter(|c| c.section == row.section && c.label == row.label)
-            .collect();
-        match on_page.as_slice() {
-            [card] => {
-                for spec in row.items {
-                    if !card.items.iter().any(|i| i.title == spec.title) {
-                        push(
-                            Kind::MissingFromPage,
-                            format!(
-                                "{who} names {:?} and the card no longer lists it — an \
-                                 implemented standard cannot silently vanish from the section",
-                                spec.title
-                            ),
-                        );
-                    }
-                }
-            }
-            others => push(
-                Kind::MissingFromPage,
-                format!(
-                    "{who} has {} card(s) on the page, not one — an implemented standard \
-                     cannot silently vanish from the section",
-                    others.len()
-                ),
-            ),
-        }
-
-        for spec in row.items {
-            // 4, table side: the symbol the row names exists in the tree.
-            if !file_has(spec.code.0, spec.code.1) {
+        for (claim, file) in spec.claims {
+            if !said.contains(claim) {
                 push(
-                    Kind::UnmappedItem,
+                    Kind::OverSpecificClaim,
                     format!(
-                        "{who} item {:?} points at {}:{:?}, which is not there — the code \
-                         that earned the item is gone",
-                        spec.title, spec.code.0, spec.code.1
+                        "{who} item {:?} no longer says {claim:?}, which its row maps \
+                         to {file} — drop the claim from the row or restore it",
+                        item.title
                     ),
                 );
             }
-            // 8. A quality metric is a field the program emits and documents.
-            if spec.field.is_empty() {
-                if row.section == "metrics" {
+            if !file_has(file, claim) {
+                push(
+                    Kind::OverSpecificClaim,
+                    format!(
+                        "{who} item {:?} claims {claim:?} and {file} does not contain \
+                         that exact string — the page is more specific than the \
+                         implementation",
+                        item.title
+                    ),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Checks 3 and 5, table side: the row's own URL is the canonical one, and
+/// the row and each of its items are on the page.
+fn row_violations(
+    row: &CanonicalStandard,
+    who: &str,
+    cards: &[StandardCard],
+    out: &mut Vec<Violation>,
+) -> Result<(), TestError> {
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
+
+    // 3, table side: the row's own URL is the canonical one.
+    let expected = match standard_identifiers(row.label)?.into_iter().next() {
+        Some(id) => canonical_url(&id)?,
+        None => None,
+    };
+    if expected.as_deref() != Some(row.href) {
+        push(
+            Kind::TitleUrlMismatch,
+            format!(
+                "{who} carries href {:?}; the document it names lives at {expected:?}",
+                row.href
+            ),
+        );
+    }
+
+    // 5. Every row, and every item of it, is on the page.
+    let on_page: Vec<&StandardCard> = cards
+        .iter()
+        .filter(|c| c.section == row.section && c.label == row.label)
+        .collect();
+    match on_page.as_slice() {
+        [card] => {
+            for spec in row.items {
+                if !card.items.iter().any(|i| i.title == spec.title) {
                     push(
-                        Kind::UnemittedField,
+                        Kind::MissingFromPage,
                         format!(
-                            "{who} item {:?} is a quality metric with no emitted field — a \
-                             badge never names a metric the JSON does not carry",
+                            "{who} names {:?} and the card no longer lists it — an \
+                             implemented standard cannot silently vanish from the section",
                             spec.title
                         ),
                     );
                 }
-            } else {
-                let ticked = format!("`{}`", spec.field);
-                let quoted = format!("\"{}\"", spec.field);
-                if !corpora.output_docs.contains(&ticked) && !corpora.output_docs.contains(&quoted)
-                {
-                    push(
-                        Kind::UnemittedField,
-                        format!(
-                            "{who} item {:?} names field {:?}, which docs/output-formats.md \
-                             and the references it points at (rest-api.md, mcp-tools.md) \
-                             never document as an output field",
-                            spec.title, spec.field
-                        ),
-                    );
-                }
+            }
+        }
+        others => push(
+            Kind::MissingFromPage,
+            format!(
+                "{who} has {} card(s) on the page, not one — an implemented standard \
+                 cannot silently vanish from the section",
+                others.len()
+            ),
+        ),
+    }
+    Ok(())
+}
+
+/// Checks 4 and 8, table side: the symbol each item names exists, and a
+/// quality metric is a field the program emits and documents.
+fn row_item_violations(
+    row: &CanonicalStandard,
+    who: &str,
+    corpora: &Corpora<'_>,
+    file_has: &dyn Fn(&str, &str) -> bool,
+    out: &mut Vec<Violation>,
+) {
+    let mut push = |kind: Kind, message: String| out.push(Violation { kind, message });
+
+    for spec in row.items {
+        // 4, table side: the symbol the row names exists in the tree.
+        if !file_has(spec.code.0, spec.code.1) {
+            push(
+                Kind::UnmappedItem,
+                format!(
+                    "{who} item {:?} points at {}:{:?}, which is not there — the code \
+                     that earned the item is gone",
+                    spec.title, spec.code.0, spec.code.1
+                ),
+            );
+        }
+        // 8. A quality metric is a field the program emits and documents.
+        if spec.field.is_empty() {
+            if row.section == "metrics" {
+                push(
+                    Kind::UnemittedField,
+                    format!(
+                        "{who} item {:?} is a quality metric with no emitted field — a \
+                         badge never names a metric the JSON does not carry",
+                        spec.title
+                    ),
+                );
+            }
+        } else {
+            let ticked = format!("`{}`", spec.field);
+            let quoted = format!("\"{}\"", spec.field);
+            if !corpora.output_docs.contains(&ticked) && !corpora.output_docs.contains(&quoted) {
+                push(
+                    Kind::UnemittedField,
+                    format!(
+                        "{who} item {:?} names field {:?}, which docs/output-formats.md \
+                         and the references it points at (rest-api.md, mcp-tools.md) \
+                         never document as an output field",
+                        spec.title, spec.field
+                    ),
+                );
             }
         }
     }
-    Ok(out)
 }
 
 /// Every `.md` under a directory, recursively, sorted, as one string.

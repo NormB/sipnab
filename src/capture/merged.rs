@@ -269,7 +269,55 @@ fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
 }
 
 #[cfg(test)]
+pub(crate) mod testutil {
+    /// Write to `path` a pcapng whose two interfaces disagree on BOTH link
+    /// type and snaplen, holding one 40-byte frame on each interface.
+    pub(crate) fn merged_fixture(path: &std::path::Path) {
+        fn block(kind: u32, body: &[u8]) -> Vec<u8> {
+            let pad = (4 - body.len() % 4) % 4;
+            let total = 12 + body.len() + pad;
+            let mut b = Vec::with_capacity(total);
+            b.extend_from_slice(&kind.to_le_bytes());
+            b.extend_from_slice(&(total as u32).to_le_bytes());
+            b.extend_from_slice(body);
+            b.extend(std::iter::repeat_n(0u8, pad));
+            b.extend_from_slice(&(total as u32).to_le_bytes());
+            b
+        }
+        let mut out = Vec::new();
+        let mut shb = Vec::new();
+        shb.extend_from_slice(&0x1a2b_3c4du32.to_le_bytes());
+        shb.extend_from_slice(&1u16.to_le_bytes());
+        shb.extend_from_slice(&0u16.to_le_bytes());
+        shb.extend_from_slice(&(-1i64).to_le_bytes());
+        out.extend_from_slice(&block(0x0a0d_0d0a, &shb));
+
+        for (lt, snap) in [(1u16, 65535u32), (12u16, 2048u32)] {
+            let mut idb = Vec::new();
+            idb.extend_from_slice(&lt.to_le_bytes());
+            idb.extend_from_slice(&0u16.to_le_bytes());
+            idb.extend_from_slice(&snap.to_le_bytes());
+            out.extend_from_slice(&block(0x0000_0001, &idb));
+        }
+
+        for (iface, byte) in [(0u32, 0xAAu8), (1u32, 0xBBu8)] {
+            let data = vec![byte; 40];
+            let mut epb = Vec::new();
+            epb.extend_from_slice(&iface.to_le_bytes());
+            epb.extend_from_slice(&0u32.to_le_bytes());
+            epb.extend_from_slice(&0u32.to_le_bytes());
+            epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            epb.extend_from_slice(&data);
+            out.extend_from_slice(&block(0x0000_0006, &epb));
+        }
+        std::fs::write(path, out).expect("write fixture");
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::testutil::merged_fixture;
     use super::*;
 
     /// A reader that counts what it hands out, so "did not read the capture"
@@ -359,50 +407,6 @@ mod tests {
             r.read,
             file.len()
         );
-    }
-
-    /// Build a pcapng whose two interfaces disagree on BOTH link type and
-    /// snaplen, then read it back.
-    fn merged_fixture(path: &Path) {
-        fn block(kind: u32, body: &[u8]) -> Vec<u8> {
-            let pad = (4 - body.len() % 4) % 4;
-            let total = 12 + body.len() + pad;
-            let mut b = Vec::with_capacity(total);
-            b.extend_from_slice(&kind.to_le_bytes());
-            b.extend_from_slice(&(total as u32).to_le_bytes());
-            b.extend_from_slice(body);
-            b.extend(std::iter::repeat_n(0u8, pad));
-            b.extend_from_slice(&(total as u32).to_le_bytes());
-            b
-        }
-        let mut out = Vec::new();
-        let mut shb = Vec::new();
-        shb.extend_from_slice(&0x1a2b_3c4du32.to_le_bytes());
-        shb.extend_from_slice(&1u16.to_le_bytes());
-        shb.extend_from_slice(&0u16.to_le_bytes());
-        shb.extend_from_slice(&(-1i64).to_le_bytes());
-        out.extend_from_slice(&block(0x0a0d_0d0a, &shb));
-
-        for (lt, snap) in [(1u16, 65535u32), (12u16, 2048u32)] {
-            let mut idb = Vec::new();
-            idb.extend_from_slice(&lt.to_le_bytes());
-            idb.extend_from_slice(&0u16.to_le_bytes());
-            idb.extend_from_slice(&snap.to_le_bytes());
-            out.extend_from_slice(&block(0x0000_0001, &idb));
-        }
-
-        for (iface, byte) in [(0u32, 0xAAu8), (1u32, 0xBBu8)] {
-            let data = vec![byte; 40];
-            let mut epb = Vec::new();
-            epb.extend_from_slice(&iface.to_le_bytes());
-            epb.extend_from_slice(&0u32.to_le_bytes());
-            epb.extend_from_slice(&0u32.to_le_bytes());
-            epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            epb.extend_from_slice(&(data.len() as u32).to_le_bytes());
-            epb.extend_from_slice(&data);
-            out.extend_from_slice(&block(0x0000_0006, &epb));
-        }
-        std::fs::write(path, out).expect("write fixture");
     }
 
     /// Every frame must carry ITS OWN interface's link type.

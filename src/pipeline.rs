@@ -2200,10 +2200,6 @@ pub fn classify_packet(
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
 ) -> PacketAction {
-    // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
-    #[cfg(not(feature = "tls"))]
-    let _ = &decrypt;
-
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
     let effective_transport = if ws_payload.is_some() {
@@ -2216,8 +2212,45 @@ pub fn classify_packet(
         Some(v) => v.into(),
         None => pp.payload.clone(),
     };
-    let effective_payload = &effective_payload;
+    let signaling = Signaling {
+        payload: &effective_payload,
+        transport: effective_transport,
+    };
 
+    if let Some(action) = classify_signaling(pp, &signaling, opts, decrypt) {
+        return action;
+    }
+    if let Some(action) = claim_control(pp, opts) {
+        return action;
+    }
+
+    // RTP/RTCP detection
+    if opts.no_rtp || pp.transport != TransportProto::Udp {
+        return PacketAction::None;
+    }
+    classify_media(pp, rtp_heuristic, opts, decrypt)
+}
+
+/// The payload and transport SIP detection runs on: the WebSocket frame's
+/// contents and `Ws` when the packet carried one, the packet's own otherwise.
+struct Signaling<'p> {
+    /// The bytes SIP detection reads.
+    payload: &'p bytes::Bytes,
+    /// The transport the SIP message is recorded as arriving on.
+    transport: TransportProto,
+}
+
+/// SIP detection: parse and derive links, touching no store. `None` when the
+/// payload is not SIP or the port gate refused it, and classification moves
+/// on to the control and media checks.
+#[inline]
+fn classify_signaling(
+    pp: &ParsedPacket,
+    signaling: &Signaling<'_>,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> Option<PacketAction> {
+    let effective_payload = signaling.payload;
     // SIP detection first — parse and derive links, touching no store. The
     // port gate applies to signaling only; RTP uses SDP-negotiated dynamic
     // ports and falls through to the media checks below.
@@ -2255,93 +2288,157 @@ pub fn classify_packet(
     // Recorded here rather than returned, following `record_portrange_skip`
     // above: noticing during classification and reporting later needs no new
     // `PacketAction` variant and no signature change in the four callers.
-    if !sip_looks_like_sip && effective_transport == crate::net::TransportProto::Tcp {
+    if !sip_looks_like_sip && signaling.transport == crate::net::TransportProto::Tcp {
         crate::security::ami::record(effective_payload, pp.src_addr, pp.dst_addr, pp.dst_port);
     }
 
-    if sip_port_ok && sip_looks_like_sip {
-        match sip::parser::parse_sip_bytes(
-            effective_payload,
-            pp.timestamp,
-            pp.src_addr,
-            pp.dst_addr,
-            pp.src_port,
-            pp.dst_port,
-            effective_transport,
-        ) {
-            Ok(mut sip_msg) => {
-                // Carry the frame pointer across the SIP parse boundary. The
-                // parser takes bytes and addressing, deliberately — it has no
-                // business knowing about captures — so the packet's provenance
-                // is attached here, at the one place that holds both the
-                // `ParsedPacket` and the message it produced.
-                //
-                // Cloning an `Option<FrameRef>` is a refcount bump on an
-                // `Arc<str>` already interned once per source, plus two words.
-                // Paid per SIP message rather than per packet, which on real
-                // traffic is a small fraction of the frames.
-                // Materialize the owned pointer HERE, where the message keeps
-                // it. The parser carries a Copy locator precisely so the ~93%
-                // of frames that never reach a retention site pay no refcount.
-                sip_msg.frame = pp.retained_frame_ref();
-                // The QoS marking rides across the same boundary and for the
-                // same reason: it is a fact about the packet, the parser never
-                // sees a packet, and every consumer downstream sees only the
-                // message. A `Copy` byte, so this costs nothing.
-                sip_msg.dscp = pp.dscp;
-                // Which source delivered it, across the same boundary and for
-                // the same reason. In a mixed run this is the only thing that
-                // makes a HEP-reported fact distinguishable from a
-                // wire-observed one, and their DISAGREEMENT is the finding the
-                // next item compares for (SRC1 stage 2). Per message, never
-                // per run: a composite run has no run-level answer.
-                sip_msg.input_origin = Some(pp.input_origin);
-                let mut sdp_links = Vec::new();
-                if !opts.no_dialog
-                    && let Some(sdp) = sip_msg.sdp()
-                    && let Some(call_id) = sip_msg.call_id()
-                {
-                    sdp_links = extract_sdp_links(&sdp, call_id);
+    (sip_port_ok && sip_looks_like_sip).then(|| parse_sip_action(pp, signaling, opts, decrypt))
+}
 
-                    // Feed SDES `a=crypto` key material into the SRTP context
-                    // (mutates decrypt, not stores — so it belongs in
-                    // classification). Keyed by the media's effective address
-                    // even when it is not a parseable IP (hostname or absent),
-                    // so key learning is never narrower than the SDP.
-                    #[cfg(feature = "tls")]
-                    if let Some(ctx) = decrypt.srtp.as_deref_mut() {
-                        for media in &sdp.media {
-                            if media.crypto.is_empty() {
-                                continue;
-                            }
-                            let addr = sip::sdp::effective_address(media, &sdp);
-                            let added = ctx.add_sdes(addr.clone(), Some(media.port), &media.crypto);
-                            if added > 0 {
-                                tracing::info!(
-                                    "SRTP: +{added} SDES key(s) from SDP for {}:{}",
-                                    addr.as_deref().unwrap_or("?"),
-                                    media.port
-                                );
-                            }
-                        }
-                    }
-                }
-                return PacketAction::Sip {
-                    msg: Box::new(sip_msg),
-                    sdp_links,
-                };
-            }
-            Err(e) => {
-                if !opts.quiet_bad_parse {
-                    tracing::debug!("SIP parse error: {e}");
-                }
-                return PacketAction::None;
+/// Parse a payload that looks like SIP into the `Sip` action, with the
+/// packet's provenance attached and its SDP links derived. A parse failure
+/// is the `None` action: the packet is consumed either way.
+#[inline]
+fn parse_sip_action(
+    pp: &ParsedPacket,
+    signaling: &Signaling<'_>,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> PacketAction {
+    match sip::parser::parse_sip_bytes(
+        signaling.payload,
+        pp.timestamp,
+        pp.src_addr,
+        pp.dst_addr,
+        pp.src_port,
+        pp.dst_port,
+        signaling.transport,
+    ) {
+        Ok(mut sip_msg) => {
+            attach_packet_provenance(&mut sip_msg, pp);
+            let sdp_links = sdp_links_for(&sip_msg, opts, decrypt);
+            PacketAction::Sip {
+                msg: Box::new(sip_msg),
+                sdp_links,
             }
         }
+        Err(e) => {
+            if !opts.quiet_bad_parse {
+                tracing::debug!("SIP parse error: {e}");
+            }
+            PacketAction::None
+        }
     }
+}
 
-    // LLMNR, claimed on sight and BEFORE any media check.
+/// Copy what the packet knows and the parser never sees onto the message:
+/// its frame pointer, its QoS marking and the source that delivered it.
+#[inline]
+fn attach_packet_provenance(sip_msg: &mut sip::SipMessage, pp: &ParsedPacket) {
+    // Carry the frame pointer across the SIP parse boundary. The
+    // parser takes bytes and addressing, deliberately — it has no
+    // business knowing about captures — so the packet's provenance
+    // is attached here, at the one place that holds both the
+    // `ParsedPacket` and the message it produced.
     //
+    // Cloning an `Option<FrameRef>` is a refcount bump on an
+    // `Arc<str>` already interned once per source, plus two words.
+    // Paid per SIP message rather than per packet, which on real
+    // traffic is a small fraction of the frames.
+    // Materialize the owned pointer HERE, where the message keeps
+    // it. The parser carries a Copy locator precisely so the ~93%
+    // of frames that never reach a retention site pay no refcount.
+    sip_msg.frame = pp.retained_frame_ref();
+    // The QoS marking rides across the same boundary and for the
+    // same reason: it is a fact about the packet, the parser never
+    // sees a packet, and every consumer downstream sees only the
+    // message. A `Copy` byte, so this costs nothing.
+    sip_msg.dscp = pp.dscp;
+    // Which source delivered it, across the same boundary and for
+    // the same reason. In a mixed run this is the only thing that
+    // makes a HEP-reported fact distinguishable from a
+    // wire-observed one, and their DISAGREEMENT is the finding the
+    // next item compares for (SRC1 stage 2). Per message, never
+    // per run: a composite run has no run-level answer.
+    sip_msg.input_origin = Some(pp.input_origin);
+}
+
+/// The SDP media links a message carries, learning any SDES keys in its SDP
+/// on the way. Empty under `--no-dialog`, or when the message has no SDP or
+/// no Call-ID.
+#[inline]
+fn sdp_links_for(
+    sip_msg: &sip::SipMessage,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
+    // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
+    #[cfg(not(feature = "tls"))]
+    let _ = &decrypt;
+
+    if opts.no_dialog {
+        return Vec::new();
+    }
+    let Some(sdp) = sip_msg.sdp() else {
+        return Vec::new();
+    };
+    let Some(call_id) = sip_msg.call_id() else {
+        return Vec::new();
+    };
+    let sdp_links = extract_sdp_links(&sdp, call_id);
+
+    // Feed SDES `a=crypto` key material into the SRTP context
+    // (mutates decrypt, not stores — so it belongs in
+    // classification).
+    #[cfg(feature = "tls")]
+    if let Some(ctx) = decrypt.srtp.as_deref_mut() {
+        learn_sdes_keys(ctx, &sdp);
+    }
+    sdp_links
+}
+
+/// Add every SDES `a=crypto` key an SDP offers to the SRTP context. Keyed by
+/// the media's effective address even when it is not a parseable IP
+/// (hostname or absent), so key learning is never narrower than the SDP.
+#[cfg(feature = "tls")]
+fn learn_sdes_keys(ctx: &mut crate::rtp::srtp::SrtpContext, sdp: &sip::sdp::SdpSession) {
+    for media in &sdp.media {
+        if media.crypto.is_empty() {
+            continue;
+        }
+        let addr = sip::sdp::effective_address(media, sdp);
+        let added = ctx.add_sdes(addr.clone(), Some(media.port), &media.crypto);
+        if added > 0 {
+            tracing::info!(
+                "SRTP: +{added} SDES key(s) from SDP for {}:{}",
+                addr.as_deref().unwrap_or("?"),
+                media.port
+            );
+        }
+    }
+}
+
+/// Claim a packet that is control traffic and must never be read as media:
+/// LLMNR, rtpengine's `ng` over HEP, and rtpproxy's control protocol on the
+/// socket the operator named. `None` leaves the packet to the media checks.
+#[inline]
+fn claim_control(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAction> {
+    if let Some(action) = claim_llmnr(pp, opts) {
+        return Some(action);
+    }
+    #[cfg(feature = "hep")]
+    if let Some(action) = claim_rtpengine_ng(pp) {
+        return Some(action);
+    }
+    claim_rtpproxy(pp, opts)
+}
+
+/// LLMNR, claimed on sight and BEFORE any media check.
+///
+/// The packet is recorded in the LLMNR store and consumed; `None` when it is
+/// not LLMNR.
+#[inline]
+fn claim_llmnr(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAction> {
     // LLMNR is NOT a VoIP protocol and sipnab is NOT a general dissector. It is
     // claimed here for one reason: a Windows name lookup is a DNS-format
     // message whose first two bytes are a random transaction ID, and one ID in
@@ -2363,26 +2460,31 @@ pub fn classify_packet(
     // enabled at all is the exposure the Responder tool abuses to harvest NTLM
     // credentials. It feeds nothing in the media path or in call diagnosis, and
     // it must never start to.
-    if pp.transport == TransportProto::Udp
-        && crate::llmnr::is_llmnr_packet(&pp.payload, pp.src_port, pp.dst_port)
+    if pp.transport != TransportProto::Udp
+        || !crate::llmnr::is_llmnr_packet(&pp.payload, pp.src_port, pp.dst_port)
     {
-        match crate::llmnr::parser::parse_llmnr(&pp.payload) {
-            Ok(msg) => crate::llmnr::store::record_llmnr(&msg, pp.src_addr, pp.timestamp),
-            Err(e) => {
-                if !opts.quiet_bad_parse {
-                    tracing::debug!("LLMNR parse error: {e}");
-                }
+        return None;
+    }
+    match crate::llmnr::parser::parse_llmnr(&pp.payload) {
+        Ok(msg) => crate::llmnr::store::record_llmnr(&msg, pp.src_addr, pp.timestamp),
+        Err(e) => {
+            if !opts.quiet_bad_parse {
+                tracing::debug!("LLMNR parse error: {e}");
             }
         }
-        // Consumed either way: a datagram on the LLMNR port whose header passed
-        // the structural checks is LLMNR, and a later parse failure makes it
-        // MALFORMED LLMNR, not media.
-        return PacketAction::None;
     }
+    // Consumed either way: a datagram on the LLMNR port whose header passed
+    // the structural checks is LLMNR, and a later parse failure makes it
+    // MALFORMED LLMNR, not media.
+    Some(PacketAction::None)
+}
 
-    // rtpengine's `ng` control plane, mirrored over HEP and observed HERE
-    // rather than delivered to our own listener (RE6).
-    //
+/// rtpengine's `ng` control plane, mirrored over HEP and observed HERE
+/// rather than delivered to our own listener (RE6). `None` when the packet
+/// is not `ng` over HEP.
+#[cfg(feature = "hep")]
+#[inline]
+fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
     // On a standalone media relay this is the only thing that names a call.
     // Without it every stream on the box is an orphan: the relay carries no
     // SIP, so a capture there is media with nothing to attribute it to.
@@ -2403,7 +2505,10 @@ pub fn classify_packet(
     //
     // TWO arms, because there are two ways `ng` reaches sipnab and they arrive
     // in different shapes.
-    //
+    if pp.transport != TransportProto::Udp {
+        return None;
+    }
+
     // This first arm is the DELIVERED one: `--hep-listen`, where sipnab is the
     // collector rtpengine exports to. The listener strips the wrapper before
     // the parser runs, so the payload here is the bare `ng` body and there is
@@ -2417,22 +2522,12 @@ pub fn classify_packet(
     // than here: rtpengine takes exactly one `--homer` destination, so anybody
     // following the page gave up their Homer collector and received no relay
     // visibility in exchange.
-    #[cfg(feature = "hep")]
-    if pp.transport == TransportProto::Udp
-        && let Some(hep) = &pp.hep
+    if let Some(hep) = &pp.hep
         && crate::rtpengine::is_ng_over_hep(hep.protocol, &pp.payload)
     {
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
-        return PacketAction::RelayControl(RelayControlMessage {
-            sdp_links,
-            relay_links: Vec::new(),
-            // `ng` over HEP, read off the wire: the decoder names its own
-            // relay and the datagram carried no credential.
-            implementation: crate::relay::RelayImplementation::Rtpengine,
-            delivery: crate::relay::ControlDelivery::BareDatagram,
-            control: None,
-        });
+        return Some(rtpengine_ng_action(sdp_links));
     }
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
@@ -2447,65 +2542,71 @@ pub fn classify_packet(
     // and bind media wherever it liked. `sniffed_ng_sdp_links` holds the
     // gate, and `docs/rtpengine.md` says plainly what a sniffed assertion is
     // and is not worth.
-    #[cfg(feature = "hep")]
-    if pp.transport == TransportProto::Udp
-        && let Some(sdp_links) = crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload)
-    {
-        // Consumed either way. A datagram that parsed as HEP and decoded as
-        // `ng` is control traffic; that it named no endpoint this time (a
-        // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
-        // is not a reason to reconsider it as media.
-        return PacketAction::RelayControl(RelayControlMessage {
-            sdp_links,
-            relay_links: Vec::new(),
-            // `ng` over HEP, read off the wire: the decoder names its own
-            // relay and the datagram carried no credential.
-            implementation: crate::relay::RelayImplementation::Rtpengine,
-            delivery: crate::relay::ControlDelivery::BareDatagram,
-            control: None,
-        });
-    }
+    //
+    // Consumed either way. A datagram that parsed as HEP and decoded as
+    // `ng` is control traffic; that it named no endpoint this time (a
+    // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
+    // is not a reason to reconsider it as media.
+    crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload).map(rtpengine_ng_action)
+}
 
-    // rtpproxy's control plane, on the one socket the operator named. Believed
-    // there and nowhere else: its datagrams carry no credential, so a socket
-    // the operator did not name, 22222 included, is not believed.
-    if pp.transport == TransportProto::Udp
-        && let Some(control) = opts.rtpproxy_control
-        && let Some((named, cookie)) = crate::relay::rtpproxy::observe_on(
-            control,
-            std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-            std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-            &pp.payload,
-        )
-    {
-        return PacketAction::RelayControl(RelayControlMessage {
-            sdp_links: Vec::new(),
-            relay_links: named.into_iter().collect(),
-            implementation: crate::relay::RelayImplementation::Rtpproxy,
-            delivery: crate::relay::ControlDelivery::BareDatagram,
-            control: Some(cookie),
-        });
-    }
+/// The relay-control action for one `ng` message over HEP, delivered or
+/// sniffed.
+#[cfg(feature = "hep")]
+#[inline]
+fn rtpengine_ng_action(
+    sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+) -> PacketAction {
+    PacketAction::RelayControl(RelayControlMessage {
+        sdp_links,
+        relay_links: Vec::new(),
+        // `ng` over HEP, read off the wire: the decoder names its own
+        // relay and the datagram carried no credential.
+        implementation: crate::relay::RelayImplementation::Rtpengine,
+        delivery: crate::relay::ControlDelivery::BareDatagram,
+        control: None,
+    })
+}
 
-    // RTP/RTCP detection
-    if opts.no_rtp || pp.transport != TransportProto::Udp {
-        return PacketAction::None;
+/// rtpproxy's control plane, on the one socket the operator named. Believed
+/// there and nowhere else: its datagrams carry no credential, so a socket
+/// the operator did not name, 22222 included, is not believed. `None` when
+/// the packet is not rtpproxy control on that socket.
+#[inline]
+fn claim_rtpproxy(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAction> {
+    if pp.transport != TransportProto::Udp {
+        return None;
     }
+    let control = opts.rtpproxy_control?;
+    let (named, cookie) = crate::relay::rtpproxy::observe_on(
+        control,
+        std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+        std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+        &pp.payload,
+    )?;
+    Some(PacketAction::RelayControl(RelayControlMessage {
+        sdp_links: Vec::new(),
+        relay_links: named.into_iter().collect(),
+        implementation: crate::relay::RelayImplementation::Rtpproxy,
+        delivery: crate::relay::ControlDelivery::BareDatagram,
+        control: Some(cookie),
+    }))
+}
 
+/// Classify a UDP packet that is neither SIP nor control traffic: DTLS key
+/// material, TURN-relayed media, STUN, RTCP or RTP.
+#[inline]
+fn classify_media(
+    pp: &ParsedPacket,
+    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> PacketAction {
     // DTLS-SRTP: recover SRTP keys from DTLS handshakes and hand them to the
     // SRTP context. DTLS packets are not RTP, so consume and stop.
     #[cfg(feature = "tls")]
     if crate::capture::dtls::is_dtls(&pp.payload) {
-        let keys = decrypt
-            .dtls
-            .as_deref_mut()
-            .map(|ext| ext.process_dtls(&pp.payload))
-            .unwrap_or_default();
-        if !keys.is_empty()
-            && let Some(ctx) = decrypt.srtp.as_deref_mut()
-        {
-            ctx.add_keys(keys);
-        }
+        learn_dtls_keys(pp, decrypt);
         return PacketAction::None;
     }
 
@@ -2559,6 +2660,37 @@ pub fn classify_packet(
         );
         return PacketAction::None;
     }
+
+    classify_rtp(pp, rtp_heuristic, decrypt)
+}
+
+/// Hand the SRTP keys a DTLS handshake packet yields to the SRTP context.
+#[cfg(feature = "tls")]
+#[inline]
+fn learn_dtls_keys(pp: &ParsedPacket, decrypt: &mut MediaDecrypt<'_>) {
+    let keys = decrypt
+        .dtls
+        .as_deref_mut()
+        .map(|ext| ext.process_dtls(&pp.payload))
+        .unwrap_or_default();
+    if !keys.is_empty()
+        && let Some(ctx) = decrypt.srtp.as_deref_mut()
+    {
+        ctx.add_keys(keys);
+    }
+}
+
+/// RTCP, then RTP by its header, then RTP by the consecutive-packet
+/// heuristic; the `None` action when the packet is none of them.
+#[inline]
+fn classify_rtp(
+    pp: &ParsedPacket,
+    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> PacketAction {
+    // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
+    #[cfg(not(feature = "tls"))]
+    let _ = &decrypt;
 
     if is_rtcp_packet(&pp.payload, pp.dst_port) {
         let rtcp_packets = rtp::rtcp::parse_rtcp(&pp.payload);
@@ -2732,10 +2864,14 @@ pub fn process_packet(
 mod quiet_bad_parse_tests {
     //! Tests that `--quiet-bad-parse` gates only the parse-error diagnostic and
     //! never changes how a packet classifies.
+
     use super::*;
     use crate::capture::parse::{ParsedPacket, TransportProto};
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Run `f` with a thread-local DEBUG subscriber and return captured output.
     fn capture_logs(f: impl FnOnce()) -> String {
@@ -2808,6 +2944,28 @@ mod quiet_bad_parse_tests {
             "the secret reached a finding: {rendered}"
         );
         crate::security::ami::reset_for_test();
+    }
+
+    /// A SIP message carries what only the packet knew: the source that
+    /// delivered it and its QoS marking.
+    #[test]
+    fn a_classified_sip_message_carries_its_packets_origin_and_marking() -> Result<(), TestError> {
+        let mut pp = valid_invite();
+        pp.input_origin = crate::capture::parse::InputOrigin::Hep;
+        pp.dscp = Some(46);
+        let mut heur = rtp::heuristic::RtpHeuristic::new();
+        let opts = PipelineOptions::default();
+        let mut decrypt = MediaDecrypt::default();
+        let PacketAction::Sip { msg, .. } = classify_packet(&pp, &mut heur, &opts, &mut decrypt)
+        else {
+            return Err("a valid INVITE classifies as SIP".into());
+        };
+        assert_eq!(
+            msg.input_origin,
+            Some(crate::capture::parse::InputOrigin::Hep)
+        );
+        assert_eq!(msg.dscp, Some(46));
+        Ok(())
     }
 
     /// `is_sip_message()` accepts the `SIP/2.0 ` response prefix, but the
@@ -4194,7 +4352,6 @@ mod resolved_media_tests {
 /// parallel.
 #[cfg(test)]
 mod rtpproxy_control_tests {
-
     /// Every packet the pipeline classifies returns a `PacketAction`, most of
     /// them `None` or an RTP packet, so the enum's size is paid on the hot
     /// path whatever the variant. The parsed SIP message is boxed so it does

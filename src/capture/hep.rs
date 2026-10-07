@@ -769,62 +769,112 @@ fn hmac_auth_ok(
         (Some(_), None) => Err(HepRefusal::AuthMissing),
         (Some(key), Some(span)) => {
             let now = chrono::Utc::now().timestamp().max(0) as u64;
-            match verify_hmac_datagram(key.as_bytes(), datagram, span, now, window_secs, cache) {
-                Ok(()) => Ok(()),
-                Err(e) => {
-                    // A skew rejection drops EVERY packet from that sender and
-                    // presents as "the collector receives nothing", which is
-                    // the hardest symptom to attribute — the operator suspects
-                    // routing, the firewall, the sender's config, and only then
-                    // a clock. It logged at debug, so nothing said so at the
-                    // default level.
-                    //
-                    // Warned once per process rather than per packet: a drifted
-                    // sender produces this on every datagram, and a line per
-                    // packet is its own outage.
-                    if e == HmacAuthError::TimestampOutOfWindow {
-                        static SKEW_WARNED: std::sync::atomic::AtomicBool =
-                            std::sync::atomic::AtomicBool::new(false);
-                        if !SKEW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            tracing::warn!(
-                                "HEP HMAC auth is rejecting packets because the \
-                                 sender's timestamp is outside the {window_secs}s \
-                                 acceptance window — check NTP on the sender, or \
-                                 widen it with --hep-hmac-window. Every packet from \
-                                 a clock-drifted peer is dropped, so this looks like \
-                                 a collector that receives nothing."
-                            );
-                        }
-                    }
-                    // The same "receives nothing" symptom, from the other
-                    // cause an operator cannot guess: a sender still speaking
-                    // the version-1 token, whose MAC covered only the payload
-                    // and left the addressing chunks forgeable. Refused rather
-                    // than accepted, and SAID rather than merely counted,
-                    // because the alternative is a receiver reporting HMAC
-                    // authentication as active over addresses nothing signed.
-                    if e == HmacAuthError::UnsupportedVersion {
-                        static V1_WARNED: std::sync::atomic::AtomicBool =
-                            std::sync::atomic::AtomicBool::new(false);
-                        if !V1_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            tracing::warn!(
-                                "HEP HMAC auth is REFUSING version-1 tokens: that \
-                                 scheme signed only the payload, so the source and \
-                                 destination chunks a sender asserts were not \
-                                 authenticated and could be appended to a captured \
-                                 packet by anyone. There is no compatibility switch \
-                                 — upgrade the sending sipnab to a build that emits \
-                                 version {HMAC_TOKEN_VERSION} tokens. Every packet \
-                                 from a version-1 sender is dropped, so this looks \
-                                 like a collector that receives nothing."
-                            );
-                        }
-                    }
-                    tracing::debug!("HEP HMAC auth rejected: {e:?}");
-                    Err(HepRefusal::from(e))
-                }
-            }
+            verify_hmac_datagram(key.as_bytes(), datagram, span, now, window_secs, cache).map_err(
+                |e| {
+                    log_hmac_rejection(e, window_secs, &HMAC_SENDER_WIDE_WARNED);
+                    HepRefusal::from(e)
+                },
+            )
         }
+    }
+}
+
+/// Whether `flag` is being claimed for the first time in this process.
+///
+/// The once-per-process warnings use it: a condition that persists produces
+/// the same refusal on every packet, and a line per packet is its own outage.
+/// Returns `true` exactly once per flag, setting it.
+#[inline]
+fn first_claim(flag: &std::sync::atomic::AtomicBool) -> bool {
+    !flag.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Which of the two sender-wide HMAC rejections have already been warned
+/// about: one flag each, claimed by [`first_claim`].
+struct HmacSenderWideWarned {
+    /// Clock skew: a timestamp outside the acceptance window.
+    skew: std::sync::atomic::AtomicBool,
+    /// A superseded version-1 token.
+    version_one: std::sync::atomic::AtomicBool,
+}
+
+impl HmacSenderWideWarned {
+    /// Neither rejection warned about yet.
+    const fn new() -> Self {
+        Self {
+            skew: std::sync::atomic::AtomicBool::new(false),
+            version_one: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+/// The process-wide flags behind [`hmac_auth_ok`]'s once-per-process warnings.
+static HMAC_SENDER_WIDE_WARNED: HmacSenderWideWarned = HmacSenderWideWarned::new();
+
+/// Log one HEP HMAC rejection: a `debug` line always, plus a `warn`, the
+/// first time its flag in `warned` is claimed, for each of the two rejections
+/// that drop every packet from a sender.
+///
+/// # Side effects
+///
+/// Logs, and claims the flag in `warned` of the rejection it warns about.
+#[cfg(feature = "hep")]
+fn log_hmac_rejection(e: HmacAuthError, window_secs: u64, warned: &HmacSenderWideWarned) {
+    match e {
+        HmacAuthError::TimestampOutOfWindow => warn_hmac_clock_skew(window_secs, &warned.skew),
+        HmacAuthError::UnsupportedVersion => warn_hmac_version_one_sender(&warned.version_one),
+        _ => {}
+    }
+    tracing::debug!("HEP HMAC auth rejected: {e:?}");
+}
+
+/// Warn, the first time `warned` is claimed, that HMAC auth is dropping a
+/// sender's packets because its timestamp is outside the acceptance window.
+///
+/// A skew rejection drops EVERY packet from that sender and presents as "the
+/// collector receives nothing", which is the hardest symptom to attribute —
+/// the operator suspects routing, the firewall, the sender's config, and only
+/// then a clock. It logged at debug, so nothing said so at the default level.
+///
+/// Warned once per process rather than per packet: a drifted sender produces
+/// this on every datagram, and a line per packet is its own outage.
+#[cfg(feature = "hep")]
+fn warn_hmac_clock_skew(window_secs: u64, warned: &std::sync::atomic::AtomicBool) {
+    if first_claim(warned) {
+        tracing::warn!(
+            "HEP HMAC auth is rejecting packets because the \
+             sender's timestamp is outside the {window_secs}s \
+             acceptance window — check NTP on the sender, or \
+             widen it with --hep-hmac-window. Every packet from \
+             a clock-drifted peer is dropped, so this looks like \
+             a collector that receives nothing."
+        );
+    }
+}
+
+/// Warn, the first time `warned` is claimed, that HMAC auth is refusing a
+/// version-1 sender.
+///
+/// The same "receives nothing" symptom as clock skew, from the other cause an
+/// operator cannot guess: a sender still speaking the version-1 token, whose
+/// MAC covered only the payload and left the addressing chunks forgeable.
+/// Refused rather than accepted, and SAID rather than merely counted, because
+/// the alternative is a receiver reporting HMAC authentication as active over
+/// addresses nothing signed.
+#[cfg(feature = "hep")]
+fn warn_hmac_version_one_sender(warned: &std::sync::atomic::AtomicBool) {
+    if first_claim(warned) {
+        tracing::warn!(
+            "HEP HMAC auth is REFUSING version-1 tokens: that \
+             scheme signed only the payload, so the source and \
+             destination chunks a sender asserts were not \
+             authenticated and could be appended to a captured \
+             packet by anyone. There is no compatibility switch \
+             — upgrade the sending sipnab to a build that emits \
+             version {HMAC_TOKEN_VERSION} tokens. Every packet \
+             from a version-1 sender is dropped, so this looks \
+             like a collector that receives nothing."
+        );
     }
 }
 
@@ -1594,35 +1644,33 @@ impl HepRateLimiter {
     /// `tracing::debug` line naming which bound refused it and the running
     /// total.
     fn allow(&mut self, peer: IpAddr) -> std::result::Result<(), crate::rate_limit::Refusal> {
-        use crate::rate_limit::Refusal;
         let Err(refusal) = self.inner.check(peer, Instant::now()) else {
             return Ok(());
         };
+        static FULL_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        self.log_refusal(refusal, peer, &FULL_WARNED);
+        Err(refusal)
+    }
+
+    /// Log why a packet from `peer` was refused, naming the bound and the
+    /// running total of drops.
+    ///
+    /// # Side effects
+    ///
+    /// Logs a `tracing::debug` line, plus, for a full tracking table, the
+    /// `warn` that claiming `full_warned` the first time allows.
+    fn log_refusal(
+        &self,
+        refusal: crate::rate_limit::Refusal,
+        peer: IpAddr,
+        full_warned: &std::sync::atomic::AtomicBool,
+    ) {
+        use crate::rate_limit::Refusal;
         let dropped = self.inner.refused_total();
         match refusal {
-            // TrackingFull refuses a LEGITIMATE peer — one inside every rate
-            // budget, turned away because the tracking table is full. It is not
-            // the same event as exceeding a limit you set, and `--hep-rate-limit`
-            // cannot relieve it, because that bounds rate and this bounds
-            // capacity. A collector fronting a large fleet hits it and sees
-            // nothing at the default log level.
-            //
-            // Warned once: the condition persists for the whole window and a
-            // line per refused packet would bury the one that matters.
             Refusal::TrackingFull => {
-                static FULL_WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !FULL_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    tracing::warn!(
-                        "HEP peer tracking is full at {} distinct peers in one second, \
-                         so packets from NEW peers are being dropped even though they \
-                         are inside every rate limit. --hep-rate-limit does not help: \
-                         it bounds rate, this bounds how many peers can be tracked at \
-                         once — raise [limits] max_tracked_peers. First refused peer: \
-                         {peer}.",
-                        self.inner.max_tracked_peers()
-                    );
-                }
+                self.warn_tracking_full(peer, full_warned);
                 tracing::debug!(
                     "HEP per-peer tracking full ({} peers); dropping new peer {peer} (total dropped: {dropped})",
                     self.inner.max_tracked_peers()
@@ -1637,7 +1685,32 @@ impl HepRateLimiter {
                 self.inner.global_max()
             ),
         }
-        Err(refusal)
+    }
+
+    /// Warn, the first time `warned` is claimed, that a full tracking table is
+    /// refusing new peers.
+    ///
+    /// TrackingFull refuses a LEGITIMATE peer — one inside every rate budget,
+    /// turned away because the tracking table is full. It is not the same
+    /// event as exceeding a limit you set, and `--hep-rate-limit` cannot
+    /// relieve it, because that bounds rate and this bounds capacity. A
+    /// collector fronting a large fleet hits it and sees nothing at the
+    /// default log level.
+    ///
+    /// Warned once: the condition persists for the whole window and a line per
+    /// refused packet would bury the one that matters.
+    fn warn_tracking_full(&self, peer: IpAddr, warned: &std::sync::atomic::AtomicBool) {
+        if first_claim(warned) {
+            tracing::warn!(
+                "HEP peer tracking is full at {} distinct peers in one second, \
+                 so packets from NEW peers are being dropped even though they \
+                 are inside every rate limit. --hep-rate-limit does not help: \
+                 it bounds rate, this bounds how many peers can be tracked at \
+                 once — raise [limits] max_tracked_peers. First refused peer: \
+                 {peer}.",
+                self.inner.max_tracked_peers()
+            );
+        }
     }
 }
 
@@ -2095,46 +2168,160 @@ fn serve_hep_stream<R: std::io::Read>(
     shared: &HepStreamShared<'_, '_>,
     tx: &PacketTx,
 ) {
-    use std::sync::atomic::Ordering;
-    let HepStreamShared {
-        ingest,
-        received,
-        stop,
-        config,
-        start,
-        bind_addr,
-        ..
-    } = shared;
-    let start = *start;
     let mut buf: Vec<u8> = Vec::with_capacity(HEP_STREAM_READ_CHUNK);
     let mut chunk = vec![0u8; HEP_STREAM_READ_CHUNK];
     loop {
-        if stop.load(Ordering::Relaxed) || signals::shutdown_requested() {
+        if shared.stopping() {
             return;
         }
-        if let Some(max_count) = config.count
-            && received.load(Ordering::Relaxed) >= max_count
-        {
-            return;
-        }
-        if let Some(duration) = config.duration
-            && start.elapsed() >= duration
-        {
-            return;
-        }
-
         // Everything whole in the buffer, before asking for more bytes.
+        if shared.forward_whole_packets(&mut buf, peer, tx).is_break() {
+            return;
+        }
+        if read_stream_chunk(stream, &mut chunk, &mut buf, peer).is_break() {
+            return;
+        }
+    }
+}
+
+/// Read once from a stream connection, appending what arrived to `buf`.
+///
+/// # Arguments
+///
+/// * `stream` — the connection, with a read timeout already set.
+/// * `chunk` — scratch space for one read, reused across reads.
+/// * `buf` — everything read from this connection and not yet consumed.
+/// * `peer` — the outer source address, for log lines.
+///
+/// # Returns
+///
+/// `Continue` after bytes arrived or the read timeout ticked; `Break` when
+/// the peer closed the connection or a non-transient read error ended it.
+///
+/// # Side effects
+///
+/// Reads the connection; logs a `tracing::debug` line when the connection
+/// ends mid-packet or on an error.
+#[inline]
+fn read_stream_chunk<R: std::io::Read>(
+    stream: &mut R,
+    chunk: &mut [u8],
+    buf: &mut Vec<u8>,
+    peer: IpAddr,
+) -> std::ops::ControlFlow<()> {
+    use std::ops::ControlFlow;
+    match stream.read(chunk) {
+        Ok(0) => {
+            if !buf.is_empty() {
+                tracing::debug!(
+                    "HEP peer {peer} closed mid-packet; {} buffered bytes discarded",
+                    buf.len()
+                );
+            }
+            ControlFlow::Break(())
+        }
+        Ok(n) => {
+            buf.extend_from_slice(&chunk[..n]);
+            ControlFlow::Continue(())
+        }
+        Err(ref e) if is_transient_recv_error(e.kind()) => ControlFlow::Continue(()),
+        Err(e) => {
+            tracing::debug!("HEP stream from {peer} ended: {e}");
+            ControlFlow::Break(())
+        }
+    }
+}
+
+impl HepStreamShared<'_, '_> {
+    /// Whether a connection just accepted from `peer` may have a reader
+    /// thread: its source is allowed, the listener is below
+    /// [`HEP_MAX_STREAM_CONNECTIONS`], and the socket accepted its read
+    /// timeout and `TCP_NODELAY`.
+    ///
+    /// # Side effects
+    ///
+    /// Sets the socket's read timeout and `TCP_NODELAY`; logs each refusal.
+    /// A refused connection is closed when the caller drops `sock`.
+    fn connection_admitted(&self, sock: &std::net::TcpStream, peer: IpAddr) -> bool {
+        use std::sync::atomic::Ordering;
+        // The allowlist is answered HERE, not per packet: a source nobody
+        // allowed must not get a reader thread it can hold open by saying
+        // nothing at all.
+        if !self.ingest.lock().peer_allowed(peer) {
+            tracing::debug!("Refusing HEP connection from non-allowed source {peer}");
+            return false;
+        }
+        if self.live.load(Ordering::Relaxed) >= HEP_MAX_STREAM_CONNECTIONS {
+            tracing::warn!(
+                "HEP listener on {}: refusing {peer} — already serving \
+                 {HEP_MAX_STREAM_CONNECTIONS} connections",
+                self.bind_addr
+            );
+            return false;
+        }
+        if let Err(e) = sock
+            .set_read_timeout(Some(HEP_STREAM_READ_TIMEOUT))
+            .and_then(|()| sock.set_nodelay(true))
+        {
+            tracing::warn!("Dropping HEP connection from {peer}: {e}");
+            return false;
+        }
+        true
+    }
+
+    /// Whether a reader should stop: the listener is winding down, a
+    /// shutdown was requested, or a capture limit has been reached.
+    fn stopping(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.stop.load(Ordering::Relaxed)
+            || listener_stop(
+                self.config,
+                self.received.load(Ordering::Relaxed),
+                self.start,
+            )
+            .is_some()
+    }
+
+    /// Hand every whole HEP packet at the front of `buf` to the ingest path
+    /// and the pipeline, removing each from `buf` as it goes.
+    ///
+    /// # Arguments
+    ///
+    /// * `buf` — everything read from this connection and not yet consumed.
+    /// * `peer` — the outer source address, for provenance and the allowlist.
+    /// * `tx` — the pipeline channel.
+    ///
+    /// # Returns
+    ///
+    /// `Continue` when `buf` holds no further whole packet and the reader
+    /// should read more; `Break` when the connection must end — bytes that
+    /// cannot be framed, a pipeline that has gone, or the `--count` limit
+    /// reached.
+    ///
+    /// # Side effects
+    ///
+    /// Counts every packet received; forwards admitted ones to `tx`
+    /// (blocking on backpressure); sets `stop` if the pipeline's receiving
+    /// side has gone; logs resumptions and the reason a connection ends.
+    fn forward_whole_packets(
+        &self,
+        buf: &mut Vec<u8>,
+        peer: IpAddr,
+        tx: &PacketTx,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow;
+        use std::sync::atomic::Ordering;
         loop {
-            let total = match hep_stream_frame(&buf) {
+            let total = match hep_stream_frame(buf) {
                 Ok(Some(total)) => total,
-                Ok(None) => break,
+                Ok(None) => return ControlFlow::Continue(()),
                 Err(e) => {
                     // No resynchronization point on a stream: once the reader
                     // is off by a byte every later length is garbage, so the
                     // connection ends rather than silently discarding the rest
                     // of what this peer sends.
                     tracing::debug!("Closing HEP stream from {peer}: {e}");
-                    return;
+                    return ControlFlow::Break(());
                 }
             };
             // Count every packet received off the connection, not only those
@@ -2142,41 +2329,145 @@ fn serve_hep_stream<R: std::io::Read>(
             // packets", so a run whose packets are dropped by the allowlist,
             // rate limiter, parser or auth still makes progress toward the
             // limit rather than appearing to stall.
-            received.fetch_add(1, Ordering::Relaxed);
-            let outcome = ingest.lock().receive(&buf[..total], peer, Instant::now());
-            log_resumed(&outcome, bind_addr);
-            let packet = outcome.packet;
+            self.received.fetch_add(1, Ordering::Relaxed);
+            let outcome = self
+                .ingest
+                .lock()
+                .receive(&buf[..total], peer, Instant::now());
             buf.drain(..total);
-            if let Some(packet) = packet
-                && tx.send(packet).is_err()
-            {
-                tracing::debug!("Receiver dropped, stopping HEP listener");
-                stop.store(true, Ordering::Relaxed);
-                return;
+            if forward_received(outcome, self.bind_addr, tx).is_break() {
+                self.stop.store(true, Ordering::Relaxed);
+                return ControlFlow::Break(());
             }
-            if let Some(max_count) = config.count
-                && received.load(Ordering::Relaxed) >= max_count
-            {
-                return;
+            if count_limit_reached(self.config, self.received.load(Ordering::Relaxed)).is_some() {
+                return ControlFlow::Break(());
             }
         }
+    }
+}
 
-        match stream.read(&mut chunk) {
-            Ok(0) => {
-                if !buf.is_empty() {
-                    tracing::debug!(
-                        "HEP peer {peer} closed mid-packet; {} buffered bytes discarded",
-                        buf.len()
-                    );
-                }
-                return;
+/// Why a HEP listener loop stopped of its own accord.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ListenerStop {
+    /// A shutdown signal was received.
+    Shutdown,
+    /// `--count`: this many packets have been received.
+    Count(u64),
+    /// `--duration`: the listener has run this long.
+    Duration(Duration),
+}
+
+impl ListenerStop {
+    /// Log the stop at `debug`, naming the limit that was reached.
+    fn log(self) {
+        match self {
+            Self::Shutdown => tracing::debug!("Shutdown requested, stopping HEP listener"),
+            Self::Count(max_count) => tracing::debug!("Reached packet count limit ({max_count})"),
+            Self::Duration(duration) => {
+                tracing::debug!("Reached duration limit ({duration:?})")
             }
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(ref e) if is_transient_recv_error(e.kind()) => continue,
-            Err(e) => {
-                tracing::debug!("HEP stream from {peer} ended: {e}");
-                return;
-            }
+        }
+    }
+}
+
+/// The `--count` limit in `config`, when `received` packets have met it;
+/// `None` when they have not, or no count is set.
+#[inline]
+fn count_limit_reached(config: &CaptureConfig, received: u64) -> Option<u64> {
+    config.count.filter(|&max_count| received >= max_count)
+}
+
+/// Which capture limit in `config`, if any, a listener that began at `start`
+/// and has received `received` packets has reached. The count is asked
+/// first; the clock is read only when a duration is set.
+fn capture_limit_reached(
+    config: &CaptureConfig,
+    received: u64,
+    start: Instant,
+) -> Option<ListenerStop> {
+    if let Some(max_count) = count_limit_reached(config, received) {
+        return Some(ListenerStop::Count(max_count));
+    }
+    if let Some(duration) = config.duration
+        && start.elapsed() >= duration
+    {
+        return Some(ListenerStop::Duration(duration));
+    }
+    None
+}
+
+/// Whether a listener should stop: a shutdown was requested, or
+/// [`capture_limit_reached`] names a limit.
+///
+/// # Side effects
+///
+/// Reads the process-wide shutdown flag and, when a duration is set, the
+/// monotonic clock.
+#[inline]
+fn listener_stop(config: &CaptureConfig, received: u64, start: Instant) -> Option<ListenerStop> {
+    if signals::shutdown_requested() {
+        return Some(ListenerStop::Shutdown);
+    }
+    capture_limit_reached(config, received, start)
+}
+
+/// Log the resumptions one received packet reported, then hand its packet,
+/// if it was admitted, to the pipeline.
+///
+/// # Returns
+///
+/// `Break` when the pipeline's receiving side has gone, so the listener must
+/// stop; `Continue` otherwise.
+///
+/// # Side effects
+///
+/// Logs; sends on `tx`, blocking on backpressure.
+#[inline]
+fn forward_received(
+    received: Received,
+    bind_addr: &str,
+    tx: &PacketTx,
+) -> std::ops::ControlFlow<()> {
+    log_resumed(&received, bind_addr);
+    if let Some(packet) = received.packet
+        && tx.send(packet).is_err()
+    {
+        tracing::debug!("Receiver dropped, stopping HEP listener");
+        return std::ops::ControlFlow::Break(());
+    }
+    std::ops::ControlFlow::Continue(())
+}
+
+/// Receive one datagram into `buf`.
+///
+/// # Returns
+///
+/// `Ok(Some((len, peer)))` for a datagram; `Ok(None)` when the read timed out
+/// or was interrupted, so the caller polls its limits and tries again.
+///
+/// # Errors
+///
+/// A non-transient receive error, which ends the listener.
+///
+/// # Side effects
+///
+/// Reads the socket (blocking up to its read timeout); logs a
+/// `tracing::error` line on a fatal error.
+#[inline]
+fn recv_datagram(
+    socket: &UdpSocket,
+    buf: &mut [u8],
+) -> Result<Option<(usize, std::net::SocketAddr)>> {
+    match socket.recv_from(buf) {
+        Ok(pair) => Ok(Some(pair)),
+        // EINTR: a signal interrupted the blocking recv — retry immediately,
+        // silently. Treating it as fatal let a single stray signal kill the
+        // listener (the read-timeout poll makes EINTR routine here).
+        Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => Ok(None),
+        Err(ref e) if is_transient_recv_error(e.kind()) => Ok(None),
+        Err(e) => {
+            tracing::error!("HEP socket recv error: {e}");
+            Err(e).context("Fatal HEP socket error")
         }
     }
 }
@@ -2243,18 +2534,20 @@ fn log_resumed(received: &Received, bind_addr: &str) {
 ///
 /// Binds and polls a TCP socket; spawns a thread per accepted connection;
 /// forwards packets to `tx`; logs startup, limit, drop and idle events.
-#[expect(clippy::too_many_arguments)]
 fn capture_hep_stream(
-    bind_addr: &str,
-    source: HepSocketSource,
-    config: &CaptureConfig,
+    start: HepListenerStart<'_, '_>,
     tx: PacketTx,
-    opts: &HepListenerOpts<'_>,
-    roster: HepRoster,
     tls: Option<std::sync::Arc<rustls::ServerConfig>>,
-    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    let HepListenerStart {
+        bind_addr,
+        source,
+        config,
+        opts,
+        roster,
+        ready_tx,
+    } = start;
 
     let bound = match source {
         HepSocketSource::Address => std::net::TcpListener::bind(bind_addr)
@@ -2303,20 +2596,12 @@ fn capture_hep_stream(
 
     std::thread::scope(|scope| {
         loop {
-            if signals::shutdown_requested() {
-                tracing::debug!("Shutdown requested, stopping HEP listener");
-                break;
-            }
-            if let Some(max_count) = config.count
-                && shared.received.load(Ordering::Relaxed) >= max_count
-            {
-                tracing::debug!("Reached packet count limit ({max_count})");
-                break;
-            }
-            if let Some(duration) = config.duration
-                && shared.start.elapsed() >= duration
-            {
-                tracing::debug!("Reached duration limit ({duration:?})");
+            if let Some(stop) = listener_stop(
+                config,
+                shared.received.load(Ordering::Relaxed),
+                shared.start,
+            ) {
+                stop.log();
                 break;
             }
 
@@ -2338,32 +2623,7 @@ fn capture_hep_stream(
                     break;
                 }
             };
-
-            // The allowlist is answered HERE, not per packet: a source nobody
-            // allowed must not get a reader thread it can hold open by saying
-            // nothing at all.
-            if !shared.ingest.lock().peer_allowed(peer.ip()) {
-                tracing::debug!(
-                    "Refusing HEP connection from non-allowed source {}",
-                    peer.ip()
-                );
-                drop(sock);
-                continue;
-            }
-            if shared.live.load(Ordering::Relaxed) >= HEP_MAX_STREAM_CONNECTIONS {
-                tracing::warn!(
-                    "HEP listener on {bind_addr}: refusing {} — already serving \
-                     {HEP_MAX_STREAM_CONNECTIONS} connections",
-                    peer.ip()
-                );
-                drop(sock);
-                continue;
-            }
-            if let Err(e) = sock
-                .set_read_timeout(Some(HEP_STREAM_READ_TIMEOUT))
-                .and_then(|()| sock.set_nodelay(true))
-            {
-                tracing::warn!("Dropping HEP connection from {}: {e}", peer.ip());
+            if !shared.connection_admitted(&sock, peer.ip()) {
                 continue;
             }
 
@@ -2372,16 +2632,7 @@ fn capture_hep_stream(
             let tls = tls.clone();
             let shared = &shared;
             scope.spawn(move || {
-                let mut sock = sock;
-                match tls {
-                    None => serve_hep_stream(&mut sock, peer.ip(), shared, &conn_tx),
-                    Some(cfg) => {
-                        if let Some(mut stream) = hep_tls_accept(sock, peer.ip(), cfg, &shared.stop)
-                        {
-                            serve_hep_stream(&mut stream, peer.ip(), shared, &conn_tx);
-                        }
-                    }
-                }
+                serve_hep_connection(sock, peer.ip(), tls, shared, &conn_tx);
                 shared.live.fetch_sub(1, Ordering::Relaxed);
             });
         }
@@ -2421,7 +2672,6 @@ fn hep_tls_accept(
     cfg: std::sync::Arc<rustls::ServerConfig>,
     stop: &std::sync::atomic::AtomicBool,
 ) -> Option<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
-    use std::sync::atomic::Ordering;
     let mut conn = match rustls::ServerConnection::new(cfg) {
         Ok(c) => c,
         Err(e) => {
@@ -2432,29 +2682,93 @@ fn hep_tls_accept(
     let mut sock = sock;
     let deadline = Instant::now() + HEP_TLS_HANDSHAKE_TIMEOUT;
     while conn.is_handshaking() {
-        if stop.load(Ordering::Relaxed) || signals::shutdown_requested() {
+        if tls_handshake_cut_short(stop, deadline, peer)
+            || !tls_handshake_step(&mut conn, &mut sock, peer)
+        {
             return None;
-        }
-        if Instant::now() >= deadline {
-            tracing::warn!(
-                "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
-            );
-            return None;
-        }
-        match conn.complete_io(&mut sock) {
-            // No bytes moved and still handshaking: the peer has gone.
-            Ok((0, 0)) => return None,
-            Ok(_) => {}
-            // The read timeout ticked while the peer was thinking.
-            Err(ref e) if is_transient_recv_error(e.kind()) => {}
-            Err(e) => {
-                tracing::debug!("HEP TLS handshake with {peer} failed: {e}");
-                return None;
-            }
         }
     }
     tracing::debug!("HEP TLS session established with {peer}");
     Some(rustls::StreamOwned::new(conn, sock))
+}
+
+/// Whether a TLS handshake still in progress must be given up before its
+/// next step: the listener is shutting down, or `deadline` has passed.
+///
+/// # Side effects
+///
+/// Reads `stop`, the process-wide shutdown flag and the monotonic clock; logs
+/// a `tracing::warn` line when the deadline has passed.
+#[inline]
+fn tls_handshake_cut_short(
+    stop: &std::sync::atomic::AtomicBool,
+    deadline: Instant,
+    peer: IpAddr,
+) -> bool {
+    if stop.load(std::sync::atomic::Ordering::Relaxed) || signals::shutdown_requested() {
+        return true;
+    }
+    if Instant::now() >= deadline {
+        tracing::warn!(
+            "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
+        );
+        return true;
+    }
+    false
+}
+
+/// Move one round of handshake bytes between `conn` and `sock`.
+///
+/// # Returns
+///
+/// `true` when the handshake may continue — bytes moved, or the read timeout
+/// ticked while the peer was thinking; `false` when the peer has gone or the
+/// handshake failed.
+///
+/// # Side effects
+///
+/// Reads and writes the socket; logs a `tracing::debug` line on failure.
+#[inline]
+fn tls_handshake_step<S: std::io::Read + std::io::Write>(
+    conn: &mut rustls::ServerConnection,
+    sock: &mut S,
+    peer: IpAddr,
+) -> bool {
+    match conn.complete_io(sock) {
+        // No bytes moved and still handshaking: the peer has gone.
+        Ok((0, 0)) => false,
+        Ok(_) => true,
+        // The read timeout ticked while the peer was thinking.
+        Err(ref e) if is_transient_recv_error(e.kind()) => true,
+        Err(e) => {
+            tracing::debug!("HEP TLS handshake with {peer} failed: {e}");
+            false
+        }
+    }
+}
+
+/// Serve one accepted stream connection: over TLS when `tls` is set, after
+/// the handshake completes, otherwise as plain TCP.
+///
+/// # Side effects
+///
+/// Those of [`hep_tls_accept`] and [`serve_hep_stream`].
+fn serve_hep_connection(
+    sock: std::net::TcpStream,
+    peer: IpAddr,
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+    shared: &HepStreamShared<'_, '_>,
+    tx: &PacketTx,
+) {
+    let mut sock = sock;
+    match tls {
+        None => serve_hep_stream(&mut sock, peer, shared, tx),
+        Some(cfg) => {
+            if let Some(mut stream) = hep_tls_accept(sock, peer, cfg, &shared.stop) {
+                serve_hep_stream(&mut stream, peer, shared, tx);
+            }
+        }
+    }
 }
 
 /// HEP listener: accept HEP packets over the transport the operator named.
@@ -2599,35 +2913,112 @@ fn serve_hep(
     opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    let tls = match hep_listener_preflight(bind_addr, opts) {
+        Ok(tls) => tls,
+        Err(e) => return startup_failed(ready_tx, e),
+    };
+    log_hep_admission_policy(opts);
+    warn_on_unverified_bind(bind_addr, opts);
+
+    // One roster per listener, hung on the capture meter every surface already
+    // holds, so `--hep-senders`, REST, MCP and the TUI all read this one.
+    let roster = listener_roster(opts, Instant::now(), Utc::now());
+    if !tx.meter().attach_hep_roster(roster.clone()) {
+        tracing::debug!(
+            "HEP listener on {bind_addr}: this capture channel already carries a sender \
+             roster, so this listener's is not the one its surfaces report"
+        );
+    }
+
+    let start = HepListenerStart {
+        bind_addr,
+        source,
+        config,
+        opts,
+        roster,
+        ready_tx,
+    };
+    match opts.transport {
+        HepTransport::Udp => capture_hep_udp(start, tx),
+        HepTransport::Tcp | HepTransport::Tls => capture_hep_stream(start, tx, tls),
+    }
+}
+
+/// What a HEP listener of either transport starts with, once the preflight
+/// has passed: where it listens, its limits and policy, the sender roster its
+/// surfaces read, and who awaits its readiness.
+struct HepListenerStart<'a, 'o> {
+    /// The listen address as the operator gave it, for binding and log lines.
+    bind_addr: &'a str,
+    /// Where the socket comes from: bound here, or handed in by a test.
+    source: HepSocketSource,
+    /// The capture limits (`--count`, `--duration`).
+    config: &'a CaptureConfig,
+    /// Allowlist, rate limits and receiver-side authentication.
+    opts: &'a HepListenerOpts<'o>,
+    /// The listener's sender roster.
+    roster: HepRoster,
+    /// Receives `Ok(())` once the socket is bound, or the startup failure.
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+}
+
+/// The checks a HEP listener makes before it touches a socket.
+///
+/// # Returns
+///
+/// The TLS configuration a `tls` listener serves, or `None` for any other
+/// transport.
+///
+/// # Errors
+///
+/// The bind policy refuses the address, or the TLS certificate or key cannot
+/// be loaded.
+///
+/// # Side effects
+///
+/// For a `tls` listener, reads and stats the certificate and key files.
+fn hep_listener_preflight(
+    bind_addr: &str,
+    opts: &HepListenerOpts<'_>,
+) -> Result<Option<std::sync::Arc<rustls::ServerConfig>>> {
     // Fail closed on an unguarded non-loopback bind before touching the
     // socket (SN-01, D18): a routable HEP listener must be constrained by a
     // shared secret or a source allowlist. Ahead of the transport split
     // because it is a property of the ADDRESS, and a TLS listener earns no
     // exemption — encrypting the path says nothing about who is on it.
-    if let Err(reason) =
-        enforce_hep_bind_policy(bind_addr, opts.auth_key.is_some(), opts.allowlist.len())
-    {
-        if let Some(ready) = ready_tx {
-            let _ = ready.send(Err(reason.clone()));
-        }
-        return Err(anyhow::anyhow!(reason));
-    }
+    enforce_hep_bind_policy(bind_addr, opts.auth_key.is_some(), opts.allowlist.len())
+        .map_err(|reason| anyhow::anyhow!(reason))?;
 
     // Before the bind, so a certificate sipnab cannot read ends the run while
     // the operator is still looking at the terminal.
-    let tls = match opts.transport {
-        HepTransport::Tls => match hep_tls_server_config(opts.tls_cert, opts.tls_key) {
-            Ok(cfg) => Some(cfg),
-            Err(e) => {
-                if let Some(ready) = ready_tx {
-                    let _ = ready.send(Err(format!("{e:#}")));
-                }
-                return Err(e);
-            }
-        },
-        _ => None,
-    };
+    match opts.transport {
+        HepTransport::Tls => hep_tls_server_config(opts.tls_cert, opts.tls_key).map(Some),
+        _ => Ok(None),
+    }
+}
 
+/// Report a listener startup failure to whoever awaits readiness on
+/// `ready_tx`, then return it.
+///
+/// # Errors
+///
+/// Always: `e`, unchanged.
+///
+/// # Side effects
+///
+/// Sends `Err` with `e` rendered in full (`{e:#}`) on `ready_tx`, if set.
+fn startup_failed<T>(
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    e: anyhow::Error,
+) -> Result<T> {
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Err(format!("{e:#}")));
+    }
+    Err(e)
+}
+
+/// Log which source allowlist and rate limits a listener applies.
+fn log_hep_admission_policy(opts: &HepListenerOpts<'_>) {
     if !opts.allowlist.is_empty() {
         tracing::info!(
             "HEP allowlist active: {} CIDR range(s)",
@@ -2638,6 +3029,12 @@ fn serve_hep(
         "{}",
         describe_hep_limiters(opts.rate_limit, opts.per_peer_rate_limit)
     );
+}
+
+/// Log how far the listener can trust who is sending to it: whether its
+/// address could be classified as loopback, and whether packets must carry a
+/// key.
+fn warn_on_unverified_bind(bind_addr: &str, opts: &HepListenerOpts<'_>) {
     // Loopback classification is purely syntactic (no DNS in a security
     // check), so a hostname bind cannot be verified as loopback and is
     // treated as routable. enforce_hep_bind_policy already fail-closes it
@@ -2659,23 +3056,31 @@ fn serve_hep(
              src/dst addresses a sender asserts are trusted verbatim; prefer --hep-auth."
         );
     }
+}
 
-    // One roster per listener, hung on the capture meter every surface already
-    // holds, so `--hep-senders`, REST, MCP and the TUI all read this one.
-    let roster = listener_roster(opts, Instant::now(), Utc::now());
-    if !tx.meter().attach_hep_roster(roster.clone()) {
-        tracing::debug!(
-            "HEP listener on {bind_addr}: this capture channel already carries a sender \
-             roster, so this listener's is not the one its surfaces report"
-        );
-    }
-
-    match opts.transport {
-        HepTransport::Udp => capture_hep_udp(bind_addr, source, config, tx, opts, roster, ready_tx),
-        HepTransport::Tcp | HepTransport::Tls => {
-            capture_hep_stream(bind_addr, source, config, tx, opts, roster, tls, ready_tx)
-        }
-    }
+/// Bind the UDP socket a datagram listener reads, with the read timeout that
+/// lets it poll for shutdown.
+///
+/// # Errors
+///
+/// The address cannot be bound, the read timeout cannot be set, or (in
+/// tests) the socket handed in is a TCP listener.
+fn bind_hep_udp(bind_addr: &str, source: HepSocketSource) -> Result<UdpSocket> {
+    let socket = match source {
+        HepSocketSource::Address => UdpSocket::bind(bind_addr)
+            .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'")),
+        #[cfg(test)]
+        HepSocketSource::Udp(u) => Ok(u),
+        #[cfg(test)]
+        HepSocketSource::Tcp(_) => Err(anyhow::anyhow!(
+            "a TCP listener was handed to the UDP listener"
+        )),
+    }?;
+    // 100ms timeout so we can check shutdown_requested() frequently
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .context("Failed to set socket read timeout")?;
+    Ok(socket)
 }
 
 /// The datagram half of [`capture_hep`]: bind a UDP socket and read it.
@@ -2695,45 +3100,19 @@ fn serve_hep(
 /// Binds and reads a UDP socket (blocking, with a 100 ms read timeout); sends
 /// readiness on `ready_tx`; forwards accepted packets to `tx`, blocking on
 /// channel backpressure.
-fn capture_hep_udp(
-    bind_addr: &str,
-    source: HepSocketSource,
-    config: &CaptureConfig,
-    tx: PacketTx,
-    opts: &HepListenerOpts<'_>,
-    roster: HepRoster,
-    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
-) -> Result<()> {
-    let bound = match source {
-        HepSocketSource::Address => UdpSocket::bind(bind_addr)
-            .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'")),
-        #[cfg(test)]
-        HepSocketSource::Udp(u) => Ok(u),
-        #[cfg(test)]
-        HepSocketSource::Tcp(_) => Err(anyhow::anyhow!(
-            "a TCP listener was handed to the UDP listener"
-        )),
-    };
-    let socket = match bound {
+fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> {
+    let HepListenerStart {
+        bind_addr,
+        source,
+        config,
+        opts,
+        roster,
+        ready_tx,
+    } = start;
+    let socket = match bind_hep_udp(bind_addr, source) {
         Ok(s) => s,
-        Err(e) => {
-            if let Some(ready) = ready_tx {
-                let _ = ready.send(Err(format!("{e:#}")));
-            }
-            return Err(e);
-        }
+        Err(e) => return startup_failed(ready_tx, e),
     };
-
-    // 100ms timeout so we can check shutdown_requested() frequently
-    if let Err(e) = socket
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .context("Failed to set socket read timeout")
-    {
-        if let Some(ready) = ready_tx {
-            let _ = ready.send(Err(format!("{e:#}")));
-        }
-        return Err(e);
-    }
 
     // Signal that the HEP socket is bound and ready.
     if let Some(ready) = ready_tx {
@@ -2754,22 +3133,8 @@ fn capture_hep_udp(
     tracing::info!("HEP listener started on {actual_addr}");
 
     loop {
-        if signals::shutdown_requested() {
-            tracing::debug!("Shutdown requested, stopping HEP listener");
-            break;
-        }
-
-        if let Some(max_count) = config.count
-            && count >= max_count
-        {
-            tracing::debug!("Reached packet count limit ({max_count})");
-            break;
-        }
-
-        if let Some(duration) = config.duration
-            && start.elapsed() >= duration
-        {
-            tracing::debug!("Reached duration limit ({duration:?})");
+        if let Some(stop) = listener_stop(config, count, start) {
+            stop.log();
             break;
         }
 
@@ -2779,17 +3144,8 @@ fn capture_hep_udp(
         // one that sender needs.
         log_sweep(ingest.sweep(Instant::now()), bind_addr, true);
 
-        let (n, peer) = match socket.recv_from(&mut buf) {
-            Ok((n, peer)) => (n, peer),
-            // EINTR: a signal interrupted the blocking recv — retry immediately,
-            // silently. Treating it as fatal let a single stray signal kill the
-            // listener (the read-timeout poll makes EINTR routine here).
-            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(ref e) if is_transient_recv_error(e.kind()) => continue,
-            Err(e) => {
-                tracing::error!("HEP socket recv error: {e}");
-                return Err(e).context("Fatal HEP socket error");
-            }
+        let Some((n, peer)) = recv_datagram(&socket, &mut buf)? else {
+            continue;
         };
 
         // Count every datagram received off the socket, not only those
@@ -2803,11 +3159,7 @@ fn capture_hep_udp(
         // token authenticates every byte that arrived on this socket, so the
         // src/dst chunks are inside the signature rather than beside it.
         let received = ingest.receive(&buf[..n], peer.ip(), Instant::now());
-        log_resumed(&received, bind_addr);
-        if let Some(packet) = received.packet
-            && tx.send(packet).is_err()
-        {
-            tracing::debug!("Receiver dropped, stopping HEP listener");
+        if forward_received(received, bind_addr, &tx).is_break() {
             break;
         }
     }
@@ -3831,7 +4183,6 @@ impl HepSender {
 /// HMAC), bind policy, rate limiting, and the idle watch.
 #[cfg(test)]
 mod tests {
-
     /// A HEP v3 datagram whose declared total length is `total_len`, with no
     /// chunks after the header.
     fn hep3_with_total_len(total_len: u16) -> Vec<u8> {
@@ -6002,18 +6353,33 @@ mod tests {
         assert!(!is_transient_recv_error(ErrorKind::AddrNotAvailable));
     }
 
+    /// The two HEP v3 timestamp chunks, carried exactly as a test writes
+    /// them: `usec` is not range-checked, so a test can send a crafted one.
+    #[derive(Clone, Copy)]
+    struct TestTimestamp {
+        /// `CHUNK_TS_SEC`: seconds since the epoch.
+        sec: u32,
+        /// `CHUNK_TS_USEC`: microseconds within that second.
+        usec: u32,
+    }
+
     /// Helper: build a minimal valid HEP v3 packet with the given fields.
-    #[expect(clippy::too_many_arguments)]
+    ///
+    /// `src_sock` and `dst_sock` supply both the address and the port
+    /// chunks; the IP family follows `src_sock`.
     fn make_hep_v3(
-        src: IpAddr,
-        dst: IpAddr,
-        src_port: u16,
-        dst_port: u16,
-        ts_sec: u32,
-        ts_usec: u32,
+        src_sock: std::net::SocketAddr,
+        dst_sock: std::net::SocketAddr,
+        ts: TestTimestamp,
         proto: u8,
         payload: &[u8],
     ) -> Vec<u8> {
+        let (src, src_port) = (src_sock.ip(), src_sock.port());
+        let (dst, dst_port) = (dst_sock.ip(), dst_sock.port());
+        let TestTimestamp {
+            sec: ts_sec,
+            usec: ts_usec,
+        } = ts;
         let mut chunks = Vec::new();
 
         // IP family
@@ -6091,7 +6457,16 @@ mod tests {
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
 
-        let data = make_hep_v3(src, dst, 5060, 5061, 1700000000, 123456, 1, sip_payload);
+        let data = make_hep_v3(
+            std::net::SocketAddr::new(src, 5060),
+            std::net::SocketAddr::new(dst, 5061),
+            TestTimestamp {
+                sec: 1700000000,
+                usec: 123456,
+            },
+            1,
+            sip_payload,
+        );
 
         let hep = parse_hep(&data).expect("parse should succeed");
         assert_eq!(hep.version, 3);
@@ -6112,7 +6487,16 @@ mod tests {
         let dst = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
 
-        let data = make_hep_v3(src, dst, 5060, 5080, 1700000000, 0, 1, payload);
+        let data = make_hep_v3(
+            std::net::SocketAddr::new(src, 5060),
+            std::net::SocketAddr::new(dst, 5080),
+            TestTimestamp {
+                sec: 1700000000,
+                usec: 0,
+            },
+            1,
+            payload,
+        );
 
         let hep = parse_hep(&data).expect("parse should succeed");
         assert_eq!(hep.version, 3);
@@ -7617,7 +8001,13 @@ mod tests {
         let make = |proto: u8| {
             let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
             let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
-            make_hep_v3(src, dst, 1, 2, 0, 0, proto, b"Z")
+            make_hep_v3(
+                std::net::SocketAddr::new(src, 1),
+                std::net::SocketAddr::new(dst, 2),
+                TestTimestamp { sec: 0, usec: 0 },
+                proto,
+                b"Z",
+            )
         };
         assert_eq!(parse_hep(&make(5)).unwrap().protocol, HepProtocol::Rtcp);
         assert_eq!(parse_hep(&make(32)).unwrap().protocol, HepProtocol::Rtp);
@@ -7807,7 +8197,16 @@ mod tests {
         // still parse cleanly.
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
-        let data = make_hep_v3(src, dst, 5060, 5061, 1_700_000_000, u32::MAX, 1, b"hello");
+        let data = make_hep_v3(
+            std::net::SocketAddr::new(src, 5060),
+            std::net::SocketAddr::new(dst, 5061),
+            TestTimestamp {
+                sec: 1_700_000_000,
+                usec: u32::MAX,
+            },
+            1,
+            b"hello",
+        );
         let hep = parse_hep(&data).expect("packet with garbage ts_usec must still parse");
         assert_eq!(hep.src_addr, src);
     }
@@ -8409,5 +8808,645 @@ mod tests {
         assert!(CidrRange::parse("10.0.0.40/").is_err(), "empty prefix");
         assert!(CidrRange::parse("10.0.0.40/33").is_err(), "prefix too long");
         assert!(CidrRange::parse("").is_err(), "empty string");
+    }
+
+    /// The decisions the HEP listener's helpers make, driven directly: the
+    /// once-per-process warnings with a fresh flag each, and the capture limits
+    /// on a chosen count and start time.
+    #[cfg(feature = "native")]
+    mod listener_decision_tests {
+        use super::super::*;
+        use super::test_chain;
+        use std::sync::atomic::AtomicBool;
+
+        /// Any error a test can return; `?` converts into it.
+        type TestError = Box<dyn std::error::Error>;
+
+        /// How many times `needle` occurs in `haystack`.
+        fn occurrences(haystack: &str, needle: &str) -> usize {
+            haystack.matches(needle).count()
+        }
+
+        #[test]
+        fn a_flag_is_claimed_exactly_once() {
+            let flag = AtomicBool::new(false);
+            assert!(first_claim(&flag), "the first claim must succeed");
+            assert!(!first_claim(&flag), "a second claim must not");
+            assert!(!first_claim(&flag), "nor any later one");
+        }
+
+        /// The WARN lines `f` logs on its first call, and those it logs on two
+        /// later calls, captured separately so "once" means "the first time".
+        fn first_then_later(f: impl Fn()) -> (String, String) {
+            let first = crate::test_utils::capture_logs(tracing::Level::WARN, &f);
+            let later = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                f();
+                f();
+            });
+            (first, later)
+        }
+
+        #[test]
+        fn a_version_one_rejection_warns_once_and_says_why() {
+            let warned = HmacSenderWideWarned::new();
+            let (first, later) = first_then_later(|| {
+                log_hmac_rejection(HmacAuthError::UnsupportedVersion, 30, &warned);
+            });
+            assert_eq!(
+                occurrences(&first, "REFUSING version-1 tokens"),
+                1,
+                "the first version-1 rejection is warned about:\n{first}"
+            );
+            assert_eq!(
+                occurrences(&first, "check NTP on the sender"),
+                0,
+                "a version-1 rejection is not a clock problem:\n{first}"
+            );
+            assert!(later.is_empty(), "not per packet:\n{later}");
+        }
+
+        #[test]
+        fn a_clock_skew_rejection_warns_once_quoting_the_window() {
+            let warned = HmacSenderWideWarned::new();
+            let (first, later) = first_then_later(|| {
+                log_hmac_rejection(HmacAuthError::TimestampOutOfWindow, 45, &warned);
+            });
+            assert_eq!(
+                occurrences(&first, "outside the 45s"),
+                1,
+                "the first skew rejection is warned about, quoting the window:\n{first}"
+            );
+            assert_eq!(
+                occurrences(&first, "REFUSING version-1 tokens"),
+                0,
+                "{first}"
+            );
+            assert!(later.is_empty(), "not per packet:\n{later}");
+        }
+
+        #[test]
+        fn a_rejection_that_does_not_drop_a_whole_sender_does_not_warn() {
+            let warned = HmacSenderWideWarned::new();
+            let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                for e in [
+                    HmacAuthError::BadFormat,
+                    HmacAuthError::BadMac,
+                    HmacAuthError::Replay,
+                ] {
+                    log_hmac_rejection(e, 30, &warned);
+                }
+            });
+            assert!(
+                logs.is_empty(),
+                "per-packet rejections stay at debug:\n{logs}"
+            );
+        }
+
+        #[test]
+        fn a_full_tracking_table_warns_once_and_other_refusals_do_not() {
+            use crate::rate_limit::Refusal;
+            let lim = HepRateLimiter::new(0, 0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
+            let warned = AtomicBool::new(false);
+            let peer = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
+            let others = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                lim.log_refusal(Refusal::PerPeer, peer, &warned);
+                lim.log_refusal(Refusal::Global, peer, &warned);
+            });
+            assert!(others.is_empty(), "rate refusals stay at debug:\n{others}");
+            let (first, later) = first_then_later(|| {
+                lim.log_refusal(Refusal::TrackingFull, peer, &warned);
+            });
+            assert_eq!(
+                occurrences(&first, "peer tracking is full"),
+                1,
+                "the first refusal by a full table is warned about:\n{first}"
+            );
+            assert!(first.contains("First refused peer: 192.0.2.7"), "{first}");
+            assert!(later.is_empty(), "not per packet:\n{later}");
+        }
+
+        /// A token the verifier refuses is refused under ITS reason, not as a
+        /// missing token: the roster counts refusals by reason, and an operator
+        /// reading "auth missing" for a sender that did send a token looks at the
+        /// wrong end.
+        #[test]
+        fn a_refused_hmac_token_is_refused_for_its_own_reason() {
+            let mut cache = HmacNonceCache::new();
+            let datagram = [0u8; 8];
+            // A span of the wrong length is a malformed token.
+            assert_eq!(
+                hmac_auth_ok(Some("k"), &datagram, Some((0, 4)), 30, &mut cache),
+                Err(HepRefusal::HmacBadFormat)
+            );
+            assert_eq!(
+                hmac_auth_ok(Some("k"), &datagram, None, 30, &mut cache),
+                Err(HepRefusal::AuthMissing)
+            );
+            assert_eq!(
+                hmac_auth_ok(None, &datagram, Some((0, 4)), 30, &mut cache),
+                Ok(())
+            );
+        }
+
+        /// A capture config with the given limits and every other field default.
+        fn limits(count: Option<u64>, duration: Option<Duration>) -> CaptureConfig {
+            CaptureConfig {
+                count,
+                duration,
+                ..CaptureConfig::default()
+            }
+        }
+
+        #[test]
+        fn the_count_limit_is_reached_at_the_count_not_after_it() {
+            let now = Instant::now();
+            let cfg = limits(Some(3), None);
+            assert_eq!(capture_limit_reached(&cfg, 2, now), None);
+            assert_eq!(
+                capture_limit_reached(&cfg, 3, now),
+                Some(ListenerStop::Count(3))
+            );
+            assert_eq!(count_limit_reached(&cfg, 4), Some(3));
+            assert_eq!(count_limit_reached(&limits(None, None), u64::MAX), None);
+        }
+
+        #[test]
+        fn the_duration_limit_is_reached_once_that_long_has_passed() {
+            let cfg = limits(None, Some(Duration::from_secs(60)));
+            assert_eq!(capture_limit_reached(&cfg, 0, Instant::now()), None);
+            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
+                // A monotonic clock younger than a minute cannot express the
+                // start; nothing to assert on such a host.
+                return;
+            };
+            assert_eq!(
+                capture_limit_reached(&cfg, 0, long_ago),
+                Some(ListenerStop::Duration(Duration::from_secs(60)))
+            );
+        }
+
+        #[test]
+        fn the_count_is_asked_before_the_duration() {
+            let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
+                return;
+            };
+            let cfg = limits(Some(1), Some(Duration::from_secs(60)));
+            assert_eq!(
+                capture_limit_reached(&cfg, 1, long_ago),
+                Some(ListenerStop::Count(1))
+            );
+        }
+
+        #[test]
+        fn no_limit_set_never_stops_the_listener() {
+            assert_eq!(
+                capture_limit_reached(&limits(None, None), u64::MAX, Instant::now()),
+                None
+            );
+        }
+
+        /// Listener options with the given allowlist and key; every limit off.
+        fn opts<'a>(allowlist: &'a [CidrRange], auth_key: Option<&'a str>) -> HepListenerOpts<'a> {
+            HepListenerOpts {
+                allowlist,
+                rate_limit: 0,
+                per_peer_rate_limit: 0,
+                max_tracked_peers: crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS,
+                auth_key,
+                auth_mode: HepAuthMode::Plain,
+                hmac_window_secs: DEFAULT_HMAC_WINDOW_SECS,
+                transport: HepTransport::Udp,
+                tls_cert: None,
+                tls_key: None,
+                silence_warn_after: HEP_IDLE_WARN_AFTER,
+            }
+        }
+
+        #[test]
+        fn an_unauthenticated_routable_bind_is_warned_about_and_a_loopback_one_is_not() {
+            let routable = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                warn_on_unverified_bind("0.0.0.0:9060", &opts(&[], None));
+            });
+            assert!(
+                routable.contains("non-loopback and unauthenticated"),
+                "{routable}"
+            );
+            assert!(!routable.contains("not a literal IP"), "{routable}");
+
+            let loopback = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                warn_on_unverified_bind("127.0.0.1:9060", &opts(&[], None));
+            });
+            assert!(loopback.is_empty(), "{loopback}");
+
+            let keyed = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+                warn_on_unverified_bind("0.0.0.0:9060", &opts(&[], Some("k")));
+            });
+            assert!(keyed.contains("authentication active"), "{keyed}");
+            assert!(!keyed.contains("unauthenticated"), "{keyed}");
+        }
+
+        #[test]
+        fn a_hostname_bind_is_warned_about_as_unverifiable() {
+            let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+                warn_on_unverified_bind("collector.example:9060", &opts(&[], Some("k")));
+            });
+            assert!(logs.contains("not a literal IP"), "{logs}");
+        }
+
+        #[test]
+        fn an_allowlist_is_announced_only_when_one_is_set() -> Result<(), TestError> {
+            let range = CidrRange::parse("10.0.0.0/8").map_err(|e| format!("CIDR: {e:?}"))?;
+            let with = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+                log_hep_admission_policy(&opts(std::slice::from_ref(&range), None));
+            });
+            assert!(
+                with.contains("HEP allowlist active: 1 CIDR range(s)"),
+                "{with}"
+            );
+            let without = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+                log_hep_admission_policy(&opts(&[], None));
+            });
+            assert!(!without.contains("allowlist active"), "{without}");
+            Ok(())
+        }
+
+        /// One HEP v3 packet as a stream carries it.
+        fn stream_packet() -> Vec<u8> {
+            let endpoint = HepEndpoint {
+                src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+                dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+                src_port: 5060,
+                dst_port: 5060,
+                transport: TransportProto::Udp,
+            };
+            build_hep_v3_bytes(
+                &endpoint,
+                Utc::now(),
+                HepProtocol::Sip,
+                1,
+                None,
+                b"OPTIONS sip:a@b SIP/2.0\r\n\r\n",
+            )
+        }
+
+        /// The listener-wide state one stream listener shares, with nothing
+        /// received yet.
+        fn shared<'a, 'o>(
+            opts: &'o HepListenerOpts<'o>,
+            config: &'a CaptureConfig,
+        ) -> HepStreamShared<'a, 'o> {
+            use std::sync::atomic::{AtomicU64, AtomicUsize};
+            HepStreamShared {
+                ingest: parking_lot::Mutex::new(HepIngest::new(
+                    opts,
+                    listener_roster(opts, Instant::now(), Utc::now()),
+                )),
+                received: AtomicU64::new(0),
+                stop: AtomicBool::new(false),
+                live: AtomicUsize::new(0),
+                config,
+                start: Instant::now(),
+                bind_addr: "127.0.0.1:9060",
+            }
+        }
+
+        /// How many packets reached the pipeline.
+        fn delivered(rx: &crate::capture::channel::PacketRx) -> usize {
+            let mut n = 0;
+            while rx.recv_timeout(Duration::from_millis(50)).is_ok() {
+                n += 1;
+            }
+            n
+        }
+
+        const PEER: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+
+        /// `--count` ends a connection at the count even when more whole packets
+        /// are already buffered: "stop after N" does not mean "after N, plus
+        /// whatever else arrived in the same read".
+        #[test]
+        fn a_stream_stops_at_the_count_with_packets_still_buffered() {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(Some(2), None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut buf = [one.as_slice(), &one, &one].concat();
+
+            let flow = shared.forward_whole_packets(&mut buf, PEER, &tx);
+
+            assert!(flow.is_break(), "the count reached must end the connection");
+            assert_eq!(shared.received.load(Ordering::Relaxed), 2);
+            assert_eq!(buf, one, "the packet past the count stays unread");
+            assert_eq!(delivered(&rx), 2);
+        }
+
+        /// Whole packets are handed on and a partial one is kept for the next
+        /// read.
+        #[test]
+        fn a_partial_packet_waits_for_the_next_read() {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut buf = [one.as_slice(), &one[..5]].concat();
+
+            let flow = shared.forward_whole_packets(&mut buf, PEER, &tx);
+
+            assert!(flow.is_continue(), "a partial packet asks for more bytes");
+            assert_eq!(shared.received.load(Ordering::Relaxed), 1);
+            assert_eq!(buf, &one[..5]);
+            assert_eq!(delivered(&rx), 1);
+        }
+
+        /// A pipeline that has gone stops the whole listener, not only this
+        /// connection: every other reader polls `stop`.
+        #[test]
+        fn a_pipeline_that_has_gone_stops_every_reader() {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            drop(rx);
+            let mut buf = stream_packet();
+
+            let flow = shared.forward_whole_packets(&mut buf, PEER, &tx);
+
+            assert!(flow.is_break());
+            assert!(
+                shared.stop.load(Ordering::Relaxed),
+                "the listener-wide stop must be raised for the other readers"
+            );
+        }
+
+        /// A reader on a listener that is winding down reads nothing more, even
+        /// with bytes waiting and no limit reached.
+        #[test]
+        fn a_reader_stops_once_the_listener_is_winding_down() {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            shared.stop.store(true, Ordering::Relaxed);
+            let mut stream = std::io::Cursor::new(stream_packet());
+
+            serve_hep_stream(&mut stream, PEER, &shared, &tx);
+
+            assert_eq!(shared.received.load(Ordering::Relaxed), 0);
+            assert_eq!(stream.position(), 0, "nothing may be read");
+            assert_eq!(delivered(&rx), 0);
+        }
+
+        /// The same reader, not winding down, reads the stream to its end and
+        /// delivers what it carried.
+        #[test]
+        fn a_reader_delivers_a_stream_to_its_end() {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut stream = std::io::Cursor::new([one.as_slice(), &one].concat());
+
+            serve_hep_stream(&mut stream, PEER, &shared, &tx);
+
+            assert_eq!(shared.received.load(Ordering::Relaxed), 2);
+            assert_eq!(delivered(&rx), 2);
+        }
+
+        /// A connected loopback TCP pair: the accepted side, and the client.
+        fn loopback_pair() -> Result<(std::net::TcpStream, std::net::TcpStream), TestError> {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let client = std::net::TcpStream::connect(listener.local_addr()?)?;
+            let (server, _) = listener.accept()?;
+            Ok((server, client))
+        }
+
+        /// The connection cap admits the last connection below it and refuses
+        /// the one at it; an admitted socket gets the read timeout every reader
+        /// relies on to notice `stop`.
+        #[test]
+        fn the_connection_cap_refuses_at_the_cap_and_admits_below_it() -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (sock, _client) = loopback_pair()?;
+
+            shared
+                .live
+                .store(HEP_MAX_STREAM_CONNECTIONS - 1, Ordering::Relaxed);
+            assert!(shared.connection_admitted(&sock, PEER));
+            assert_eq!(
+                sock.read_timeout()
+                    .map_err(|e| format!("read timeout: {e:?}"))?,
+                Some(HEP_STREAM_READ_TIMEOUT)
+            );
+            assert!(sock.nodelay().map_err(|e| format!("nodelay: {e:?}"))?);
+
+            shared
+                .live
+                .store(HEP_MAX_STREAM_CONNECTIONS, Ordering::Relaxed);
+            assert!(!shared.connection_admitted(&sock, PEER));
+            Ok(())
+        }
+
+        #[test]
+        fn a_connection_from_outside_the_allowlist_is_refused() -> Result<(), TestError> {
+            let range = CidrRange::parse("10.0.0.0/8").map_err(|e| format!("CIDR: {e:?}"))?;
+            let opts = opts(std::slice::from_ref(&range), None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            let (sock, _client) = loopback_pair()?;
+            assert!(!shared.connection_admitted(&sock, PEER));
+            assert!(shared.connection_admitted(&sock, IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+            Ok(())
+        }
+
+        /// A handshake is given up once its deadline has passed, or as soon as
+        /// the listener winds down; before either it goes on.
+        #[test]
+        fn a_handshake_is_given_up_at_its_deadline_or_on_stop() {
+            use std::sync::atomic::Ordering;
+            let stop = AtomicBool::new(false);
+            let later = Instant::now() + Duration::from_secs(60);
+            assert!(!tls_handshake_cut_short(&stop, later, PEER));
+            let Some(past) = Instant::now().checked_sub(Duration::from_secs(1)) else {
+                return;
+            };
+            assert!(tls_handshake_cut_short(&stop, past, PEER));
+            stop.store(true, Ordering::Relaxed);
+            assert!(tls_handshake_cut_short(&stop, later, PEER));
+        }
+
+        /// A transport that hands over `inbound` and then has nothing more to
+        /// read, and that accepts no bytes at all: a peer that sent its
+        /// ClientHello and went away.
+        struct SentThenGone {
+            /// What the peer sent.
+            inbound: std::io::Cursor<Vec<u8>>,
+        }
+
+        impl std::io::Read for SentThenGone {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                match self.inbound.read(buf)? {
+                    0 => Err(std::io::ErrorKind::WouldBlock.into()),
+                    n => Ok(n),
+                }
+            }
+        }
+
+        impl std::io::Write for SentThenGone {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Ok(0)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        /// A handshake round that moves no bytes at all means the peer has gone:
+        /// the step reports it rather than spinning until the deadline.
+        #[test]
+        fn a_handshake_round_that_moves_no_bytes_ends_the_handshake() -> Result<(), TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+            let (_ca, cert, key) = test_chain(dir.path());
+            let server_cfg = hep_tls_server_config(Some(&cert), Some(&key))
+                .map_err(|e| format!("server config: {e:?}"))?;
+            let mut server = rustls::ServerConnection::new(server_cfg)
+                .map_err(|e| format!("server session: {e:?}"))?;
+
+            let client_cfg =
+                rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+                    .with_safe_default_protocol_versions()
+                    .map_err(|e| format!("protocol versions: {e:?}"))?
+                    .with_root_certificates(rustls::RootCertStore::empty())
+                    .with_no_client_auth();
+            let name = rustls::pki_types::ServerName::try_from("127.0.0.1")
+                .map_err(|e| format!("IP name: {e:?}"))?;
+            let mut client = rustls::ClientConnection::new(std::sync::Arc::new(client_cfg), name)
+                .map_err(|e| format!("client session: {e:?}"))?;
+            let mut hello = Vec::new();
+            client
+                .write_tls(&mut hello)
+                .map_err(|e| format!("ClientHello: {e:?}"))?;
+
+            let mut io = SentThenGone {
+                inbound: std::io::Cursor::new(hello),
+            };
+            assert!(
+                tls_handshake_step(&mut server, &mut io, PEER),
+                "reading the ClientHello is progress"
+            );
+            assert!(server.is_handshaking());
+            assert!(
+                !tls_handshake_step(&mut server, &mut io, PEER),
+                "a round that moves nothing must end the handshake"
+            );
+            Ok(())
+        }
+
+        /// A read timeout that ticks while the peer is still composing its
+        /// ClientHello is not the end of the handshake.
+        #[test]
+        fn a_handshake_round_that_times_out_waiting_for_the_peer_goes_on() -> Result<(), TestError>
+        {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+            let (_ca, cert, key) = test_chain(dir.path());
+            let server_cfg = hep_tls_server_config(Some(&cert), Some(&key))
+                .map_err(|e| format!("server config: {e:?}"))?;
+            let mut server = rustls::ServerConnection::new(server_cfg)
+                .map_err(|e| format!("server session: {e:?}"))?;
+            let mut io = SentThenGone {
+                inbound: std::io::Cursor::new(Vec::new()),
+            };
+            assert!(tls_handshake_step(&mut server, &mut io, PEER));
+            Ok(())
+        }
+
+        /// The bind policy is asked before any socket is touched, on every
+        /// transport: an unguarded routable address fails the preflight.
+        #[test]
+        fn the_preflight_refuses_an_unguarded_routable_bind() {
+            let err = hep_listener_preflight("0.0.0.0:9060", &opts(&[], None))
+                .expect_err("an unguarded routable bind must be refused");
+            assert_eq!(
+                format!("{err:#}"),
+                enforce_hep_bind_policy("0.0.0.0:9060", false, 0).expect_err("the same refusal"),
+                "the preflight reports the policy's own reason"
+            );
+            assert!(matches!(
+                hep_listener_preflight("0.0.0.0:9060", &opts(&[], Some("k"))),
+                Ok(None)
+            ));
+        }
+
+        /// Whoever awaits readiness hears the failure, in full, and the caller
+        /// gets the same error back.
+        #[test]
+        fn a_startup_failure_reaches_whoever_awaits_readiness() -> Result<(), TestError> {
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let e = anyhow::anyhow!("inner cause").context("outer step");
+            let r: Result<()> = startup_failed(Some(tx), e);
+            assert_eq!(
+                rx.try_recv()
+                    .map_err(|e| format!("readiness must be reported: {e:?}"))?,
+                Err("outer step: inner cause".to_string())
+            );
+            assert_eq!(
+                format!("{:#}", r.expect_err("the error comes back")),
+                "outer step: inner cause"
+            );
+            Ok(())
+        }
+
+        /// The datagram socket gets the read timeout the receive loop relies on
+        /// to poll for shutdown and its limits; without it a quiet socket would
+        /// block the listener for good.
+        #[test]
+        fn the_datagram_socket_polls_on_a_read_timeout() -> Result<(), TestError> {
+            let u = UdpSocket::bind("127.0.0.1:0")
+                .map_err(|e| format!("bind a loopback port: {e:?}"))?;
+            let socket = bind_hep_udp("127.0.0.1:0", HepSocketSource::Udp(u))
+                .map_err(|e| format!("bind: {e:?}"))?;
+            assert_eq!(
+                socket
+                    .read_timeout()
+                    .map_err(|e| format!("read timeout: {e:?}"))?,
+                Some(Duration::from_millis(100))
+            );
+            Ok(())
+        }
+
+        /// A packet that ended a silence says so on its way to the pipeline.
+        #[test]
+        fn a_packet_that_ends_a_silence_reports_the_resumption() {
+            let (tx, _rx) = crate::capture::channel::packet_channel(16);
+            let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+                let flow = forward_received(
+                    Received {
+                        packet: None,
+                        resumed_after: Some(Duration::from_secs(31)),
+                        sender_resumed: None,
+                    },
+                    "127.0.0.1:9060",
+                    &tx,
+                );
+                assert!(
+                    flow.is_continue(),
+                    "a refused packet does not stop the listener"
+                );
+            });
+            assert!(
+                logs.contains("HEP listener on 127.0.0.1:9060: traffic resumed after 31s idle"),
+                "{logs}"
+            );
+        }
     }
 }

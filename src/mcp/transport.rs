@@ -545,114 +545,14 @@ mod http {
         resource: Option<ProtectedResource>,
         tls: Option<Arc<rustls::ServerConfig>>,
     ) -> anyhow::Result<()> {
-        // Refuse non-loopback bind without auth (D18 + 8.2 rule).
-        if !bind.ip().is_loopback() && auth_config.is_unconfigured() {
-            anyhow::bail!(
-                "MCP HTTP refuses to start: --mcp-bind {bind} is non-loopback \
-                 but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / \
-                 --mcp-signing-key / --mcp-signing-key-file / \
-                 SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan."
-            );
-        }
-        if tls.is_none() && !bind.ip().is_loopback() {
-            tracing::warn!(
-                "MCP HTTP bound non-loopback ({bind}) without TLS — serve HTTPS \
-                 with --mcp-tls-cert/--mcp-tls-key, or terminate TLS in a reverse \
-                 proxy, and apply a source-IP allowlist."
-            );
-        }
+        refuse_unsafe_bind(bind, &auth_config, tls.is_some())?;
 
-        let session_mgr = Arc::new(LocalSessionManager::default());
         let state = McpHttpState {
             verifier: Arc::new(TokenVerifier::new(auth_config)),
             resource: resource.map(Arc::new),
         };
-
-        // The Host allowlist is sipnab's own (crate::host_allowlist), shared
-        // with the REST API so the two servers answer DNS rebinding with one
-        // rule. rmcp's copy is switched off -- an empty list is rmcp's "allow
-        // all" -- because it does not know the bound address, and a request
-        // it would refuse is refused by the layer below before it gets here.
-        let hosts = Arc::new(HostAllowlist::new(bind, &extra_allowed_hosts));
-        if hosts.is_disabled() {
-            tracing::warn!(
-                "MCP HTTP host-header check disabled via --mcp-allowed-host '*' \
-                 — pair this with a network-level source-IP allowlist."
-            );
-        } else {
-            tracing::info!("MCP HTTP allowed Host headers: {:?}", hosts.describe());
-        }
-        let mut http_config = StreamableHttpServerConfig::default();
-        http_config.allowed_hosts.clear();
-
-        let mcp_service: StreamableHttpService<SipnabMcp, LocalSessionManager> =
-            StreamableHttpService::new(
-                {
-                    let server = server.clone();
-                    move || Ok(server.clone())
-                },
-                session_mgr,
-                http_config,
-            );
-
-        let mut mcp_router = Router::new()
-            .nest_service("/mcp", mcp_service)
-            .route("/health", axum::routing::get(|| async { "ok" }))
-            .route_layer(middleware::from_fn_with_state(state.clone(), auth_layer));
-
-        // The metadata document is UNAUTHENTICATED by design — a client fetches
-        // it precisely because it does not yet hold a credential (RFC 9728 §5,
-        // steps 2-4). That is why it is registered HERE and not above: axum
-        // applies `route_layer` only to routes declared before the call, so
-        // this line's POSITION is the whole of the exemption. Moving it up
-        // would put the bearer guard back in front of the one document whose
-        // purpose is to be readable without one; moving `route_layer` down
-        // would strip the guard from `/mcp` and `/health` instead, and both
-        // mistakes look like working code.
-        if let Some(r) = &state.resource {
-            // Serialized once. The document is a constant for the lifetime of
-            // the process — every field comes from startup configuration — so
-            // re-rendering it per request would only add a way for two
-            // responses to differ.
-            let body = serde_json::to_string(&r.document())
-                .map_err(|e| anyhow::anyhow!("protected-resource metadata is not JSON: {e}"))?;
-            tracing::info!(
-                "MCP HTTP publishing OAuth protected-resource metadata for {} at {}",
-                r.resource,
-                r.path
-            );
-            mcp_router = mcp_router.route(
-                &r.path,
-                axum::routing::get(move || {
-                    let body = body.clone();
-                    // RFC 9728 §3.2: "a JSON object using the application/json
-                    // content type".
-                    async move {
-                        (
-                            [(
-                                axum::http::header::CONTENT_TYPE,
-                                HeaderValue::from_static("application/json"),
-                            )],
-                            body,
-                        )
-                    }
-                }),
-            );
-        }
-
-        let mcp_router = mcp_router
-            // Outermost: a request from a rebound name is refused before the
-            // bearer guard, so it learns nothing about the credential it
-            // lacks, and before any route, the metadata document included.
-            .layer(middleware::from_fn(move |req: Request, next: Next| {
-                let hosts = Arc::clone(&hosts);
-                async move { host_layer(&hosts, req, next).await }
-            }))
-            // Cap the JSON-RPC request body so an oversized POST can't exhaust
-            // memory. No blanket request timeout here: the streamable-HTTP
-            // transport keeps long-lived connections for server-sent events.
-            .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
-            .with_state(state);
+        let hosts = host_allowlist(bind, &extra_allowed_hosts);
+        let mcp_router = mcp_router(server, state, hosts)?;
 
         let listener = tokio::net::TcpListener::bind(bind).await?;
         let actual = listener.local_addr().unwrap_or(bind);
@@ -661,16 +561,10 @@ mod http {
         }
         tracing::info!("MCP HTTP server listening on {actual}");
         let service = mcp_router.into_make_service_with_connect_info::<SocketAddr>();
-        // Poll the project-wide shutdown flag.
-        let shutdown = async move {
-            while !crate::signals::shutdown_requested() {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            }
-        };
         match tls {
             None => {
                 axum::serve(listener, service)
-                    .with_graceful_shutdown(shutdown)
+                    .with_graceful_shutdown(shutdown_requested())
                     .await?;
             }
             // `tap_io` with a no-op is how the peer address reaches the
@@ -685,11 +579,174 @@ mod http {
                     crate::tls_listener::MAX_HANDSHAKES,
                 )?;
                 axum::serve(tls_listener.tap_io(|_| {}), service)
-                    .with_graceful_shutdown(shutdown)
+                    .with_graceful_shutdown(shutdown_requested())
                     .await?;
             }
         }
         Ok(())
+    }
+
+    /// Refuse a bind the server must not start on, and warn about one it may
+    /// start on but should not be left on.
+    ///
+    /// # Errors
+    ///
+    /// The bind is non-loopback and no authentication is configured (D18 +
+    /// 8.2 rule).
+    ///
+    /// # Side effects
+    ///
+    /// Logs a warning for a non-loopback bind served without TLS.
+    fn refuse_unsafe_bind(
+        bind: SocketAddr,
+        auth_config: &VerifierConfig,
+        serves_tls: bool,
+    ) -> anyhow::Result<()> {
+        // Refuse non-loopback bind without auth (D18 + 8.2 rule).
+        if !bind.ip().is_loopback() && auth_config.is_unconfigured() {
+            anyhow::bail!(
+                "MCP HTTP refuses to start: --mcp-bind {bind} is non-loopback \
+                 but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / \
+                 --mcp-signing-key / --mcp-signing-key-file / \
+                 SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan."
+            );
+        }
+        if !serves_tls && !bind.ip().is_loopback() {
+            tracing::warn!(
+                "MCP HTTP bound non-loopback ({bind}) without TLS — serve HTTPS \
+                 with --mcp-tls-cert/--mcp-tls-key, or terminate TLS in a reverse \
+                 proxy, and apply a source-IP allowlist."
+            );
+        }
+        Ok(())
+    }
+
+    /// The Host-header allowlist for `bind` plus the operator's additions,
+    /// logged as it takes effect.
+    fn host_allowlist(bind: SocketAddr, extra_allowed_hosts: &[String]) -> Arc<HostAllowlist> {
+        // The Host allowlist is sipnab's own (crate::host_allowlist), shared
+        // with the REST API so the two servers answer DNS rebinding with one
+        // rule. rmcp's copy is switched off (see `mcp_router`) because it
+        // does not know the bound address, and a request it would refuse is
+        // refused by the layer below before it gets here.
+        let hosts = Arc::new(HostAllowlist::new(bind, extra_allowed_hosts));
+        if hosts.is_disabled() {
+            tracing::warn!(
+                "MCP HTTP host-header check disabled via --mcp-allowed-host '*' \
+                 — pair this with a network-level source-IP allowlist."
+            );
+        } else {
+            tracing::info!("MCP HTTP allowed Host headers: {:?}", hosts.describe());
+        }
+        hosts
+    }
+
+    /// The whole MCP HTTP router: `/mcp` and `/health` behind the bearer
+    /// guard, the protected-resource metadata document outside it, and the
+    /// Host check and body limit around everything.
+    ///
+    /// # Errors
+    ///
+    /// The protected-resource metadata document does not serialize to JSON.
+    fn mcp_router(
+        server: SipnabMcp,
+        state: McpHttpState,
+        hosts: Arc<HostAllowlist>,
+    ) -> anyhow::Result<Router> {
+        // rmcp's Host allowlist is switched off -- an empty list is rmcp's
+        // "allow all" -- because sipnab's own runs as the outermost layer.
+        let mut http_config = StreamableHttpServerConfig::default();
+        http_config.allowed_hosts.clear();
+
+        let mcp_service: StreamableHttpService<SipnabMcp, LocalSessionManager> =
+            StreamableHttpService::new(
+                move || Ok(server.clone()),
+                Arc::new(LocalSessionManager::default()),
+                http_config,
+            );
+
+        let mcp_router = Router::new()
+            .nest_service("/mcp", mcp_service)
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .route_layer(middleware::from_fn_with_state(state.clone(), auth_layer));
+
+        // The metadata document is UNAUTHENTICATED by design — a client fetches
+        // it precisely because it does not yet hold a credential (RFC 9728 §5,
+        // steps 2-4). That is why it is registered HERE and not above: axum
+        // applies `route_layer` only to routes declared before the call, so
+        // this line's POSITION is the whole of the exemption. Moving it up
+        // would put the bearer guard back in front of the one document whose
+        // purpose is to be readable without one; moving `route_layer` down
+        // would strip the guard from `/mcp` and `/health` instead, and both
+        // mistakes look like working code.
+        let mcp_router = match &state.resource {
+            Some(r) => with_resource_metadata(mcp_router, r)?,
+            None => mcp_router,
+        };
+
+        Ok(mcp_router
+            // Outermost: a request from a rebound name is refused before the
+            // bearer guard, so it learns nothing about the credential it
+            // lacks, and before any route, the metadata document included.
+            .layer(middleware::from_fn(move |req: Request, next: Next| {
+                let hosts = Arc::clone(&hosts);
+                async move { host_layer(&hosts, req, next).await }
+            }))
+            // Cap the JSON-RPC request body so an oversized POST can't exhaust
+            // memory. No blanket request timeout here: the streamable-HTTP
+            // transport keeps long-lived connections for server-sent events.
+            .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
+            .with_state(state))
+    }
+
+    /// Mount the RFC 9728 protected-resource metadata document for `r` on
+    /// `router`. The caller decides where in the router it goes, because the
+    /// position is what keeps it outside the bearer guard.
+    ///
+    /// # Errors
+    ///
+    /// The document does not serialize to JSON.
+    fn with_resource_metadata(
+        router: Router<McpHttpState>,
+        r: &ProtectedResource,
+    ) -> anyhow::Result<Router<McpHttpState>> {
+        // Serialized once. The document is a constant for the lifetime of
+        // the process — every field comes from startup configuration — so
+        // re-rendering it per request would only add a way for two
+        // responses to differ.
+        let body = serde_json::to_string(&r.document())
+            .map_err(|e| anyhow::anyhow!("protected-resource metadata is not JSON: {e}"))?;
+        tracing::info!(
+            "MCP HTTP publishing OAuth protected-resource metadata for {} at {}",
+            r.resource,
+            r.path
+        );
+        Ok(router.route(
+            &r.path,
+            axum::routing::get(move || {
+                let body = body.clone();
+                // RFC 9728 §3.2: "a JSON object using the application/json
+                // content type".
+                async move {
+                    (
+                        [(
+                            axum::http::header::CONTENT_TYPE,
+                            HeaderValue::from_static("application/json"),
+                        )],
+                        body,
+                    )
+                }
+            }),
+        ))
+    }
+
+    /// Resolve once the project-wide shutdown flag is set, polling it every
+    /// 200 ms.
+    async fn shutdown_requested() {
+        // Poll the project-wide shutdown flag.
+        while !crate::signals::shutdown_requested() {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
     }
 
     /// Middleware-level tests for `auth_layer`: what gets admitted, what gets

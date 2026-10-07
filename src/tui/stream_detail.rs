@@ -59,13 +59,7 @@ pub fn render_stream_detail(
     scroll: usize,
     display: &StreamDetailDisplay,
 ) -> usize {
-    let StreamDetailDisplay {
-        theme,
-        resolver,
-        name_mode,
-        declared_one_way_delay_ms,
-        quality_bands,
-    } = *display;
+    let theme = display.theme;
     let stream = match store.get(key) {
         Some(s) => s,
         None => {
@@ -76,9 +70,84 @@ pub fn render_stream_detail(
         }
     };
 
+    // Which figure goes to which rank is `MosDelay`'s to decide, not this
+    // view's; see `push_quality`.
+    let delay = crate::rtp::quality::MosDelay::of_run(display.declared_one_way_delay_ms, store);
+    let ctx = DetailContext {
+        stream,
+        theme,
+        bands: display.quality_bands,
+        delay: &delay,
+        grounded: crate::rtp::quality::mos_is_grounded(stream.codec.as_deref()),
+    };
+
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(60);
 
     // ── Header ──────────────────────────────────────────────────────
+    push_header(&mut lines, stream, display);
+
+    // ── Quality Metrics ─────────────────────────────────────────────
+    push_quality(&mut lines, &ctx, store);
+
+    // ── Quality Over Time ───────────────────────────────────────────
+    if !stream.quality_intervals.is_empty() {
+        push_quality_over_time(&mut lines, &ctx, area.width);
+    }
+
+    // ── Burst/Gap Analysis ──────────────────────────────────────────
+    push_burst_gap(&mut lines, stream, theme);
+
+    // ── Silence Detection ───────────────────────────────────────────
+    push_silence(&mut lines, stream, theme);
+
+    // ── Reported by the far end (RTCP XR) ───────────────────────────
+    // Everything above this point is what sipnab measured from the media it
+    // saw. Everything below is what an endpoint asserted in an RTCP XR VoIP
+    // Metrics block (RFC 3611 §4.7) — a different kind of fact, on a
+    // different path segment, over an unauthenticated datagram. The section
+    // header says so, and no value from here is folded into anything above.
+    if let Some(xr) = store.remote_voip_metrics(key) {
+        push_far_end_report(&mut lines, xr, theme);
+    }
+
+    // ── Render with scroll ──────────────────────────────────────────
+    let visible_height = area.height as usize;
+    let max_scroll = lines.len().saturating_sub(visible_height);
+    let effective_scroll = scroll.min(max_scroll);
+
+    let para = Paragraph::new(lines).scroll((effective_scroll as u16, 0));
+    frame.render_widget(para, area);
+    effective_scroll
+}
+
+/// What every section of the detail view reads.
+struct DetailContext<'s> {
+    /// The stream shown.
+    stream: &'s crate::rtp::stream::RtpStream,
+    /// Color theme.
+    theme: &'s Theme,
+    /// The session's quality bands.
+    bands: &'s crate::rtp::bands::QualityBands,
+    /// The one-way delay evidence every MOS in the view is scored with.
+    delay: &'s crate::rtp::quality::MosDelay<'s>,
+    /// Whether the codec has a published impairment value, so its MOS is a
+    /// score rather than a placeholder.
+    grounded: bool,
+}
+
+/// The two header rows: SSRC, codec and payload type; the endpoints and
+/// the dialog the stream belongs to.
+fn push_header<'s>(
+    lines: &mut Vec<Line<'s>>,
+    stream: &'s crate::rtp::stream::RtpStream,
+    display: &StreamDetailDisplay,
+) {
+    let StreamDetailDisplay {
+        theme,
+        resolver,
+        name_mode,
+        ..
+    } = *display;
     let ssrc = format!("0x{:08X}", stream.key.ssrc);
     let codec_str = stream.codec.as_deref().unwrap_or("Unknown");
     let pt = stream.payload_type;
@@ -92,7 +161,7 @@ pub fn render_stream_detail(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  SSRC: "),
-        Span::styled(&ssrc, Style::default().fg(theme.header)),
+        Span::styled(ssrc, Style::default().fg(theme.header)),
         Span::raw("  Codec: "),
         Span::styled(
             format!("{codec_str}/{clock}"),
@@ -130,9 +199,39 @@ pub fn render_stream_detail(
     ]));
 
     lines.push(Line::raw(""));
+}
 
-    // ── Quality Metrics ─────────────────────────────────────────────
+/// The quality section: the triage row (MOS, jitter, loss, RTT), the
+/// wideband score, volume and timing, flags and the QoS marking.
+fn push_quality<'s>(lines: &mut Vec<Line<'s>>, ctx: &DetailContext<'s>, store: &StreamStore) {
+    let stream = ctx.stream;
+    let theme = ctx.theme;
     let loss_pct = stream.loss_percent();
+
+    lines.push(section_header("Quality", theme));
+    lines.push(triage_row(ctx, store, loss_pct));
+    if let Some(row) = wideband_row(ctx, loss_pct) {
+        lines.push(row);
+    }
+    push_volume_rows(lines, stream, theme);
+
+    let flags = format!(
+        "  Orphaned: {}    Found without SDP: {}",
+        if stream.orphaned() { "Yes" } else { "No" },
+        if stream.heuristic { "Yes" } else { "No" },
+    );
+    lines.push(Line::raw(flags));
+    lines.push(dscp_row(stream, theme));
+
+    lines.push(Line::raw(""));
+}
+
+/// The triage row: MOS with its grounding, jitter, loss, round trip, and
+/// where the MOS delay came from.
+fn triage_row<'s>(ctx: &DetailContext<'s>, store: &StreamStore, loss_pct: f64) -> Line<'s> {
+    let stream = ctx.stream;
+    let theme = ctx.theme;
+    let quality_bands = ctx.bands;
     // The store's best round trip, taken ONCE: the delay term of the MOS below
     // and the RTT cell of the same row are the same measurement, and reading it
     // twice is how the two come to disagree.
@@ -149,8 +248,7 @@ pub fn render_stream_detail(
     // view's. It was decided here first and copied into the DSL and the call
     // list wrongly — as nothing at all — so the rule now lives beside the
     // resolver it feeds.
-    let delay = crate::rtp::quality::MosDelay::of_run(declared_one_way_delay_ms, store);
-    let (one_way, delay_src) = delay.resolve(stream);
+    let (one_way, delay_src) = ctx.delay.resolve(stream);
     let mos = crate::rtp::quality::estimate_mos_with_delay(
         stream.jitter,
         loss_pct,
@@ -179,13 +277,12 @@ pub fn render_stream_detail(
     // of 0. REST and MCP carry this as `mos_grounded`/`mos_grounding`; an
     // operator at the terminal is looking at the same stream.
     let grounding = crate::rtp::quality::mos_grounding(stream.codec.as_deref());
-    let grounded = crate::rtp::quality::mos_is_grounded(stream.codec.as_deref());
 
     let mos_band = MosBand::of(mos, quality_bands);
     // A band color on a placeholder is the lie in its most convincing form: it
     // paints "unknown" bold green and calls it Good. Ungrounded scores render
     // muted, so the color says what the number is worth.
-    let mos_style = if grounded {
+    let mos_style = if ctx.grounded {
         Style::default()
             .fg(mos_band.color(theme))
             .add_modifier(Modifier::BOLD)
@@ -194,9 +291,7 @@ pub fn render_stream_detail(
     };
     let mos_label = mos_band.label();
 
-    lines.push(section_header("Quality", theme));
-
-    lines.push(Line::from(vec![
+    Line::from(vec![
         Span::raw("  MOS: "),
         Span::styled(format!("{mos:.1} ({mos_label})"), mos_style),
         // Short enough for the triage row; the sentence behind it is on the
@@ -227,45 +322,57 @@ pub fn render_stream_detail(
         // calls never carry — so the row an operator reads to decide "was this
         // acceptable?" showed two of the three numbers that decide it, with
         // nothing saying the third was missing rather than fine.
-        match round_trip {
-            Some((ms, src)) => Span::styled(
-                format!(
-                    "{ms:.0}ms{}",
-                    match src {
-                        crate::rtp::rtcp::RttSource::XrVoipMetrics => "",
-                        // Marked, because it is anchored on the capture point:
-                        // the full round trip only when the tap sits with the
-                        // SR sender, a lower bound otherwise.
-                        crate::rtp::rtcp::RttSource::SenderReportEcho => "~",
-                    }
-                ),
-                rtt_style(ms, theme, quality_bands),
-            ),
-            // Not "0ms", and not blank. An operator scanning this row has to
-            // be able to tell "nobody measured it" from "it is fine".
-            None => Span::styled("n/a", Style::default().fg(theme.muted)),
-        },
+        rtt_span(round_trip, theme, quality_bands),
         Span::raw("    "),
         Span::styled(format!("({delay_note})"), Style::default().fg(theme.muted)),
-    ]));
+    ])
+}
 
-    // The wideband row, for AMR-WB only.
-    //
-    // The MOS above is `MOS_CQE` on the narrowband G.107 scale, which anchors
-    // at 93.2. It cannot score a wideband codec, and the figure it returns for
-    // one is not an approximation but a scale error worth 35.8 R-points. REST
-    // and MCP have carried the G.107.1 score since it shipped; without this
-    // row an operator at the terminal read the narrowband number for an AMR-WB
-    // call while the API beside them carried the real one.
-    //
-    // Deliberately NOT banded or colored. `MosBand` is calibrated on the
-    // narrowband scale, and painting a `MOS_CQEW` with it would be the same
-    // category error one line down from the sentence refusing it. The number
-    // carries its scale, its mode and its listening context instead, which is
-    // what makes it readable without a band.
+/// The RTT cell of the triage row.
+fn rtt_span(
+    round_trip: Option<(f64, crate::rtp::rtcp::RttSource)>,
+    theme: &Theme,
+    quality_bands: &crate::rtp::bands::QualityBands,
+) -> Span<'static> {
+    match round_trip {
+        Some((ms, src)) => Span::styled(
+            format!(
+                "{ms:.0}ms{}",
+                match src {
+                    crate::rtp::rtcp::RttSource::XrVoipMetrics => "",
+                    // Marked, because it is anchored on the capture point:
+                    // the full round trip only when the tap sits with the
+                    // SR sender, a lower bound otherwise.
+                    crate::rtp::rtcp::RttSource::SenderReportEcho => "~",
+                }
+            ),
+            rtt_style(ms, theme, quality_bands),
+        ),
+        // Not "0ms", and not blank. An operator scanning this row has to
+        // be able to tell "nobody measured it" from "it is fine".
+        None => Span::styled("n/a", Style::default().fg(theme.muted)),
+    }
+}
+
+/// The wideband row, for AMR-WB only.
+///
+/// The MOS above is `MOS_CQE` on the narrowband G.107 scale, which anchors
+/// at 93.2. It cannot score a wideband codec, and the figure it returns for
+/// one is not an approximation but a scale error worth 35.8 R-points. REST
+/// and MCP have carried the G.107.1 score since it shipped; without this
+/// row an operator at the terminal read the narrowband number for an AMR-WB
+/// call while the API beside them carried the real one.
+///
+/// Deliberately NOT banded or colored. `MosBand` is calibrated on the
+/// narrowband scale, and painting a `MOS_CQEW` with it would be the same
+/// category error one line down from the sentence refusing it. The number
+/// carries its scale, its mode and its listening context instead, which is
+/// what makes it readable without a band.
+fn wideband_row<'s>(ctx: &DetailContext<'s>, loss_pct: f64) -> Option<Line<'s>> {
+    let theme = ctx.theme;
     match crate::rtp::emodel_wb::verdict_for_stream(
-        stream.codec.as_deref(),
-        stream.amr_mode_kbps(),
+        ctx.stream.codec.as_deref(),
+        ctx.stream.amr_mode_kbps(),
         loss_pct,
         crate::rtp::emodel_wb::declared_listening_context(),
     ) {
@@ -273,24 +380,22 @@ pub fn render_stream_detail(
         // line saying a wideband score is unavailable for a G.711 call is true
         // and useless, and would train the eye to skip the field on the
         // streams that carry a finding.
-        crate::rtp::emodel_wb::WidebandVerdict::NotAttempted => {}
-        crate::rtp::emodel_wb::WidebandVerdict::Scored(w) => {
-            lines.push(Line::from(vec![
-                Span::raw("  MOS_CQEW: "),
-                Span::styled(
-                    format!("{:.2}", w.mos),
-                    Style::default().add_modifier(Modifier::BOLD),
+        crate::rtp::emodel_wb::WidebandVerdict::NotAttempted => None,
+        crate::rtp::emodel_wb::WidebandVerdict::Scored(w) => Some(Line::from(vec![
+            Span::raw("  MOS_CQEW: "),
+            Span::styled(
+                format!("{:.2}", w.mos),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "    AMR-WB {} kbit/s, {} (G.107.1 wideband scale)",
+                    w.mode_kbps,
+                    w.context.as_str()
                 ),
-                Span::styled(
-                    format!(
-                        "    AMR-WB {} kbit/s, {} (G.107.1 wideband scale)",
-                        w.mode_kbps,
-                        w.context.as_str()
-                    ),
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-        }
+                Style::default().fg(theme.muted),
+            ),
+        ])),
         crate::rtp::emodel_wb::WidebandVerdict::Unavailable {
             reason,
             mode_kbps,
@@ -299,7 +404,7 @@ pub fn render_stream_detail(
             // A reason, never a blank. A missing number reads as a bug; the
             // sentence says the tables end here, which is a finding about the
             // stream rather than about sipnab.
-            lines.push(Line::from(vec![
+            Some(Line::from(vec![
                 Span::raw("  MOS_CQEW: "),
                 Span::styled("n/a", Style::default().fg(theme.muted)),
                 Span::styled(
@@ -310,10 +415,19 @@ pub fn render_stream_detail(
                     ),
                     Style::default().fg(theme.muted),
                 ),
-            ]));
+            ]))
         }
     }
+}
 
+/// Packets, bytes, duration, bitrate, clock, first and last seen, and
+/// lost packets.
+fn push_volume_rows<'s>(
+    lines: &mut Vec<Line<'s>>,
+    stream: &'s crate::rtp::stream::RtpStream,
+    theme: &Theme,
+) {
+    let clock = stream.clock_rate;
     let duration_secs = stream
         .last_seen
         .signed_duration_since(stream.first_seen)
@@ -361,22 +475,17 @@ pub fn render_stream_detail(
             },
         ),
     ]));
+}
 
-    let flags = format!(
-        "  Orphaned: {}    Found without SDP: {}",
-        if stream.orphaned() { "Yes" } else { "No" },
-        if stream.heuristic { "Yes" } else { "No" },
-    );
-    lines.push(Line::raw(flags));
-
-    // QoS marking. A terminal shows a value rather than a JSON key, so this
-    // renders the codepoint's standard name beside the number — an operator
-    // recognizes "EF" faster than 46, and "not observed" is a finding rather
-    // than a missing row.
-    //
-    // Colored because it is actionable at a glance: unmarked media on a
-    // congested link is a configuration fault, and a stream re-marked in
-    // flight is a policy boundary the operator may not know they crossed.
+/// QoS marking. A terminal shows a value rather than a JSON key, so this
+/// renders the codepoint's standard name beside the number — an operator
+/// recognizes "EF" faster than 46, and "not observed" is a finding rather
+/// than a missing row.
+///
+/// Colored because it is actionable at a glance: unmarked media on a
+/// congested link is a configuration fault, and a stream re-marked in
+/// flight is a policy boundary the operator may not know they crossed.
+fn dscp_row(stream: &crate::rtp::stream::RtpStream, theme: &Theme) -> Line<'static> {
     let (marking, marking_style) = match stream.dscp_first {
         Some(v) => (
             // EF gets its purpose beside its name: it is the one codepoint a
@@ -405,303 +514,331 @@ pub fn render_stream_detail(
             Style::default().fg(theme.bad),
         ));
     }
-    lines.push(Line::from(dscp_line));
+    Line::from(dscp_line)
+}
+
+/// The quality-over-time section: the MOS and jitter sparklines and the
+/// per-interval table.
+fn push_quality_over_time<'s>(lines: &mut Vec<Line<'s>>, ctx: &DetailContext<'s>, width: u16) {
+    let theme = ctx.theme;
+    lines.push(section_header("Quality over time", theme));
+
+    // Cap the number of sparkline glyphs to the pane width: reserve room
+    // for the row label and the trailing "(avg: …)" annotation, then draw
+    // only the most recent intervals. Without this a long history emits one
+    // glyph per interval and overflows (and truncates) the pane, hiding the
+    // newest data and the average.
+    const SPARK_LABEL_W: usize = 13; // "  MOS Trend: " / "  Jitter:    "
+    const SPARK_SUFFIX_W: usize = 18; // worst-case "  (avg: 1234.5ms)"
+    let spark_budget = (width as usize)
+        .saturating_sub(SPARK_LABEL_W + SPARK_SUFFIX_W)
+        .max(1);
+
+    lines.push(mos_trend_row(ctx, spark_budget));
+    lines.push(jitter_trend_row(ctx, spark_budget));
 
     lines.push(Line::raw(""));
 
-    // ── Quality Over Time ───────────────────────────────────────────
-    if !stream.quality_intervals.is_empty() {
-        lines.push(section_header("Quality over time", theme));
+    lines.push(Line::from(vec![
+        Span::styled("  Time       ", Style::default().fg(theme.muted)),
+        Span::styled("Jitter     ", Style::default().fg(theme.muted)),
+        Span::styled("Loss       ", Style::default().fg(theme.muted)),
+        Span::styled("Packets    ", Style::default().fg(theme.muted)),
+        Span::styled("MOS", Style::default().fg(theme.muted)),
+    ]));
 
-        // Cap the number of sparkline glyphs to the pane width: reserve room
-        // for the row label and the trailing "(avg: …)" annotation, then draw
-        // only the most recent intervals. Without this a long history emits one
-        // glyph per interval and overflows (and truncates) the pane, hiding the
-        // newest data and the average.
-        const SPARK_LABEL_W: usize = 13; // "  MOS Trend: " / "  Jitter:    "
-        const SPARK_SUFFIX_W: usize = 18; // worst-case "  (avg: 1234.5ms)"
-        let spark_budget = (area.width as usize)
-            .saturating_sub(SPARK_LABEL_W + SPARK_SUFFIX_W)
-            .max(1);
+    let first_ts = ctx.stream.quality_intervals.first().map(|q| q.timestamp);
+    for qi in &ctx.stream.quality_intervals {
+        lines.push(interval_row(ctx, qi, first_ts));
+    }
+    lines.push(Line::raw(""));
+}
 
-        // Sparkline: MOS trend
-        //
-        // Scored through the same evidence as the headline MOS above. Scoring
-        // the trend on the assumed 100 ms while the number beside it used the
-        // measured path made one pane give two answers: a long-haul call read
-        // `MOS: 1.00` next to a flat, healthy sparkline.
-        let scored: Vec<crate::rtp::quality::IntervalQuality> = stream
-            .quality_intervals
-            .iter()
-            .map(|qi| delay.interval_score(stream, qi))
-            .collect();
-        let mos_values: Vec<f64> = scored.iter().map(|s| s.mos).collect();
-        let mut mos_spans: Vec<Span<'_>> = vec![Span::styled(
-            "  MOS Trend: ",
-            Style::default().fg(theme.muted),
-        )];
-        let mos_start = mos_values.len().saturating_sub(spark_budget);
-        for s in &scored[mos_start..] {
-            let ch = mos_to_block(s.mos);
-            // The same rule the headline follows, applied per glyph: a band
-            // color on a placeholder paints "unknown" green. This row used to
-            // band every interval of a stream whose own headline three lines
-            // above was already muted for exactly this reason.
-            let color = if s.verdict.is_verdict() {
-                MosBand::of(s.mos, quality_bands).color(theme)
-            } else {
-                theme.muted
-            };
-            mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
-        }
-        // An average of placeholders is a placeholder with more digits. The
-        // annotation says so rather than publishing one.
-        let mos_annotation = if grounded {
-            let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
-            format!("  (avg: {mos_avg:.1})")
+/// Sparkline: MOS trend
+///
+/// Scored through the same evidence as the headline MOS above. Scoring
+/// the trend on the assumed 100 ms while the number beside it used the
+/// measured path made one pane give two answers: a long-haul call read
+/// `MOS: 1.00` next to a flat, healthy sparkline.
+fn mos_trend_row<'s>(ctx: &DetailContext<'s>, spark_budget: usize) -> Line<'s> {
+    let theme = ctx.theme;
+    let scored: Vec<crate::rtp::quality::IntervalQuality> = ctx
+        .stream
+        .quality_intervals
+        .iter()
+        .map(|qi| ctx.delay.interval_score(ctx.stream, qi))
+        .collect();
+    let mos_values: Vec<f64> = scored.iter().map(|s| s.mos).collect();
+    let mut mos_spans: Vec<Span<'_>> = vec![Span::styled(
+        "  MOS Trend: ",
+        Style::default().fg(theme.muted),
+    )];
+    let mos_start = mos_values.len().saturating_sub(spark_budget);
+    for s in &scored[mos_start..] {
+        let ch = mos_to_block(s.mos);
+        // The same rule the headline follows, applied per glyph: a band
+        // color on a placeholder paints "unknown" green. This row used to
+        // band every interval of a stream whose own headline three lines
+        // above was already muted for exactly this reason.
+        let color = if s.verdict.is_verdict() {
+            MosBand::of(s.mos, ctx.bands).color(theme)
         } else {
-            "  (not scorable)".to_string()
+            theme.muted
         };
-        mos_spans.push(Span::styled(
-            mos_annotation,
-            Style::default().fg(theme.muted),
-        ));
-        lines.push(Line::from(mos_spans));
+        mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
+    }
+    // An average of placeholders is a placeholder with more digits. The
+    // annotation says so rather than publishing one.
+    let mos_annotation = if ctx.grounded {
+        let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
+        format!("  (avg: {mos_avg:.1})")
+    } else {
+        "  (not scorable)".to_string()
+    };
+    mos_spans.push(Span::styled(
+        mos_annotation,
+        Style::default().fg(theme.muted),
+    ));
+    Line::from(mos_spans)
+}
 
-        // Sparkline: Jitter trend
-        let jitter_values: Vec<f64> = stream
-            .quality_intervals
-            .iter()
-            .map(|qi| qi.jitter_ms)
-            .collect();
-        let jitter_avg = jitter_values.iter().sum::<f64>() / jitter_values.len() as f64;
-        let mut jitter_spans: Vec<Span<'_>> = vec![Span::styled(
-            "  Jitter:    ",
-            Style::default().fg(theme.muted),
-        )];
-        let jitter_start = jitter_values.len().saturating_sub(spark_budget);
-        for &j in &jitter_values[jitter_start..] {
-            let ch = jitter_to_block(j);
-            // The shared bands, same as `jitter_style` below. This loop carried
-            // its own 20/50 — not a `*_style` function, so the gate that
-            // consolidated the other six copies read straight past it, and this
-            // pane called a 25 ms interval a warning in its trend row and good
-            // in the table three lines under it.
-            let color = band_color(quality_bands.jitter(j), theme);
-            jitter_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
-        }
-        jitter_spans.push(Span::styled(
-            format!("  (avg: {jitter_avg:.1}ms)"),
-            Style::default().fg(theme.muted),
-        ));
-        lines.push(Line::from(jitter_spans));
+/// Sparkline: Jitter trend
+fn jitter_trend_row<'s>(ctx: &DetailContext<'s>, spark_budget: usize) -> Line<'s> {
+    let theme = ctx.theme;
+    let jitter_values: Vec<f64> = ctx
+        .stream
+        .quality_intervals
+        .iter()
+        .map(|qi| qi.jitter_ms)
+        .collect();
+    let jitter_avg = jitter_values.iter().sum::<f64>() / jitter_values.len() as f64;
+    let mut jitter_spans: Vec<Span<'_>> = vec![Span::styled(
+        "  Jitter:    ",
+        Style::default().fg(theme.muted),
+    )];
+    let jitter_start = jitter_values.len().saturating_sub(spark_budget);
+    for &j in &jitter_values[jitter_start..] {
+        let ch = jitter_to_block(j);
+        // The shared bands, same as `jitter_style` below. This loop carried
+        // its own 20/50 — not a `*_style` function, so the gate that
+        // consolidated the other six copies read straight past it, and this
+        // pane called a 25 ms interval a warning in its trend row and good
+        // in the table three lines under it.
+        let color = band_color(ctx.bands.jitter(j), theme);
+        jitter_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
+    }
+    jitter_spans.push(Span::styled(
+        format!("  (avg: {jitter_avg:.1}ms)"),
+        Style::default().fg(theme.muted),
+    ));
+    Line::from(jitter_spans)
+}
 
-        lines.push(Line::raw(""));
+/// One row of the per-interval table.
+fn interval_row<'s>(
+    ctx: &DetailContext<'s>,
+    qi: &crate::rtp::stream::QualityInterval,
+    first_ts: Option<chrono::DateTime<chrono::Utc>>,
+) -> Line<'s> {
+    let theme = ctx.theme;
+    let quality_bands = ctx.bands;
+    let offset = first_ts
+        .map(|ft| qi.timestamp.signed_duration_since(ft).num_seconds())
+        .unwrap_or(0);
+    let qi_scored = ctx.delay.interval_score(ctx.stream, qi);
+    // `n/s` for the same reason the round-trip renders `n/a`: a column
+    // that has to print SOMETHING prints the refusal, not a number
+    // that reads as a measurement.
+    let (qi_mos_text, qi_mos_style) = if qi_scored.verdict.is_verdict() {
+        (
+            format!("{:.1}", qi_scored.mos),
+            Style::default().fg(MosBand::of(qi_scored.mos, quality_bands).color(theme)),
+        )
+    } else {
+        ("n/s".to_string(), Style::default().fg(theme.muted))
+    };
 
-        lines.push(Line::from(vec![
-            Span::styled("  Time       ", Style::default().fg(theme.muted)),
-            Span::styled("Jitter     ", Style::default().fg(theme.muted)),
-            Span::styled("Loss       ", Style::default().fg(theme.muted)),
-            Span::styled("Packets    ", Style::default().fg(theme.muted)),
-            Span::styled("MOS", Style::default().fg(theme.muted)),
-        ]));
+    Line::from(vec![
+        Span::raw(format!("  +{offset:<8}s ")),
+        Span::styled(
+            format!("{:<10.1}ms ", qi.jitter_ms),
+            jitter_style(qi.jitter_ms, theme, quality_bands),
+        ),
+        Span::styled(
+            format!("{:<10.2}% ", qi.loss_pct),
+            loss_style(qi.loss_pct, theme, quality_bands),
+        ),
+        Span::raw(format!("{:<10} ", qi.packets)),
+        Span::styled(qi_mos_text, qi_mos_style),
+    ])
+}
 
-        let first_ts = stream.quality_intervals.first().map(|q| q.timestamp);
-        for qi in &stream.quality_intervals {
-            let offset = first_ts
-                .map(|ft| qi.timestamp.signed_duration_since(ft).num_seconds())
-                .unwrap_or(0);
-            let qi_scored = delay.interval_score(stream, qi);
-            // `n/s` for the same reason the round-trip renders `n/a`: a column
-            // that has to print SOMETHING prints the refusal, not a number
-            // that reads as a measurement.
-            let (qi_mos_text, qi_mos_style) = if qi_scored.verdict.is_verdict() {
-                (
-                    format!("{:.1}", qi_scored.mos),
-                    Style::default().fg(MosBand::of(qi_scored.mos, quality_bands).color(theme)),
-                )
+/// The burst/gap section, for a stream that lost packets.
+fn push_burst_gap<'s>(
+    lines: &mut Vec<Line<'s>>,
+    stream: &crate::rtp::stream::RtpStream,
+    theme: &Theme,
+) {
+    if stream.lost_packets == 0 {
+        return;
+    }
+    let Some(bga) = stream.burst_gap_analysis() else {
+        return;
+    };
+    lines.push(section_header("Burst/gap analysis", theme));
+    lines.push(Line::from(vec![
+        Span::raw("  Bursts: "),
+        Span::styled(
+            bga.burst_count.to_string(),
+            Style::default().fg(theme.warning),
+        ),
+        Span::raw("    Burst duration: "),
+        Span::raw(format!("{:.0}ms", bga.burst_duration_ms)),
+        Span::raw("    Gap duration: "),
+        Span::raw(format!("{:.1}s", bga.gap_duration_ms / 1000.0)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::raw("  Burst loss rate: "),
+        Span::styled(
+            format!("{:.1}%", bga.burst_loss_rate * 100.0),
+            Style::default().fg(theme.bad),
+        ),
+        Span::raw("    Gap loss rate: "),
+        Span::raw(format!("{:.1}%", bga.gap_loss_rate * 100.0)),
+        Span::raw("    Pattern: "),
+        Span::styled(
+            if bga.is_bursty { "Bursty" } else { "Random" },
+            if bga.is_bursty {
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                ("n/s".to_string(), Style::default().fg(theme.muted))
-            };
+                Style::default().fg(theme.muted)
+            },
+        ),
+    ]));
+    lines.push(Line::raw(""));
+}
 
-            lines.push(Line::from(vec![
-                Span::raw(format!("  +{offset:<8}s ")),
-                Span::styled(
-                    format!("{:<10.1}ms ", qi.jitter_ms),
-                    jitter_style(qi.jitter_ms, theme, quality_bands),
-                ),
-                Span::styled(
-                    format!("{:<10.2}% ", qi.loss_pct),
-                    loss_style(qi.loss_pct, theme, quality_bands),
-                ),
-                Span::raw(format!("{:<10} ", qi.packets)),
-                Span::styled(qi_mos_text, qi_mos_style),
-            ]));
-        }
-        lines.push(Line::raw(""));
+/// The silence section, for a stream with comfort noise or silence
+/// periods; the first 20 periods are listed.
+fn push_silence<'s>(
+    lines: &mut Vec<Line<'s>>,
+    stream: &crate::rtp::stream::RtpStream,
+    theme: &Theme,
+) {
+    if stream.cn_frames == 0 && stream.silence_periods.is_empty() {
+        return;
     }
+    lines.push(section_header("Silence detection", theme));
+    lines.push(Line::from(vec![
+        Span::raw("  Comfort-noise frames: "),
+        Span::raw(stream.cn_frames.to_string()),
+        Span::raw("    Silence periods: "),
+        Span::raw(stream.silence_periods.len().to_string()),
+    ]));
 
-    // ── Burst/Gap Analysis ──────────────────────────────────────────
-    if stream.lost_packets > 0
-        && let Some(bga) = stream.burst_gap_analysis()
-    {
-        lines.push(section_header("Burst/gap analysis", theme));
+    for sp in stream.silence_periods.iter().take(20) {
         lines.push(Line::from(vec![
-            Span::raw("  Bursts: "),
+            Span::raw("  Seq "),
             Span::styled(
-                bga.burst_count.to_string(),
-                Style::default().fg(theme.warning),
-            ),
-            Span::raw("    Burst duration: "),
-            Span::raw(format!("{:.0}ms", bga.burst_duration_ms)),
-            Span::raw("    Gap duration: "),
-            Span::raw(format!("{:.1}s", bga.gap_duration_ms / 1000.0)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::raw("  Burst loss rate: "),
-            Span::styled(
-                format!("{:.1}%", bga.burst_loss_rate * 100.0),
-                Style::default().fg(theme.bad),
-            ),
-            Span::raw("    Gap loss rate: "),
-            Span::raw(format!("{:.1}%", bga.gap_loss_rate * 100.0)),
-            Span::raw("    Pattern: "),
-            Span::styled(
-                if bga.is_bursty { "Bursty" } else { "Random" },
-                if bga.is_bursty {
-                    Style::default()
-                        .fg(theme.warning)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.muted)
-                },
-            ),
-        ]));
-        lines.push(Line::raw(""));
-    }
-
-    // ── Silence Detection ───────────────────────────────────────────
-    if stream.cn_frames > 0 || !stream.silence_periods.is_empty() {
-        lines.push(section_header("Silence detection", theme));
-        lines.push(Line::from(vec![
-            Span::raw("  Comfort-noise frames: "),
-            Span::raw(stream.cn_frames.to_string()),
-            Span::raw("    Silence periods: "),
-            Span::raw(stream.silence_periods.len().to_string()),
-        ]));
-
-        for sp in stream.silence_periods.iter().take(20) {
-            lines.push(Line::from(vec![
-                Span::raw("  Seq "),
-                Span::styled(
-                    format!("{}-{}", sp.start_seq, sp.end_seq),
-                    Style::default().fg(theme.muted),
-                ),
-                Span::raw(format!("    Duration: {}ms", sp.duration_ms)),
-            ]));
-        }
-        if stream.silence_periods.len() > 20 {
-            lines.push(Line::styled(
-                format!("  ... and {} more", stream.silence_periods.len() - 20),
+                format!("{}-{}", sp.start_seq, sp.end_seq),
                 Style::default().fg(theme.muted),
-            ));
-        }
-        lines.push(Line::raw(""));
-    }
-
-    // ── Reported by the far end (RTCP XR) ───────────────────────────
-    // Everything above this point is what sipnab measured from the media it
-    // saw. Everything below is what an endpoint asserted in an RTCP XR VoIP
-    // Metrics block (RFC 3611 §4.7) — a different kind of fact, on a
-    // different path segment, over an unauthenticated datagram. The section
-    // header says so, and no value from here is folded into anything above.
-    if let Some(xr) = store.remote_voip_metrics(key) {
-        let m = &xr.metrics;
-        lines.push(section_header("Reported by far end (RTCP XR)", theme));
-        lines.push(Line::styled(
-            format!(
-                "  Endpoint's own claim, not sipnab's measurement \
-                 (reporter SSRC 0x{:08X}, {} report{})",
-                xr.reporter_ssrc,
-                xr.reports_seen,
-                if xr.reports_seen == 1 { "" } else { "s" },
             ),
-            Style::default()
-                .fg(theme.muted)
-                .add_modifier(Modifier::ITALIC),
-        ));
-
-        lines.push(Line::from(vec![
-            Span::raw("  MOS-LQ: "),
-            Span::styled(reported_mos(m.mos_lq()), Style::default().fg(theme.header)),
-            Span::raw("    MOS-CQ: "),
-            Span::styled(reported_mos(m.mos_cq()), Style::default().fg(theme.header)),
-            Span::raw("    R factor: "),
-            Span::styled(reported_u8(m.r_factor()), Style::default().fg(theme.header)),
-            Span::raw("    Ext R: "),
-            Span::raw(reported_u8(m.ext_r_factor())),
+            Span::raw(format!("    Duration: {}ms", sp.duration_ms)),
         ]));
-
-        lines.push(Line::from(vec![
-            Span::raw("  Loss: "),
-            Span::raw(format!("{:.2}%", m.loss_rate_pct())),
-            Span::raw("    Discard: "),
-            Span::raw(format!("{:.2}%", m.discard_rate_pct())),
-            Span::raw("    Burst density: "),
-            Span::raw(format!("{:.1}%", m.burst_density_pct())),
-            Span::raw("    Gap density: "),
-            Span::raw(format!("{:.1}%", m.gap_density_pct())),
-        ]));
-
-        lines.push(Line::from(vec![
-            Span::raw("  Burst duration: "),
-            Span::raw(format!("{}ms", m.burst_duration)),
-            Span::raw("    Gap duration: "),
-            Span::raw(format!("{}ms", m.gap_duration)),
-            Span::raw("    Round-trip: "),
-            Span::raw(format!("{}ms", m.round_trip_delay)),
-            Span::raw("    End-system: "),
-            Span::raw(format!("{}ms", m.end_system_delay)),
-        ]));
-
-        lines.push(Line::from(vec![
-            Span::raw("  Signal: "),
-            Span::raw(reported_dbm0(m.signal_level_dbm0())),
-            Span::raw("    Noise: "),
-            Span::raw(reported_dbm0(m.noise_level_dbm0())),
-            Span::raw("    RERL: "),
-            Span::raw(match m.rerl_db() {
-                Some(v) => format!("{v} dB"),
-                None => "n/a".to_string(),
-            }),
-            Span::raw("    Gmin: "),
-            Span::raw(m.gmin.to_string()),
-        ]));
-
-        lines.push(Line::from(vec![
-            Span::raw("  Jitter buffer nominal: "),
-            Span::raw(format!("{}ms", m.jb_nominal)),
-            Span::raw("    max: "),
-            Span::raw(format!("{}ms", m.jb_maximum)),
-            Span::raw("    absolute max: "),
-            Span::raw(if m.jb_abs_max_is_capped() {
-                format!("{}ms or more", m.jb_abs_max)
-            } else {
-                format!("{}ms", m.jb_abs_max)
-            }),
-        ]));
-
-        lines.push(Line::raw(""));
     }
+    if stream.silence_periods.len() > 20 {
+        lines.push(Line::styled(
+            format!("  ... and {} more", stream.silence_periods.len() - 20),
+            Style::default().fg(theme.muted),
+        ));
+    }
+    lines.push(Line::raw(""));
+}
 
-    // ── Render with scroll ──────────────────────────────────────────
-    let visible_height = area.height as usize;
-    let max_scroll = lines.len().saturating_sub(visible_height);
-    let effective_scroll = scroll.min(max_scroll);
+/// The far end's own RTCP XR VoIP Metrics report, labeled as its claim.
+fn push_far_end_report<'s>(
+    lines: &mut Vec<Line<'s>>,
+    xr: &crate::rtp::stream_store::RemoteVoipMetrics,
+    theme: &Theme,
+) {
+    let m = &xr.metrics;
+    lines.push(section_header("Reported by far end (RTCP XR)", theme));
+    lines.push(Line::styled(
+        format!(
+            "  Endpoint's own claim, not sipnab's measurement \
+             (reporter SSRC 0x{:08X}, {} report{})",
+            xr.reporter_ssrc,
+            xr.reports_seen,
+            if xr.reports_seen == 1 { "" } else { "s" },
+        ),
+        Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::ITALIC),
+    ));
 
-    let para = Paragraph::new(lines).scroll((effective_scroll as u16, 0));
-    frame.render_widget(para, area);
-    effective_scroll
+    lines.push(Line::from(vec![
+        Span::raw("  MOS-LQ: "),
+        Span::styled(reported_mos(m.mos_lq()), Style::default().fg(theme.header)),
+        Span::raw("    MOS-CQ: "),
+        Span::styled(reported_mos(m.mos_cq()), Style::default().fg(theme.header)),
+        Span::raw("    R factor: "),
+        Span::styled(reported_u8(m.r_factor()), Style::default().fg(theme.header)),
+        Span::raw("    Ext R: "),
+        Span::raw(reported_u8(m.ext_r_factor())),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::raw("  Loss: "),
+        Span::raw(format!("{:.2}%", m.loss_rate_pct())),
+        Span::raw("    Discard: "),
+        Span::raw(format!("{:.2}%", m.discard_rate_pct())),
+        Span::raw("    Burst density: "),
+        Span::raw(format!("{:.1}%", m.burst_density_pct())),
+        Span::raw("    Gap density: "),
+        Span::raw(format!("{:.1}%", m.gap_density_pct())),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::raw("  Burst duration: "),
+        Span::raw(format!("{}ms", m.burst_duration)),
+        Span::raw("    Gap duration: "),
+        Span::raw(format!("{}ms", m.gap_duration)),
+        Span::raw("    Round-trip: "),
+        Span::raw(format!("{}ms", m.round_trip_delay)),
+        Span::raw("    End-system: "),
+        Span::raw(format!("{}ms", m.end_system_delay)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::raw("  Signal: "),
+        Span::raw(reported_dbm0(m.signal_level_dbm0())),
+        Span::raw("    Noise: "),
+        Span::raw(reported_dbm0(m.noise_level_dbm0())),
+        Span::raw("    RERL: "),
+        Span::raw(match m.rerl_db() {
+            Some(v) => format!("{v} dB"),
+            None => "n/a".to_string(),
+        }),
+        Span::raw("    Gmin: "),
+        Span::raw(m.gmin.to_string()),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::raw("  Jitter buffer nominal: "),
+        Span::raw(format!("{}ms", m.jb_nominal)),
+        Span::raw("    max: "),
+        Span::raw(format!("{}ms", m.jb_maximum)),
+        Span::raw("    absolute max: "),
+        Span::raw(if m.jb_abs_max_is_capped() {
+            format!("{}ms or more", m.jb_abs_max)
+        } else {
+            format!("{}ms", m.jb_abs_max)
+        }),
+    ]));
+
+    lines.push(Line::raw(""));
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -882,6 +1019,9 @@ pub(in crate::tui) fn jitter_to_block(jitter_ms: f64) -> char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Every MOS band maps to its block glyph, including exact boundaries
     /// and below-minimum values.
@@ -1287,7 +1427,60 @@ mod tests {
             out.contains("Lost packets:"),
             "lost packets line missing: {out}"
         );
+        assert!(
+            out.contains("Burst/gap analysis"),
+            "a stream that lost packets gets the burst/gap section: {out}"
+        );
         let _ = Color::Reset; // keep Color import used regardless of assertions
+    }
+
+    /// A stream with no loss has no burst/gap section to show.
+    #[test]
+    fn a_stream_without_loss_has_no_burst_gap_section() {
+        let (store, key) = store_with_stream(0x3434_3434, 0, 0);
+        let out = render_to_string(&store, &key);
+        assert!(out.contains("RTP stream detail"));
+        assert!(!out.contains("Burst/gap analysis"), "{out}");
+    }
+
+    /// Silence periods alone open the silence section, comfort-noise frames
+    /// or not.
+    #[test]
+    fn silence_periods_alone_open_the_silence_section() -> Result<(), TestError> {
+        use crate::rtp::stream::{RtpStream, SilencePeriod};
+        let ssrc = 0x3535_3535u32;
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
+        let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
+        stream.cn_frames = 0;
+        stream.silence_periods.push(SilencePeriod {
+            start_seq: 10,
+            end_seq: 20,
+            duration_ms: 200,
+        });
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(stream);
+        let out = render_to_string(&store, &key);
+        assert!(out.contains("Silence detection"), "{out}");
+        assert!(out.contains("10-20"), "{out}");
+        Ok(())
+    }
+
+    /// The RTT cell marks a round trip derived from a sender-report echo,
+    /// leaves an XR-reported one unmarked, and says `n/a` for none.
+    #[test]
+    fn the_rtt_cell_marks_an_echo_derived_round_trip() {
+        use crate::rtp::rtcp::RttSource;
+        let theme = Theme::default();
+        let bands = crate::rtp::bands::QualityBands::default();
+        let text = |rt| rtt_span(rt, &theme, &bands).content.into_owned();
+        assert_eq!(text(Some((40.0, RttSource::SenderReportEcho))), "40ms~");
+        assert_eq!(text(Some((40.0, RttSource::XrVoipMetrics))), "40ms");
+        assert_eq!(text(None), "n/a");
     }
 
     /// Attach an XR VoIP Metrics block reporting the far end's own figures to

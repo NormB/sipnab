@@ -203,6 +203,72 @@ struct FragmentEntry {
     created: Instant,
 }
 
+/// How a new fragment relates to the fragments an entry already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FragmentOverlap {
+    /// It covers bytes no held fragment covers.
+    None,
+    /// It is an exact copy of a held fragment.
+    Duplicate,
+    /// It covers bytes a held fragment covers, and is not a copy of it.
+    Conflict,
+}
+
+impl FragmentEntry {
+    /// Check a new fragment at `byte_offset` against the held fragments.
+    fn overlap(&self, byte_offset: usize, payload: &bytes::Bytes, ends: bool) -> FragmentOverlap {
+        let new_end = byte_offset + payload.len();
+        for (existing_offset, existing_data, existing_ends) in &self.fragments {
+            let existing_end = *existing_offset + existing_data.len();
+
+            // Overlap detection: ranges [existing_offset..existing_end) and [byte_offset..new_end)
+            if byte_offset < existing_end && new_end > *existing_offset {
+                // An exact copy of a fragment already held: a capture on
+                // `any` records a forwarded datagram once per interface, and
+                // a network may duplicate a fragment. RFC 8200 section 4.5
+                // lets a reassembler drop such a copy and keep the datagram.
+                // Anything else over the same range is an overlap.
+                if *existing_offset == byte_offset
+                    && *existing_ends == ends
+                    && existing_data == payload
+                {
+                    return FragmentOverlap::Duplicate;
+                }
+                return FragmentOverlap::Conflict;
+            }
+        }
+        FragmentOverlap::None
+    }
+
+    /// The datagram, once the held fragments cover `0..total_len` without a
+    /// gap; `None` while one is still missing.
+    fn assemble(&self, total_len: usize) -> Option<Vec<u8>> {
+        // Sort fragments by offset and check contiguity
+        let mut sorted: Vec<&(usize, bytes::Bytes, bool)> = self.fragments.iter().collect();
+        sorted.sort_by_key(|(off, _, _)| *off);
+
+        let mut cursor = 0;
+        for (off, data, _) in &sorted {
+            if *off != cursor {
+                // Gap: not all fragments received yet
+                return None;
+            }
+            cursor += data.len();
+        }
+
+        if cursor != total_len {
+            return None;
+        }
+
+        // All fragments present — reassemble
+        let mut reassembled = vec![0u8; total_len];
+        for (off, data, _) in &sorted {
+            reassembled[*off..*off + data.len()].copy_from_slice(data);
+        }
+        Some(reassembled)
+    }
+}
+
 /// Reassembles IP-fragmented packets into complete datagrams.
 ///
 /// Fragments are tracked by (src, dst, ip_id, protocol). The reassembler
@@ -278,6 +344,22 @@ impl FragmentReassembler {
             self.evict_oldest();
         }
 
+        let total_len = self.store_fragment(&key, byte_offset, parsed)?;
+        self.complete_datagram(&key, total_len, parsed)
+    }
+
+    /// Hold one fragment under `key`, and return the datagram's total length
+    /// once the final fragment has been seen.
+    ///
+    /// `None` when the length is not known yet, and when the fragment was a
+    /// duplicate (ignored) or overlapped a held one (the whole entry dropped).
+    fn store_fragment(
+        &mut self,
+        key: &FragmentKey,
+        byte_offset: usize,
+        parsed: &ParsedPacket,
+    ) -> Option<usize> {
+        let ip_id = key.ip_id;
         let entry = self
             .entries
             .entry(key.clone())
@@ -287,36 +369,24 @@ impl FragmentReassembler {
                 created: Instant::now(),
             });
 
-        // Check for overlapping fragments
-        let new_end = byte_offset + parsed.payload.len();
-        for (existing_offset, existing_data, existing_ends) in &entry.fragments {
-            let existing_end = *existing_offset + existing_data.len();
-
-            // Overlap detection: ranges [existing_offset..existing_end) and [byte_offset..new_end)
-            if byte_offset < existing_end && new_end > *existing_offset {
-                // An exact copy of a fragment already held: a capture on
-                // `any` records a forwarded datagram once per interface, and
-                // a network may duplicate a fragment. RFC 8200 section 4.5
-                // lets a reassembler drop such a copy and keep the datagram.
-                // Anything else over the same range is an overlap.
-                if *existing_offset == byte_offset
-                    && *existing_ends == !parsed.more_fragments
-                    && *existing_data == parsed.payload
-                {
-                    tracing::debug!(
-                        "Duplicate IP fragment ignored (id={ip_id}, src={}, dst={}, offset={byte_offset})",
-                        parsed.src_addr,
-                        parsed.dst_addr,
-                    );
-                    return None;
-                }
+        match entry.overlap(byte_offset, &parsed.payload, !parsed.more_fragments) {
+            FragmentOverlap::None => {}
+            FragmentOverlap::Duplicate => {
+                tracing::debug!(
+                    "Duplicate IP fragment ignored (id={ip_id}, src={}, dst={}, offset={byte_offset})",
+                    parsed.src_addr,
+                    parsed.dst_addr,
+                );
+                return None;
+            }
+            FragmentOverlap::Conflict => {
                 tracing::warn!(
                     "Overlapping IP fragment detected (id={ip_id}, src={}, dst={}); \
                      dropping all fragments for this datagram (possible evasion)",
                     parsed.src_addr,
                     parsed.dst_addr,
                 );
-                self.entries.remove(&key);
+                self.entries.remove(key);
                 return None;
             }
         }
@@ -332,8 +402,18 @@ impl FragmentReassembler {
         }
 
         // Check if reassembly is complete
-        let total_len = entry.total_len?;
+        entry.total_len
+    }
 
+    /// Reassemble the datagram under `key` of `total_len` bytes once every
+    /// fragment is held, dropping it if it is oversized.
+    fn complete_datagram(
+        &mut self,
+        key: &FragmentKey,
+        total_len: usize,
+        parsed: &ParsedPacket,
+    ) -> Option<Vec<u8>> {
+        let ip_id = key.ip_id;
         // Safety check: refuse to reassemble datagrams > 64KB
         if total_len > MAX_REASSEMBLED_SIZE {
             tracing::warn!(
@@ -342,32 +422,11 @@ impl FragmentReassembler {
                 parsed.src_addr,
                 parsed.dst_addr,
             );
-            self.entries.remove(&key);
+            self.entries.remove(key);
             return None;
         }
 
-        // Sort fragments by offset and check contiguity
-        let mut sorted: Vec<&(usize, bytes::Bytes, bool)> = entry.fragments.iter().collect();
-        sorted.sort_by_key(|(off, _, _)| *off);
-
-        let mut cursor = 0;
-        for (off, data, _) in &sorted {
-            if *off != cursor {
-                // Gap: not all fragments received yet
-                return None;
-            }
-            cursor += data.len();
-        }
-
-        if cursor != total_len {
-            return None;
-        }
-
-        // All fragments present — reassemble
-        let mut reassembled = vec![0u8; total_len];
-        for (off, data, _) in &sorted {
-            reassembled[*off..*off + data.len()].copy_from_slice(data);
-        }
+        let reassembled = self.entries.get(key)?.assemble(total_len)?;
 
         tracing::debug!(
             "Reassembled IP datagram: id={ip_id}, {} -> {}, {total_len} bytes",
@@ -375,7 +434,7 @@ impl FragmentReassembler {
             parsed.dst_addr,
         );
 
-        self.entries.remove(&key);
+        self.entries.remove(key);
         Some(reassembled)
     }
 
@@ -493,6 +552,80 @@ struct TcpStream {
     blocked_template: Option<ParsedPacket>,
 }
 
+impl TcpStream {
+    /// Record one segment on this stream: its time, a SYN's new start, the
+    /// start a stream without a SYN is anchored at, its payload, and a push.
+    ///
+    /// Returns `false` for a SYN without payload, which has nothing further
+    /// to deliver.
+    #[inline]
+    fn take_segment(
+        &mut self,
+        flags: &super::parse::TcpFlags,
+        seq: u32,
+        parsed: &ParsedPacket,
+    ) -> bool {
+        self.last_seen = Instant::now();
+        // The latest time seen, so one stray early timestamp does not make the
+        // next ordinary packet look like the end of a long silence.
+        self.last_packet_at = self.last_packet_at.max(parsed.timestamp);
+
+        // SYN: (re)initialize expected sequence
+        if flags.syn {
+            self.restart_at_syn(seq);
+            // SYN packets typically have no payload
+            if parsed.payload.is_empty() {
+                return false;
+            }
+        }
+
+        self.anchor(seq, !parsed.payload.is_empty());
+
+        // Buffer the segment (skip empty payloads from pure ACKs)
+        if !parsed.payload.is_empty() {
+            self.buffered_bytes += parsed.payload.len();
+            self.buffer.insert(seq, parsed.payload.clone());
+        }
+        // A PSH requests delivery of the data up to here; record it while we hold
+        // the borrow. It may not be drainable yet (a gap before it) — the flush
+        // retries it once a later out-of-order segment fills the gap.
+        if flags.psh {
+            self.pending_flush = true;
+        }
+        true
+    }
+
+    /// Restart the stream at a SYN with sequence number `seq`.
+    fn restart_at_syn(&mut self, seq: u32) {
+        // SYN consumes one sequence number; data starts at seq+1
+        self.expected_seq = seq.wrapping_add(1);
+        self.initialized = true;
+        self.syn_seen = true;
+        self.buffer.clear();
+        self.buffered_bytes = 0;
+    }
+
+    /// Settle where a stream with no SYN starts, given a segment at `seq`.
+    fn anchor(&mut self, seq: u32, has_payload: bool) {
+        // If stream not initialized (missed the SYN), use first segment's seq
+        if !self.initialized {
+            self.expected_seq = seq;
+            self.initialized = true;
+        }
+
+        // If we see a segment earlier than expected_seq and we never saw a SYN,
+        // the stream's initial expected_seq was a guess from the first segment
+        // we received (which may not have been the lowest). Adjust downward so
+        // we can assemble from the true beginning -- unless data has already
+        // been delivered from the guess: then the earlier segment is a
+        // retransmission (or a second interface's copy), and delivering from
+        // it again would report its message twice.
+        if has_payload && seq_lt(seq, self.expected_seq) && !self.syn_seen && !self.delivered {
+            self.expected_seq = seq;
+        }
+    }
+}
+
 /// Whether a stream last heard from at `last` has been silent for `ttl` or
 /// longer by `now`, both the capture's own timestamps -- the bound
 /// [`TcpReassembler::sweep`] holds a live stream to. A clock that runs
@@ -604,13 +737,8 @@ impl TcpReassembler {
     /// streams), updates per-stream buffers/counters/`last_seen`, and logs
     /// RST discards and overflow flushes at debug level.
     pub fn insert(&mut self, parsed: &ParsedPacket) -> Vec<Vec<u8>> {
-        let flags = match &parsed.tcp_flags {
-            Some(f) => f,
-            None => return Vec::new(),
-        };
-        let seq = match parsed.tcp_seq {
-            Some(s) => s,
-            None => return Vec::new(),
+        let (Some(flags), Some(seq)) = (&parsed.tcp_flags, parsed.tcp_seq) else {
+            return Vec::new();
         };
 
         let key = TcpStreamKey {
@@ -626,25 +754,7 @@ impl TcpReassembler {
             return Vec::new();
         }
 
-        // A direction silent for longer than the TTL, in the capture's own
-        // time, is over, as a sweep would have found it on a live capture: a
-        // file reads in less wall time than it spans, so the sweep never
-        // does. Without this, a later connection on the same address and port
-        // pair continues the old stream, and without a SYN to anchor it its
-        // segments are taken for retransmissions.
-        let restarted = self
-            .streams
-            .get(&key)
-            .is_some_and(|s| silent_past(s.last_packet_at, parsed.timestamp, self.ttl));
-        if restarted {
-            self.streams.remove(&key);
-            REASSEMBLY_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(
-                "TCP {} -> {}: silent past the reassembly TTL; starting afresh",
-                key.src,
-                key.dst
-            );
-        }
+        let restarted = self.restart_if_silent(&key, parsed.timestamp);
 
         // Enforce max entries
         if !self.streams.contains_key(&key) && self.streams.len() >= self.max_entries {
@@ -668,56 +778,8 @@ impl TcpReassembler {
                 blocked_template: None,
             });
 
-        stream.last_seen = Instant::now();
-        // The latest time seen, so one stray early timestamp does not make the
-        // next ordinary packet look like the end of a long silence.
-        stream.last_packet_at = stream.last_packet_at.max(parsed.timestamp);
-
-        // SYN: (re)initialize expected sequence
-        if flags.syn {
-            // SYN consumes one sequence number; data starts at seq+1
-            stream.expected_seq = seq.wrapping_add(1);
-            stream.initialized = true;
-            stream.syn_seen = true;
-            stream.buffer.clear();
-            stream.buffered_bytes = 0;
-            // SYN packets typically have no payload
-            if parsed.payload.is_empty() {
-                return Vec::new();
-            }
-        }
-
-        // If stream not initialized (missed the SYN), use first segment's seq
-        if !stream.initialized {
-            stream.expected_seq = seq;
-            stream.initialized = true;
-        }
-
-        // If we see a segment earlier than expected_seq and we never saw a SYN,
-        // the stream's initial expected_seq was a guess from the first segment
-        // we received (which may not have been the lowest). Adjust downward so
-        // we can assemble from the true beginning -- unless data has already
-        // been delivered from the guess: then the earlier segment is a
-        // retransmission (or a second interface's copy), and delivering from
-        // it again would report its message twice.
-        if !parsed.payload.is_empty()
-            && seq_lt(seq, stream.expected_seq)
-            && !stream.syn_seen
-            && !stream.delivered
-        {
-            stream.expected_seq = seq;
-        }
-
-        // Buffer the segment (skip empty payloads from pure ACKs)
-        if !parsed.payload.is_empty() {
-            stream.buffered_bytes += parsed.payload.len();
-            stream.buffer.insert(seq, parsed.payload.clone());
-        }
-        // A PSH requests delivery of the data up to here; record it while we hold
-        // the borrow. It may not be drainable yet (a gap before it) — the flush
-        // below retries it once a later out-of-order segment fills the gap.
-        if flags.psh {
-            stream.pending_flush = true;
+        if !stream.take_segment(flags, seq, parsed) {
+            return Vec::new();
         }
 
         // A hole that no captured packet will fill: resume at a message
@@ -727,14 +789,9 @@ impl TcpReassembler {
             self.resync_past_hole(&key, starts_message, just_arrived);
         }
 
-        let mut results = Vec::new();
-
         // FIN: flush everything and remove stream
         if flags.fin {
-            let flushed = self.drain_in_order(&key);
-            if !flushed.is_empty() {
-                results.push(flushed);
-            }
+            let results = self.drain_as_results(&key);
             self.streams.remove(&key);
             return results;
         }
@@ -743,68 +800,122 @@ impl TcpReassembler {
         let ceiling = max_tcp_buffer();
         let buffered = self.streams.get(&key).map_or(0, |s| s.buffered_bytes);
         if buffered > ceiling {
-            let flushed = self.drain_in_order(&key);
-            if !flushed.is_empty() {
-                // Warned, not just debugged: this cuts a message in half, and
-                // the halves parse as malformed SIP. An operator reading the
-                // output sees a broken message from a peer that sent a
-                // perfectly good one, and nothing connects that to a buffer
-                // ceiling. Once per process — a peer that exceeds it once
-                // usually exceeds it on every call.
-                static OVERFLOW_WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !OVERFLOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    tracing::warn!(
-                        "a SIP/TCP message from {} to {} exceeded the {ceiling}-byte \
-                         reassembly buffer and was flushed mid-message, so it will parse as \
-                         malformed. TCP sets no such limit; this is sipnab's ceiling. Large \
-                         multipart bodies (ISUP, long Record-Route sets) hit it legitimately. \
-                         Raise it with --max-tcp-buffer or [limits] max_tcp_buffer.",
-                        key.src,
-                        key.dst,
-                    );
-                }
-                tracing::debug!(
-                    "TCP buffer overflow flush: {} -> {} ({} bytes)",
+            return self.flush_overflow(&key, ceiling);
+        }
+
+        let results = self.flush_pending_push(&key);
+        self.remember_blocked(&key, parsed);
+        results
+    }
+
+    /// Whether the stream `key` names was silent past the TTL, in which case
+    /// it is dropped so this segment starts it afresh.
+    ///
+    /// A direction silent for longer than the TTL, in the capture's own
+    /// time, is over, as a sweep would have found it on a live capture: a
+    /// file reads in less wall time than it spans, so the sweep never
+    /// does. Without this, a later connection on the same address and port
+    /// pair continues the old stream, and without a SYN to anchor it its
+    /// segments are taken for retransmissions.
+    fn restart_if_silent(
+        &mut self,
+        key: &TcpStreamKey,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let restarted = self
+            .streams
+            .get(key)
+            .is_some_and(|s| silent_past(s.last_packet_at, timestamp, self.ttl));
+        if restarted {
+            self.streams.remove(key);
+            REASSEMBLY_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+            tracing::debug!(
+                "TCP {} -> {}: silent past the reassembly TTL; starting afresh",
+                key.src,
+                key.dst
+            );
+        }
+        restarted
+    }
+
+    /// The in-order data of `key`, drained, as a result list: empty when
+    /// nothing was drainable.
+    fn drain_as_results(&mut self, key: &TcpStreamKey) -> Vec<Vec<u8>> {
+        let mut results = Vec::new();
+        let flushed = self.drain_in_order(key);
+        if !flushed.is_empty() {
+            results.push(flushed);
+        }
+        results
+    }
+
+    /// Flush a stream whose buffer passed `ceiling`, cutting the message it
+    /// holds.
+    fn flush_overflow(&mut self, key: &TcpStreamKey, ceiling: usize) -> Vec<Vec<u8>> {
+        let mut results = Vec::new();
+        let flushed = self.drain_in_order(key);
+        if !flushed.is_empty() {
+            // Warned, not just debugged: this cuts a message in half, and
+            // the halves parse as malformed SIP. An operator reading the
+            // output sees a broken message from a peer that sent a
+            // perfectly good one, and nothing connects that to a buffer
+            // ceiling. Once per process — a peer that exceeds it once
+            // usually exceeds it on every call.
+            static OVERFLOW_WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !OVERFLOW_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "a SIP/TCP message from {} to {} exceeded the {ceiling}-byte \
+                     reassembly buffer and was flushed mid-message, so it will parse as \
+                     malformed. TCP sets no such limit; this is sipnab's ceiling. Large \
+                     multipart bodies (ISUP, long Record-Route sets) hit it legitimately. \
+                     Raise it with --max-tcp-buffer or [limits] max_tcp_buffer.",
                     key.src,
                     key.dst,
-                    flushed.len(),
                 );
-                results.push(flushed);
             }
-            return results;
+            tracing::debug!(
+                "TCP buffer overflow flush: {} -> {} ({} bytes)",
+                key.src,
+                key.dst,
+                flushed.len(),
+            );
+            results.push(flushed);
         }
-
-        // Flush if a push is pending — now, or one that earlier stalled on a
-        // missing segment that this (out-of-order) segment has just filled.
-        if self.streams.get(&key).is_some_and(|s| s.pending_flush) {
-            let flushed = self.drain_in_order(&key);
-            if !flushed.is_empty() {
-                results.push(flushed);
-            }
-            // Once the contiguous data is delivered, the push is satisfied.
-            if let Some(s) = self.streams.get_mut(&key)
-                && s.buffer.is_empty()
-            {
-                s.pending_flush = false;
-            }
-        }
-
-        // Data still waiting behind a hole: remember the packet it came in, so
-        // the end of the input can release it with the right addressing.
-        if let Some(stream) = self.streams.get_mut(&key) {
-            let blocked =
-                !stream.buffer.is_empty() && !stream.buffer.contains_key(&stream.expected_seq);
-            if !blocked {
-                stream.blocked_template = None;
-            } else if !parsed.payload.is_empty() {
-                let mut template = parsed.clone();
-                template.payload = bytes::Bytes::new();
-                stream.blocked_template = Some(template);
-            }
-        }
-
         results
+    }
+
+    /// Flush if a push is pending — now, or one that earlier stalled on a
+    /// missing segment that this (out-of-order) segment has just filled.
+    fn flush_pending_push(&mut self, key: &TcpStreamKey) -> Vec<Vec<u8>> {
+        if !self.streams.get(key).is_some_and(|s| s.pending_flush) {
+            return Vec::new();
+        }
+        let results = self.drain_as_results(key);
+        // Once the contiguous data is delivered, the push is satisfied.
+        if let Some(s) = self.streams.get_mut(key)
+            && s.buffer.is_empty()
+        {
+            s.pending_flush = false;
+        }
+        results
+    }
+
+    /// Data still waiting behind a hole: remember the packet it came in, so
+    /// the end of the input can release it with the right addressing.
+    fn remember_blocked(&mut self, key: &TcpStreamKey, parsed: &ParsedPacket) {
+        let Some(stream) = self.streams.get_mut(key) else {
+            return;
+        };
+        let blocked =
+            !stream.buffer.is_empty() && !stream.buffer.contains_key(&stream.expected_seq);
+        if !blocked {
+            stream.blocked_template = None;
+        } else if !parsed.payload.is_empty() {
+            let mut template = parsed.clone();
+            template.payload = bytes::Bytes::new();
+            stream.blocked_template = Some(template);
+        }
     }
 
     /// At the end of the input, release every stream held behind a hole that
@@ -1085,6 +1196,9 @@ mod tests {
     use crate::capture::parse::{TcpFlags, TransportProto};
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Helper to build a fragment ParsedPacket.
     fn make_fragment(
@@ -1580,6 +1694,322 @@ mod tests {
 
         // Entry should be dropped
         assert!(r.is_empty());
+    }
+
+    /// A fragment lying past the one that ends the datagram means the pieces
+    /// do not describe one datagram of the declared length: it is never
+    /// completed from them.
+    #[test]
+    fn a_fragment_past_the_final_one_never_completes_the_datagram() {
+        let mut r = FragmentReassembler::new();
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        assert!(
+            r.insert(&make_fragment(src, dst, 91, 1, true, &[0xBB; 8]))
+                .is_none()
+        );
+        assert!(
+            r.insert(&make_fragment(src, dst, 91, 0, false, &[0xAA; 8]))
+                .is_none(),
+            "the final fragment ends at byte 8, and another runs to 16"
+        );
+        assert_eq!(r.len(), 1, "held until the TTL, never reassembled");
+    }
+
+    /// A datagram of exactly the 64 KB ceiling is reassembled; only one past
+    /// it is refused.
+    #[test]
+    fn a_datagram_at_the_size_ceiling_is_reassembled() -> Result<(), TestError> {
+        let mut r = FragmentReassembler::new();
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let head = vec![0xAA; 65528];
+        let tail_len = MAX_REASSEMBLED_SIZE - head.len();
+        assert!(
+            r.insert(&make_fragment(src, dst, 92, 0, true, &head))
+                .is_none()
+        );
+        let whole = r
+            .insert(&make_fragment(
+                src,
+                dst,
+                92,
+                65528 / 8,
+                false,
+                &vec![0xBB; tail_len],
+            ))
+            .ok_or("a datagram of exactly the ceiling completes")?;
+        assert_eq!(whole.len(), MAX_REASSEMBLED_SIZE);
+        assert!(r.is_empty());
+        Ok(())
+    }
+
+    /// A SYN starts the stream afresh: data buffered before it is not
+    /// delivered as if it followed the new start.
+    #[test]
+    fn a_syn_discards_what_the_stream_buffered_before_it() {
+        let mut r = TcpReassembler::new();
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                1000,
+                default_tcp_flags(),
+                b"OLD!"
+            ))
+            .is_empty()
+        );
+        syn_at(&mut r, 995);
+        let out = r.insert(&make_tcp_segment(5060, 5061, 996, psh(), b"NEW!"));
+        assert_eq!(out, vec![b"NEW!".to_vec()]);
+    }
+
+    /// A SYN without payload only sets the stream's start: a FIN beside it
+    /// is not acted on, and the stream stays.
+    #[test]
+    fn a_syn_without_payload_only_sets_the_start() {
+        let mut r = TcpReassembler::new();
+        let flags = TcpFlags {
+            syn: true,
+            fin: true,
+            ..default_tcp_flags()
+        };
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 99, flags, b""))
+                .is_empty()
+        );
+        assert_eq!(r.len(), 1, "the stream is kept");
+    }
+
+    /// Once a push is delivered, a later segment without PSH waits to be
+    /// pushed instead of being flushed on the strength of the old push.
+    #[test]
+    fn a_satisfied_push_does_not_flush_the_next_segment() {
+        let mut r = TcpReassembler::new();
+        syn_at(&mut r, 99);
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 100, psh(), b"AB")),
+            vec![b"AB".to_vec()]
+        );
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                102,
+                default_tcp_flags(),
+                b"CD"
+            ))
+            .is_empty(),
+            "no PSH since the last delivery"
+        );
+    }
+
+    /// A stream that was blocked by a hole and then unblocked is not released
+    /// at the end of the input: what it still buffers was never behind a hole.
+    #[test]
+    fn a_stream_no_longer_blocked_is_not_released_at_the_end() {
+        let mut r = TcpReassembler::new().with_resync(crate::sip::parser::starts_sip_message);
+        syn_at(&mut r, 99);
+        let at2 = 100 + BYE.len() as u32;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, at2, psh(), HUNDRED))
+                .is_empty()
+        );
+        let out = r.insert(&make_tcp_segment(5060, 5061, 100, psh(), BYE));
+        assert_eq!(out, vec![[BYE, HUNDRED].concat()]);
+        let at3 = at2 + HUNDRED.len() as u32;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, at3, default_tcp_flags(), BYE))
+                .is_empty()
+        );
+        assert!(r.finish().is_empty(), "nothing waits behind a hole");
+    }
+
+    /// A direction holding exactly the buffer ceiling is not flushed; one
+    /// byte past it is.
+    #[test]
+    fn the_buffer_ceiling_flushes_only_once_passed() {
+        let ceiling = max_tcp_buffer();
+        let mut r = TcpReassembler::new();
+        syn_at(&mut r, 99);
+        let full = vec![b'x'; ceiling];
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                100,
+                default_tcp_flags(),
+                &full
+            ))
+            .is_empty(),
+            "at the ceiling, still buffered"
+        );
+        let next = 100 + ceiling as u32;
+        let out = r.insert(&make_tcp_segment(
+            5060,
+            5061,
+            next,
+            default_tcp_flags(),
+            b"y",
+        ));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].len(), ceiling + 1);
+    }
+
+    /// A SYN restarts the byte count the buffer ceiling is measured against:
+    /// what the stream buffered before it does not count toward the ceiling
+    /// of the stream it starts.
+    #[test]
+    fn a_syn_restarts_the_buffered_byte_count() {
+        let ceiling = max_tcp_buffer();
+        let mut r = TcpReassembler::new();
+        let full = vec![b'x'; ceiling];
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                1000,
+                default_tcp_flags(),
+                &full
+            ))
+            .is_empty()
+        );
+        syn_at(&mut r, 99);
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                100,
+                default_tcp_flags(),
+                b"y"
+            ))
+            .is_empty(),
+            "one byte buffered since the SYN is far below the ceiling"
+        );
+    }
+
+    /// A segment that lies before the start a SYN set is never delivered: the
+    /// start is known, so it is not moved back the way a guessed start is.
+    #[test]
+    fn a_segment_before_the_syn_start_is_not_delivered() {
+        let mut r = TcpReassembler::new();
+        syn_at(&mut r, 99);
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 96, psh(), b"OLD!"))
+                .is_empty(),
+            "before the SYN's start"
+        );
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 100, psh(), b"NEW!")),
+            vec![b"NEW!".to_vec()]
+        );
+    }
+
+    /// On a stream joined part way, a segment without payload that lies
+    /// before the guessed start does not move the start back: it carries
+    /// nothing to assemble from there.
+    #[test]
+    fn an_empty_segment_does_not_move_a_guessed_start_back() {
+        let mut r = TcpReassembler::new();
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                1000,
+                default_tcp_flags(),
+                b"AB"
+            ))
+            .is_empty()
+        );
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 900, default_tcp_flags(), b""))
+                .is_empty()
+        );
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 1002, psh(), b"CD")),
+            vec![b"ABCD".to_vec()]
+        );
+    }
+
+    /// A direction silent past the TTL counts as one reassembly timeout when
+    /// its next segment starts it afresh.
+    #[test]
+    fn a_restart_after_silence_counts_a_timeout() -> Result<(), TestError> {
+        let at = |seq: u32, secs: i64| -> Result<_, TestError> {
+            let mut p = make_tcp_segment(5060, 5061, seq, psh(), HUNDRED);
+            p.timestamp = chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0)
+                .ok_or("a valid timestamp")?;
+            Ok(p)
+        };
+        let mut r = TcpReassembler::with_limits(DEFAULT_MAX_ENTRIES, Duration::from_secs(30));
+        assert_eq!(r.insert(&at(1_000, 0)?), vec![HUNDRED.to_vec()]);
+        let before = reassembly_timeouts();
+        assert_eq!(r.insert(&at(1_000, 60)?), vec![HUNDRED.to_vec()]);
+        // The counter is process-wide, so other tests may add to it too; this
+        // restart must add at least one.
+        assert!(reassembly_timeouts() > before);
+        Ok(())
+    }
+
+    /// The buffer-ceiling warning is said once per process, however many
+    /// times a stream passes the ceiling.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_buffer_ceiling_warning_is_said_at_most_once() {
+        let ceiling = max_tcp_buffer();
+        let full = vec![b'x'; ceiling + 1];
+        let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
+            for port in [5070, 5071] {
+                let mut r = TcpReassembler::new();
+                let mut syn = default_tcp_flags();
+                syn.syn = true;
+                r.insert(&make_tcp_segment(port, 5061, 99, syn, b""));
+                let out = r.insert(&make_tcp_segment(
+                    port,
+                    5061,
+                    100,
+                    default_tcp_flags(),
+                    &full,
+                ));
+                assert_eq!(out.len(), 1, "flushed past the ceiling");
+            }
+        });
+        assert!(
+            logs.matches("exceeded the").count() <= 1,
+            "warned more than once: {logs}"
+        );
+    }
+
+    /// A segment without payload is not buffered: an ACK whose sequence
+    /// number lies ahead leaves nothing behind that keeps a satisfied push
+    /// pending, so the next segment without PSH still waits to be pushed.
+    #[test]
+    fn an_empty_segment_ahead_is_not_buffered() {
+        let mut r = TcpReassembler::new();
+        syn_at(&mut r, 99);
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 100, psh(), b"AB")),
+            vec![b"AB".to_vec()]
+        );
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 300, default_tcp_flags(), b""))
+                .is_empty()
+        );
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 102, psh(), b"CD")),
+            vec![b"CD".to_vec()]
+        );
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                104,
+                default_tcp_flags(),
+                b"EF"
+            ))
+            .is_empty(),
+            "no PSH since the last delivery"
+        );
     }
 
     /// At the entry cap, inserting a new key evicts the oldest so the count

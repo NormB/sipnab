@@ -566,22 +566,99 @@ fn expand_archive(
             return Ok(());
         }
     };
-    tally.filtered_out += exp.filtered;
-    for skipped in &exp.skipped {
-        tally.members_skipped += 1;
-        if skipped.reason.is_locked() {
-            tally.members_locked += 1;
-        }
-        tracing::warn!("Skipping '{}': {}", skipped.label, skipped.reason);
-    }
-    for stop in &exp.stops {
-        tally.archives_cut_short += 1;
-        tracing::warn!("'{}': {stop}", path.display());
-    }
+    tally.note_members_not_unpacked(path, exp.filtered, &exp.skipped, &exp.stops);
 
     let mut labels = Vec::with_capacity(exp.members.len());
+    let read = admit_members(&exp.members, tally, resolved, &mut labels);
+
+    tracing::info!(
+        "'{}' unpacked ({}): {read} capture(s) to read, {} member(s) not read, \
+         {} directory entr(ies)",
+        path.display(),
+        archive_layers(&exp.members),
+        exp.skipped.len() + exp.members.len() - read,
+        exp.directories
+    );
+    // An archive the operator NAMED, of which nothing could be read, fails
+    // the run the way an unreadable named file does, naming each member's
+    // reason. An archive found in a directory stays a warning, as a stray
+    // file there would.
+    if explicit && read == 0 {
+        bail!(
+            "cannot read capture '{}' named with -I: no readable capture in it ({})",
+            path.display(),
+            unread_reasons(&exp)
+        );
+    }
+    let decrypted = tally.note_encryption(&exp.members, &exp.skipped);
+    if let Some(dir) = exp.take_dir() {
+        extractions.push(archive::KeptExtraction::new(dir, labels).with_decrypted(decrypted));
+    }
+    Ok(())
+}
+
+impl ResolveTally {
+    /// Count, and name, what an archive held that was not unpacked: members
+    /// the name filter left out, members skipped with a reason, and the
+    /// points where the archive stopped short.
+    fn note_members_not_unpacked(
+        &mut self,
+        path: &Path,
+        filtered: usize,
+        skipped_members: &[crate::capture::archive::Skipped],
+        stops: &[crate::capture::archive::Stop],
+    ) {
+        self.filtered_out += filtered;
+        for skipped in skipped_members {
+            self.members_skipped += 1;
+            if skipped.reason.is_locked() {
+                self.members_locked += 1;
+            }
+            tracing::warn!("Skipping '{}': {}", skipped.label, skipped.reason);
+        }
+        for stop in stops {
+            self.archives_cut_short += 1;
+            tracing::warn!("'{}': {stop}", path.display());
+        }
+    }
+
+    /// Count the unpacked members that were decrypted, and the archive when
+    /// any of its entries used ZipCrypto. Returns the decrypted members' paths.
+    fn note_encryption(
+        &mut self,
+        members: &[crate::capture::archive::Member],
+        skipped: &[crate::capture::archive::Skipped],
+    ) -> Vec<PathBuf> {
+        use crate::capture::archive::Encryption;
+        let decrypted: Vec<PathBuf> = members
+            .iter()
+            .filter(|m| m.encryption != Encryption::None)
+            .map(|m| m.path.clone())
+            .collect();
+        self.members_decrypted += decrypted.len();
+        if members
+            .iter()
+            .map(|m| m.encryption)
+            .chain(skipped.iter().map(|s| s.encryption))
+            .any(|e| e == Encryption::ZipCrypto)
+        {
+            self.zipcrypto_archives += 1;
+        }
+        decrypted
+    }
+}
+
+/// Add every unpacked member that reads as a capture to `resolved`, and its
+/// path and label to `labels`; count and name the rest. Returns how many were
+/// added.
+fn admit_members(
+    members: &[crate::capture::archive::Member],
+    tally: &mut ResolveTally,
+    resolved: &mut Vec<ResolvedInput>,
+    labels: &mut Vec<(PathBuf, String)>,
+) -> usize {
     let mut read = 0usize;
-    for member in &exp.members {
+    for member in members {
         if let Some(why) = &member.cut_short {
             tally.archives_cut_short += 1;
             tracing::warn!(
@@ -609,9 +686,13 @@ fn expand_archive(
             }
         }
     }
+    read
+}
 
-    let layers = exp
-        .members
+/// The layers the first member was unpacked through, outermost first, as
+/// `a > b`; empty for an archive with no members.
+fn archive_layers(members: &[crate::capture::archive::Member]) -> String {
+    members
         .first()
         .map(|m| {
             m.layers
@@ -620,45 +701,7 @@ fn expand_archive(
                 .collect::<Vec<_>>()
                 .join(" > ")
         })
-        .unwrap_or_default();
-    tracing::info!(
-        "'{}' unpacked ({layers}): {read} capture(s) to read, {} member(s) not read, \
-         {} directory entr(ies)",
-        path.display(),
-        exp.skipped.len() + exp.members.len() - read,
-        exp.directories
-    );
-    // An archive the operator NAMED, of which nothing could be read, fails
-    // the run the way an unreadable named file does, naming each member's
-    // reason. An archive found in a directory stays a warning, as a stray
-    // file there would.
-    if explicit && read == 0 {
-        bail!(
-            "cannot read capture '{}' named with -I: no readable capture in it ({})",
-            path.display(),
-            unread_reasons(&exp)
-        );
-    }
-    let decrypted: Vec<PathBuf> = exp
-        .members
-        .iter()
-        .filter(|m| m.encryption != archive::Encryption::None)
-        .map(|m| m.path.clone())
-        .collect();
-    tally.members_decrypted += decrypted.len();
-    if exp
-        .members
-        .iter()
-        .map(|m| m.encryption)
-        .chain(exp.skipped.iter().map(|s| s.encryption))
-        .any(|e| e == archive::Encryption::ZipCrypto)
-    {
-        tally.zipcrypto_archives += 1;
-    }
-    if let Some(dir) = exp.take_dir() {
-        extractions.push(archive::KeptExtraction::new(dir, labels).with_decrypted(decrypted));
-    }
-    Ok(())
+        .unwrap_or_default()
 }
 
 /// Each unread member of `exp` and its reason, in the shared vocabulary, for
@@ -698,64 +741,7 @@ fn expand_one(
     // A glob is identified by its metacharacters. Checked before the
     // filesystem, because a path containing them may also happen to exist.
     if spec.contains('*') || spec.contains('?') || spec.contains('[') {
-        let mut out = Vec::new();
-        for entry in glob::glob(spec).with_context(|| format!("bad glob pattern '{spec}'"))? {
-            // A glob match that cannot be stat'd — most often a component of
-            // its own path is not readable. Dropping it left the operator with
-            // a short set and no reason for it.
-            let path = match entry {
-                Ok(p) => p,
-                Err(e) => {
-                    tally.unreachable += 1;
-                    tracing::warn!(
-                        "Skipping '{}' matched by '{spec}': {}",
-                        e.path().display(),
-                        e.error()
-                    );
-                    continue;
-                }
-            };
-            // A glob over a tree of per-host subdirectories matches the
-            // DIRECTORIES: `-I '/caps/*'` used to keep only `path.is_file()`
-            // and so resolved to nothing while saying nothing. The directory
-            // was discovered rather than named, so one that yields no capture
-            // is a warning and not the end of the run.
-            if path.is_dir() {
-                match expand_dir(&path, opts, name_pat, tally) {
-                    Ok(found) => out.extend(found),
-                    Err(e) => {
-                        tally.unreachable += 1;
-                        tracing::warn!(
-                            "Skipping directory '{}' matched by '{spec}': {e:#}",
-                            path.display()
-                        );
-                    }
-                }
-                continue;
-            }
-            if !path.is_file() {
-                tally.unusable += 1;
-                tracing::warn!(
-                    "Skipping '{}' matched by '{spec}': not a file or a directory",
-                    path.display()
-                );
-                continue;
-            }
-            if let Some(pat) = name_pat
-                && !name_matches(pat, &path)
-            {
-                tally.filtered_out += 1;
-                continue;
-            }
-            out.push((path, false));
-        }
-        if out.is_empty() {
-            match opts.name_glob.as_deref() {
-                Some(g) => bail!("glob '{spec}' matched no files named '{g}'"),
-                None => bail!("glob '{spec}' matched no files"),
-            }
-        }
-        return Ok(out);
+        return expand_glob(spec, opts, name_pat, tally);
     }
 
     let path = PathBuf::from(spec);
@@ -780,6 +766,85 @@ fn expand_one(
         return Ok(vec![(path, true)]);
     }
     bail!("'{spec}' does not exist")
+}
+
+/// Expand a glob `-I` argument into the files it matches, directly or
+/// through the directories it matches.
+fn expand_glob(
+    spec: &str,
+    opts: &ResolveOptions,
+    name_pat: Option<&glob::Pattern>,
+    tally: &mut ResolveTally,
+) -> Result<Vec<(PathBuf, bool)>> {
+    let mut out = Vec::new();
+    for entry in glob::glob(spec).with_context(|| format!("bad glob pattern '{spec}'"))? {
+        // A glob match that cannot be stat'd — most often a component of
+        // its own path is not readable. Dropping it left the operator with
+        // a short set and no reason for it.
+        match entry {
+            Ok(path) => take_glob_match(spec, path, opts, name_pat, tally, &mut out),
+            Err(e) => {
+                tally.unreachable += 1;
+                tracing::warn!(
+                    "Skipping '{}' matched by '{spec}': {}",
+                    e.path().display(),
+                    e.error()
+                );
+            }
+        }
+    }
+    if out.is_empty() {
+        match opts.name_glob.as_deref() {
+            Some(g) => bail!("glob '{spec}' matched no files named '{g}'"),
+            None => bail!("glob '{spec}' matched no files"),
+        }
+    }
+    Ok(out)
+}
+
+/// Add what one path a glob matched contributes to `out`: the files of a
+/// directory, or a file the name filter accepts. Anything else is counted.
+fn take_glob_match(
+    spec: &str,
+    path: PathBuf,
+    opts: &ResolveOptions,
+    name_pat: Option<&glob::Pattern>,
+    tally: &mut ResolveTally,
+    out: &mut Vec<(PathBuf, bool)>,
+) {
+    // A glob over a tree of per-host subdirectories matches the
+    // DIRECTORIES: `-I '/caps/*'` used to keep only `path.is_file()`
+    // and so resolved to nothing while saying nothing. The directory
+    // was discovered rather than named, so one that yields no capture
+    // is a warning and not the end of the run.
+    if path.is_dir() {
+        match expand_dir(&path, opts, name_pat, tally) {
+            Ok(found) => out.extend(found),
+            Err(e) => {
+                tally.unreachable += 1;
+                tracing::warn!(
+                    "Skipping directory '{}' matched by '{spec}': {e:#}",
+                    path.display()
+                );
+            }
+        }
+        return;
+    }
+    if !path.is_file() {
+        tally.unusable += 1;
+        tracing::warn!(
+            "Skipping '{}' matched by '{spec}': not a file or a directory",
+            path.display()
+        );
+        return;
+    }
+    if let Some(pat) = name_pat
+        && !name_matches(pat, &path)
+    {
+        tally.filtered_out += 1;
+        return;
+    }
+    out.push((path, false));
 }
 
 /// Whether a discovered path satisfies the `--input-name` pattern.
@@ -885,16 +950,7 @@ fn report_unusable_entry(
     }
     let path = entry.path();
     if path.is_dir() {
-        if !opts.recursive {
-            tally.not_descended += 1;
-        } else if entry.path_is_symlink() {
-            tally.link_to_dir += 1;
-            tracing::warn!(
-                "Skipping '{}': symlinked directory, not descended (following it \
-                 risks a loop); name it with its own -I to read it",
-                path.display()
-            );
-        }
+        note_undescended_dir(entry, opts, tally);
         return;
     }
     tally.unusable += 1;
@@ -905,6 +961,26 @@ fn report_unusable_entry(
             "Skipping '{}': not a file (a fifo, socket or device node cannot \
              hold a capture)",
             path.display()
+        );
+    }
+}
+
+/// Account for a walked subdirectory, which the walk does not enter as a
+/// file: counted when `--recursive` is off, named when it is a symlink the
+/// recursive walk will not follow.
+fn note_undescended_dir(
+    entry: &walkdir::DirEntry,
+    opts: &ResolveOptions,
+    tally: &mut ResolveTally,
+) {
+    if !opts.recursive {
+        tally.not_descended += 1;
+    } else if entry.path_is_symlink() {
+        tally.link_to_dir += 1;
+        tracing::warn!(
+            "Skipping '{}': symlinked directory, not descended (following it \
+             risks a loop); name it with its own -I to read it",
+            entry.path().display()
         );
     }
 }
@@ -1008,6 +1084,9 @@ fn same_instant_pairs(resolved: &[ResolvedInput]) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     fn samples() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples")
@@ -1337,6 +1416,245 @@ mod tests {
         assert!(line.contains("2 archive member(s)"), "{line}");
     }
 
+    /// An unpacked member at `path` with the given encryption.
+    fn member(
+        path: &Path,
+        label: &str,
+        encryption: crate::capture::archive::Encryption,
+    ) -> crate::capture::archive::Member {
+        crate::capture::archive::Member {
+            label: label.to_string(),
+            path: path.to_path_buf(),
+            layers: vec![
+                crate::capture::archive::Layer::Gzip,
+                crate::capture::archive::Layer::Tar,
+            ],
+            cut_short: None,
+            encryption,
+        }
+    }
+
+    /// A member that was not unpacked, for `reason`, with the given encryption.
+    fn skipped(
+        label: &str,
+        reason: crate::capture::archive::SkipReason,
+        encryption: crate::capture::archive::Encryption,
+    ) -> crate::capture::archive::Skipped {
+        crate::capture::archive::Skipped {
+            label: label.to_string(),
+            reason,
+            encryption,
+        }
+    }
+
+    /// Every way an archive member goes unread is counted under its own
+    /// heading: filtered by name, skipped (locked ones also as locked), and
+    /// each point where the archive stopped short.
+    #[test]
+    fn members_not_unpacked_are_counted_by_reason() {
+        use crate::capture::archive::{Encryption, SkipReason, Stop};
+        let mut tally = ResolveTally::default();
+        tally.note_members_not_unpacked(
+            Path::new("a.zip"),
+            3,
+            &[
+                skipped(
+                    "a.zip/x.pcap",
+                    SkipReason::EncryptedNoPassword,
+                    Encryption::Aes256,
+                ),
+                skipped("a.zip/y.pcap", SkipReason::Empty, Encryption::None),
+            ],
+            &[Stop::EntryCap { limit: 1 }],
+        );
+        assert_eq!(tally.filtered_out, 3);
+        assert_eq!(tally.members_skipped, 2);
+        assert_eq!(tally.members_locked, 1);
+        assert_eq!(tally.archives_cut_short, 1);
+    }
+
+    /// Decrypted members are counted and returned; an archive is counted as
+    /// ZipCrypto once when any entry, read or skipped, used it.
+    #[test]
+    fn decrypted_members_and_zipcrypto_archives_are_counted() {
+        use crate::capture::archive::{Encryption, SkipReason};
+        let mut tally = ResolveTally::default();
+        let decrypted = tally.note_encryption(
+            &[
+                member(Path::new("/x/plain"), "a/plain", Encryption::None),
+                member(Path::new("/x/aes"), "a/aes", Encryption::Aes256),
+                member(Path::new("/x/zc"), "a/zc", Encryption::ZipCrypto),
+            ],
+            &[],
+        );
+        assert_eq!(
+            decrypted,
+            vec![PathBuf::from("/x/aes"), PathBuf::from("/x/zc")]
+        );
+        assert_eq!(tally.members_decrypted, 2);
+        assert_eq!(tally.zipcrypto_archives, 1);
+
+        let mut tally = ResolveTally::default();
+        let decrypted = tally.note_encryption(
+            &[member(Path::new("/x/plain"), "a/plain", Encryption::None)],
+            &[skipped(
+                "a/locked",
+                SkipReason::EncryptedWrongPassword,
+                Encryption::ZipCrypto,
+            )],
+        );
+        assert!(decrypted.is_empty());
+        assert_eq!(tally.members_decrypted, 0);
+        assert_eq!(
+            tally.zipcrypto_archives, 1,
+            "a skipped ZipCrypto entry counts"
+        );
+    }
+
+    /// A member that reads as a capture joins the set under its label; one
+    /// that does not is counted as unreadable and left out.
+    #[test]
+    fn only_readable_members_are_admitted() -> Result<(), TestError> {
+        use crate::capture::archive::Encryption;
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let good = root.path().join("good.pcap");
+        std::fs::write(&good, pcap_at(1_000, b"g")).map_err(|e| format!("write: {e:?}"))?;
+        let bad = root.path().join("bad.pcap");
+        let mut truncated = pcap_at(1_000, b"payload");
+        truncated.truncate(truncated.len() - 3);
+        std::fs::write(&bad, truncated).map_err(|e| format!("write: {e:?}"))?;
+
+        let mut tally = ResolveTally::default();
+        let mut resolved = Vec::new();
+        let mut labels = Vec::new();
+        let read = admit_members(
+            &[
+                member(&bad, "a.tgz/bad.pcap", Encryption::None),
+                member(&good, "a.tgz/good.pcap", Encryption::None),
+            ],
+            &mut tally,
+            &mut resolved,
+            &mut labels,
+        );
+        assert_eq!(read, 1);
+        assert_eq!(tally.unreadable, 1);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(&*resolved[0].name(), "a.tgz/good.pcap");
+        assert_eq!(labels, vec![(good, "a.tgz/good.pcap".to_string())]);
+        Ok(())
+    }
+
+    /// The layers line names each format the first member came through,
+    /// outermost first.
+    #[test]
+    fn archive_layers_are_named_outermost_first() {
+        use crate::capture::archive::Encryption;
+        assert_eq!(
+            archive_layers(&[member(Path::new("/x"), "a/x", Encryption::None)]),
+            "gzip > tar"
+        );
+        assert_eq!(archive_layers(&[]), "");
+    }
+
+    /// The unpack line reconciles: captures to read plus members not read is
+    /// every member the archive held.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_unpack_line_counts_members_not_read() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let path = root.path().join("mixed.tar");
+        let mut truncated = pcap_at(1_000, b"payload");
+        truncated.truncate(truncated.len() - 3);
+        std::fs::write(
+            &path,
+            tar_of(&[
+                ("empty.pcap", b""),
+                ("notes.txt", b"a note, not a capture"),
+                ("bad.pcap", &truncated),
+                ("ok.pcap", &pcap_at(1_000, b"ok")),
+            ]),
+        )
+        .map_err(|e| format!("write: {e:?}"))?;
+        let mut resolved = None;
+        let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+            resolved = Some(resolve_counting(&[spec(&path)], &ResolveOptions::default()));
+        });
+        resolved
+            .ok_or("the resolve ran")?
+            .map_err(|e| format!("resolve: {e:?}"))?;
+        // Two members skipped by the unpacker and one unpacked that does not
+        // read as a capture: three not read.
+        assert!(
+            logs.contains("unpacked (tar): 1 capture(s) to read, 3 member(s) not read"),
+            "{logs}"
+        );
+        Ok(())
+    }
+
+    /// A glob is recognized by `[` as well as by `*` and `?`.
+    #[test]
+    fn a_bracket_glob_is_expanded() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(root.path().join("a.pcap"), pcap_at(1_000, b"a"))
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::write(root.path().join("b.pcap"), pcap_at(2_000, b"b"))
+            .map_err(|e| format!("write: {e:?}"))?;
+        let pattern = format!("{}/[a].pcap", root.path().display());
+        let set = resolve_set(&[pattern], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
+        assert_eq!(set.inputs.len(), 1);
+        assert!(set.inputs[0].name().ends_with("a.pcap"));
+        Ok(())
+    }
+
+    /// What a glob matched and could not use is counted: a directory with no
+    /// capture in it as unreachable, a dangling symlink as unusable.
+    #[cfg(unix)]
+    #[test]
+    fn a_glob_counts_the_matches_it_cannot_use() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(root.path().join("a.pcap"), pcap_at(1_000, b"a"))
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::create_dir(root.path().join("empty")).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::os::unix::fs::symlink(root.path().join("gone"), root.path().join("dead.pcap"))
+            .map_err(|e| format!("symlink: {e:?}"))?;
+        let pattern = format!("{}/*", root.path().display());
+        let (set, tally) = resolve_counting(&[pattern], &ResolveOptions::default())
+            .map_err(|e| format!("resolve: {e:?}"))?;
+        assert_eq!(set.inputs.len(), 1);
+        assert_eq!(tally.unreachable, 1, "{tally:?}");
+        assert_eq!(tally.unusable, 1, "{tally:?}");
+        Ok(())
+    }
+
+    /// A glob match whose own path cannot be read is counted as unreachable
+    /// rather than dropped.
+    #[cfg(unix)]
+    #[test]
+    fn a_glob_match_that_cannot_be_read_is_counted() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let open = root.path().join("open");
+        let locked = root.path().join("locked");
+        std::fs::create_dir(&open).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::create_dir(&locked).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::write(open.join("a.pcap"), pcap_at(1_000, b"a"))
+            .map_err(|e| format!("write: {e:?}"))?;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let readable_anyway = std::fs::read_dir(&locked).is_ok();
+        let pattern = format!("{}/*/*", root.path().display());
+        let result = resolve_counting(&[pattern], &ResolveOptions::default());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let (set, tally) = result.map_err(|e| format!("resolve: {e:?}"))?;
+        assert_eq!(set.inputs.len(), 1);
+        if !readable_anyway {
+            assert_eq!(tally.unreachable, 1, "{tally:?}");
+        }
+        Ok(())
+    }
+
     /// `--input-name` filters an archive's members the way it filters a
     /// directory's files; it still refuses a single file named directly.
     #[test]
@@ -1418,6 +1736,28 @@ mod tests {
         let pattern = format!("{}/definitely-no-such-*.pcap", samples().display());
         let err = resolve(&[pattern], &ResolveOptions::default()).expect_err("must fail");
         assert!(format!("{err:#}").contains("matched no files"));
+    }
+
+    /// A glob whose every match the `--input-name` filter left out fails
+    /// naming that filter, so the operator sees which of the two narrowed the
+    /// set to nothing.
+    #[test]
+    fn a_glob_the_name_filter_empties_names_the_filter() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        std::fs::write(dir.path().join("a.pcap"), pcap_at(1_000, b"a"))
+            .map_err(|e| format!("write: {e:?}"))?;
+        let opts = ResolveOptions {
+            name_glob: Some("keep-*".to_string()),
+            ..Default::default()
+        };
+        let pattern = format!("{}/*.pcap", dir.path().display());
+        let err = resolve(std::slice::from_ref(&pattern), &opts).expect_err("must fail");
+        assert!(
+            format!("{err:#}")
+                .contains(&format!("glob '{pattern}' matched no files named 'keep-*'")),
+            "{err:#}"
+        );
+        Ok(())
     }
 
     /// Resolve a real capture directory named by `SIPNAB_CORPUS`.

@@ -56,30 +56,7 @@ pub fn dropped_to() -> Option<&'static str> {
 /// Returns an error if the target user cannot be resolved, or if any of the
 /// underlying syscalls (`setgroups`, `setgid`, `setuid`) fail.
 pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<()> {
-    if no_priv_drop {
-        tracing::info!("Privilege drop disabled (--no-priv-drop)");
-        return Ok(());
-    }
-
-    // Only drop if running as root
-    if !is_root() {
-        tracing::debug!("Not running as root, skipping privilege drop");
-        return Ok(());
-    }
-
-    // On macOS, dropping to 'nobody' (uid 65534) strands the process without
-    // a launchd per-user session, which crashes CoreAudio and other user-
-    // context frameworks the moment they are invoked (e.g., pressing P to
-    // play RTP audio in the TUI). macOS's security model relies on TCC and
-    // the app sandbox rather than uid-based privilege separation, so the
-    // drop buys little here. Require an explicit --user to opt in.
-    #[cfg(target_os = "macos")]
-    if target_user.is_none() {
-        tracing::warn!(
-            "Running as root on macOS without --user; skipping privilege drop \
-             to avoid breaking CoreAudio and other per-user services. \
-             Pass --user <name> to opt in, or run without sudo."
-        );
+    if drop_is_skipped(target_user, no_priv_drop, is_root()) {
         return Ok(());
     }
 
@@ -116,6 +93,38 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     let _ = DROPPED_TO.set(user.to_string());
 
     Ok(())
+}
+
+/// Whether [`drop_privileges`] keeps the current credentials, logging why.
+///
+/// `--no-priv-drop` skips the drop, and so does a process that is not root,
+/// since it has nothing to shed. On macOS a root process with no `--user` also
+/// keeps root: dropping to 'nobody' (uid 65534) strands the process without a
+/// launchd per-user session, which crashes CoreAudio and other user-context
+/// frameworks the moment they are invoked (e.g., pressing P to play RTP audio
+/// in the TUI). macOS's security model relies on TCC and the app sandbox
+/// rather than uid-based privilege separation, so the drop buys little there.
+fn drop_is_skipped(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> bool {
+    if no_priv_drop {
+        tracing::info!("Privilege drop disabled (--no-priv-drop)");
+        return true;
+    }
+    if !root {
+        tracing::debug!("Not running as root, skipping privilege drop");
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    if target_user.is_none() {
+        tracing::warn!(
+            "Running as root on macOS without --user; skipping privilege drop \
+             to avoid breaking CoreAudio and other per-user services. \
+             Pass --user <name> to opt in, or run without sudo."
+        );
+        return true;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = target_user;
+    false
 }
 
 /// Linux capabilities a live capture needs: `CAP_NET_RAW` to open the packet
@@ -882,6 +891,26 @@ mod tests {
     fn is_root_returns_false_for_normal_user() {
         // CI and dev machines run as non-root
         assert!(!is_root());
+    }
+
+    /// The drop is skipped when `--no-priv-drop` is set or the process is not
+    /// root, whatever user was named; a root process with a named user drops.
+    #[test]
+    fn the_drop_is_skipped_only_by_the_flag_or_a_non_root_process() {
+        assert!(drop_is_skipped(Some("nobody"), true, true));
+        assert!(drop_is_skipped(Some("nobody"), false, false));
+        assert!(drop_is_skipped(None, true, false));
+        assert!(!drop_is_skipped(Some("nobody"), false, true));
+    }
+
+    /// A root process with no `--user` drops to the default user on Linux;
+    /// on macOS it keeps root, so CoreAudio keeps its per-user session.
+    #[test]
+    fn a_root_process_without_a_user_drops_except_on_macos() {
+        assert_eq!(
+            drop_is_skipped(None, false, true),
+            cfg!(target_os = "macos")
+        );
     }
 
     /// `no_priv_drop == true` returns `Ok` without touching any syscall.

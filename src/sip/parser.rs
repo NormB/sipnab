@@ -514,6 +514,94 @@ pub fn set_parser_limits(max_header_line: usize, max_headers: usize) {
     MAX_HEADERS_PER_MESSAGE.store(max_headers, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The header lines read so far, and the one still pending: a header line
+/// is not complete until the next line shows it is not folded.
+///
+/// The per-message caps are read once, when the accumulator is made.
+struct HeaderLines<'a> {
+    /// Headers stored so far, at most `max_headers`.
+    headers: Vec<SipHeader>,
+    /// The pending logical header line. Folding is rare in real traffic, so
+    /// the common case stays a borrow of the message; only a continuation
+    /// line promotes it to an owned unfold buffer (`to_mut`).
+    pending: Cow<'a, str>,
+    /// The bytes `pending` was read from, extended over every continuation
+    /// line folded into it, so a header can name its own bytes without the
+    /// grammar being walked a second time.
+    pending_span: Option<Range<u32>>,
+    /// Set for a dropped header, an over-long line, or a line that is not
+    /// UTF-8; the caller adds the conditions it sees itself.
+    parse_error: bool,
+    /// The per-message header cap.
+    max_headers: usize,
+    /// The cap on one logical (unfolded) header line, in bytes.
+    max_line: usize,
+}
+
+impl<'a> HeaderLines<'a> {
+    /// No headers yet, nothing pending, and the caps as configured now.
+    fn new() -> Self {
+        HeaderLines {
+            // A typical SIP message carries ~10-15 headers; skip the growth reallocs.
+            headers: Vec::with_capacity(16),
+            pending: Cow::Borrowed(""),
+            pending_span: None,
+            parse_error: false,
+            max_headers: MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed),
+            max_line: MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Store the pending header, if there is one, and clear it. A header
+    /// dropped because the per-message cap was reached sets `parse_error`,
+    /// so the truncation is visible rather than a silent loss.
+    fn flush(&mut self) {
+        if !self.pending.is_empty()
+            && let Some(hdr) = parse_header_line(&self.pending, self.pending_span.take())
+        {
+            if self.headers.len() < self.max_headers {
+                self.headers.push(hdr);
+            } else {
+                self.parse_error = true;
+            }
+        }
+        self.pending = Cow::Borrowed("");
+        self.pending_span = None;
+    }
+
+    /// One line of header text, read from bytes `start..end` of the message.
+    fn line(&mut self, text: &'a str, start: usize, end: usize) {
+        // RFC 3261 section 7.3.1: continuation lines start with SP or HTAB.
+        if text.starts_with(' ') || text.starts_with('\t') {
+            // Append to the pending line with a single space, within the cap.
+            if self.pending.len() + text.len() < self.max_line {
+                let buf = self.pending.to_mut();
+                buf.push(' ');
+                buf.push_str(text.trim_start());
+                if let Some(span) = self.pending_span.as_mut() {
+                    span.end = u32::try_from(end).unwrap_or(span.end);
+                }
+            } else {
+                self.parse_error = true;
+                note_oversize_header_dropped();
+            }
+            return;
+        }
+        // A new header: the pending one is complete.
+        self.flush();
+        // Bound the unfolded line too: without this a single multi-MB header
+        // (no continuations) sails past the cap that only guarded folded
+        // growth.
+        if text.len() >= self.max_line {
+            self.parse_error = true;
+            note_oversize_header_dropped();
+        } else {
+            self.pending = Cow::Borrowed(text);
+            self.pending_span = span_of(start, end);
+        }
+    }
+}
+
 /// Parse SIP headers (with folding and compact form expansion) and extract body.
 ///
 /// # Arguments
@@ -534,153 +622,41 @@ fn parse_headers_and_body(
     data: &[u8],
     start: usize,
 ) -> (Vec<SipHeader>, Option<std::ops::Range<usize>>, bool) {
-    /// Push a parsed header unless the per-message cap is reached. Dropping a
-    /// header because the cap was hit sets `parse_error` so the truncation is
-    /// visible rather than a silent loss.
-    fn push_header_capped(
-        headers: &mut Vec<SipHeader>,
-        hdr: SipHeader,
-        max_headers: usize,
-        parse_error: &mut bool,
-    ) {
-        if headers.len() < max_headers {
-            headers.push(hdr);
-        } else {
-            *parse_error = true;
-        }
-    }
-
-    let max_header_line = MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed);
-    let max_headers = MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed);
-    // A typical SIP message carries ~10-15 headers; skip the growth reallocs.
-    let mut headers = Vec::with_capacity(16);
+    let mut lines = HeaderLines::new();
     let mut pos = start;
-    let mut parse_error = false;
-
-    // The pending (possibly folded) logical header line. Folding is rare in
-    // real traffic, so the common case stays a borrow of `data`; only a
-    // continuation line promotes it to an owned unfold buffer (`to_mut`).
-    let mut current_line: Cow<'_, str> = Cow::Borrowed("");
-    // The bytes `current_line` was read from, extended over every continuation
-    // line folded into it. Carried beside the text so a header can name its
-    // own bytes without anybody walking the grammar a second time.
-    let mut current_span: Option<Range<u32>> = None;
     let mut found_body_separator = false;
 
     while pos < data.len() {
-        match find_crlf(&data[pos..]) {
-            Some(crlf_offset) => {
-                let line_bytes = &data[pos..pos + crlf_offset];
-                pos = pos + crlf_offset + 2; // advance past \r\n
-
-                // Empty line = end of headers
-                if line_bytes.is_empty() {
-                    // Flush any pending header
-                    if !current_line.is_empty()
-                        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
-                    {
-                        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
-                    }
-                    current_line = Cow::Borrowed("");
-                    current_span = None;
-                    found_body_separator = true;
-                    break;
-                }
-
-                // Convert to string; skip malformed lines
-                let line_str = match std::str::from_utf8(line_bytes) {
-                    Ok(s) => s,
-                    Err(_) => {
-                        parse_error = true;
-                        continue;
-                    }
-                };
-
-                // RFC 3261 SS7.3.1: continuation lines start with SP or HTAB
-                if line_str.starts_with(' ') || line_str.starts_with('\t') {
-                    // Header folding: append to current line with a single space
-                    // (capped). `to_mut` materializes the unfold buffer only here.
-                    if current_line.len() + line_str.len() < max_header_line {
-                        let buf = current_line.to_mut();
-                        buf.push(' ');
-                        buf.push_str(line_str.trim_start());
-                        if let Some(span) = current_span.as_mut() {
-                            span.end = u32::try_from(pos - 2).unwrap_or(span.end);
-                        }
-                    } else {
-                        parse_error = true;
-                        note_oversize_header_dropped();
-                    }
-                } else {
-                    // New header — flush the previous one
-                    if !current_line.is_empty()
-                        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
-                    {
-                        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
-                    }
-                    // Bound the unfolded line too: without this a single
-                    // multi-MB header (no continuations) sails past the cap
-                    // that only guarded folded growth.
-                    if line_str.len() >= max_header_line {
-                        parse_error = true;
-                        note_oversize_header_dropped();
-                        current_line = Cow::Borrowed("");
-                        current_span = None;
-                    } else {
-                        current_line = Cow::Borrowed(line_str);
-                        current_span = span_of(pos - crlf_offset - 2, pos - 2);
-                    }
-                }
+        let Some(crlf_offset) = find_crlf(&data[pos..]) else {
+            // No more CRLFs: the remainder is a partial header, and the
+            // message is incomplete.
+            if let Ok(remainder) = std::str::from_utf8(&data[pos..]) {
+                lines.line(remainder, pos, data.len());
             }
-            None => {
-                // No more CRLFs — treat remainder as a partial header
-                if pos < data.len()
-                    && let Ok(remainder) = std::str::from_utf8(&data[pos..])
-                {
-                    if remainder.starts_with(' ') || remainder.starts_with('\t') {
-                        if current_line.len() + remainder.len() < max_header_line {
-                            let buf = current_line.to_mut();
-                            buf.push(' ');
-                            buf.push_str(remainder.trim_start());
-                            if let Some(span) = current_span.as_mut() {
-                                span.end = u32::try_from(data.len()).unwrap_or(span.end);
-                            }
-                        } else {
-                            note_oversize_header_dropped();
-                        }
-                        // parse_error set below in the None→break path
-                    } else {
-                        if !current_line.is_empty()
-                            && let Some(hdr) =
-                                parse_header_line(&current_line, current_span.clone())
-                        {
-                            push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
-                        }
-                        // Same unfolded-line cap on the no-trailing-CRLF path:
-                        // drop an over-long remainder so it is not flushed as a
-                        // header. (parse_error is set unconditionally just below
-                        // for this truncated-message path.)
-                        if remainder.len() < max_header_line {
-                            current_line = Cow::Borrowed(remainder);
-                            current_span = span_of(pos, data.len());
-                        } else {
-                            note_oversize_header_dropped();
-                            current_span = None;
-                        }
-                    }
-                }
-                parse_error = true;
-                break;
-            }
+            lines.parse_error = true;
+            break;
+        };
+        let line_start = pos;
+        let line_end = pos + crlf_offset;
+        pos = line_end + 2; // advance past \r\n
+
+        // Empty line = end of headers
+        if line_end == line_start {
+            found_body_separator = true;
+            break;
+        }
+        // A line that is not UTF-8 is skipped and flagged.
+        match std::str::from_utf8(&data[line_start..line_end]) {
+            Ok(text) => lines.line(text, line_start, line_end),
+            Err(_) => lines.parse_error = true,
         }
     }
-
-    // Flush any remaining header
-    if !current_line.is_empty()
-        && let Some(hdr) = parse_header_line(&current_line, current_span.clone())
-    {
-        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
-    }
+    lines.flush();
+    let HeaderLines {
+        headers,
+        mut parse_error,
+        ..
+    } = lines;
 
     // No \r\n\r\n found means the message is incomplete
     if !found_body_separator {
@@ -1498,6 +1474,30 @@ Subject: first-part\r\n continued-tail";
                 .iter()
                 .any(|h| h.name.eq_ignore_ascii_case("Call-ID")),
             "a following normal header must still parse"
+        );
+    }
+
+    /// An over-long last line with no CRLF after it is dropped, and the
+    /// header before it is stored once. The unterminated path flushed the
+    /// previous header but kept it as the pending line, so the end-of-input
+    /// flush stored it a second time.
+    #[test]
+    #[serial_test::serial(oversize_headers)]
+    fn an_oversize_unterminated_last_line_does_not_repeat_the_header_before_it() {
+        let big_value = "A".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 100);
+        let raw = format!("Call-ID: ok@example.com\r\nSubject: {big_value}");
+        let (headers, _body, parse_error) = parse_headers_and_body(raw.as_bytes(), 0);
+        assert!(parse_error, "a message with no blank line is incomplete");
+        let call_ids = headers
+            .iter()
+            .filter(|h| h.name.eq_ignore_ascii_case("Call-ID"))
+            .count();
+        assert_eq!(call_ids, 1, "the header before the dropped line repeated");
+        assert!(
+            !headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("Subject")),
+            "the over-long line must be dropped"
         );
     }
 

@@ -329,6 +329,35 @@ fn a_promised_descriptor_that_is_not_there_stops_the_worker() -> Result<(), Test
     Ok(())
 }
 
+/// The worker's exit code names the step that stopped it: 2 for arguments
+/// it cannot parse, 3 for a promised descriptor it cannot adopt.
+#[test]
+fn the_worker_exit_code_names_the_step_that_stopped_it() -> Result<(), TestError> {
+    let mut unparsable = Reaped(run_worker_directly(&["--rate-limit", "many"])?);
+    let status = within(test_timeout(10), || unparsable.0.try_wait().ok().flatten())
+        .ok_or("a worker with unparsable arguments must exit")?;
+    assert_eq!(status.code(), Some(2), "unparsable arguments: {status:?}");
+
+    let mut missing = Reaped(run_worker_directly(&[
+        "--rate-limit",
+        "10",
+        "--send-fds",
+        "udp4",
+        "--run-as",
+        "nobody",
+        "--log-level",
+        "error",
+    ])?);
+    let status = within(test_timeout(10), || missing.0.try_wait().ok().flatten())
+        .ok_or("a worker missing a promised descriptor must exit")?;
+    assert_eq!(
+        status.code(),
+        Some(3),
+        "a descriptor not adopted: {status:?}"
+    );
+    Ok(())
+}
+
 /// A descriptor of the wrong kind at a promised slot stops the worker at
 /// startup: wrapping a stream socket as the UDP one would write kill
 /// responses into whatever connection it belongs to.
@@ -593,6 +622,9 @@ fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() -> Resul
 /// filter (an enforcing list derived from a capture need not allow `execve`
 /// at all).
 ///
+/// `launch` runs those steps through `confine_after_capture_start`, so the
+/// order is read there, and `launch` is checked to delegate to it.
+///
 /// Read from the source because none of those can be driven here: a chroot
 /// needs root, this host's kernel has no Landlock, and an enforcing seccomp
 /// list is per host. Placed after any of them, the spawn fails on exactly the
@@ -601,9 +633,19 @@ fn a_killed_worker_disables_the_defense_and_counts_what_was_in_flight() -> Resul
 fn the_worker_starts_before_anything_that_could_stop_an_exec() -> Result<(), TestError> {
     let src =
         std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/app/bootstrap.rs"))?;
-    let start = src.find("pub fn launch(").ok_or("launch is defined")?;
-    let body = &src[start..];
-    let body = &body[..body.find("\n}\n").ok_or("launch ends")?];
+    let fn_body = |signature: &str| -> Result<String, TestError> {
+        let start = src
+            .find(signature)
+            .ok_or_else(|| format!("{signature} is defined"))?;
+        let body = &src[start..];
+        Ok(body[..body.find("\n}\n").ok_or("function ends")?].to_string())
+    };
+    assert!(
+        fn_body("pub fn launch(")?.contains("confine_after_capture_start("),
+        "launch no longer runs its post-open steps through \
+         confine_after_capture_start; repoint this test"
+    );
+    let body = fn_body("fn confine_after_capture_start(")?;
     // Code only: a comment naming a step is not a call to it.
     let code: String = body
         .lines()

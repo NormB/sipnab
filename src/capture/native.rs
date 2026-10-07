@@ -791,26 +791,7 @@ where
     ) -> Result<thread::JoinHandle<Result<()>>>,
     K: Fn(),
 {
-    let mut handles = Vec::new();
-    let mut per_device_ready_rxs = Vec::new();
-    let mut first_err: Option<String> = None;
-
-    for member in members {
-        // Each sub-thread gets its own ready signal so we can
-        // aggregate them before signaling the caller.
-        let (dev_ready_tx, dev_ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
-        per_device_ready_rxs.push((member.label(), dev_ready_rx));
-
-        match spawn_member(member.clone(), config.clone(), tx.clone(), dev_ready_tx) {
-            Ok(h) => handles.push(h),
-            Err(e) => {
-                // A failed spawn dooms the session like a failed open: stop
-                // spawning, tear the started siblings down below.
-                first_err = Some(format!("{e:#}"));
-                break;
-            }
-        }
-    }
+    let mut spawned = spawn_members(members, config, &tx, &spawn_member);
 
     // Drop our copy of tx so the channel closes when all capture
     // threads finish.
@@ -822,45 +803,132 @@ where
     // (`handles` may be shorter than the rx list after a spawn failure; a
     // dropped ready sender then surfaces as a disconnect, which the spawn
     // error already outranks via `first_err`.)
-    for (label, dev_rx) in per_device_ready_rxs.iter().take(handles.len()) {
-        match dev_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
-                if first_err.is_none() {
-                    first_err = Some(format!("Capture member {label} failed to open: {e}"));
-                }
-            }
-            Err(_) => {
-                if first_err.is_none() {
-                    first_err = Some(format!(
-                        "Capture member {label} exited before signaling ready"
-                    ));
-                }
-            }
-        }
-    }
-
-    if let Some(err) = first_err {
-        // One device failing dooms the whole multi-capture: a capture that
-        // silently covers only some of the requested interfaces would be
-        // worse than an error (matching single-capture, where the open
-        // failure is THE error). Signal the siblings that did open to stop
-        // (their capture loops poll the shutdown flag), unblock the caller
-        // with the one aggregated error naming the failed device, then reap
-        // the threads instead of blocking on them forever.
-        stop_siblings();
-        if let Some(ready) = ready_tx {
-            let _ = ready.send(Err(err.clone()));
-        }
-        for h in handles {
-            let _ = h.join();
-        }
-        return Err(anyhow::anyhow!(err));
+    let readiness = first_readiness_failure(&spawned);
+    if let Some(err) = spawned.first_err.take().or(readiness) {
+        return Err(abort_members(
+            err,
+            &stop_siblings,
+            ready_tx,
+            spawned.handles,
+        ));
     }
     if let Some(ready) = ready_tx {
         let _ = ready.send(Ok(()));
     }
 
+    reap_members(spawned.handles)
+}
+
+/// The member threads [`spawn_members`] started, and what stopped it early.
+struct SpawnedMembers {
+    /// One join handle per member whose thread started, in member order.
+    handles: Vec<thread::JoinHandle<Result<()>>>,
+    /// Each member's label and readiness receiver, in member order. One
+    /// longer than `handles` when a spawn failed.
+    ready_rxs: Vec<(String, crossbeam_channel::Receiver<Result<(), String>>)>,
+    /// The spawn failure that stopped the loop, if one did.
+    first_err: Option<String>,
+}
+
+/// Spawn one capture thread per member, each with its own ready signal, and
+/// stop at the first member that fails to spawn.
+fn spawn_members<S>(
+    members: &[CaptureSource],
+    config: &CaptureConfig,
+    tx: &PacketTx,
+    spawn_member: &S,
+) -> SpawnedMembers
+where
+    S: Fn(
+        CaptureSource,
+        CaptureConfig,
+        PacketTx,
+        MemberReadyTx,
+    ) -> Result<thread::JoinHandle<Result<()>>>,
+{
+    let mut spawned = SpawnedMembers {
+        handles: Vec::new(),
+        ready_rxs: Vec::new(),
+        first_err: None,
+    };
+    for member in members {
+        // Each sub-thread gets its own ready signal so we can
+        // aggregate them before signaling the caller.
+        let (dev_ready_tx, dev_ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+        spawned.ready_rxs.push((member.label(), dev_ready_rx));
+
+        match spawn_member(member.clone(), config.clone(), tx.clone(), dev_ready_tx) {
+            Ok(h) => spawned.handles.push(h),
+            Err(e) => {
+                // A failed spawn dooms the session like a failed open: stop
+                // spawning, tear the started siblings down below.
+                spawned.first_err = Some(format!("{e:#}"));
+                break;
+            }
+        }
+    }
+    spawned
+}
+
+/// Wait for every spawned member's readiness and return the first failure.
+///
+/// Every receiver is waited on, not only those before the first failure, so
+/// no member is still opening when the coordinator decides the outcome.
+fn first_readiness_failure(spawned: &SpawnedMembers) -> Option<String> {
+    let mut first = None;
+    for (label, dev_rx) in spawned.ready_rxs.iter().take(spawned.handles.len()) {
+        let failure = readiness_failure(label, dev_rx.recv());
+        if first.is_none() {
+            first = failure;
+        }
+    }
+    first
+}
+
+/// The error one member's readiness signal stands for, or `None` when it
+/// opened.
+fn readiness_failure(
+    label: &str,
+    signal: Result<Result<(), String>, crossbeam_channel::RecvError>,
+) -> Option<String> {
+    match signal {
+        Ok(Ok(())) => None,
+        Ok(Err(e)) => Some(format!("Capture member {label} failed to open: {e}")),
+        Err(_) => Some(format!(
+            "Capture member {label} exited before signaling ready"
+        )),
+    }
+}
+
+/// Tear a multi-capture down after one member failed, returning the error.
+///
+/// One device failing dooms the whole multi-capture: a capture that
+/// silently covers only some of the requested interfaces would be
+/// worse than an error (matching single-capture, where the open
+/// failure is THE error). Signal the siblings that did open to stop
+/// (their capture loops poll the shutdown flag), unblock the caller
+/// with the one aggregated error naming the failed device, then reap
+/// the threads instead of blocking on them forever.
+fn abort_members<K: Fn()>(
+    err: String,
+    stop_siblings: &K,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    handles: Vec<thread::JoinHandle<Result<()>>>,
+) -> anyhow::Error {
+    stop_siblings();
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Err(err.clone()));
+    }
+    for h in handles {
+        let _ = h.join();
+    }
+    anyhow::anyhow!(err)
+}
+
+/// Join every member thread and return the first error any of them reported.
+///
+/// A panicked member is logged and does not make the run fail.
+fn reap_members(handles: Vec<thread::JoinHandle<Result<()>>>) -> Result<()> {
     let mut first_error = None;
     for h in handles {
         match h.join() {
@@ -1025,6 +1093,9 @@ mod tests {
         use super::*;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        /// Any error a test can return; `?` converts into it.
+        type TestError = Box<dyn std::error::Error>;
 
         /// Build a fake `spawn_device`: `bad*` devices signal an open error
         /// and exit; others count into `opened`, signal ready, and loop until
@@ -1191,6 +1262,246 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("coordinator finishes after siblings stop")
                 .expect("clean shutdown is Ok");
+        }
+
+        /// A spawner whose members act out their device name, run to
+        /// completion without a stop signal, and count every spawn attempt.
+        ///
+        /// `bad*` fails its open, `silent*` exits without answering readiness,
+        /// `late*` opens and then fails, `nospawn*` fails to spawn at all, and
+        /// any other name opens and exits cleanly.
+        fn scripted_spawner(
+            spawns: Arc<AtomicU64>,
+        ) -> impl Fn(
+            CaptureSource,
+            CaptureConfig,
+            channel::PacketTx,
+            MemberReadyTx,
+        ) -> Result<thread::JoinHandle<Result<()>>> {
+            move |member, _config, _tx, ready| {
+                spawns.fetch_add(1, Ordering::SeqCst);
+                let dev = match &member {
+                    CaptureSource::Live { device } => device.clone(),
+                    other => other.label(),
+                };
+                if dev.starts_with("nospawn") {
+                    anyhow::bail!("spawn refused for {dev}");
+                }
+                Ok(thread::spawn(move || {
+                    if dev.starts_with("bad") {
+                        let _ = ready.send(Err(format!("no such device {dev}")));
+                        anyhow::bail!("no such device {dev}");
+                    }
+                    if dev.starts_with("silent") {
+                        drop(ready);
+                        return Ok(());
+                    }
+                    let _ = ready.send(Ok(()));
+                    if dev.starts_with("late") {
+                        anyhow::bail!("{dev} failed after opening");
+                    }
+                    Ok(())
+                }))
+            }
+        }
+
+        /// What [`run_scripted`] reports: the coordinator's result, the
+        /// readiness answer, and the number of spawn attempts.
+        type ScriptedRun = (Result<()>, Result<(), String>, u64);
+
+        /// Run the coordinator over `devs` with [`scripted_spawner`] on this
+        /// thread, returning its result, the readiness answer, and the number
+        /// of spawn attempts.
+        fn run_scripted(devs: &[&str]) -> Result<ScriptedRun, TestError> {
+            let members: Vec<CaptureSource> = devs
+                .iter()
+                .map(|d| CaptureSource::Live {
+                    device: (*d).to_string(),
+                })
+                .collect();
+            let (tx, _rx) = channel::packet_channel(16);
+            let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+            let spawns = Arc::new(AtomicU64::new(0));
+            let result = run_multi_capture(
+                &members,
+                &CaptureConfig::default(),
+                tx,
+                Some(ready_tx),
+                scripted_spawner(spawns.clone()),
+                || {},
+            );
+            let ready = ready_rx
+                .try_recv()
+                .map_err(|e| format!("readiness was answered: {e:?}"))?;
+            Ok((result, ready, spawns.load(Ordering::SeqCst)))
+        }
+
+        /// With two members failing to open, the error names the first in
+        /// member order and carries that member's own reason.
+        #[test]
+        fn the_first_member_to_fail_its_open_is_the_one_named() -> Result<(), TestError> {
+            let (result, ready, _) = run_scripted(&["good0", "bad1", "bad2"])?;
+            let msg = ready.expect_err("an open failed");
+            assert_eq!(
+                msg,
+                "Capture member device 'bad1' failed to open: no such device bad1"
+            );
+            assert_eq!(result.expect_err("the run fails").to_string(), msg);
+            Ok(())
+        }
+
+        /// A member that exits without answering readiness fails the run with
+        /// a message saying exactly that.
+        #[test]
+        fn a_member_that_never_answers_readiness_fails_the_run() -> Result<(), TestError> {
+            let (result, ready, _) = run_scripted(&["good0", "silent1"])?;
+            let msg = ready.expect_err("the member never answered");
+            assert_eq!(
+                msg,
+                "Capture member device 'silent1' exited before signaling ready"
+            );
+            assert!(result.is_err());
+            Ok(())
+        }
+
+        /// A member that opened and then failed makes the run fail with that
+        /// member's error, after readiness was reported as success.
+        #[test]
+        fn a_member_failing_after_its_open_fails_the_run() -> Result<(), TestError> {
+            let (result, ready, _) = run_scripted(&["good0", "late1", "late2"])?;
+            ready.map_err(|e| format!("every member opened: {e:?}"))?;
+            assert_eq!(
+                result.expect_err("a member failed").to_string(),
+                "late1 failed after opening"
+            );
+            Ok(())
+        }
+
+        /// A member that cannot be spawned stops the spawning there, and its
+        /// error outranks an open failure among the members already started.
+        #[test]
+        fn a_spawn_failure_stops_spawning_and_is_the_error_reported() -> Result<(), TestError> {
+            let (result, ready, spawns) = run_scripted(&["good0", "nospawn1", "good2"])?;
+            assert_eq!(spawns, 2, "no member after the failed spawn is started");
+            assert_eq!(
+                ready.expect_err("a spawn failed"),
+                "spawn refused for nospawn1"
+            );
+            assert!(result.is_err());
+
+            let (_, ready, _) = run_scripted(&["bad0", "nospawn1"])?;
+            assert_eq!(
+                ready.expect_err("both failed"),
+                "spawn refused for nospawn1"
+            );
+            Ok(())
+        }
+
+        /// Only members whose thread started are waited on for readiness: a
+        /// failed spawn whose ready sender is still held elsewhere does not
+        /// leave the coordinator waiting on a member that never runs.
+        #[test]
+        fn a_failed_spawn_is_not_waited_on_for_readiness() -> Result<(), TestError> {
+            let held: Arc<std::sync::Mutex<Vec<MemberReadyTx>>> = Arc::default();
+            let held2 = held.clone();
+            let spawner = move |member: CaptureSource,
+                                _config: CaptureConfig,
+                                _tx: channel::PacketTx,
+                                ready: MemberReadyTx|
+                  -> Result<thread::JoinHandle<Result<()>>> {
+                if member.label().contains("nospawn") {
+                    held2
+                        .lock()
+                        .map_err(|e| anyhow::anyhow!("lock the held senders: {e}"))?
+                        .push(ready);
+                    anyhow::bail!("spawn refused");
+                }
+                Ok(thread::spawn(move || {
+                    let _ = ready.send(Ok(()));
+                    Ok(())
+                }))
+            };
+            let members = vec![
+                CaptureSource::Live {
+                    device: "good0".to_string(),
+                },
+                CaptureSource::Live {
+                    device: "nospawn1".to_string(),
+                },
+            ];
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            thread::spawn(move || {
+                let (tx, _rx) = channel::packet_channel(16);
+                let res = run_multi_capture(
+                    &members,
+                    &CaptureConfig::default(),
+                    tx,
+                    None,
+                    spawner,
+                    || {},
+                );
+                let _ = done_tx.send(res.map_err(|e| e.to_string()));
+            });
+            let res = done_rx.recv_timeout(Duration::from_secs(5)).map_err(|e| {
+                format!("the coordinator must not wait on a member that never started: {e:?}")
+            })?;
+            assert_eq!(res, Err("spawn refused".to_string()));
+            drop(held);
+            Ok(())
+        }
+
+        /// A failed run returns only after every started member thread has
+        /// exited, so no capture thread outlives the error it caused.
+        #[test]
+        fn a_failed_run_returns_after_every_member_thread_exits() {
+            let exited = Arc::new(AtomicU64::new(0));
+            let stop = Arc::new(AtomicBool::new(false));
+            let (exited2, stop2) = (exited.clone(), stop.clone());
+            let spawner = move |member: CaptureSource,
+                                _config: CaptureConfig,
+                                _tx: channel::PacketTx,
+                                ready: MemberReadyTx|
+                  -> Result<thread::JoinHandle<Result<()>>> {
+                let (exited, stop) = (exited2.clone(), stop2.clone());
+                let bad = member.label().contains("bad");
+                Ok(thread::spawn(move || {
+                    if bad {
+                        let _ = ready.send(Err("no such device".to_string()));
+                    } else {
+                        let _ = ready.send(Ok(()));
+                        while !stop.load(Ordering::SeqCst) {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        // Exit well after the stop signal, so a coordinator
+                        // that does not join returns before this count moves.
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                    exited.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }))
+            };
+            let members: Vec<CaptureSource> = ["good0", "bad1", "good2"]
+                .iter()
+                .map(|d| CaptureSource::Live {
+                    device: (*d).to_string(),
+                })
+                .collect();
+            let (tx, _rx) = channel::packet_channel(16);
+            let stop3 = stop.clone();
+            let result = run_multi_capture(
+                &members,
+                &CaptureConfig::default(),
+                tx,
+                None,
+                spawner,
+                move || stop3.store(true, Ordering::SeqCst),
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                exited.load(Ordering::SeqCst),
+                3,
+                "every member thread exited before the coordinator returned"
+            );
         }
     }
 

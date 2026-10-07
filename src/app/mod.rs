@@ -89,27 +89,7 @@ pub fn build_resolver(
     ));
     // System hosts table (offline, cheap).
     let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
-    // Operator-provided mapping files (manual layer, highest priority).
-    for f in &cli.name_args.names {
-        if let Err(e) = resolver.load_manual_file(std::path::Path::new(f)) {
-            tracing::warn!("could not load names file {f}: {e}");
-        }
-    }
-    if let Some(hf) = &cfg.hosts_file {
-        let _ = resolver.load_manual_file(std::path::Path::new(hf));
-    }
-    // Inline [names.manual] table from the config (highest-priority manual layer).
-    if let Some(manual) = &cfg.manual {
-        for (ip_str, name) in manual {
-            match ip_str.parse::<std::net::IpAddr>() {
-                Ok(ip) if crate::names::is_valid_name(name) => {
-                    resolver.set_manual(ip, name.clone());
-                }
-                Ok(_) => tracing::warn!("ignoring invalid name for {ip_str:?} in [names.manual]"),
-                Err(_) => tracing::warn!("ignoring invalid IP key {ip_str:?} in [names.manual]"),
-            }
-        }
-    }
+    load_manual_names(&resolver, &cli.name_args.names, cfg);
 
     let mode = if reverse {
         NameMode::Dns
@@ -119,4 +99,103 @@ pub fn build_resolver(
         NameMode::Off
     };
     (resolver, mode)
+}
+
+/// Load the manual name layer: the operator's `--names` files, the config's
+/// `hosts_file`, then its inline `[names.manual]` table.
+///
+/// # Side effects
+///
+/// Reads each file; a `--names` file that fails to load is warned about, a
+/// `hosts_file` that fails is skipped silently.
+fn load_manual_names(
+    resolver: &crate::names::NameResolver,
+    names_files: &[String],
+    cfg: &crate::config::NamesConfig,
+) {
+    // Operator-provided mapping files (manual layer, highest priority).
+    for f in names_files {
+        if let Err(e) = resolver.load_manual_file(std::path::Path::new(f)) {
+            tracing::warn!("could not load names file {f}: {e}");
+        }
+    }
+    if let Some(hf) = &cfg.hosts_file {
+        let _ = resolver.load_manual_file(std::path::Path::new(hf));
+    }
+    // Inline [names.manual] table from the config (highest-priority manual layer).
+    if let Some(manual) = &cfg.manual {
+        apply_manual_table(resolver, manual);
+    }
+}
+
+/// Apply an inline `[names.manual]` table, warning about and skipping an
+/// entry whose key is not an IP address or whose name is not valid.
+fn apply_manual_table(
+    resolver: &crate::names::NameResolver,
+    manual: &std::collections::BTreeMap<String, String>,
+) {
+    for (ip_str, name) in manual {
+        match ip_str.parse::<std::net::IpAddr>() {
+            Ok(ip) if crate::names::is_valid_name(name) => {
+                resolver.set_manual(ip, name.clone());
+            }
+            Ok(_) => tracing::warn!("ignoring invalid name for {ip_str:?} in [names.manual]"),
+            Err(_) => tracing::warn!("ignoring invalid IP key {ip_str:?} in [names.manual]"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::names::NameMode;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A headless CLI with no flags.
+    fn cli() -> Cli {
+        Cli::parse_from_args(["sipnab", "-N"])
+    }
+
+    /// An inline `[names.manual]` entry with a valid name is applied; one
+    /// whose name would corrupt the hosts format is skipped.
+    #[test]
+    fn the_manual_table_applies_valid_names_only() {
+        let mut config = Config::default();
+        config.names.manual = Some(
+            [
+                ("192.0.2.8".to_string(), "alpha".to_string()),
+                ("192.0.2.9".to_string(), "bad\nname".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let (resolver, _) = build_resolver(&cli(), &config);
+        let ip = |last| IpAddr::V4(Ipv4Addr::new(192, 0, 2, last));
+        assert_eq!(
+            resolver.name(ip(8), NameMode::Names).as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(resolver.name(ip(9), NameMode::Names), None);
+    }
+
+    /// `[names] hosts_file` reaches the manual layer.
+    #[test]
+    fn the_config_hosts_file_is_loaded() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let hosts = dir.path().join("hosts");
+        std::fs::write(&hosts, "192.0.2.10 bravo\n").map_err(|e| format!("write hosts: {e:?}"))?;
+        let mut config = Config::default();
+        config.names.hosts_file = Some(hosts.display().to_string());
+        let (resolver, _) = build_resolver(&cli(), &config);
+        assert_eq!(
+            resolver
+                .name(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), NameMode::Names)
+                .as_deref(),
+            Some("bravo")
+        );
+        Ok(())
+    }
 }

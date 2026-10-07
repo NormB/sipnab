@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:4196`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4196)),
+- `cores_ignored_warning` ([`bootstrap.rs:4925`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4925)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:5234`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5234)), which asserts the warning
+  ([`bootstrap.rs:5953`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L5953)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -305,7 +305,7 @@ to answer is what replaces `final_sweep`'s single well-defined moment.
 ### Instruments
 
 `KERNEL_DROPPED` / `IFACE_DROPPED`
-([`live.rs:945`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L945)) are the loss counters;
+([`live.rs:1179`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1179)) are the loss counters;
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total` are the regime discriminator
 ([section 3, "What widening CAPTURE buys, exactly"](#3-what-widening-capture-buys-exactly)).
@@ -579,6 +579,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:3599`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3599)) returns true only for the
+  ([`bootstrap.rs:4347`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4347)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

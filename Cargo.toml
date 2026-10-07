@@ -31,6 +31,9 @@ wildcard_imports = "warn"
 # Five or more one-letter bindings in one scope leave the reader to track
 # what each stands for; name them.
 many_single_char_names = "warn"
+# A function whose branches nest past clippy's threshold (25) cannot be read
+# or tested one decision at a time; split it along its decisions.
+cognitive_complexity = "warn"
 
 [lints]
 workspace = true

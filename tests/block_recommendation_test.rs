@@ -116,17 +116,10 @@ fn the_block_says_sipnab_applied_nothing() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The counter-evidence is in the SAME block as the accusation.
-///
-/// The fixture is the case BA2 was written about: one address that trips a
-/// detector AND completed a registration. The behavioral entry is opened by
-/// the plain REGISTER, `established` is set by the `200 OK` answering it, and
-/// the scanner-UA request that follows is what files the finding. A rule
-/// generated from that finding alone would disconnect a working peer.
-#[test]
-fn an_established_source_carries_its_counter_evidence() -> Result<(), TestError> {
-    let tmp = tempfile::tempdir()?;
-    let pcap = tmp.path().join("customer.pcap");
+/// A capture of a peer that registers successfully and then sends one
+/// scanner-UA request: an accused source that is also established.
+fn established_scanner_capture(dir: &Path) -> Result<std::path::PathBuf, TestError> {
+    let pcap = dir.join("customer.pcap");
 
     let register = udp_frame(
         SCANNER,
@@ -171,6 +164,20 @@ fn an_established_source_carries_its_counter_evidence() -> Result<(), TestError>
           User-Agent: friendly-scanner\r\nContent-Length: 0\r\n\r\n",
     );
     write_pcap(&pcap, &[register, ok, scan])?;
+    Ok(pcap)
+}
+
+/// The counter-evidence is in the SAME block as the accusation.
+///
+/// The fixture is the case BA2 was written about: one address that trips a
+/// detector AND completed a registration. The behavioral entry is opened by
+/// the plain REGISTER, `established` is set by the `200 OK` answering it, and
+/// the scanner-UA request that follows is what files the finding. A rule
+/// generated from that finding alone would disconnect a working peer.
+#[test]
+fn an_established_source_carries_its_counter_evidence() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
+    let pcap = established_scanner_capture(tmp.path())?;
 
     let (stdout, stderr, code) = run_support::run(
         &[
@@ -214,6 +221,37 @@ fn an_established_source_carries_its_counter_evidence() -> Result<(), TestError>
         live_command.is_none(),
         "a block about an established source offers a runnable command: {}",
         live_command.unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// The end-of-run summary names the accused source and says that a block
+/// would disconnect it, because it also completed a registration. The
+/// summary is read without `--recommend-block`, which is the case where it
+/// is the only place an operator learns this.
+#[test]
+fn the_run_summary_says_an_established_source_would_be_disconnected() -> Result<(), TestError> {
+    let tmp = tempfile::tempdir()?;
+    let pcap = established_scanner_capture(tmp.path())?;
+    let (stdout, stderr, code) = run_support::run(
+        &[
+            "-N",
+            "-I",
+            pcap.to_str().ok_or("utf-8 path")?,
+            "--portrange",
+            "1-65535",
+            "--kill-scanner",
+        ],
+        Some("info"),
+    )?;
+    assert_eq!(code, Some(0), "run failed:\n{stdout}{stderr}");
+    let line = stderr
+        .lines()
+        .find(|l| l.contains("198.51.100.7") && l.contains("finding(s) [scanner]"))
+        .ok_or_else(|| format!("no summary line names the source:\n{stderr}"))?;
+    assert!(
+        line.contains("-- also completed a registration or call, so a block disconnects it"),
+        "{line}"
     );
     Ok(())
 }

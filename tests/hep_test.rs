@@ -507,6 +507,68 @@ fn a_sender_refused_on_every_packet_trips_the_silence_warning() -> Result<(), Te
     Ok(())
 }
 
+/// `--hep-senders` is a report the run was asked for, so a roster that cannot
+/// reach stdout fails the run (exit 1) rather than ending it as a success.
+/// Stdout is `/dev/full`; `--no-cli-print` and `--quiet` keep everything else
+/// off stdout, so the roster is the only write that can fail.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hep_senders_roster_that_cannot_be_written_fails_the_run() -> Result<(), TestError> {
+    let full = std::fs::OpenOptions::new().write(true).open("/dev/full")?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "--hep-listen",
+            "127.0.0.1:0",
+            "--quiet",
+            "--no-cli-print",
+            "--hep-senders",
+            "--count",
+            "1",
+        ])
+        .env("SIPNAB_LOG", "info")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(full))
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr = BufReader::new(child.stderr.take().ok_or("stderr is piped")?);
+    let (port_tx, port_rx) = mpsc::channel();
+    thread::spawn(move || {
+        for line in stderr.lines().map_while(Result::ok) {
+            if let Some(rest) = line.split("HEP listener started on ").nth(1)
+                && let Some(p) = rest.trim().rsplit(':').next()
+                && let Ok(p) = p.parse::<u16>()
+            {
+                let _ = port_tx.send(p);
+            }
+        }
+    });
+    let port = port_rx
+        .recv_timeout(test_timeout(10))
+        .map_err(|e| format!("the listener reports its port: {e:?}"))?;
+    let sock = UdpSocket::bind("127.0.0.1:0")?;
+    sock.send_to(&hep3_sip(&invite_bytes())?, ("127.0.0.1", port))?;
+
+    let deadline = Instant::now() + test_timeout(15);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the run did not end after --count 1"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "a roster that could not be written must fail the run"
+    );
+    Ok(())
+}
+
 /// `--hep-senders --json` ends a headless run with the roster: two senders
 /// with the right key (capture ids 7 and 9) as two entries with their own
 /// counts, and a sender with the wrong key as a refused source under

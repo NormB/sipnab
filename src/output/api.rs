@@ -1373,17 +1373,7 @@ async fn serve_router(listener: ApiListener, router: Router) -> Result<(), crate
     let ApiListener { tcp, tls } = listener;
     let listener = tokio::net::TcpListener::from_std(tcp)
         .map_err(|e| crate::Error::Server(format!("failed to register the API listener: {e}")))?;
-
-    if tls.is_some() {
-        tracing::info!("REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
-    }
-    // Log the *actual* bound address: with port 0 the OS assigns an ephemeral
-    // port, so logging the requested address would print ":0". Matches the
-    // MCP HTTP server.
-    match listener.local_addr() {
-        Ok(addr) => tracing::info!("REST API listening on {}", addr),
-        Err(_) => tracing::info!("REST API listening"),
-    }
+    log_listening(&listener, tls.is_some());
 
     let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let served = match tls {
@@ -1393,20 +1383,44 @@ async fn serve_router(listener: ApiListener, router: Router) -> Result<(), crate
         // not of an arbitrary listener, and implementing it here for
         // `SocketAddr` would break the orphan rule.
         Some(config) => {
-            let tls_listener = TlsListener::new(
-                "API TLS",
-                listener,
-                config,
-                API_TLS_HANDSHAKE_TIMEOUT,
-                API_TLS_MAX_HANDSHAKES,
-            )
-            .map_err(|e| {
-                crate::Error::Server(format!("failed to start the API TLS listener: {e}"))
-            })?;
+            let tls_listener = api_tls_listener(listener, config)?;
             axum::serve(tls_listener.tap_io(|_| {}), service).await
         }
     };
     served.map_err(|e| crate::Error::Server(format!("API server error: {e}")))
+}
+
+/// Log what the REST API listener serves and the address it is bound to.
+fn log_listening(listener: &tokio::net::TcpListener, serves_tls: bool) {
+    if serves_tls {
+        tracing::info!("REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
+    }
+    // Log the *actual* bound address: with port 0 the OS assigns an ephemeral
+    // port, so logging the requested address would print ":0". Matches the
+    // MCP HTTP server.
+    match listener.local_addr() {
+        Ok(addr) => tracing::info!("REST API listening on {}", addr),
+        Err(_) => tracing::info!("REST API listening"),
+    }
+}
+
+/// Wrap the REST API's TCP listener in the TLS accept loop.
+///
+/// # Errors
+///
+/// `crate::Error::Server` when the TLS listener cannot start.
+fn api_tls_listener(
+    listener: tokio::net::TcpListener,
+    config: Arc<rustls::ServerConfig>,
+) -> Result<TlsListener, crate::Error> {
+    TlsListener::new(
+        "API TLS",
+        listener,
+        config,
+        API_TLS_HANDSHAKE_TIMEOUT,
+        API_TLS_MAX_HANDSHAKES,
+    )
+    .map_err(|e| crate::Error::Server(format!("failed to start the API TLS listener: {e}")))
 }
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────

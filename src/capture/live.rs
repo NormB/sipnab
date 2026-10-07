@@ -323,36 +323,81 @@ pub fn capture_live_fanout(
         return capture_live(device, config, tx, ready_tx, reconfigure);
     }
 
-    // -B is PER HANDLE, so N sockets ask the kernel for N rings of that size.
-    // Say the total out loud rather than letting a flag that allocated one
-    // buffer yesterday quietly allocate several today: at the 64 MiB default,
-    // `--cores 8` is half a gigabyte of locked ring, and the operator who set
-    // -B did not agree to a multiplier.
-    //
-    // Whether N should DIVIDE the request instead is a live design question
-    // (see docs/design/live-fanout.md) and is deliberately not decided here —
-    // dividing silently shrinks a buffer an operator sized on purpose, which is
-    // the same class of surprise in the other direction.
-    let total_ring_mb = u64::from(config.buffer_mb) * sockets as u64;
+    announce_fanout(device, config.buffer_mb, sockets, group);
+    let handles = spawn_fanout_sockets(
+        FanoutSocket {
+            device,
+            config,
+            tx: &tx,
+            ready_tx: ready_tx.as_ref(),
+            reconfigure: reconfigure.as_ref(),
+            group,
+        },
+        sockets,
+    )?;
+    first_thread_error(handles)
+}
+
+/// What every socket of one fanout group is opened with.
+struct FanoutSocket<'a> {
+    /// The device every socket captures on.
+    device: &'a str,
+    /// The capture configuration every socket shares.
+    config: &'a CaptureConfig,
+    /// The one channel every socket feeds.
+    tx: &'a PacketTx,
+    /// The caller's readiness handshake, answered by the first socket only.
+    ready_tx: Option<&'a crossbeam_channel::Sender<Result<(), String>>>,
+    /// The runtime filter control every socket polls.
+    reconfigure: Option<&'a ReconfigureHandle>,
+    /// The `PACKET_FANOUT` group every socket joins.
+    group: u16,
+}
+
+/// Log how many sockets a fanout capture opens and the ring they total.
+///
+/// -B is PER HANDLE, so N sockets ask the kernel for N rings of that size.
+/// Say the total out loud rather than letting a flag that allocated one
+/// buffer yesterday quietly allocate several today: at the 64 MiB default,
+/// `--cores 8` is half a gigabyte of locked ring, and the operator who set
+/// -B did not agree to a multiplier.
+///
+/// Whether N should DIVIDE the request instead is a live design question
+/// (see docs/design/live-fanout.md) and is deliberately not decided here —
+/// dividing silently shrinks a buffer an operator sized on purpose, which is
+/// the same class of surprise in the other direction.
+fn announce_fanout(device: &str, buffer_mb: u32, sockets: usize, group: u16) {
+    let total_ring_mb = u64::from(buffer_mb) * sockets as u64;
     tracing::info!(
         "'{device}': capturing on {sockets} sockets, fanout group {group}; \
-         -B {} MiB is per socket, so ~{total_ring_mb} MiB of ring in total. \
+         -B {buffer_mb} MiB is per socket, so ~{total_ring_mb} MiB of ring in total. \
          This widens CAPTURE only — processing stays on one thread, so this is \
          not {sockets} cores of analysis",
-        config.buffer_mb,
     );
+}
+
+/// Start one capture thread per socket of the group.
+fn spawn_fanout_sockets(
+    shared: FanoutSocket<'_>,
+    sockets: usize,
+) -> Result<Vec<std::thread::JoinHandle<Result<()>>>> {
     let mut handles = Vec::with_capacity(sockets);
     for index in 0..sockets {
-        let device = device.to_string();
-        let config = config.clone();
-        let tx = tx.clone();
+        let device = shared.device.to_string();
+        let config = shared.config.clone();
+        let tx = shared.tx.clone();
         // Only the first socket answers the readiness handshake. N answers to a
         // one-shot channel would leave the caller's meaning of "ready" up to
         // whichever thread won.
-        let ready = if index == 0 { ready_tx.clone() } else { None };
+        let ready = if index == 0 {
+            shared.ready_tx.cloned()
+        } else {
+            None
+        };
         // Every socket polls the same shared control, so a runtime filter change
         // reaches all of them; each installs it on its own handle.
-        let reconfigure = reconfigure.clone();
+        let reconfigure = shared.reconfigure.cloned();
+        let group = shared.group;
         handles.push(
             std::thread::Builder::new()
                 .name(format!("capture-{device}-{index}"))
@@ -369,7 +414,12 @@ pub fn capture_live_fanout(
                 })?,
         );
     }
+    Ok(handles)
+}
 
+/// Join every capture thread, and return the first error any of them
+/// reported. A panicked thread counts as an error, in join order.
+fn first_thread_error(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<()> {
     let mut first_err = None;
     for handle in handles {
         match handle.join() {
@@ -482,56 +532,143 @@ fn capture_live_group(
     socket_index: Option<usize>,
     reconfigure: Option<ReconfigureHandle>,
 ) -> Result<()> {
+    warn_if_buffer_clamped(config.buffer_mb);
+
+    let (mut cap, granted_mb) = match open_with_buffer_ladder(device, config) {
+        Ok(opened) => opened,
+        Err(e) => {
+            return Err(report_not_ready(
+                ready_tx.as_ref(),
+                anyhow::anyhow!(open_failure_message(&e)),
+            ));
+        }
+    };
+
+    if let Err(err) = install_initial_filter(&mut cap, config) {
+        return Err(report_not_ready(ready_tx.as_ref(), err));
+    }
+
+    // Put the handle into non-blocking mode. The capture loop drives its own
+    // liveness by polling the fd (see `wait_readable`), so individual reads
+    // must never block — otherwise an idle interface would stall the loop and
+    // `--duration` / Ctrl-C would not take effect until the next packet.
+    #[cfg(unix)]
+    let mut cap = match cap.setnonblock() {
+        Ok(c) => c,
+        Err(e) => {
+            let err = anyhow::Error::new(e)
+                .context(format!("Failed to set non-blocking mode on '{device}'"));
+            return Err(report_not_ready(ready_tx.as_ref(), err));
+        }
+    };
+
+    #[cfg(unix)]
+    join_fanout_or_refuse(&cap, device, fanout_group)?;
+
+    // Signal that the capture device is open and ready.
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
+    }
+
+    let mut session = LiveSession {
+        device,
+        config,
+        tx,
+        reconfigure,
+        link_type: cap.get_datalink().0,
+        // Qualified by socket index under a fanout group, so this socket's
+        // ordinals cannot name a sibling's frames. See `fanout_source_name`.
+        interface_name: Some(fanout_source_name(device, socket_index)),
+        start: std::time::Instant::now(),
+        count: 0,
+        // This device's frame numbering, kept separately from `count` because the
+        // two answer different questions: `count` is what `--count` and the summary
+        // line bound, whereas the ordinal is half of a provenance pointer and
+        // belongs to THIS source. Under `--multi-device` and under a `-d` + `-L`
+        // composite several readers push into one channel, so one counter per
+        // reader is what keeps each source's positions its own -- see
+        // `FrameCounter`. `None` under `PACKET_FANOUT`, where several sockets share
+        // this device name and no per-socket counter could number them without
+        // collisions -- see `frame_counter_for`.
+        frames: frame_counter_for(fanout_group),
+        drops: DropTracker {
+            last_stats: std::time::Instant::now(),
+            prev_dropped: 0,
+            prev_if_dropped: 0,
+            granted_mb,
+        },
+        // The generation of the last filter this socket installed at runtime. The
+        // initial filter was applied at open (above); reconfigure only carries
+        // CHANGES, so this starts at 0 (the control's resting generation).
+        installed_filter_gen: 0,
+        // Selectable fd for poll(2). On Linux this is the packet-socket fd and is
+        // valid for the lifetime of the capture.
+        #[cfg(unix)]
+        poll_fd: {
+            use std::os::unix::io::AsRawFd;
+            cap.as_raw_fd()
+        },
+    };
+
+    tracing::info!(
+        "Capturing on '{device}' (link_type={}, snaplen={})",
+        session.link_type,
+        config.snaplen
+    );
+
+    // Some reads never come back on their own: libpcap's netmap module loops
+    // inside `pcap_next_ex` until a frame arrives, so on a silent link the
+    // checks at the top of this loop never run and SIGTERM was ignored (NM2).
+    // The breaker watches the same rule from beside the loop and calls
+    // `pcap_breakloop`, which returns the read as `NoMorePackets` below.
+    // Dropped with this function, which joins its thread.
+    let _breaker = {
+        let handle = cap.breakloop_handle();
+        let duration = config.duration;
+        let start = session.start;
+        super::breaker::Breaker::spawn(
+            format!("capture-stop:{device}"),
+            move || {
+                super::breaker::stop_due(signals::shutdown_requested(), start.elapsed(), duration)
+            },
+            move || handle.breakloop(),
+            BREAKER_INTERVAL,
+        )
+    };
+
+    session.run(&mut cap)?;
+    session.finish(&mut cap);
+    Ok(())
+}
+
+/// Warn that a `-B` request above [`MAX_BUFFER_MB`] is clamped, before the
+/// open is attempted.
+fn warn_if_buffer_clamped(buffer_mb: u32) {
+    if buffer_mb > MAX_BUFFER_MB {
+        tracing::warn!(
+            "-B/--buffer {buffer_mb} MiB exceeds the {MAX_BUFFER_MB} MiB ceiling \
+             (pcap_set_buffer_size takes a C int); capturing with \
+             {MAX_BUFFER_MB} MiB instead.",
+        );
+    }
+}
+
+/// Open `device` with the requested ring, falling back to smaller ones if the
+/// kernel will not give us that much. See `buffer_ladder`.
+///
+/// Returns the handle and the size the kernel actually granted, which is what
+/// the drop warning has to quote. It is not `config.buffer_mb` whenever the
+/// ladder stepped down.
+fn open_with_buffer_ladder(
+    device: &str,
+    config: &CaptureConfig,
+) -> Result<(pcap::Capture<pcap::Active>, u32)> {
     // Promiscuous mode is opt-out (`--no-promisc` / `config.promisc`). The "any"
     // pseudo-device on Linux does not support it regardless.
     let use_promisc = config.promisc && device != "any";
-
-    if config.buffer_mb > MAX_BUFFER_MB {
-        tracing::warn!(
-            "-B/--buffer {} MiB exceeds the {MAX_BUFFER_MB} MiB ceiling \
-             (pcap_set_buffer_size takes a C int); capturing with \
-             {MAX_BUFFER_MB} MiB instead.",
-            config.buffer_mb,
-        );
-    }
-
-    // Open with the requested ring, falling back to smaller ones if the kernel
-    // will not give us that much. See `buffer_ladder`.
-    let mut opened = None;
     let mut open_err = None;
-    // The size the kernel actually granted, which is what the drop warning has
-    // to quote. It is not `config.buffer_mb` whenever the ladder stepped down.
-    let mut granted_mb = config.buffer_mb;
     for (attempt, mb) in buffer_ladder(config.buffer_mb).into_iter().enumerate() {
-        let result = pcap::Capture::from_device(device)
-            .with_context(|| format!("Failed to open device '{device}'"))
-            .and_then(|inactive| {
-                inactive
-                    .promisc(use_promisc)
-                    .snaplen(config.snaplen as i32)
-                    .buffer_size(buffer_size_bytes(mb))
-                    // Read timeout and immediate mode are one decision, not two.
-                    // On Linux, asking for immediate delivery makes libpcap
-                    // refuse TPACKET_V3 (a V3 block cannot be retired early), so
-                    // the interactive path runs on V2 — where the ring is carved
-                    // into snaplen-sized slots and a 64 MiB ring at snaplen 65535
-                    // holds about a thousand packets. Headless captures give up
-                    // immediate delivery to get V3's snaplen-independent ring,
-                    // and pay for it with a short block-retire timer instead of
-                    // the 100 ms one V3 would otherwise inherit. See
-                    // `read_timeout_ms` and `CaptureConfig::immediate_mode`.
-                    //
-                    // Neither choice touches how quickly the loop below reacts to
-                    // shutdown: the handle is non-blocking, so an empty ring
-                    // returns TimeoutExpired at once and the wait that follows is
-                    // sipnab's own bounded `poll()` on the capture fd. `--duration`
-                    // and Ctrl-C are answered within POLL_INTERVAL either way.
-                    .timeout(read_timeout_ms(config.immediate_mode))
-                    .immediate_mode(config.immediate_mode)
-                    .open()
-                    .with_context(|| format!("Failed to activate capture on '{device}'"))
-            });
-        match result {
+        match open_device(device, config, use_promisc, mb) {
             Ok(cap) => {
                 if attempt > 0 {
                     // Say so loudly. A silently-shrunk ring is a capture that
@@ -546,97 +683,123 @@ fn capture_live_group(
                         config.buffer_mb,
                     );
                 }
-                granted_mb = effective_buffer_mb(mb);
-                opened = Some(cap);
-                break;
+                return Ok((cap, effective_buffer_mb(mb)));
             }
             Err(e) => open_err = Some(e),
         }
     }
+    Err(open_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open device '{device}'")))
+}
 
-    let mut cap = match opened.ok_or_else(|| {
-        open_err.unwrap_or_else(|| anyhow::anyhow!("Failed to open device '{device}'"))
-    }) {
-        Ok(cap) => cap,
-        Err(e) => {
-            // Help a typo'd device name: append what actually exists (the
-            // auto-detect path already does). Permission failures keep their
-            // own dedicated hint in the bootstrap, so skip the list there.
-            let mut msg = format!("{e:#}");
-            let is_permission = is_permission_error(&msg);
-            if !is_permission {
-                let devices = crate::capture::device::list_devices();
-                if !devices.is_empty() {
-                    msg.push_str(&format!("\n  Available devices: {}", devices.join(", ")));
-                }
-            }
-            if let Some(ready) = ready_tx {
-                let _ = ready.send(Err(msg.clone()));
-            }
-            return Err(anyhow::anyhow!(msg));
+/// Open and activate `device` with a ring of `mb` MiB.
+fn open_device(
+    device: &str,
+    config: &CaptureConfig,
+    use_promisc: bool,
+    mb: u32,
+) -> Result<pcap::Capture<pcap::Active>> {
+    pcap::Capture::from_device(device)
+        .with_context(|| format!("Failed to open device '{device}'"))
+        .and_then(|inactive| {
+            inactive
+                .promisc(use_promisc)
+                .snaplen(config.snaplen as i32)
+                .buffer_size(buffer_size_bytes(mb))
+                // Read timeout and immediate mode are one decision, not two.
+                // On Linux, asking for immediate delivery makes libpcap
+                // refuse TPACKET_V3 (a V3 block cannot be retired early), so
+                // the interactive path runs on V2 — where the ring is carved
+                // into snaplen-sized slots and a 64 MiB ring at snaplen 65535
+                // holds about a thousand packets. Headless captures give up
+                // immediate delivery to get V3's snaplen-independent ring,
+                // and pay for it with a short block-retire timer instead of
+                // the 100 ms one V3 would otherwise inherit. See
+                // `read_timeout_ms` and `CaptureConfig::immediate_mode`.
+                //
+                // Neither choice touches how quickly the loop below reacts to
+                // shutdown: the handle is non-blocking, so an empty ring
+                // returns TimeoutExpired at once and the wait that follows is
+                // sipnab's own bounded `poll()` on the capture fd. `--duration`
+                // and Ctrl-C are answered within POLL_INTERVAL either way.
+                .timeout(read_timeout_ms(config.immediate_mode))
+                .immediate_mode(config.immediate_mode)
+                .open()
+                .with_context(|| format!("Failed to activate capture on '{device}'"))
+        })
+}
+
+/// The message for a device that would not open.
+///
+/// Help a typo'd device name: append what actually exists (the
+/// auto-detect path already does). Permission failures keep their
+/// own dedicated hint in the bootstrap, so skip the list there.
+fn open_failure_message(e: &anyhow::Error) -> String {
+    let mut msg = format!("{e:#}");
+    if !is_permission_error(&msg) {
+        let devices = crate::capture::device::list_devices();
+        if !devices.is_empty() {
+            msg.push_str(&format!("\n  Available devices: {}", devices.join(", ")));
         }
-    };
+    }
+    msg
+}
 
+/// Install the `config` BPF filter on a freshly opened handle.
+fn install_initial_filter(
+    cap: &mut pcap::Capture<pcap::Active>,
+    config: &CaptureConfig,
+) -> Result<()> {
     if let Some(ref bpf) = config.bpf_filter
         && let Err(e) = cap.filter(bpf, true)
     {
-        let err = anyhow::Error::new(e).context(format!(
+        return Err(anyhow::Error::new(e).context(format!(
             "Failed to compile BPF filter: {bpf}{}",
             crate::capture::bpf_filter::positional_filter_hint(config.bpf_filter_positional)
                 .map_or_else(String::new, |h| format!(". {h}"))
-        ));
-        if let Some(ready) = ready_tx {
-            let _ = ready.send(Err(format!("{err:#}")));
-        }
-        return Err(err);
+        )));
     }
+    Ok(())
+}
 
-    // Put the handle into non-blocking mode. The capture loop drives its own
-    // liveness by polling the fd (see `wait_readable`), so individual reads
-    // must never block — otherwise an idle interface would stall the loop and
-    // `--duration` / Ctrl-C would not take effect until the next packet.
-    #[cfg(unix)]
-    let mut cap = match cap.setnonblock() {
-        Ok(c) => c,
-        Err(e) => {
-            let err = anyhow::Error::new(e)
-                .context(format!("Failed to set non-blocking mode on '{device}'"));
-            if let Some(ready) = ready_tx {
-                let _ = ready.send(Err(format!("{err:#}")));
-            }
-            return Err(err);
-        }
-    };
+/// Answer the readiness handshake with `err`, then hand `err` back to return.
+fn report_not_ready(
+    ready_tx: Option<&crossbeam_channel::Sender<Result<(), String>>>,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Err(format!("{err:#}")));
+    }
+    err
+}
 
-    // Selectable fd for poll(2). On Linux this is the packet-socket fd and is
-    // valid for the lifetime of the capture.
-    #[cfg(unix)]
-    let poll_fd = {
-        use std::os::unix::io::AsRawFd;
-        cap.as_raw_fd()
-    };
-
-    // Not gated on `target_os = "linux"`, deliberately.
-    //
-    // `join_fanout_group` already carries the platform split: it is a real
-    // setsockopt on Linux and a stub returning `Unsupported` elsewhere. Gating
-    // the CALL as well duplicated that decision, and got it wrong — the cfg
-    // covered the use of `fanout_group` but not the binding, so on macOS the
-    // parameter was unused and `-D warnings` failed the build. Twice.
-    //
-    // Keeping one platform decision in one place makes that mistake
-    // unrepresentable: the parameter is read on every unix target, so it cannot
-    // become unused on one of them. The `bail!` is unreachable off Linux
-    // because `plan_fanout` returns `Solo` there, so `fanout_group` is `None`.
-    // A FAILURE HERE IS FATAL TO THIS SOCKET, deliberately. An ungrouped socket
-    // on the same interface does not capture a share of the traffic — it
-    // captures ALL of it. Falling back to "carry on without the group" would
-    // therefore feed the channel a duplicate of every packet for each socket
-    // that failed, and duplicated RTP is not a degraded reading: it doubles
-    // octet counts and reports a stream at twice its codec's rate. Refusing to
-    // capture is the honest outcome; the caller probes before committing (see
-    // `capture_live_fanout`) so this is the unexpected path, not the normal one.
-    #[cfg(unix)]
+/// Join this socket to `fanout_group`, or refuse to capture on it.
+///
+/// Not gated on `target_os = "linux"`, deliberately.
+///
+/// `join_fanout_group` already carries the platform split: it is a real
+/// setsockopt on Linux and a stub returning `Unsupported` elsewhere. Gating
+/// the CALL as well duplicated that decision, and got it wrong — the cfg
+/// covered the use of `fanout_group` but not the binding, so on macOS the
+/// parameter was unused and `-D warnings` failed the build. Twice.
+///
+/// Keeping one platform decision in one place makes that mistake
+/// unrepresentable: the parameter is read on every unix target, so it cannot
+/// become unused on one of them. The `bail!` is unreachable off Linux
+/// because `plan_fanout` returns `Solo` there, so `fanout_group` is `None`.
+/// A FAILURE HERE IS FATAL TO THIS SOCKET, deliberately. An ungrouped socket
+/// on the same interface does not capture a share of the traffic — it
+/// captures ALL of it. Falling back to "carry on without the group" would
+/// therefore feed the channel a duplicate of every packet for each socket
+/// that failed, and duplicated RTP is not a degraded reading: it doubles
+/// octet counts and reports a stream at twice its codec's rate. Refusing to
+/// capture is the honest outcome; the caller probes before committing (see
+/// `capture_live_fanout`) so this is the unexpected path, not the normal one.
+#[cfg(unix)]
+fn join_fanout_or_refuse(
+    cap: &pcap::Capture<pcap::Active>,
+    device: &str,
+    fanout_group: Option<u16>,
+) -> Result<()> {
     if let Some(group) = fanout_group {
         use std::os::unix::io::AsRawFd;
         if let Err(e) = super::fanout::join_fanout_group(cap.as_raw_fd(), group) {
@@ -648,195 +811,263 @@ fn capture_live_group(
         }
         tracing::debug!("'{device}': joined PACKET_FANOUT group {group}");
     }
+    Ok(())
+}
 
-    // Signal that the capture device is open and ready.
-    if let Some(ready) = ready_tx {
-        let _ = ready.send(Ok(()));
+/// Kernel/interface drop accounting. libpcap's counters are cumulative per
+/// handle, so the loop keeps the previous reading and folds the delta into
+/// the process-global totals — see `fold_stats`.
+struct DropTracker {
+    /// When the counters were last read.
+    last_stats: std::time::Instant,
+    /// The handle's cumulative kernel-buffer drop count at the last reading.
+    prev_dropped: u32,
+    /// The handle's cumulative interface drop count at the last reading.
+    prev_if_dropped: u32,
+    /// The size the kernel actually granted, which is what the drop warning has
+    /// to quote. It is not `config.buffer_mb` whenever the ladder stepped down.
+    granted_mb: u32,
+}
+
+impl DropTracker {
+    /// Fold one reading of the handle's counters into the process totals.
+    fn fold(&mut self, device: &str, stat: &pcap::Stat) {
+        fold_stats(
+            device,
+            stat,
+            self.granted_mb,
+            &mut self.prev_dropped,
+            &mut self.prev_if_dropped,
+        );
+    }
+}
+
+/// What a read loop does after one step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReadStep {
+    /// Go round again.
+    Continue,
+    /// Leave the loop; the capture ends normally.
+    Stop,
+}
+
+/// One socket's read loop: what it stamps on each frame, where it sends it,
+/// and what it counts while it runs.
+struct LiveSession<'a> {
+    /// The device name, for log lines.
+    device: &'a str,
+    /// Count and duration limits, and the snaplen.
+    config: &'a CaptureConfig,
+    /// The channel every captured packet is sent on.
+    tx: PacketTx,
+    /// The runtime filter control, when one was given.
+    reconfigure: Option<ReconfigureHandle>,
+    /// The handle's link type, stamped on every packet.
+    link_type: i32,
+    /// The source name stamped on every packet.
+    interface_name: Option<String>,
+    /// When the capture started, for `--duration`.
+    start: std::time::Instant,
+    /// Packets sent so far.
+    count: u64,
+    /// This source's frame numbering; see where the session is built.
+    frames: Option<crate::capture::packet::FrameCounter>,
+    /// Kernel and interface drop accounting.
+    drops: DropTracker,
+    /// The generation of the last filter this socket installed at runtime.
+    installed_filter_gen: u64,
+    /// The capture fd `wait_readable` polls.
+    #[cfg(unix)]
+    poll_fd: std::os::unix::io::RawFd,
+}
+
+impl LiveSession<'_> {
+    /// Read until a stop, a limit, a dropped receiver or a fatal read error.
+    fn run(&mut self, cap: &mut pcap::Capture<pcap::Active>) -> Result<()> {
+        loop {
+            self.poll_drop_stats(cap);
+
+            if self.stop_requested() {
+                break;
+            }
+
+            // Install a runtime filter change if one is pending. The poll is a cheap
+            // atomic load on the common (unchanged) path; only a real change locks,
+            // compiles, and calls `pcap_setfilter` on this socket's handle.
+            if let Some(ref handle) = self.reconfigure {
+                self.installed_filter_gen = apply_pending(cap, handle, self.installed_filter_gen);
+            }
+
+            if self.count_limit_reached() {
+                break;
+            }
+
+            if self.read_step(cap)? == ReadStep::Stop {
+                break;
+            }
+        }
+        Ok(())
     }
 
-    let link_type = cap.get_datalink().0;
-    // Qualified by socket index under a fanout group, so this socket's
-    // ordinals cannot name a sibling's frames. See `fanout_source_name`.
-    let interface_name = Some(fanout_source_name(device, socket_index));
-    let start = std::time::Instant::now();
-    let mut count: u64 = 0;
-    // This device's frame numbering, kept separately from `count` because the
-    // two answer different questions: `count` is what `--count` and the summary
-    // line bound, whereas the ordinal is half of a provenance pointer and
-    // belongs to THIS source. Under `--multi-device` and under a `-d` + `-L`
-    // composite several readers push into one channel, so one counter per
-    // reader is what keeps each source's positions its own -- see
-    // `FrameCounter`. `None` under `PACKET_FANOUT`, where several sockets share
-    // this device name and no per-socket counter could number them without
-    // collisions -- see `frame_counter_for`.
-    let mut frames = frame_counter_for(fanout_group);
-
-    // Kernel/interface drop accounting. libpcap's counters are cumulative per
-    // handle, so the loop keeps the previous reading and folds the delta into
-    // the process-global totals — see `fold_stats`.
-    let mut last_stats = std::time::Instant::now();
-    let (mut prev_dropped, mut prev_if_dropped) = (0u32, 0u32);
-    // The generation of the last filter this socket installed at runtime. The
-    // initial filter was applied at open (above); reconfigure only carries
-    // CHANGES, so this starts at 0 (the control's resting generation).
-    let mut installed_filter_gen = 0u64;
-
-    tracing::info!(
-        "Capturing on '{device}' (link_type={link_type}, snaplen={})",
-        config.snaplen
-    );
-
-    // Some reads never come back on their own: libpcap's netmap module loops
-    // inside `pcap_next_ex` until a frame arrives, so on a silent link the
-    // checks at the top of this loop never run and SIGTERM was ignored (NM2).
-    // The breaker watches the same rule from beside the loop and calls
-    // `pcap_breakloop`, which returns the read as `NoMorePackets` below.
-    // Dropped with this function, which joins its thread.
-    let _breaker = {
-        let handle = cap.breakloop_handle();
-        let duration = config.duration;
-        super::breaker::Breaker::spawn(
-            format!("capture-stop:{device}"),
-            move || {
-                super::breaker::stop_due(signals::shutdown_requested(), start.elapsed(), duration)
-            },
-            move || handle.breakloop(),
-            BREAKER_INTERVAL,
-        )
-    };
-
-    loop {
-        // Ask libpcap what the kernel threw away. On a timer rather than per
-        // packet: `pcap_stats` is a syscall, and a capture that polls it per
-        // packet spends more time measuring loss than avoiding it.
-        if last_stats.elapsed() >= STATS_INTERVAL {
-            last_stats = std::time::Instant::now();
-            match cap.stats() {
-                Ok(stat) => fold_stats(
-                    device,
-                    &stat,
-                    granted_mb,
-                    &mut prev_dropped,
-                    &mut prev_if_dropped,
-                ),
-                // Not fatal: some capture backends do not implement stats. The
-                // capture is still good; only the loss visibility is missing.
-                Err(e) => tracing::debug!("pcap_stats unavailable on '{device}': {e}"),
-            }
+    /// Ask libpcap what the kernel threw away. On a timer rather than per
+    /// packet: `pcap_stats` is a syscall, and a capture that polls it per
+    /// packet spends more time measuring loss than avoiding it.
+    #[inline]
+    fn poll_drop_stats(&mut self, cap: &mut pcap::Capture<pcap::Active>) {
+        if self.drops.last_stats.elapsed() < STATS_INTERVAL {
+            return;
         }
+        self.drops.last_stats = std::time::Instant::now();
+        match cap.stats() {
+            Ok(stat) => self.drops.fold(self.device, &stat),
+            // Not fatal: some capture backends do not implement stats. The
+            // capture is still good; only the loss visibility is missing.
+            Err(e) => tracing::debug!("pcap_stats unavailable on '{}': {e}", self.device),
+        }
+    }
 
-        if super::breaker::stop_due(
+    /// Whether shutdown was requested or `--duration` has run out.
+    #[inline]
+    fn stop_requested(&self) -> bool {
+        let stop = super::breaker::stop_due(
             signals::shutdown_requested(),
-            start.elapsed(),
-            config.duration,
-        ) {
+            self.start.elapsed(),
+            self.config.duration,
+        );
+        if stop {
             tracing::debug!("Stop requested or --duration reached, stopping live capture");
-            break;
         }
+        stop
+    }
 
-        // Install a runtime filter change if one is pending. The poll is a cheap
-        // atomic load on the common (unchanged) path; only a real change locks,
-        // compiles, and calls `pcap_setfilter` on this socket's handle.
-        if let Some(ref handle) = reconfigure {
-            installed_filter_gen = apply_pending(&mut cap, handle, installed_filter_gen);
-        }
+    /// Whether `--count` packets have been sent.
+    #[inline]
+    fn count_limit_reached(&self) -> bool {
+        count_limit_reached(self.config.count, self.count)
+    }
 
-        if let Some(max_count) = config.count
-            && count >= max_count
-        {
-            tracing::debug!("Reached packet count limit ({max_count})");
-            break;
-        }
-
-        // Read FIRST, poll only when the ring is dry.
-        //
-        // This loop used to `poll()` before every `next_packet()`, which cost a
-        // syscall per packet — at the rates this tool benchmarks at, millions
-        // per second — and bought nothing whenever the ring already held data,
-        // which on a busy link is essentially always. libpcap's Linux capture
-        // is a memory-mapped TPACKET ring: draining it is userspace pointer
-        // work, and `poll()` is only needed once it is empty.
-        //
-        // So the wait moved into the `TimeoutExpired` arm, which is exactly the
-        // "nothing available" signal. Idle behavior is unchanged — a quiet link
-        // still blocks up to POLL_INTERVAL and then re-checks
-        // shutdown/count/duration at the top — so `--duration` and Ctrl-C stay
-        // as responsive as before. A busy link now makes zero poll syscalls.
-        //
-        // The read goes through `next_ex::next_packet`, not the crate's
-        // `Capture::next_packet`: libpcap's netmap module reports a frame its
-        // filter rejected as a successful read with no data, and the crate
-        // turns that into a slice over address 0 (NM1). `Ok(None)` is that
-        // read. The frame is already gone, so the loop simply reads again.
-        match super::next_ex::next_packet(&mut cap) {
-            Ok(None) => continue,
-            Ok(Some(pkt)) => {
-                let ts = pcap_ts_to_chrono(pkt.header.ts);
-                let mut packet = Packet::new(
-                    ts,
-                    pkt.data.to_vec(),
-                    pkt.header.caplen as usize,
-                    pkt.header.len as usize,
-                    interface_name.clone(),
-                    link_type,
-                );
-                // Stamped beside the source name, because those two together
-                // are what make the frame nameable, and BEFORE the send: once
-                // the packet is on the channel this thread cannot amend it,
-                // and a consumer inferring position from arrival order would
-                // be wrong the moment the other member of a composite
-                // interleaves its own packets.
-                packet.origin = frames
-                    .as_mut()
-                    .map(crate::capture::packet::FrameCounter::next_origin);
-
-                if tx.send(packet).is_err() {
-                    tracing::debug!("Receiver dropped, stopping live capture");
-                    break;
-                }
-
-                count += 1;
-            }
+    /// Read one frame and act on what the read returned.
+    ///
+    /// Read FIRST, poll only when the ring is dry.
+    ///
+    /// This loop used to `poll()` before every `next_packet()`, which cost a
+    /// syscall per packet — at the rates this tool benchmarks at, millions
+    /// per second — and bought nothing whenever the ring already held data,
+    /// which on a busy link is essentially always. libpcap's Linux capture
+    /// is a memory-mapped TPACKET ring: draining it is userspace pointer
+    /// work, and `poll()` is only needed once it is empty.
+    ///
+    /// So the wait moved into the `TimeoutExpired` arm, which is exactly the
+    /// "nothing available" signal. Idle behavior is unchanged — a quiet link
+    /// still blocks up to POLL_INTERVAL and then re-checks
+    /// shutdown/count/duration at the top — so `--duration` and Ctrl-C stay
+    /// as responsive as before. A busy link now makes zero poll syscalls.
+    ///
+    /// The read goes through `next_ex::next_packet`, not the crate's
+    /// `Capture::next_packet`: libpcap's netmap module reports a frame its
+    /// filter rejected as a successful read with no data, and the crate
+    /// turns that into a slice over address 0 (NM1). `Ok(None)` is that
+    /// read. The frame is already gone, so the loop simply reads again.
+    #[inline]
+    fn read_step(&mut self, cap: &mut pcap::Capture<pcap::Active>) -> Result<ReadStep> {
+        match super::next_ex::next_packet(cap) {
+            Ok(None) => Ok(ReadStep::Continue),
+            Ok(Some(pkt)) => Ok(self.deliver(&pkt)),
             Err(pcap::Error::TimeoutExpired) => {
                 // The ring is empty. Block here — bounded, so the loop still
                 // re-checks shutdown/count/duration roughly every
                 // POLL_INTERVAL on a completely idle link.
                 #[cfg(unix)]
-                match wait_readable(poll_fd, POLL_INTERVAL) {
-                    Ok(WaitResult::Readable) | Ok(WaitResult::TimedOut) => {}
-                    Err(e) => {
-                        tracing::error!("poll on capture fd for '{device}' failed: {e}");
-                        return Err(e).context("Fatal capture error while polling capture fd");
-                    }
-                }
-                continue;
+                self.wait_for_ring()?;
+                Ok(ReadStep::Continue)
             }
-            // The breaker's `pcap_breakloop` (see `_breaker` above): a stop,
-            // taken now, with whatever the kernel still holds left unread.
+            // The breaker's `pcap_breakloop` (see `_breaker` in
+            // `capture_live_group`): a stop, taken now, with whatever the
+            // kernel still holds left unread.
             Err(pcap::Error::NoMorePackets) => {
-                tracing::debug!("Read on '{device}' broken off for a stop");
-                break;
+                tracing::debug!("Read on '{}' broken off for a stop", self.device);
+                Ok(ReadStep::Stop)
             }
             Err(e) => {
-                tracing::error!("Capture error on '{device}': {e}");
+                tracing::error!("Capture error on '{}': {e}", self.device);
                 // pcap errors on live devices are generally fatal
-                return Err(e).context("Fatal capture error");
+                Err(e).context("Fatal capture error")
             }
         }
     }
 
-    // Final reading, so drops in the last STATS_INTERVAL are not lost — on a
-    // short `--duration` run that window is most of the capture.
-    if let Ok(stat) = cap.stats() {
-        fold_stats(
-            device,
-            &stat,
-            granted_mb,
-            &mut prev_dropped,
-            &mut prev_if_dropped,
+    /// Stamp one captured frame and send it. `Stop` when the receiver is gone.
+    #[inline]
+    fn deliver(&mut self, pkt: &pcap::Packet<'_>) -> ReadStep {
+        let ts = pcap_ts_to_chrono(pkt.header.ts);
+        let mut packet = Packet::new(
+            ts,
+            pkt.data.to_vec(),
+            pkt.header.caplen as usize,
+            pkt.header.len as usize,
+            self.interface_name.clone(),
+            self.link_type,
         );
+        // Stamped beside the source name, because those two together
+        // are what make the frame nameable, and BEFORE the send: once
+        // the packet is on the channel this thread cannot amend it,
+        // and a consumer inferring position from arrival order would
+        // be wrong the moment the other member of a composite
+        // interleaves its own packets.
+        packet.origin = self
+            .frames
+            .as_mut()
+            .map(crate::capture::packet::FrameCounter::next_origin);
+
+        if self.tx.send(packet).is_err() {
+            tracing::debug!("Receiver dropped, stopping live capture");
+            return ReadStep::Stop;
+        }
+
+        self.count += 1;
+        ReadStep::Continue
     }
-    let (dropped, if_dropped) = kernel_drop_counts();
+
+    /// Wait, bounded by POLL_INTERVAL, for the capture fd to become readable.
+    #[cfg(unix)]
+    fn wait_for_ring(&self) -> Result<()> {
+        match wait_readable(self.poll_fd, POLL_INTERVAL) {
+            Ok(WaitResult::Readable) | Ok(WaitResult::TimedOut) => Ok(()),
+            Err(e) => {
+                tracing::error!("poll on capture fd for '{}' failed: {e}", self.device);
+                Err(e).context("Fatal capture error while polling capture fd")
+            }
+        }
+    }
+
+    /// Take the final drop reading and log the closing line.
+    ///
+    /// Final reading, so drops in the last STATS_INTERVAL are not lost — on a
+    /// short `--duration` run that window is most of the capture.
+    fn finish(&mut self, cap: &mut pcap::Capture<pcap::Active>) {
+        if let Ok(stat) = cap.stats() {
+            self.drops.fold(self.device, &stat);
+        }
+        log_capture_summary(self.device, self.count, kernel_drop_counts());
+    }
+}
+
+/// Whether `count` packets sent reach the `--count` `limit`, logging the stop
+/// when they do. One rule for the live and the file readers.
+#[inline]
+pub(super) fn count_limit_reached(limit: Option<u64>, count: u64) -> bool {
+    match limit {
+        Some(max_count) if count >= max_count => {
+            tracing::debug!("Reached packet count limit ({max_count})");
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Log the line that closes a live capture: a warning when anything was
+/// dropped, since the analysis is then incomplete, otherwise an info line.
+fn log_capture_summary(device: &str, count: u64, (dropped, if_dropped): (u64, u64)) {
     if dropped > 0 || if_dropped > 0 {
         tracing::warn!(
             "Live capture on '{device}' finished: {count} packets captured, \
@@ -846,7 +1077,6 @@ fn capture_live_group(
     } else {
         tracing::info!("Live capture on '{device}' finished: {count} packets, no drops");
     }
-    Ok(())
 }
 
 /// Largest capture buffer accepted, in MiB.
@@ -1086,7 +1316,7 @@ mod fanout_plan_tests {
         let direct = code.iter().filter(|l| l.contains(".next_packet()")).count();
         let checked = code
             .iter()
-            .filter(|l| l.contains("next_ex::next_packet(&mut cap)"))
+            .filter(|l| l.contains("next_ex::next_packet(cap)"))
             .count();
         assert_eq!(
             (direct, checked),
@@ -1130,8 +1360,12 @@ mod fanout_plan_tests {
             .expect("the loop must handle NoMorePackets, the broken read, itself");
         let arm = arm.split("Err(").next().unwrap_or("");
         assert!(
-            arm.contains("break;") && !arm.contains("return Err"),
+            arm.contains("Ok(ReadStep::Stop)") && !arm.contains("return Err"),
             "a broken read must end the loop as a stop, not as a capture error"
+        );
+        assert!(
+            group.contains("if self.read_step(cap)? == ReadStep::Stop {\n                break;"),
+            "the loop must leave on the step that reports a stop"
         );
     }
 
@@ -1247,6 +1481,9 @@ mod fanout_plan_tests {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A typo'd `-d <device>` used to fail with just "Failed to open device"
     /// — the auto-detect path lists the available devices, and the explicit
@@ -2042,6 +2279,226 @@ mod tests {
             let _ = capture_live("sipnab-no-such-dev0", &config, tx, None, None);
         });
         assert!(!logs.contains("ceiling"), "{logs}");
+    }
+
+    /// The first failure in join order is the one returned, a panic counts as
+    /// a failure, and a group whose threads all finished cleanly is `Ok`.
+    #[test]
+    fn a_fanout_returns_the_first_thread_failure_in_join_order() -> Result<(), TestError> {
+        let spawn = |r: Result<()>| std::thread::spawn(move || r);
+        let handles = vec![
+            spawn(Ok(())),
+            spawn(Err(anyhow::anyhow!("second socket failed"))),
+            spawn(Err(anyhow::anyhow!("third socket failed"))),
+        ];
+        let err = first_thread_error(handles).expect_err("a socket failed");
+        assert_eq!(err.to_string(), "second socket failed");
+
+        // The panic is the fixture: a socket thread that dies instead of
+        // returning, which `first_thread_error` must report as a failure.
+        let panicked = vec![
+            spawn(Ok(())),
+            std::thread::spawn(|| -> Result<()> { panic!("socket thread panicked") }),
+        ];
+        let err = first_thread_error(panicked).expect_err("a panic is a failure");
+        assert_eq!(err.to_string(), "a capture thread panicked");
+
+        assert!(first_thread_error(vec![spawn(Ok(())), spawn(Ok(()))]).is_ok());
+        Ok(())
+    }
+
+    /// Only the first socket of a group answers the readiness handshake, so
+    /// the caller receives one answer however many sockets the group has.
+    #[test]
+    fn a_fanout_answers_readiness_from_its_first_socket_only() -> Result<(), TestError> {
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(4);
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let config = crate::capture::CaptureConfig::default();
+        let handles = spawn_fanout_sockets(
+            FanoutSocket {
+                device: "sipnab-no-such-dev0",
+                config: &config,
+                tx: &tx,
+                ready_tx: Some(&ready_tx),
+                reconfigure: None,
+                group: 7,
+            },
+            3,
+        )
+        .map_err(|e| format!("threads start: {e:?}"))?;
+        let err = first_thread_error(handles).expect_err("the device does not exist");
+        assert!(err.to_string().contains("sipnab-no-such-dev0"), "{err}");
+        let answers: Vec<Result<(), String>> = ready_rx.try_iter().collect();
+        assert_eq!(answers.len(), 1, "one answer, from socket 0: {answers:?}");
+        assert!(answers[0].is_err(), "{answers:?}");
+        Ok(())
+    }
+
+    /// A read loop session over `config`, sending on `tx`, numbering its own
+    /// frames under the source name `eth0`.
+    fn session<'a>(config: &'a CaptureConfig, tx: PacketTx) -> LiveSession<'a> {
+        LiveSession {
+            device: "eth0",
+            config,
+            tx,
+            reconfigure: None,
+            link_type: 1,
+            interface_name: Some("eth0".to_string()),
+            start: std::time::Instant::now(),
+            count: 0,
+            frames: frame_counter_for(None),
+            drops: DropTracker {
+                last_stats: std::time::Instant::now(),
+                prev_dropped: 0,
+                prev_if_dropped: 0,
+                granted_mb: 64,
+            },
+            installed_filter_gen: 0,
+            #[cfg(unix)]
+            poll_fd: -1,
+        }
+    }
+
+    /// A delivered frame carries its source, its link type and its ordinal,
+    /// and is counted once it is on the channel.
+    #[test]
+    fn a_delivered_frame_is_stamped_numbered_and_counted() -> Result<(), TestError> {
+        let config = CaptureConfig::default();
+        let (tx, rx) = crate::capture::channel::packet_channel(16);
+        let mut live = session(&config, tx);
+        let header = pcap::PacketHeader {
+            ts: tv(1_700_000_000, 5),
+            caplen: 3,
+            len: 9,
+        };
+        let data = [1u8, 2, 3];
+        for _ in 0..2 {
+            assert_eq!(
+                live.deliver(&pcap::Packet::new(&header, &data)),
+                ReadStep::Continue
+            );
+        }
+        assert_eq!(live.count, 2);
+        let timeout = std::time::Duration::from_secs(1);
+        for ordinal in 0..2 {
+            let p = rx
+                .recv_timeout(timeout)
+                .map_err(|e| format!("delivered: {e:?}"))?;
+            assert_eq!(p.interface.as_deref(), Some("eth0"));
+            assert_eq!(p.link_type, 1);
+            assert_eq!((p.caplen, p.origlen), (3, 9));
+            assert_eq!(&p.data[..], &data);
+            assert_eq!(p.origin.map(|o| o.ordinal), Some(ordinal));
+        }
+        Ok(())
+    }
+
+    /// A frame the receiver can no longer take stops the loop and is not
+    /// counted.
+    #[test]
+    fn a_frame_with_no_receiver_stops_the_loop_uncounted() {
+        let config = CaptureConfig::default();
+        let (tx, rx) = crate::capture::channel::packet_channel(16);
+        drop(rx);
+        let mut live = session(&config, tx);
+        let header = pcap::PacketHeader {
+            ts: tv(1, 0),
+            caplen: 1,
+            len: 1,
+        };
+        assert_eq!(
+            live.deliver(&pcap::Packet::new(&header, &[0u8])),
+            ReadStep::Stop
+        );
+        assert_eq!(live.count, 0);
+    }
+
+    /// `--count N` stops the loop once N packets are sent, not one later, and
+    /// no limit never stops it.
+    #[test]
+    fn the_count_limit_is_reached_at_exactly_the_limit() {
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let limited = CaptureConfig {
+            count: Some(2),
+            ..Default::default()
+        };
+        let mut live = session(&limited, tx.clone());
+        live.count = 1;
+        assert!(!live.count_limit_reached());
+        live.count = 2;
+        assert!(live.count_limit_reached());
+
+        let unlimited = CaptureConfig::default();
+        let mut live = session(&unlimited, tx);
+        live.count = u64::MAX;
+        assert!(!live.count_limit_reached());
+    }
+
+    /// The closing line is a warning naming both counts when either drop
+    /// counter is non-zero, and a plain info line when nothing was dropped.
+    #[test]
+    fn the_closing_line_warns_when_either_counter_dropped_anything() {
+        for drops in [(3, 0), (0, 4)] {
+            let logs = capture_logs(|| log_capture_summary("eth0", 10, drops));
+            assert!(
+                logs.contains("WARN")
+                    && logs.contains(&format!(
+                        "{} dropped by the kernel buffer and {} by the interface",
+                        drops.0, drops.1
+                    ))
+                    && logs.contains("THIS ANALYSIS IS INCOMPLETE"),
+                "{logs}"
+            );
+        }
+        let logs = capture_logs(|| log_capture_summary("eth0", 10, (0, 0)));
+        assert!(
+            logs.contains("INFO")
+                && logs.contains("Live capture on 'eth0' finished: 10 packets, no drops"),
+            "{logs}"
+        );
+    }
+
+    /// The fanout announcement states the ring the whole group asks for: the
+    /// per-socket `-B` times the number of sockets.
+    #[test]
+    fn the_fanout_announcement_states_the_total_ring() {
+        let logs = capture_logs(|| announce_fanout("eth0", 64, 4, 7));
+        assert!(
+            logs.contains("capturing on 4 sockets, fanout group 7")
+                && logs.contains("-B 64 MiB is per socket, so ~256 MiB of ring in total"),
+            "{logs}"
+        );
+    }
+
+    /// A `--duration` that has run out is a stop request.
+    #[test]
+    fn an_exhausted_duration_is_a_stop_request() {
+        let config = CaptureConfig {
+            duration: Some(std::time::Duration::ZERO),
+            ..Default::default()
+        };
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        assert!(session(&config, tx).stop_requested());
+    }
+
+    /// The drop warning a session's tracker gives quotes the buffer the
+    /// kernel granted that session, and the tracker keeps the reading it
+    /// folded as the base for the next one.
+    #[test]
+    #[serial_test::serial(kernel_drop_counts)]
+    fn the_drop_tracker_quotes_the_buffer_it_was_granted() {
+        // The warning is once per process; this test owns it while the
+        // serial group is held.
+        DROP_REPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
+        let mut drops = DropTracker {
+            last_stats: std::time::Instant::now(),
+            prev_dropped: 0,
+            prev_if_dropped: 0,
+            granted_mb: 8,
+        };
+        let logs = capture_logs(|| drops.fold("eth0", &stat(100, 5, 2)));
+        assert!(logs.contains("kernel capture buffer is 8 MiB"), "{logs}");
+        assert_eq!((drops.prev_dropped, drops.prev_if_dropped), (5, 2));
     }
 
     /// Run `f` under a thread-local subscriber and return what it logged.

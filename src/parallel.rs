@@ -937,7 +937,11 @@ impl<'a> Frames<'a> {
         path: &std::path::Path,
         may_map: bool,
     ) -> Self {
-        if !may_map {
+        if may_map {
+            if let Some(mapped) = Self::try_map(path) {
+                return mapped;
+            }
+        } else {
             // Said out loud: otherwise the only sign that the fast path was
             // skipped is the absence of the line below, and an absent log line
             // is indistinguishable from a log that was never wired up.
@@ -946,36 +950,41 @@ impl<'a> Frames<'a> {
                 crate::capture::archive::source_name(path)
             );
         }
-        if may_map {
-            // A file that will not map is the ordinary case for pcapng and
-            // gzip, so this is debug-level rather than a warning.
-            match crate::capture::mapped::MappedPcap::open(path) {
-                Ok(Some(m)) => {
-                    tracing::debug!(
-                        "Mapped '{}' for a copy-free read",
-                        crate::capture::archive::source_name(path)
-                    );
-                    return Frames::Mapped(Box::new(m));
-                }
-                Ok(None) => {
-                    tracing::debug!(
-                        "'{}' cannot be mapped; reading via libpcap",
-                        crate::capture::archive::source_name(path)
-                    );
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "Mapping '{}' failed ({e}); reading via libpcap",
-                        crate::capture::archive::source_name(path)
-                    );
-                }
-            }
-        }
         let link_type = cap.get_datalink().0;
         Frames::Libpcap {
             cap,
             block: bytes::BytesMut::with_capacity(Self::BLOCK),
             link_type,
+        }
+    }
+
+    /// The mapped arm for `path`, or `None` when the file will not map and
+    /// libpcap must read it.
+    fn try_map(path: &std::path::Path) -> Option<Self> {
+        // A file that will not map is the ordinary case for pcapng and
+        // gzip, so this is debug-level rather than a warning.
+        match crate::capture::mapped::MappedPcap::open(path) {
+            Ok(Some(m)) => {
+                tracing::debug!(
+                    "Mapped '{}' for a copy-free read",
+                    crate::capture::archive::source_name(path)
+                );
+                Some(Frames::Mapped(Box::new(m)))
+            }
+            Ok(None) => {
+                tracing::debug!(
+                    "'{}' cannot be mapped; reading via libpcap",
+                    crate::capture::archive::source_name(path)
+                );
+                None
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Mapping '{}' failed ({e}); reading via libpcap",
+                    crate::capture::archive::source_name(path)
+                );
+                None
+            }
         }
     }
 
@@ -1082,62 +1091,13 @@ fn shard_set(
     progress: &mut ReadProgress,
     tally: &mut crate::capture::file::ReadTally,
 ) -> anyhow::Result<()> {
-    use crate::capture::file::open_offline;
-
     for (i, path) in paths.iter().enumerate() {
-        let is_first = i == 0;
-        let (mut cap, _gz_guard) = match open_offline(path) {
-            Ok(opened) => opened,
-            // The first file owns the "is this set usable at all" verdict. A
-            // later one that vanished mid-run — a rotating capture directory
-            // being cleaned up while it is analyzed — is logged and skipped:
-            // losing one file of a set is bad, losing the other nine is worse.
-            Err(e) if is_first => return Err(e),
-            Err(e) => {
-                tally.skipped += 1;
-                tally.lost = true;
-                tracing::error!(
-                    "Skipping '{}': {e:#}",
-                    crate::capture::archive::source_name(path)
-                );
-                continue;
-            }
+        let Some((mut cap, _gz_guard)) = open_member(path, i == 0, tally)? else {
+            continue;
         };
-        if let Some(ref bpf) = capture_config.bpf_filter
-            && let Err(e) = cap.filter(bpf, true)
-        {
-            if let Some(line) =
-                crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
-            {
-                tally.skipped += 1;
-                tracing::warn!("{line}");
-                continue;
-            }
-            // Counted as a skip BEFORE the refusal is propagated: a file whose
-            // traffic never reached the workers is data missing from the
-            // analysis, and the caller reports the tally on every path out — so
-            // a run that refuses on file twelve still says it read eleven.
-            tally.skipped += 1;
-            tally.lost = true;
-            // Refused wherever in the set it happens, not only on the first
-            // file. The filter text does not change between files, so a failure
-            // is a static misconfiguration against that file's link type, not a
-            // mid-read race like a member vanishing from a rotating directory:
-            // the filter was always going to fail on that file. Reading on
-            // dropped the whole traffic of every member sharing that link type
-            // — a Linux-cooked or DLT_NULL file among Ethernet ones — behind
-            // one log line, and then exited 0 with a report that looked
-            // complete, which is the defect class the summary above exists to
-            // remove. `crate::capture::file::filter_failure` builds the error
-            // so both readers refuse with the same sentence, and so the sentence
-            // NAMES the file: the operator's first question about a forty-file
-            // set is which of the forty.
-            return Err(crate::capture::file::filter_failure(
-                bpf,
-                path,
-                e,
-                capture_config.bpf_filter_positional,
-            ));
+        if let Err(refusal) = apply_filter(&mut cap, path, capture_config) {
+            tally_filter_refusal(refusal, tally)?;
+            continue;
         }
         tracing::info!(
             "Reading from '{}'",
@@ -1156,27 +1116,177 @@ fn shard_set(
             .map(|max| max.saturating_sub(progress.count));
         let read = shard_opened(&mut cap, path, capture_config, txs.len(), budget, &mut sink);
         progress.dropped += sink.dropped;
-        let budget_spent = read.budget_spent;
-        match progress.absorb(read) {
-            None if budget_spent => {
-                // The `--count` budget ran out inside this file. Requested, so
-                // not a loss — but the file was still not read to its end, and
-                // the files behind it are "not reached" rather than absent.
-                tally.stopped_early += 1;
-                return Ok(());
-            }
-            None => tally.complete += 1,
-            Some(e) => {
-                tally.stopped_early += 1;
-                tally.lost = true;
-                tracing::error!(
-                    "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
-                    crate::capture::archive::source_name(path)
-                );
-            }
+        if tally_member_read(read, path, progress, tally).is_break() {
+            return Ok(());
         }
     }
     Ok(())
+}
+
+/// An opened file of the set: the capture, and whatever owns a decompressed
+/// copy of it.
+type OpenedMember = (
+    pcap::Capture<pcap::Offline>,
+    Option<crate::capture::file::OfflineGuard>,
+);
+
+/// Open one file of a set read in this thread.
+///
+/// `Ok(None)` means the file could not be opened and was tallied as a lost
+/// skip, and the set reads on.
+///
+/// # Errors
+///
+/// The FIRST file (`is_first`) cannot be opened.
+fn open_member(
+    path: &std::path::Path,
+    is_first: bool,
+    tally: &mut crate::capture::file::ReadTally,
+) -> anyhow::Result<Option<OpenedMember>> {
+    match crate::capture::file::open_offline(path) {
+        Ok(opened) => Ok(Some(opened)),
+        // The first file owns the "is this set usable at all" verdict. A
+        // later one that vanished mid-run — a rotating capture directory
+        // being cleaned up while it is analyzed — is logged and skipped:
+        // losing one file of a set is bad, losing the other nine is worse.
+        Err(e) if is_first => Err(e),
+        Err(e) => {
+            tally.skipped += 1;
+            tally.lost = true;
+            tracing::error!(
+                "Skipping '{}': {e:#}",
+                crate::capture::archive::source_name(path)
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Why the run's BPF filter could not be applied to one file of the set.
+enum FilterRefusal {
+    /// The filter would not compile, and sipnab does not decode this file's
+    /// link type, so the file is skipped rather than ending the set. Carries
+    /// the line that says so.
+    Undecodable(String),
+    /// The filter would not compile against this file's link type. Carries
+    /// the error that names the file.
+    Failed(anyhow::Error),
+}
+
+impl From<FilterRefusal> for FileOutcome {
+    fn from(refusal: FilterRefusal) -> Self {
+        match refusal {
+            FilterRefusal::Undecodable(line) => FileOutcome::Undecodable(line),
+            FilterRefusal::Failed(e) => FileOutcome::FilterFailed(e),
+        }
+    }
+}
+
+/// Apply the run's BPF filter, if one is set, to one opened file.
+///
+/// The one rule both readers use: [`shard_set`] in this thread and
+/// [`read_one_file`] in a reader thread.
+///
+/// # Errors
+///
+/// The filter would not compile against the file's link type.
+fn apply_filter(
+    cap: &mut pcap::Capture<pcap::Offline>,
+    path: &std::path::Path,
+    capture_config: &crate::capture::CaptureConfig,
+) -> Result<(), FilterRefusal> {
+    let Some(ref bpf) = capture_config.bpf_filter else {
+        return Ok(());
+    };
+    let Err(e) = cap.filter(bpf, true) else {
+        return Ok(());
+    };
+    if let Some(line) =
+        crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
+    {
+        return Err(FilterRefusal::Undecodable(line));
+    }
+    // `crate::capture::file::filter_failure` builds the error so both readers
+    // refuse with the same sentence, and so the sentence NAMES the file: the
+    // operator's first question about a forty-file set is which of the forty.
+    Err(FilterRefusal::Failed(crate::capture::file::filter_failure(
+        bpf,
+        path,
+        e,
+        capture_config.bpf_filter_positional,
+    )))
+}
+
+/// Count a file the filter refused in the tally of a set read in this
+/// thread.
+///
+/// # Errors
+///
+/// The filter would not compile against the file: the set ends here. An
+/// undecodable link type is a skip, and the set reads on.
+fn tally_filter_refusal(
+    refusal: FilterRefusal,
+    tally: &mut crate::capture::file::ReadTally,
+) -> anyhow::Result<()> {
+    match refusal {
+        FilterRefusal::Undecodable(line) => {
+            tally.skipped += 1;
+            tracing::warn!("{line}");
+            Ok(())
+        }
+        FilterRefusal::Failed(e) => {
+            // Counted as a skip BEFORE the refusal is propagated: a file whose
+            // traffic never reached the workers is data missing from the
+            // analysis, and the caller reports the tally on every path out — so
+            // a run that refuses on file twelve still says it read eleven.
+            tally.skipped += 1;
+            tally.lost = true;
+            // Refused wherever in the set it happens, not only on the first
+            // file. The filter text does not change between files, so a failure
+            // is a static misconfiguration against that file's link type, not a
+            // mid-read race like a member vanishing from a rotating directory:
+            // the filter was always going to fail on that file. Reading on
+            // dropped the whole traffic of every member sharing that link type
+            // — a Linux-cooked or DLT_NULL file among Ethernet ones — behind
+            // one log line, and then exited 0 with a report that looked
+            // complete, which is the defect class the summary in
+            // [`shard_set`] exists to remove.
+            Err(e)
+        }
+    }
+}
+
+/// Fold one file's read into the run's progress and the set's tally.
+///
+/// `Break` means the `--count` budget ran out inside this file and the set
+/// stops here; a read that stopped on an error is logged and the set reads
+/// on.
+fn tally_member_read(
+    read: FileRead,
+    path: &std::path::Path,
+    progress: &mut ReadProgress,
+    tally: &mut crate::capture::file::ReadTally,
+) -> std::ops::ControlFlow<()> {
+    let budget_spent = read.budget_spent;
+    match progress.absorb(read) {
+        None if budget_spent => {
+            // The `--count` budget ran out inside this file. Requested, so
+            // not a loss — but the file was still not read to its end, and
+            // the files behind it are "not reached" rather than absent.
+            tally.stopped_early += 1;
+            return std::ops::ControlFlow::Break(());
+        }
+        None => tally.complete += 1,
+        Some(e) => {
+            tally.stopped_early += 1;
+            tally.lost = true;
+            tracing::error!(
+                "Stopped reading '{}' early: {e:#}. Continuing with the rest of the set.",
+                crate::capture::archive::source_name(path)
+            );
+        }
+    }
+    std::ops::ControlFlow::Continue(())
 }
 
 /// How far the readers of LATER files may run ahead of the file the dispatcher
@@ -1561,20 +1671,8 @@ fn read_one_file(
         Ok(opened) => opened,
         Err(e) => return FileOutcome::OpenFailed(e),
     };
-    if let Some(ref bpf) = capture_config.bpf_filter
-        && let Err(e) = cap.filter(bpf, true)
-    {
-        if let Some(line) =
-            crate::capture::file::undecodable_filter_skip(path, cap.get_datalink().0, bpf, &e)
-        {
-            return FileOutcome::Undecodable(line);
-        }
-        return FileOutcome::FilterFailed(crate::capture::file::filter_failure(
-            bpf,
-            path,
-            e,
-            capture_config.bpf_filter_positional,
-        ));
+    if let Err(refusal) = apply_filter(&mut cap, path, capture_config) {
+        return refusal.into();
     }
     let mut sink = QueueSink { file, tx, runway };
     // No `--count` budget: a set read in parallel never has one. See
@@ -2078,8 +2176,12 @@ pub fn run_offline_parallel_file(
 mod tests {
     //! Sharding-invariant tests and end-to-end offline-reconstruction fixtures
     //! (heuristic RTP, core-count invariance, codec negotiation, dynamic codec).
+
     use super::*;
     use std::net::Ipv4Addr;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an IPv4 `IpAddr` from four octets (test brevity helper).
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
@@ -2912,6 +3014,130 @@ mod tests {
             checked > 0,
             "no dialog carried a digest, so this asserted nothing — the \
              comparison, not the capture, is what failed"
+        );
+    }
+
+    /// Read `paths` with the serial reader ([`shard_set`]) under
+    /// `capture_config`, its worker channels held open and never drained.
+    /// Returns what it returned, its tally, and the packets it counted.
+    #[cfg(feature = "native")]
+    fn serial_read(
+        paths: &[std::path::PathBuf],
+        capture_config: &crate::capture::CaptureConfig,
+    ) -> (anyhow::Result<()>, crate::capture::file::ReadTally, u64) {
+        let (txs, _rxs): (Vec<_>, Vec<_>) = (0..2).map(|_| crossbeam_channel::unbounded()).unzip();
+        let mut progress = ReadProgress {
+            count: 0,
+            dropped: 0,
+            unshardable: 0,
+            clock: SweepClock::new(true),
+        };
+        let mut tally = crate::capture::file::ReadTally {
+            given: paths.len(),
+            ..crate::capture::file::ReadTally::default()
+        };
+        let read = shard_set(paths, capture_config, &txs, &mut progress, &mut tally);
+        (read, tally, progress.count)
+    }
+
+    /// The serial reader skips a later member that will not open, counts it
+    /// as lost, and reads the rest of the set.
+    #[test]
+    fn the_serial_reader_reads_on_past_a_later_member_that_will_not_open() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3100_0001, s + 1)).collect();
+        let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3100_0002, s + 1)).collect();
+        let paths = vec![
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
+            dir.path().join("rot.pcap1-vanished"),
+            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000),
+        ];
+        let (read, tally, count) = serial_read(&paths, &crate::capture::CaptureConfig::default());
+        assert!(
+            read.is_ok(),
+            "a later member that will not open must not end the set"
+        );
+        assert_eq!(count, 14, "both readable members must be read in full");
+        assert_eq!(
+            (
+                tally.complete,
+                tally.skipped,
+                tally.stopped_early,
+                tally.lost
+            ),
+            (2, 1, 0, true),
+            "{tally:?}"
+        );
+        Ok(())
+    }
+
+    /// The serial reader refuses a set whose FIRST member will not open:
+    /// that proves the set unusable before any packet is read.
+    #[test]
+    fn the_serial_reader_refuses_a_set_whose_first_member_will_not_open() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let frames: Vec<Vec<u8>> = (0..3).map(|s| rtp_frame(0x3200_0001, s + 1)).collect();
+        let paths = vec![
+            dir.path().join("rot.pcap0-vanished"),
+            write_eth_pcap_at(dir.path(), "rot.pcap1", &frames, 1_700_000_000),
+        ];
+        let (read, tally, count) = serial_read(&paths, &crate::capture::CaptureConfig::default());
+        assert!(
+            read.is_err(),
+            "the first member not opening must refuse the set"
+        );
+        assert_eq!(count, 0, "nothing may be read after the refusal");
+        assert_eq!(tally.skipped, 0, "{tally:?}");
+        Ok(())
+    }
+
+    /// A `--count` budget spent inside a file stops the serial read there:
+    /// that file is stopped early, and the files behind it are not reached.
+    #[test]
+    fn a_count_budget_spent_inside_a_file_ends_the_serial_read_there() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3300_0001, s + 1)).collect();
+        let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3300_0002, s + 1)).collect();
+        let paths = vec![
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap1", &last, 1_700_001_000),
+        ];
+        let cc = crate::capture::CaptureConfig {
+            count: Some(4),
+            ..crate::capture::CaptureConfig::default()
+        };
+        let (read, tally, count) = serial_read(&paths, &cc);
+        assert!(read.is_ok());
+        assert_eq!(count, 4, "the budget is the packet count");
+        assert_eq!(
+            (
+                tally.complete,
+                tally.skipped,
+                tally.stopped_early,
+                tally.lost
+            ),
+            (0, 0, 1, false),
+            "only the first file is reached, and a spent budget is not a loss: {tally:?}"
+        );
+        Ok(())
+    }
+
+    /// A filter that will not compile against a later member refuses the set
+    /// and counts that member as a lost skip, after the members before it.
+    #[test]
+    fn a_filter_refused_by_a_later_member_is_counted_as_lost() {
+        let paths = set_whose_second_file_rejects_an_ether_filter();
+        let cc = crate::capture::CaptureConfig {
+            bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
+            ..crate::capture::CaptureConfig::default()
+        };
+        let (read, tally, _) = serial_read(&paths, &cc);
+        assert!(read.is_err(), "the filter failure must refuse the set");
+        assert_eq!(
+            (tally.complete, tally.skipped, tally.lost),
+            (1, 1, true),
+            "{tally:?}"
         );
     }
 
