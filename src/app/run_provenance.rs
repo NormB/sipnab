@@ -115,9 +115,11 @@ impl RunProvenance {
             // how the run was invoked, and refusing to record the line because
             // one byte was undecodable would lose the whole record over the
             // least interesting part of it.
-            argv: std::env::args_os()
-                .map(|a| a.to_string_lossy().into_owned())
-                .collect(),
+            argv: redact_argv(
+                std::env::args_os()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect(),
+            ),
             cwd: std::env::current_dir()
                 .map(|p| p.display().to_string())
                 // An unreadable cwd (deleted underneath the process) is a
@@ -308,9 +310,109 @@ pub fn write_record(cli: &Cli) -> Result<Option<PathBuf>, String> {
     Ok(Some(path.to_path_buf()))
 }
 
+/// What replaces a secret's value in the recorded argv.
+pub const REDACTED: &str = "[redacted]";
+
+/// `argv` with the value of every [`crate::cli::SECRET_FLAGS`] flag replaced
+/// by [`REDACTED`], in both the `--flag value` and the `--flag=value` form.
+/// Arguments after `--` are positionals and are kept as given.
+#[must_use]
+pub fn redact_argv(argv: Vec<String>) -> Vec<String> {
+    let is_secret = |name: &str| crate::cli::SECRET_FLAGS.contains(&name);
+    let mut out = Vec::with_capacity(argv.len());
+    let mut options = true;
+    let mut redact_next = false;
+    for arg in argv {
+        if redact_next {
+            redact_next = false;
+            out.push(REDACTED.to_string());
+            continue;
+        }
+        if !options {
+            out.push(arg);
+            continue;
+        }
+        if arg == "--" {
+            options = false;
+            out.push(arg);
+            continue;
+        }
+        match arg.strip_prefix("--").map(|rest| rest.split_once('=')) {
+            Some(Some((name, _))) if is_secret(name) => out.push(format!("--{name}={REDACTED}")),
+            Some(None) if is_secret(&arg[2..]) => {
+                redact_next = true;
+                out.push(arg);
+            }
+            _ => out.push(arg),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A secret given inline is not written to the record: the value after
+    /// `--hep-auth`, or after `--api-key=`, is replaced, and every other
+    /// argument is kept as given. Before 2026-10-07 the record held argv as
+    /// the shell passed it, so `--run-provenance-file` wrote the key to disk.
+    #[test]
+    fn inline_secrets_are_redacted_from_the_recorded_argv() {
+        let argv: Vec<String> = [
+            "sipnab",
+            "-I",
+            "calls.pcap",
+            "--hep-auth",
+            "k-one",
+            "--api-key=k-two",
+            "--archive-password",
+            "pw",
+            "--vcon-forward-auth=Authorization: Bearer k3",
+            "--hep-auth-file",
+            "/etc/sipnab/hep.key",
+        ]
+        .map(String::from)
+        .to_vec();
+        let out = redact_argv(argv);
+        assert_eq!(
+            out,
+            [
+                "sipnab",
+                "-I",
+                "calls.pcap",
+                "--hep-auth",
+                REDACTED,
+                "--api-key=[redacted]",
+                "--archive-password",
+                REDACTED,
+                "--vcon-forward-auth=[redacted]",
+                "--hep-auth-file",
+                "/etc/sipnab/hep.key",
+            ]
+        );
+        for secret in ["k-one", "k-two", "pw", "k3"] {
+            assert!(
+                !out.iter().any(|a| a.contains(secret)),
+                "{secret} survived: {out:?}"
+            );
+        }
+    }
+
+    /// A secret flag as the last argument has no value to redact, and an
+    /// argument after `--` is a positional, not a flag.
+    #[test]
+    fn redaction_handles_a_trailing_flag_and_the_end_of_options() {
+        let argv: Vec<String> = ["sipnab", "--", "--hep-auth", "literal", "--mcp-token"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            redact_argv(argv.clone()),
+            ["sipnab", "--", "--hep-auth", "literal", "--mcp-token"]
+        );
+        let argv: Vec<String> = ["sipnab", "--mcp-token"].map(String::from).to_vec();
+        assert_eq!(redact_argv(argv), ["sipnab", "--mcp-token"]);
+    }
 
     /// The record carries the invocation, not a reconstruction of it.
     #[test]

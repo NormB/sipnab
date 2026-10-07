@@ -18,6 +18,13 @@ entry that carries them.
   (`[env: SIPNAB_HEP_AUTH=<value>]`). Help now names the variable only.
   `tests/help_env_values_test.rs` reads every environment-backed flag from the
   parser, so a flag added later is held to the same rule.
+- **`--run-provenance-file` no longer records secrets.** The record held the
+  command line as given, so `--hep-auth <key>`, `--api-key=<key>` and the other
+  flags that take a secret inline wrote that secret to the file. Their values
+  are now recorded as `[redacted]`. `cli::SECRET_FLAGS` lists those flags, and
+  `tests/secret_flags_test.rs` fails when a flag read from an environment
+  variable, or one whose value is named as a key, token, password, header or
+  `user:pass`, is missing from it.
 
 ### Added
 

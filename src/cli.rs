@@ -17,6 +17,22 @@ use clap::Parser;
 /// spelling belongs.
 pub const RELAY_CONTROL_FLAG: &str = "--rtpengine-control";
 
+/// Every flag that takes a secret as its value, by long name. The run
+/// provenance record (`--run-provenance-file`) redacts the values of these,
+/// and `tests/secret_flags_test.rs` holds the list to what the parser
+/// declares: a flag read from an environment variable, or one whose value is
+/// named as a key, token, password, header or `user:pass` credential.
+pub const SECRET_FLAGS: &[&str] = &[
+    "api-key",
+    "api-signing-key",
+    "archive-password",
+    "hep-auth",
+    "mcp-signing-key",
+    "mcp-token",
+    "metrics-auth",
+    "vcon-forward-auth",
+];
+
 /// Value of `--hep-rate-limit-per-peer`: disabled, a fixed cap, or `auto`
 /// (derive a fair per-peer cap from the global ceiling and the number of
 /// allowed sources at startup).
@@ -2610,6 +2626,8 @@ pub struct SecurityArgs {
     /// capture device is opened. The file is opened for APPEND and never
     /// truncated, so successive runs accumulate; created mode 0600 if absent,
     /// because argv holds capture paths and a path holds a customer name.
+    /// The value of a flag that takes a secret inline, such as --hep-auth or
+    /// --api-key, is recorded as `[redacted]`.
     ///
     /// **A record that cannot be written stops the run.** A best-effort line
     /// would be worse than none: its absence would mean either "not enabled"
