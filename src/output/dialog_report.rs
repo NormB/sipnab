@@ -609,21 +609,25 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) for determinism.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or_else(|| "2024-06-15T12:00:00Z is a valid timestamp".into())
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build a Completed dialog: INVITE followed 153 s later by BYE.
-    fn make_completed_dialog() -> SipDialog {
-        let t0 = base_ts();
+    fn make_completed_dialog() -> Result<SipDialog, TestError> {
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(153);
 
         let raw_invite = build_sip(
@@ -646,7 +650,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let raw_bye = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
@@ -668,20 +672,20 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
         crate::sip::dialog::update_state(&mut dialog, &bye);
         dialog.messages.push(bye.clone());
         dialog.updated_at = bye.timestamp;
-        dialog
+        Ok(dialog)
     }
 
     /// A single completed dialog renders Call-ID, users, state, duration,
     /// and the Msgs header.
     #[test]
-    fn single_completed_dialog_report() {
-        let dialog = make_completed_dialog();
+    fn single_completed_dialog_report() -> Result<(), TestError> {
+        let dialog = make_completed_dialog()?;
         let dialogs: Vec<&SipDialog> = vec![&dialog];
         let streams: Vec<&crate::rtp::stream::RtpStream> = vec![];
 
@@ -702,6 +706,7 @@ mod tests {
             report.contains("Msgs"),
             "should contain message count header"
         );
+        Ok(())
     }
 
     /// Build an INVITE dialog and drive it with the given follow-up messages
@@ -714,8 +719,8 @@ mod tests {
     /// report that omits the recording is the reader who most needs it going
     /// without.
     #[test]
-    fn a_recorded_call_names_its_recording_in_the_report() {
-        let mut d = make_dialog("rec@test", &[]);
+    fn a_recorded_call_names_its_recording_in_the_report() -> Result<(), TestError> {
+        let mut d = make_dialog("rec@test", &[])?;
         d.siprec_metadata = Some(crate::sip::siprec::SirecMetadata {
             session_id: Some("sess-9".to_string()),
             mode: Some("complete".to_string()),
@@ -748,21 +753,26 @@ mod tests {
             "and each stream resolved to the party that sends it, by AOR rather \
              than by the UUID an operator cannot read:\n{report}"
         );
+        Ok(())
     }
 
     /// An ordinary call raises no recording heading.
     #[test]
-    fn an_unrecorded_call_raises_no_siprec_heading() {
-        let d = make_dialog("plain@test", &[]);
+    fn an_unrecorded_call_raises_no_siprec_heading() -> Result<(), TestError> {
+        let d = make_dialog("plain@test", &[])?;
         let report = print_dialog_report(&[&d], &[]);
         assert!(
             !report.contains("SIPREC"),
             "a call nobody recorded must not be labeled as recorded:\n{report}"
         );
+        Ok(())
     }
 
-    fn make_dialog(call_id: &str, followups: &[(&str, &str, bool)]) -> SipDialog {
-        let t0 = base_ts();
+    fn make_dialog(
+        call_id: &str,
+        followups: &[(&str, &str, bool)],
+    ) -> Result<SipDialog, TestError> {
+        let t0 = base_ts()?;
         let raw_invite = build_sip(
             "INVITE sip:1002@example.com SIP/2.0",
             &[
@@ -783,8 +793,8 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse invite");
-        let mut dialog = SipDialog::new(&invite).expect("create dialog");
+        .map_err(|e| format!("parse invite: {e:?}"))?;
+        let mut dialog = SipDialog::new(&invite).ok_or("create dialog")?;
 
         for (i, (start, cseq, with_tag)) in followups.iter().enumerate() {
             let to = if *with_tag {
@@ -812,27 +822,28 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("parse followup");
+            .map_err(|e| format!("parse followup: {e:?}"))?;
             crate::sip::dialog::update_state(&mut dialog, &msg);
             dialog.messages.push(msg);
         }
-        dialog
+        Ok(dialog)
     }
 
     /// The dialog table header includes the Code column.
     #[test]
-    fn report_has_code_column_header() {
-        let dialog = make_completed_dialog();
+    fn report_has_code_column_header() -> Result<(), TestError> {
+        let dialog = make_completed_dialog()?;
         let report = print_dialog_report(&[&dialog], &[]);
         assert!(
             report.contains("Code"),
             "report should have a Code column header: {report}"
         );
+        Ok(())
     }
 
     /// An answered+ended call (200 then BYE) shows final code 200.
     #[test]
-    fn completed_dialog_shows_final_code_200() {
+    fn completed_dialog_shows_final_code_200() -> Result<(), TestError> {
         // A real answered+ended call: INVITE -> 200 (INVITE) -> BYE.
         let dialog = make_dialog(
             "done@example.com",
@@ -840,34 +851,36 @@ mod tests {
                 ("SIP/2.0 200 OK", "CSeq: 1 INVITE", true),
                 ("BYE sip:1002@example.com SIP/2.0", "CSeq: 2 BYE", true),
             ],
-        );
+        )?;
         assert_eq!(dialog.state(), &DialogState::Completed);
         let report = print_dialog_report(&[&dialog], &[]);
         assert!(
             report.contains("200"),
             "completed dialog should show final code 200: {report}"
         );
+        Ok(())
     }
 
     /// A 486-rejected INVITE shows state Failed with code 486.
     #[test]
-    fn failed_dialog_shows_response_code() {
+    fn failed_dialog_shows_response_code() -> Result<(), TestError> {
         // INVITE rejected with 486 Busy Here -> State Failed, Code 486.
         let dialog = make_dialog(
             "busy@example.com",
             &[("SIP/2.0 486 Busy Here", "CSeq: 1 INVITE", true)],
-        );
+        )?;
         let report = print_dialog_report(&[&dialog], &[]);
         assert!(report.contains("Failed"), "should be Failed: {report}");
         assert!(
             report.contains("486"),
             "failed dialog should show its 486 code, not just 'Failed': {report}"
         );
+        Ok(())
     }
 
     /// A canceled INVITE shows state Canceled with code 487.
     #[test]
-    fn canceled_dialog_shows_487() {
+    fn canceled_dialog_shows_487() -> Result<(), TestError> {
         // INVITE canceled before answer -> State Canceled, Code 487.
         let dialog = make_dialog(
             "cxl@example.com",
@@ -879,19 +892,20 @@ mod tests {
                 ),
                 ("SIP/2.0 487 Request Terminated", "CSeq: 1 INVITE", true),
             ],
-        );
+        )?;
         let report = print_dialog_report(&[&dialog], &[]);
         assert!(report.contains("Canceled"), "should be Canceled: {report}");
         assert!(
             report.contains("487"),
             "canceled dialog should show its 487 code: {report}"
         );
+        Ok(())
     }
 
     /// An auth-challenged call that then succeeds reports 200, never the
     /// intermediate 407.
     #[test]
-    fn auth_challenged_call_reports_final_200_not_407() {
+    fn auth_challenged_call_reports_final_200_not_407() -> Result<(), TestError> {
         // INVITE -> 407 (challenge) -> authed INVITE -> 200 -> BYE. The 407 is an
         // intermediate auth step; the call's outcome is 200, not 407.
         let dialog = make_dialog(
@@ -905,7 +919,7 @@ mod tests {
                 ("SIP/2.0 200 OK", "CSeq: 2 INVITE", true),
                 ("BYE sip:1002@example.com SIP/2.0", "CSeq: 3 BYE", true),
             ],
-        );
+        )?;
         assert_eq!(
             dialog.final_status_code(),
             Some(200),
@@ -916,11 +930,12 @@ mod tests {
             !report.contains("407"),
             "report must not surface the intermediate 407 as the outcome: {report}"
         );
+        Ok(())
     }
 
     /// A 407 with no authenticated retry reports the 407 as the outcome.
     #[test]
-    fn unauthenticated_call_still_reports_the_challenge() {
+    fn unauthenticated_call_still_reports_the_challenge() -> Result<(), TestError> {
         // 407 with no authenticated retry: the challenge IS the outcome.
         let dialog = make_dialog(
             "noauth@example.com",
@@ -929,35 +944,37 @@ mod tests {
                 "CSeq: 1 INVITE",
                 true,
             )],
-        );
+        )?;
         assert_eq!(dialog.final_status_code(), Some(407));
+        Ok(())
     }
 
     /// A ringing dialog with no final response has no final status code.
     #[test]
-    fn in_progress_dialog_has_no_final_code() {
+    fn in_progress_dialog_has_no_final_code() -> Result<(), TestError> {
         // INVITE + 180 Ringing only — no final response yet -> Code "-".
         let dialog = make_dialog(
             "ring@example.com",
             &[("SIP/2.0 180 Ringing", "CSeq: 1 INVITE", true)],
-        );
+        )?;
         assert_eq!(
             dialog.final_status_code(),
             None,
             "a ringing dialog has no final status code yet"
         );
+        Ok(())
     }
 
     /// Build a PCMA stream with 250 pkts / 5 lost / 12 ms jitter over 5 s
     /// (64 kbps) for exercising the RTP table columns.
-    fn make_rtp_stream() -> crate::rtp::stream::RtpStream {
+    fn make_rtp_stream() -> Result<crate::rtp::stream::RtpStream, TestError> {
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream::{RtpStream, StreamKey};
         use std::net::SocketAddr;
         let key = StreamKey {
             ssrc: 0x0a0b0c0d,
-            src: "10.0.0.1:20000".parse::<SocketAddr>().unwrap(),
-            dst: "10.0.0.2:30000".parse::<SocketAddr>().unwrap(),
+            src: "10.0.0.1:20000".parse::<SocketAddr>()?,
+            dst: "10.0.0.2:30000".parse::<SocketAddr>()?,
         };
         let hdr = RtpHeader {
             version: 2,
@@ -971,20 +988,20 @@ mod tests {
             ssrc: 0x0a0b0c0d,
             payload_offset: 12,
         };
-        let mut s = RtpStream::new(key, &hdr, base_ts());
+        let mut s = RtpStream::new(key, &hdr, base_ts()?);
         s.packet_count = 250;
         s.octet_count = 40_000; // 40000 B * 8 / 5 s / 1000 = 64 kbps (G.711)
         s.lost_packets = 5; // 5 / (250+5) = 2.0%
         s.jitter = 12.0;
-        s.last_seen = base_ts() + TimeDelta::seconds(5);
-        s
+        s.last_seen = base_ts()? + TimeDelta::seconds(5);
+        Ok(s)
     }
 
     /// The RTP table carries PT/Clock/Lost/Loss%/Jitter/Dur/Kbps columns
     /// with correctly derived values.
     #[test]
-    fn rtp_report_includes_pt_and_critical_fields() {
-        let mut s = make_rtp_stream();
+    fn rtp_report_includes_pt_and_critical_fields() -> Result<(), TestError> {
+        let mut s = make_rtp_stream()?;
         // The columns under test belong to the ASSOCIATED table, so the
         // fixture has to be a claimed stream. It used to reach that table by
         // default, back when an unclaimed stream counted as an orphan only
@@ -1008,6 +1025,7 @@ mod tests {
         );
         assert!(report.contains("5s"), "duration 5s: {report}");
         assert!(report.contains("2.0%"), "loss 5/(250+5)=2.0%: {report}");
+        Ok(())
     }
 
     // ── Orphaned-stream section ────────────────────────────────────────
@@ -1015,11 +1033,11 @@ mod tests {
     /// Build the stream of [`make_rtp_stream`] as an orphan: no dialog claims
     /// it, which is the whole of what an orphan is. A distinct SSRC so a mixed
     /// report can name which row landed in which table.
-    fn make_orphaned_stream() -> crate::rtp::stream::RtpStream {
-        let mut s = make_rtp_stream();
+    fn make_orphaned_stream() -> Result<crate::rtp::stream::RtpStream, TestError> {
+        let mut s = make_rtp_stream()?;
         s.key.ssrc = 0x0bad0bad;
         s.associated_dialog = None;
-        s
+        Ok(s)
     }
 
     /// An orphaned stream renders a row under the orphan heading.
@@ -1035,14 +1053,14 @@ mod tests {
     /// (`crate::output::call_report`) with no orphan section at all, so
     /// nothing there can go empty either.
     #[test]
-    fn orphaned_stream_renders_under_the_orphan_heading() {
-        let s = make_orphaned_stream();
+    fn orphaned_stream_renders_under_the_orphan_heading() -> Result<(), TestError> {
+        let s = make_orphaned_stream()?;
 
         let report = print_dialog_report(&[], &[&s]);
 
-        let (before, orphans) = report.split_once("Orphaned Streams:").unwrap_or_else(|| {
-            panic!("an orphaned stream produced no Orphaned Streams section:\n{report}")
-        });
+        let (before, orphans) = report.split_once("Orphaned Streams:").ok_or_else(|| {
+            format!("an orphaned stream produced no Orphaned Streams section:\n{report}")
+        })?;
         assert!(
             orphans.contains("0x0bad0bad"),
             "the orphaned stream's SSRC must appear under the heading:\n{report}"
@@ -1051,6 +1069,7 @@ mod tests {
             !before.contains("RTP Streams:"),
             "an orphan has no dialog, so it must not open the associated table:\n{report}"
         );
+        Ok(())
     }
 
     /// A stream linked to a dialog raises no orphan heading.
@@ -1058,8 +1077,8 @@ mod tests {
     /// The section is absent rather than empty, so "no Orphaned Streams" in a
     /// report reads as "this capture had no orphans" and must stay true.
     #[test]
-    fn linked_stream_raises_no_orphan_heading() {
-        let mut s = make_rtp_stream();
+    fn linked_stream_raises_no_orphan_heading() -> Result<(), TestError> {
+        let mut s = make_rtp_stream()?;
         s.associated_dialog = Some("report-test@example.com".to_string());
 
         let report = print_dialog_report(&[], &[&s]);
@@ -1072,21 +1091,22 @@ mod tests {
             !report.contains("Orphaned Streams:"),
             "a linked stream is not orphaned and must not raise the heading:\n{report}"
         );
+        Ok(())
     }
 
     /// The shape every real capture produces: the two tables partition the
     /// streams, each SSRC under exactly one heading.
     #[test]
-    fn mixed_report_partitions_streams_between_the_two_tables() {
-        let mut linked = make_rtp_stream();
+    fn mixed_report_partitions_streams_between_the_two_tables() -> Result<(), TestError> {
+        let mut linked = make_rtp_stream()?;
         linked.associated_dialog = Some("report-test@example.com".to_string());
-        let orphan = make_orphaned_stream();
+        let orphan = make_orphaned_stream()?;
 
         let report = print_dialog_report(&[], &[&linked, &orphan]);
 
         let (associated, orphans) = report
             .split_once("Orphaned Streams:")
-            .unwrap_or_else(|| panic!("a report holding one orphan needs both tables:\n{report}"));
+            .ok_or_else(|| format!("a report holding one orphan needs both tables:\n{report}"))?;
         assert!(
             associated.contains("0x0a0b0c0d") && !associated.contains("0x0bad0bad"),
             "the associated table must hold the linked stream and only it:\n{report}"
@@ -1095,63 +1115,70 @@ mod tests {
             orphans.contains("0x0bad0bad") && !orphans.contains("0x0a0b0c0d"),
             "the orphan table must hold the orphan and only it:\n{report}"
         );
+        Ok(())
     }
 
     /// A long Call-ID is truncated within the limit and ends with "...".
     #[test]
-    fn truncate_long_call_id() {
+    fn truncate_long_call_id() -> Result<(), TestError> {
         let result = truncate_str(
             "this-is-a-very-long-call-id-string-that-needs-truncation",
             22,
         );
         assert!(result.len() <= 22);
         assert!(result.ends_with("..."));
+        Ok(())
     }
 
     /// `format_seconds` renders seconds, minutes, and hours variants.
     #[test]
-    fn format_seconds_variants() {
+    fn format_seconds_variants() -> Result<(), TestError> {
         assert_eq!(format_seconds(0), "0s");
         assert_eq!(format_seconds(45), "45s");
         assert_eq!(format_seconds(153), "2m 33s");
         assert_eq!(format_seconds(3661), "1h 1m 1s");
+        Ok(())
     }
 
     // ── UTF-8 safe truncate_str ────────────────────────────────────────
 
     /// A string within the limit is returned unchanged.
     #[test]
-    fn truncate_str_short_string_unchanged() {
+    fn truncate_str_short_string_unchanged() -> Result<(), TestError> {
         assert_eq!(truncate_str("hello", 10), "hello");
+        Ok(())
     }
 
     /// Truncation to 8 keeps 5 chars plus the "..." suffix.
     #[test]
-    fn truncate_str_exact_ellipsis() {
+    fn truncate_str_exact_ellipsis() -> Result<(), TestError> {
         assert_eq!(truncate_str("hello world", 8), "hello...");
+        Ok(())
     }
 
     /// 2-byte UTF-8 input truncates on a char boundary without panicking.
     #[test]
-    fn truncate_str_multibyte_latin_no_panic() {
+    fn truncate_str_multibyte_latin_no_panic() -> Result<(), TestError> {
         // "héllo wörld" contains 2-byte UTF-8 chars
         let result = truncate_str("héllo wörld", 8);
         assert!(result.ends_with("..."));
+        Ok(())
     }
 
     /// 3-byte CJK input truncates without panicking or emptying the result.
     #[test]
-    fn truncate_str_cjk_no_panic() {
+    fn truncate_str_cjk_no_panic() -> Result<(), TestError> {
         // "日本語テスト" — each char is 3 bytes in UTF-8
         let result = truncate_str("日本語テスト", 6);
         assert!(!result.is_empty());
+        Ok(())
     }
 
     /// Tiny `max_len` values (0..=3, too small for the 3-byte "..." ellipsis)
     /// must never produce a result exceeding `max_len` bytes, even for
     /// multi-byte input where a single char is wider than the budget.
     #[test]
-    fn truncate_str_tiny_max_len_respects_byte_contract() {
+    fn truncate_str_tiny_max_len_respects_byte_contract() -> Result<(), TestError> {
         // Each CJK char is 3 bytes; 3 chars = 9 bytes total.
         let s = "日本語";
         for max_len in 0..=3 {
@@ -1165,6 +1192,7 @@ mod tests {
         // ASCII sanity: whole chars that fit, no ellipsis when there is no room.
         assert_eq!(truncate_str("hello", 0), "");
         assert_eq!(truncate_str("hello", 3), "hel");
+        Ok(())
     }
 
     // ── ICMP media section ─────────────────────────────────────────────
@@ -1226,13 +1254,13 @@ mod tests {
     /// table that showed the endpoint without it would invite a reader to act
     /// on a `none`-tier guess as though it were an exact 5-tuple match.
     #[test]
-    fn every_media_row_names_its_attribution_tier() {
+    fn every_media_row_names_its_attribution_tier() -> Result<(), TestError> {
         let mut out = String::new();
         write_icmp_media_section(&mut out, &resolved_one_per_tier());
 
         let (_, table) = out
             .split_once("Description")
-            .unwrap_or_else(|| panic!("the section rendered no table:\n{out}"));
+            .ok_or_else(|| format!("the section rendered no table:\n{out}"))?;
         let rows: Vec<&str> = table
             .lines()
             .filter(|l| !l.trim().is_empty() && !l.starts_with('-'))
@@ -1254,6 +1282,7 @@ mod tests {
                 "tier {tier} must appear exactly once:\n{out}"
             );
         }
+        Ok(())
     }
 
     /// The summary keeps `unkeyed` as its own outcome.
@@ -1262,7 +1291,7 @@ mod tests {
     /// state, not "matched nothing". Folding it away would make the two
     /// invariants #98 asserts uncheckable from the report.
     #[test]
-    fn the_media_summary_reports_unkeyed_separately() {
+    fn the_media_summary_reports_unkeyed_separately() -> Result<(), TestError> {
         let resolved = resolved_one_per_tier();
         let mut out = String::new();
         write_icmp_media_section(&mut out, &resolved);
@@ -1283,6 +1312,7 @@ mod tests {
             r.flows.iter().map(|f| f.errors).sum::<u64>() + r.unkeyed + r.untracked_flows,
             r.errors
         );
+        Ok(())
     }
 
     /// A finding no dialog can claim is still printed.
@@ -1291,7 +1321,7 @@ mod tests {
     /// A section assembled from dialogs would show none of them, which is the
     /// invisibility this section exists to end.
     #[test]
-    fn a_finding_that_named_no_call_is_still_printed() {
+    fn a_finding_that_named_no_call_is_still_printed() -> Result<(), TestError> {
         use crate::pipeline::{IcmpMediaReport, MediaMatch, ResolvedIcmpMedia};
         let resolved = ResolvedIcmpMedia::new(IcmpMediaReport {
             errors: 4,
@@ -1304,11 +1334,12 @@ mod tests {
 
         let (_, table) = out
             .split_once("Description")
-            .unwrap_or_else(|| panic!("a finding with no call produced no table:\n{out}"));
+            .ok_or_else(|| format!("a finding with no call produced no table:\n{out}"))?;
         assert!(
             table.lines().any(|l| l.starts_with("none ")),
             "the unattributed finding must be printed:\n{out}"
         );
+        Ok(())
     }
 
     /// A capture with no media ICMP raises no section.
@@ -1316,13 +1347,14 @@ mod tests {
     /// Absent rather than empty, so "no ICMP section" reads as "this capture
     /// had none" and stays true.
     #[test]
-    fn a_capture_with_no_media_icmp_raises_no_section() {
+    fn a_capture_with_no_media_icmp_raises_no_section() -> Result<(), TestError> {
         let mut out = String::new();
         write_icmp_media_section(&mut out, &crate::pipeline::ResolvedIcmpMedia::default());
         assert!(
             out.is_empty(),
             "silence when there is nothing to say: {out}"
         );
+        Ok(())
     }
 
     /// The whole report carries the section, not just the writer.
@@ -1331,8 +1363,8 @@ mod tests {
     /// this task started from.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn the_report_carries_the_media_section() {
-        let dialog = make_completed_dialog();
+    fn the_report_carries_the_media_section() -> Result<(), TestError> {
+        let dialog = make_completed_dialog()?;
 
         crate::pipeline::reset_icmp_evidence();
         let clean = print_dialog_report(&[&dialog], &[]);
@@ -1353,6 +1385,7 @@ mod tests {
             report.contains("sdp_endpoint"),
             "the weakest attributed tier must still reach the report:\n{report}"
         );
+        Ok(())
     }
 
     /// Evidence the PARSER filed reaches the report, not just a published set.
@@ -1372,11 +1405,11 @@ mod tests {
     /// writer is serialized on `icmp_evidence` with the tests that read it.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn media_icmp_the_parser_filed_reaches_the_whole_report() {
-        let dialog = make_completed_dialog();
+    fn media_icmp_the_parser_filed_reaches_the_whole_report() -> Result<(), TestError> {
+        let dialog = make_completed_dialog()?;
         crate::pipeline::reset_icmp_evidence();
 
-        crate::pipeline::test_support::file_one_media_icmp_error();
+        crate::pipeline::test_support::file_one_media_icmp_error()?;
         crate::pipeline::resolve_icmp_media(&crate::rtp::stream_store::StreamStore::new(4));
 
         let report = print_dialog_report(&[&dialog], &[]);
@@ -1395,6 +1428,7 @@ mod tests {
             report.contains("198.51.100.20:20000"),
             "the report must name the endpoint that did not answer:\n{report}"
         );
+        Ok(())
     }
 
     /// A run that saw a recording or forking command has to SAY so. The
@@ -1402,8 +1436,8 @@ mod tests {
     /// the promise in its own doc comment -- "a run can say what it did not
     /// attribute" -- false for as long as it went unrendered.
     #[test]
-    fn a_media_creating_command_reaches_the_report() {
-        let note = super::media_creating_note(3).expect("three commands is something to say");
+    fn a_media_creating_command_reaches_the_report() -> Result<(), TestError> {
+        let note = super::media_creating_note(3).ok_or("three commands is something to say")?;
 
         assert!(
             note.contains('3'),
@@ -1413,6 +1447,7 @@ mod tests {
             note.contains("not being one of its two legs") || note.contains("two legs"),
             "and why it is not attributed, or the line reads as a defect:\n{note}"
         );
+        Ok(())
     }
 
     /// The note must actually REACH the report. The two tests around this one
@@ -1425,7 +1460,7 @@ mod tests {
     /// until the next test runs. Presence after an increment is stable either
     /// way, and it is what fails if the render site goes away.
     #[test]
-    fn the_note_reaches_the_rendered_report() {
+    fn the_note_reaches_the_rendered_report() -> Result<(), TestError> {
         crate::relay::note_media_creating_command();
 
         let report = print_dialog_report(&[], &[]);
@@ -1435,12 +1470,14 @@ mod tests {
             "a command sipnab saw and did not attribute must appear in the \
              report an operator actually reads:\n{report}"
         );
+        Ok(())
     }
 
     /// Nothing seen, nothing said. A line whose only content is a zero is
     /// noise in a report an operator reads under time pressure.
     #[test]
-    fn a_run_that_saw_none_says_nothing_about_them() {
+    fn a_run_that_saw_none_says_nothing_about_them() -> Result<(), TestError> {
         assert_eq!(super::media_creating_note(0), None, "zero is not a finding");
+        Ok(())
     }
 }

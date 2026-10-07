@@ -881,13 +881,15 @@ pub fn analyze_burst_gap(received: &[bool], ptime_ms: f64) -> BurstGapAnalysis {
 mod grounding_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The cellular codecs sipnab cannot ground must say so.
     ///
     /// This is the whole point: they currently score identically to an
     /// unidentified stream, so without this signal a caller cannot tell a
     /// measurement from a placeholder.
     #[test]
-    fn cellular_codecs_are_reported_as_ungrounded() {
+    fn cellular_codecs_are_reported_as_ungrounded() -> Result<(), TestError> {
         for c in ["AMR", "AMR-WB", "EVS", "G722", "G726", "iLBC"] {
             assert_eq!(
                 mos_grounding(Some(c)),
@@ -896,6 +898,7 @@ mod grounding_tests {
                  claim a grounded MOS"
             );
         }
+        Ok(())
     }
 
     /// A declared impairment changes the SCORE, and only for that codec.
@@ -910,7 +913,7 @@ mod grounding_tests {
     /// ungrounded — declaring it here would make these two tests fight when the
     /// harness runs them in parallel. Nothing else in this binary names `SILK`.
     #[test]
-    fn a_declared_impairment_moves_the_score_for_that_codec_alone() {
+    fn a_declared_impairment_moves_the_score_for_that_codec_alone() -> Result<(), TestError> {
         let placeholder = estimate_mos(10.0, 0.0, None);
         let before = estimate_mos(10.0, 0.0, Some("SILK"));
         assert_eq!(
@@ -954,6 +957,7 @@ mod grounding_tests {
             "clearing the table must restore the placeholder"
         );
         assert_eq!(mos_grounding(Some("SILK")), MosGrounding::Unpublished);
+        Ok(())
     }
 
     /// A codec sipnab does not know and nobody declared stays a placeholder.
@@ -963,7 +967,7 @@ mod grounding_tests {
     /// to claim a grounded MOS rather than inherit the new mechanism's
     /// confidence.
     #[test]
-    fn an_undeclared_unknown_codec_still_refuses_to_claim_grounding() {
+    fn an_undeclared_unknown_codec_still_refuses_to_claim_grounding() -> Result<(), TestError> {
         assert_eq!(
             mos_grounding(Some("EVS")),
             MosGrounding::Unpublished,
@@ -974,20 +978,23 @@ mod grounding_tests {
             estimate_mos(10.0, 0.0, Some("EVS")),
             estimate_mos(10.0, 0.0, None)
         );
+        Ok(())
     }
 
     /// The three sipnab does know are grounded.
     #[test]
-    fn known_codecs_are_reported_as_grounded() {
+    fn known_codecs_are_reported_as_grounded() -> Result<(), TestError> {
         for c in ["PCMU", "PCMA", "G729", "opus"] {
             assert_eq!(mos_grounding(Some(c)), MosGrounding::Published, "{c}");
         }
+        Ok(())
     }
 
     /// An unidentified stream is ungrounded, matching what the score means.
     #[test]
-    fn an_unidentified_codec_is_ungrounded() {
+    fn an_unidentified_codec_is_ungrounded() -> Result<(), TestError> {
         assert_eq!(mos_grounding(None), MosGrounding::Unpublished);
+        Ok(())
     }
 
     /// The grounding signal must agree with the scorer.
@@ -996,7 +1003,7 @@ mod grounding_tests {
     /// signal would launder the guess instead of exposing it — worse than
     /// having no signal.
     #[test]
-    fn grounding_agrees_with_the_score() {
+    fn grounding_agrees_with_the_score() -> Result<(), TestError> {
         let placeholder = estimate_mos(10.0, 0.0, None);
         for c in ["PCMU", "PCMA", "G729", "opus"] {
             assert_ne!(
@@ -1014,11 +1021,15 @@ mod grounding_tests {
                  this changes, the grounding table must change with it"
             );
         }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// The R-factor is published, not thrown away.
     ///
     /// `estimate_mos_with_delay` computes `R = R0 - Is - Id - Ie_eff + A` and
@@ -1029,7 +1040,7 @@ mod tests {
     /// The only `r_factor` on any surface was the FAR END's RTCP XR value,
     /// which is a different measurement of a different path segment.
     #[test]
-    fn the_r_factor_is_reported_alongside_the_mos() {
+    fn the_r_factor_is_reported_alongside_the_mos() -> Result<(), TestError> {
         // With no impairment at all — no jitter, no loss, no delay — R is R0.
         let ideal = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
         assert!(
@@ -1046,6 +1057,7 @@ mod tests {
             (r - (93.2 - 0.024 * DEFAULT_ONE_WAY_DELAY_MS)).abs() < 0.01,
             "the default delay costs 0.024 per ms, got {r}"
         );
+        Ok(())
     }
 
     /// The R-factor and the MOS describe the same stream.
@@ -1053,7 +1065,7 @@ mod tests {
     /// One derivation, two scales. If these ever disagree, the MOS is being
     /// computed from an R nobody can see — which is the state this fixes.
     #[test]
-    fn the_published_r_factor_is_the_one_the_mos_came_from() {
+    fn the_published_r_factor_is_the_one_the_mos_came_from() -> Result<(), TestError> {
         for (jitter, loss, codec) in [
             (0.0, 0.0, Some("PCMU")),
             (30.0, 2.0, Some("PCMA")),
@@ -1068,6 +1080,7 @@ mod tests {
                 r_to_mos(r)
             );
         }
+        Ok(())
     }
 
     /// Impairment lowers R, and it lowers it monotonically.
@@ -1075,12 +1088,13 @@ mod tests {
     /// The direction check: a scale that moved the wrong way, or not at all,
     /// would still satisfy the equality above.
     #[test]
-    fn more_impairment_means_a_lower_r_factor() {
+    fn more_impairment_means_a_lower_r_factor() -> Result<(), TestError> {
         let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
         let jittery = estimate_r_with_delay(60.0, 0.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
         let lossy = estimate_r_with_delay(0.0, 8.0, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
         assert!(jittery < clean, "jitter must lower R: {jittery} vs {clean}");
         assert!(lossy < clean, "loss must lower R: {lossy} vs {clean}");
+        Ok(())
     }
 
     /// R stays inside the scale the E-model defines.
@@ -1090,7 +1104,7 @@ mod tests {
     /// scale, because a reader comparing it against an SLA threshold cannot
     /// tell a clamped value from a computed one otherwise.
     #[test]
-    fn the_r_factor_stays_within_its_scale() {
+    fn the_r_factor_stays_within_its_scale() -> Result<(), TestError> {
         for (jitter, loss) in [(0.0, 0.0), (500.0, 50.0), (3000.0, 100.0)] {
             let r = estimate_r_with_delay(jitter, loss, Some("PCMU"), DEFAULT_ONE_WAY_DELAY_MS);
             assert!(
@@ -1098,6 +1112,7 @@ mod tests {
                 "R must stay in 0..=100, got {r} for jitter {jitter} loss {loss}"
             );
         }
+        Ok(())
     }
 
     /// An ungrounded codec still yields an R, and it is the placeholder's.
@@ -1108,9 +1123,10 @@ mod tests {
     /// Publishing R without that flag would be a second ungrounded number with
     /// no warning attached.
     #[test]
-    fn an_ungrounded_codec_still_yields_an_r_from_the_placeholder() {
+    fn an_ungrounded_codec_still_yields_an_r_from_the_placeholder() -> Result<(), TestError> {
         let r = estimate_r_with_delay(0.0, 0.0, Some("G722"), DEFAULT_ONE_WAY_DELAY_MS);
         assert!(r > 0.0 && r < 93.2, "the placeholder Ie lowers R: {r}");
+        Ok(())
     }
 
     use super::*;
@@ -1120,7 +1136,7 @@ mod tests {
     /// MOS stays within [1.0, 4.5] even at extreme loss where the raw
     /// G.107 cubic dips below 1.0.
     #[test]
-    fn mos_never_dips_below_documented_floor() {
+    fn mos_never_dips_below_documented_floor() -> Result<(), TestError> {
         // 100% loss on G.711 lands R ≈ 4.4, where the raw G.107 cubic
         // evaluates to ~0.99 — the [1.0, 4.5] contract must hold anyway.
         let mos = estimate_mos(0.0, 100.0, Some("PCMU"));
@@ -1138,32 +1154,35 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// Clean G.711 (0% loss, 10 ms jitter) scores above 4.0.
     #[test]
-    fn mos_g711_perfect_conditions() {
+    fn mos_g711_perfect_conditions() -> Result<(), TestError> {
         // G.711, 0% loss, 10ms jitter — should be excellent
         let mos = estimate_mos(10.0, 0.0, Some("PCMU"));
         assert!(mos > 4.0, "Expected MOS > 4.0 for perfect G.711, got {mos}");
+        Ok(())
     }
 
     /// G.711 at 5% loss and 50 ms jitter lands in the noticeably degraded
     /// 2.0-3.5 band.
     #[test]
-    fn mos_g711_moderate_degradation() {
+    fn mos_g711_moderate_degradation() -> Result<(), TestError> {
         // G.711, 5% loss, 50ms jitter — noticeable degradation
         let mos = estimate_mos(50.0, 5.0, Some("PCMU"));
         assert!(
             (2.0..=3.5).contains(&mos),
             "Expected MOS 2.0-3.5 for degraded G.711, got {mos}"
         );
+        Ok(())
     }
 
     /// G.729's inherent equipment impairment (Ie=10) scores below G.711 at
     /// identical network conditions.
     #[test]
-    fn mos_g729_lower_than_g711() {
+    fn mos_g729_lower_than_g711() -> Result<(), TestError> {
         // G.729 has inherent codec impairment
         let mos_g711 = estimate_mos(10.0, 0.0, Some("PCMU"));
         let mos_g729 = estimate_mos(10.0, 0.0, Some("G729"));
@@ -1171,80 +1190,88 @@ mod tests {
             mos_g729 < mos_g711,
             "Expected G.729 MOS ({mos_g729}) < G.711 MOS ({mos_g711})"
         );
+        Ok(())
     }
 
     /// Opus and G.711 share Ie=0, so their MOS matches at equal conditions.
     #[test]
-    fn mos_opus_comparable_to_g711() {
+    fn mos_opus_comparable_to_g711() -> Result<(), TestError> {
         let mos_g711 = estimate_mos(10.0, 0.0, Some("PCMU"));
         let mos_opus = estimate_mos(10.0, 0.0, Some("opus"));
         assert!(
             (mos_g711 - mos_opus).abs() < 0.01,
             "Opus and G.711 should have same MOS at same conditions"
         );
+        Ok(())
     }
 
     /// PCMA and PCMU (both G.711) produce identical MOS.
     #[test]
-    fn mos_pcma_same_as_pcmu() {
+    fn mos_pcma_same_as_pcmu() -> Result<(), TestError> {
         let mos_pcmu = estimate_mos(20.0, 1.0, Some("PCMU"));
         let mos_pcma = estimate_mos(20.0, 1.0, Some("PCMA"));
         assert!(
             (mos_pcmu - mos_pcma).abs() < 0.01,
             "PCMA and PCMU should have same MOS"
         );
+        Ok(())
     }
 
     /// An unknown/absent codec gets the moderate Ie=5 impairment, scoring
     /// below G.711.
     #[test]
-    fn mos_unknown_codec_moderate_impairment() {
+    fn mos_unknown_codec_moderate_impairment() -> Result<(), TestError> {
         let mos_unknown = estimate_mos(10.0, 0.0, None);
         let mos_g711 = estimate_mos(10.0, 0.0, Some("PCMU"));
         assert!(
             mos_unknown < mos_g711,
             "Unknown codec MOS ({mos_unknown}) should be less than G.711 ({mos_g711})"
         );
+        Ok(())
     }
 
     /// Extreme conditions (100% loss, 500 ms jitter) never push MOS below
     /// the 1.0 floor.
     #[test]
-    fn mos_never_below_one() {
+    fn mos_never_below_one() -> Result<(), TestError> {
         // Extreme conditions: 100% loss, 500ms jitter
         let mos = estimate_mos(500.0, 100.0, None);
         assert!(mos >= 1.0, "MOS should never go below 1.0, got {mos}");
+        Ok(())
     }
 
     /// Perfect conditions never push MOS above the 4.5 ceiling.
     #[test]
-    fn mos_never_above_four_five() {
+    fn mos_never_above_four_five() -> Result<(), TestError> {
         // Perfect conditions
         let mos = estimate_mos(0.0, 0.0, Some("PCMU"));
         assert!(mos <= 4.5, "MOS should never exceed 4.5, got {mos}");
+        Ok(())
     }
 
     /// Raising jitter from 5 ms to 200 ms lowers the score (delay
     /// impairment Id grows).
     #[test]
-    fn mos_high_jitter_degrades_quality() {
+    fn mos_high_jitter_degrades_quality() -> Result<(), TestError> {
         let mos_low = estimate_mos(5.0, 0.0, Some("PCMU"));
         let mos_high = estimate_mos(200.0, 0.0, Some("PCMU"));
         assert!(
             mos_high < mos_low,
             "High jitter MOS ({mos_high}) should be less than low jitter ({mos_low})"
         );
+        Ok(())
     }
 
     /// Raising loss from 0% to 20% lowers the score (Ie-eff grows).
     #[test]
-    fn mos_high_loss_degrades_quality() {
+    fn mos_high_loss_degrades_quality() -> Result<(), TestError> {
         let mos_low = estimate_mos(10.0, 0.0, Some("PCMU"));
         let mos_high = estimate_mos(10.0, 20.0, Some("PCMU"));
         assert!(
             mos_high < mos_low,
             "High loss MOS ({mos_high}) should be less than low loss ({mos_low})"
         );
+        Ok(())
     }
 
     // ── Burst/gap analysis tests ─────────────────────────────────────
@@ -1252,7 +1279,7 @@ mod tests {
     /// Ten consecutive losses in otherwise clean traffic are detected as
     /// at least one burst.
     #[test]
-    fn burst_detected_consecutive_loss() {
+    fn burst_detected_consecutive_loss() -> Result<(), TestError> {
         // 10 consecutive lost packets in a sequence of 100
         let mut received = vec![true; 100];
         for i in 20..30 {
@@ -1266,11 +1293,12 @@ mod tests {
             "Should detect at least 1 burst, got {}",
             analysis.burst_count
         );
+        Ok(())
     }
 
     /// Isolated single losses (every 50th packet) never form a burst.
     #[test]
-    fn no_burst_random_isolated_loss() {
+    fn no_burst_random_isolated_loss() -> Result<(), TestError> {
         // Random loss: every 50th packet lost (never more than 1 consecutive)
         let mut received = vec![true; 200];
         for i in (0..200).step_by(50) {
@@ -1283,11 +1311,12 @@ mod tests {
             "Isolated single losses should not be bursty"
         );
         assert_eq!(analysis.burst_count, 0);
+        Ok(())
     }
 
     /// Two consecutive losses stay below the 3-loss burst threshold.
     #[test]
-    fn no_burst_two_consecutive_loss() {
+    fn no_burst_two_consecutive_loss() -> Result<(), TestError> {
         // 2 consecutive losses is below the burst threshold (3)
         let mut received = vec![true; 50];
         received[10] = false;
@@ -1299,12 +1328,13 @@ mod tests {
             "2 consecutive losses should not be a burst"
         );
         assert_eq!(analysis.burst_count, 0);
+        Ok(())
     }
 
     /// Exactly three consecutive losses is the minimum counted as one
     /// burst.
     #[test]
-    fn burst_exactly_three_consecutive() {
+    fn burst_exactly_three_consecutive() -> Result<(), TestError> {
         // Exactly 3 consecutive losses — minimum burst
         let mut received = vec![true; 50];
         received[10] = false;
@@ -1314,11 +1344,12 @@ mod tests {
         let analysis = analyze_burst_gap(&received, 20.0);
         assert!(analysis.is_bursty, "3 consecutive losses should be a burst");
         assert_eq!(analysis.burst_count, 1);
+        Ok(())
     }
 
     /// Two separated loss runs are counted as two distinct bursts.
     #[test]
-    fn multiple_bursts_detected() {
+    fn multiple_bursts_detected() -> Result<(), TestError> {
         let mut received = vec![true; 100];
         // First burst: packets 10-14 lost
         for i in 10..15 {
@@ -1336,33 +1367,36 @@ mod tests {
             "Should detect 2 bursts, got {}",
             analysis.burst_count
         );
+        Ok(())
     }
 
     /// An empty reception sequence yields the all-zero, non-bursty result.
     #[test]
-    fn empty_sequence() {
+    fn empty_sequence() -> Result<(), TestError> {
         let analysis = analyze_burst_gap(&[], 20.0);
         assert!(!analysis.is_bursty);
         assert_eq!(analysis.burst_count, 0);
         assert_eq!(analysis.burst_duration_ms, 0.0);
         assert_eq!(analysis.gap_duration_ms, 0.0);
+        Ok(())
     }
 
     /// A loss-free sequence reports no bursts and zero loss rates.
     #[test]
-    fn all_received_no_loss() {
+    fn all_received_no_loss() -> Result<(), TestError> {
         let received = vec![true; 100];
         let analysis = analyze_burst_gap(&received, 20.0);
         assert!(!analysis.is_bursty);
         assert_eq!(analysis.burst_count, 0);
         assert_eq!(analysis.burst_loss_rate, 0.0);
         assert_eq!(analysis.gap_loss_rate, 0.0);
+        Ok(())
     }
 
     /// With one clear burst in clean traffic, the burst-region loss rate
     /// exceeds the gap-region loss rate.
     #[test]
-    fn burst_loss_rate_higher_than_gap() {
+    fn burst_loss_rate_higher_than_gap() -> Result<(), TestError> {
         // Create a clear burst in otherwise clean traffic
         let mut received = vec![true; 200];
         for i in 50..60 {
@@ -1377,22 +1411,24 @@ mod tests {
             analysis.burst_loss_rate,
             analysis.gap_loss_rate
         );
+        Ok(())
     }
 
     /// A 2-packet all-lost sequence is below the burst threshold, so not
     /// bursty.
     #[test]
-    fn all_lost_below_threshold_not_bursty() {
+    fn all_lost_below_threshold_not_bursty() -> Result<(), TestError> {
         let received = vec![false, false]; // Only 2 lost = below burst threshold of 3
         let result = analyze_burst_gap(&received, 20.0);
         assert_eq!(result.burst_count, 0);
         assert!(!result.is_bursty);
+        Ok(())
     }
 
     /// 100 consecutive losses form exactly one burst with ~100% burst loss
     /// rate.
     #[test]
-    fn all_lost_single_burst() {
+    fn all_lost_single_burst() -> Result<(), TestError> {
         let received = vec![false; 100]; // 100 consecutive lost
         let result = analyze_burst_gap(&received, 20.0);
         assert_eq!(result.burst_count, 1);
@@ -1402,6 +1438,7 @@ mod tests {
             "burst_loss_rate should be ~1.0, got {}",
             result.burst_loss_rate
         );
+        Ok(())
     }
 
     /// The retroactive gap→burst reclassification must move the same
@@ -1410,7 +1447,7 @@ mod tests {
     /// counters exceed the reclassified count) followed by a 3+ burst
     /// exercises the guard; burst and gap loss rates must stay coherent.
     #[test]
-    fn retroactive_reclassification_keeps_accounting_consistent() {
+    fn retroactive_reclassification_keeps_accounting_consistent() -> Result<(), TestError> {
         let mut received = vec![true; 30];
         received[5] = false; // isolated loss — stays in the gap
         for i in 20..24 {
@@ -1434,12 +1471,13 @@ mod tests {
             a.burst_loss_rate,
             a.gap_loss_rate
         );
+        Ok(())
     }
 
     /// Burst duration scales with `ptime_ms`: the same loss pattern lasts
     /// longer at 30 ms packets than at 20 ms.
     #[test]
-    fn burst_duration_reflects_ptime() {
+    fn burst_duration_reflects_ptime() -> Result<(), TestError> {
         let mut received = vec![true; 50];
         for i in 10..16 {
             received[i] = false; // 6 consecutive losses
@@ -1456,6 +1494,7 @@ mod tests {
             analysis_30ms.burst_duration_ms,
             analysis_20ms.burst_duration_ms
         );
+        Ok(())
     }
 
     /// The loss term has a pole, and `loss_pct` is the one input never checked.
@@ -1467,7 +1506,7 @@ mod tests {
     /// a caller outside this crate — the function is `pub` and `estimate_mos`
     /// is re-exported — can drive the R-factor to a division by zero.
     #[test]
-    fn the_loss_pole_at_minus_ten_percent_cannot_be_reached() {
+    fn the_loss_pole_at_minus_ten_percent_cannot_be_reached() -> Result<(), TestError> {
         let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
         let r = estimate_r_with_delay(0.0, -10.0, Some("PCMU"), 0.0);
         assert!(
@@ -1484,6 +1523,7 @@ mod tests {
             r <= clean + 1e-9,
             "Ppl = -10 scored {r}, above the clean stream's {clean}"
         );
+        Ok(())
     }
 
     /// Loss is a percentage of packets lost. There is no such thing as less
@@ -1491,7 +1531,7 @@ mod tests {
     /// clean stream — which is exactly what the unguarded term does, because
     /// a negative `Ppl` makes the whole loss contribution negative.
     #[test]
-    fn negative_loss_scores_no_better_than_no_loss() {
+    fn negative_loss_scores_no_better_than_no_loss() -> Result<(), TestError> {
         let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
         for bad in [-0.5, -5.0, -9.9, -10.1, -100.0] {
             let r = estimate_r_with_delay(0.0, bad, Some("PCMU"), 0.0);
@@ -1501,6 +1541,7 @@ mod tests {
                 "loss {bad} scored {r}, above the clean stream's {clean}"
             );
         }
+        Ok(())
     }
 
     /// A non-finite loss figure is treated as no loss, the way a non-finite
@@ -1508,7 +1549,7 @@ mod tests {
     /// function refuses to launder garbage into a confident-looking number;
     /// loss must not be the one that does.
     #[test]
-    fn a_non_finite_loss_is_treated_as_no_loss() {
+    fn a_non_finite_loss_is_treated_as_no_loss() -> Result<(), TestError> {
         let clean = estimate_r_with_delay(0.0, 0.0, Some("PCMU"), 0.0);
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let r = estimate_r_with_delay(0.0, bad, Some("PCMU"), 0.0);
@@ -1518,13 +1559,14 @@ mod tests {
                 "loss {bad} scored {r}, not the no-loss {clean}"
             );
         }
+        Ok(())
     }
 
     /// Above 100% the input is not a percentage any more. Total loss is the
     /// worst a stream can be, so anything past it scores as total loss rather
     /// than continuing to climb toward the `Ie = 95` asymptote.
     #[test]
-    fn loss_beyond_total_scores_as_total_loss() {
+    fn loss_beyond_total_scores_as_total_loss() -> Result<(), TestError> {
         let total = estimate_r_with_delay(0.0, 100.0, Some("PCMU"), 0.0);
         for over in [100.1, 500.0, 1.0e12] {
             let r = estimate_r_with_delay(0.0, over, Some("PCMU"), 0.0);
@@ -1533,13 +1575,14 @@ mod tests {
                 "loss {over}% scored {r}, not the total-loss {total}"
             );
         }
+        Ok(())
     }
 
     /// The MOS wrapper inherits the guard rather than carrying its own. Both
     /// scales come from one derivation, so a loss figure the R-factor refuses
     /// must not reach the MOS by another door.
     #[test]
-    fn the_mos_wrapper_inherits_the_loss_guard() {
+    fn the_mos_wrapper_inherits_the_loss_guard() -> Result<(), TestError> {
         for bad in [-10.0, -1.0, f64::NAN, f64::INFINITY, 1.0e9] {
             let mos = estimate_mos(0.0, bad, Some("PCMU"));
             assert!(mos.is_finite(), "loss {bad} produced MOS = {mos}");
@@ -1548,6 +1591,7 @@ mod tests {
                 "loss {bad} left the MOS scale at {mos}"
             );
         }
+        Ok(())
     }
 }
 
@@ -1900,10 +1944,12 @@ impl MosProvenance {
 mod provenance_tests {
     use super::{MosGrounding, MosProvenance};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// sipnab's two groundings lift into the two sipnab-side provenances, and
     /// neither can become the endpoint-reported one.
     #[test]
-    fn grounding_lifts_into_the_sipnab_side_of_the_scale() {
+    fn grounding_lifts_into_the_sipnab_side_of_the_scale() -> Result<(), TestError> {
         assert_eq!(
             MosProvenance::from(MosGrounding::Published),
             MosProvenance::Estimated
@@ -1919,13 +1965,14 @@ mod provenance_tests {
                 "no sipnab grounding may masquerade as an endpoint's claim"
             );
         }
+        Ok(())
     }
 
     /// The endpoint's claim is not something sipnab measured, and the label
     /// says whose number it is. A reader who cannot tell the two apart is the
     /// failure this enum exists to prevent.
     #[test]
-    fn an_endpoint_claim_is_not_a_local_measurement() {
+    fn an_endpoint_claim_is_not_a_local_measurement() -> Result<(), TestError> {
         assert!(!MosProvenance::ReportedByEndpoint.is_measured_here());
         assert!(MosProvenance::Estimated.is_measured_here());
         assert!(MosProvenance::Placeholder.is_measured_here());
@@ -1935,6 +1982,7 @@ mod provenance_tests {
                 .contains("far end"),
             "the label must attribute the number to its source"
         );
+        Ok(())
     }
 }
 
@@ -1943,13 +1991,15 @@ mod provenance_tests {
 mod interval_quality_tests {
     use super::{IntervalVerdict, MosGrounding, R_ACCEPTABLE, mos_is_grounded, score_interval};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The boundary is inclusive, and the only way to prove that is to hand it
     /// exactly the boundary. A scored interval arrives at R through the
     /// E-model and never lands on 70.000 to order, so `>=` quietly becoming
     /// `>` would move every interval sitting on the line into "degraded" with
     /// nothing to notice it.
     #[test]
-    fn the_boundary_itself_is_acceptable() {
+    fn the_boundary_itself_is_acceptable() -> Result<(), TestError> {
         assert_eq!(
             IntervalVerdict::of(R_ACCEPTABLE, MosGrounding::Published),
             IntervalVerdict::Acceptable,
@@ -1967,6 +2017,7 @@ mod interval_quality_tests {
             IntervalVerdict::of(just_below, MosGrounding::Published),
             IntervalVerdict::Degraded
         );
+        Ok(())
     }
 
     /// Owed, for a boundary test that tested the same side twice.
@@ -1976,7 +2027,7 @@ mod interval_quality_tests {
     /// that does not sit where the test claims is a green light bolted to the
     /// wrong wire, so the fixture gets its own assertion now.
     #[test]
-    fn an_epsilon_step_does_not_move_a_number_of_this_size() {
+    fn an_epsilon_step_does_not_move_a_number_of_this_size() -> Result<(), TestError> {
         assert_eq!(
             R_ACCEPTABLE - f64::EPSILON,
             R_ACCEPTABLE,
@@ -1989,6 +2040,7 @@ mod interval_quality_tests {
             "the predecessor must be strictly below and adjacent, not merely \
              some smaller number that would pass on any boundary"
         );
+        Ok(())
     }
 
     /// Owed, for the same slip: the pair of fixtures either side of a boundary
@@ -1998,7 +2050,7 @@ mod interval_quality_tests {
     /// `R_ACCEPTABLE` moves the test with it instead of leaving a stale
     /// literal that still passes.
     #[test]
-    fn the_boundary_fixtures_straddle_the_boundary() {
+    fn the_boundary_fixtures_straddle_the_boundary() -> Result<(), TestError> {
         let below = f64::from_bits(R_ACCEPTABLE.to_bits() - 1);
         let above = f64::from_bits(R_ACCEPTABLE.to_bits() + 1);
         assert!(below < R_ACCEPTABLE, "the low fixture is not below");
@@ -2008,13 +2060,14 @@ mod interval_quality_tests {
             IntervalVerdict::of(above, MosGrounding::Published),
             "one representable step across the boundary must change the verdict"
         );
+        Ok(())
     }
 
     /// An R that is not a number certifies nothing. Every comparison against
     /// `NaN` is false, so the arm this lands in is the one that decides
     /// whether an arithmetic accident reads as a healthy call.
     #[test]
-    fn a_non_finite_r_is_never_acceptable() {
+    fn a_non_finite_r_is_never_acceptable() -> Result<(), TestError> {
         for r in [f64::NAN, f64::NEG_INFINITY] {
             assert_eq!(
                 IntervalVerdict::of(r, MosGrounding::Published),
@@ -2022,13 +2075,14 @@ mod interval_quality_tests {
                 "R={r} must not read as an acceptable interval"
             );
         }
+        Ok(())
     }
 
     /// Grounding outranks the number. An operator-declared impairment is a
     /// real input and bands like a published one; an absent one refuses
     /// whatever R was computed beside it.
     #[test]
-    fn grounding_decides_before_the_number_does() {
+    fn grounding_decides_before_the_number_does() -> Result<(), TestError> {
         assert_eq!(
             IntervalVerdict::of(100.0, MosGrounding::Unpublished),
             IntervalVerdict::NotScorable,
@@ -2042,13 +2096,14 @@ mod interval_quality_tests {
         assert!(!IntervalVerdict::NotScorable.is_verdict());
         assert!(IntervalVerdict::Degraded.is_verdict());
         assert!(IntervalVerdict::Acceptable.is_verdict());
+        Ok(())
     }
 
     /// The whole point of scoring an interval: the stream's lifetime figures
     /// are a mean, and the failure this project has already recorded — 90 %
     /// loss that was three bursts of half a second — is invisible in one.
     #[test]
-    fn a_bad_interval_is_degraded_even_when_the_stream_looks_clean() {
+    fn a_bad_interval_is_degraded_even_when_the_stream_looks_clean() -> Result<(), TestError> {
         let clean = score_interval(2.0, 0.0, Some("PCMU"), 20.0);
         let burst = score_interval(2.0, 90.0, Some("PCMU"), 20.0);
         assert_eq!(clean.verdict, IntervalVerdict::Acceptable);
@@ -2058,6 +2113,7 @@ mod interval_quality_tests {
             "the interval that lost nine packets in ten cannot score at or \
              above the one that lost none"
         );
+        Ok(())
     }
 
     /// An ungrounded codec gets no color. The number is still published, with
@@ -2065,7 +2121,7 @@ mod interval_quality_tests {
     /// refused is the VERDICT, because a placeholder banded green is a
     /// confident answer nobody measured.
     #[test]
-    fn an_ungrounded_codec_is_never_banded() {
+    fn an_ungrounded_codec_is_never_banded() -> Result<(), TestError> {
         for codec in [None, Some("AMR-WB"), Some("EVS"), Some("G722")] {
             let perfect = score_interval(0.0, 0.0, codec, 20.0);
             assert_eq!(
@@ -2079,13 +2135,14 @@ mod interval_quality_tests {
                 "{codec:?} must report itself ungrounded beside the refusal"
             );
         }
+        Ok(())
     }
 
     /// The refusal and the grounding are one decision, not two that agree
     /// today. A codec the scorer grounds must be bandable and a codec it does
     /// not must not be, for every name either side knows.
     #[test]
-    fn the_verdict_and_the_grounding_cannot_disagree() {
+    fn the_verdict_and_the_grounding_cannot_disagree() -> Result<(), TestError> {
         for codec in [
             None,
             Some("PCMU"),
@@ -2105,12 +2162,13 @@ mod interval_quality_tests {
                 "{codec:?}: the verdict and the grounding gave different answers"
             );
         }
+        Ok(())
     }
 
     /// The boundary is the published one and it is inclusive at R = 70, where
     /// ITU-T G.107's worst category is still "some users dissatisfied".
     #[test]
-    fn the_acceptable_boundary_is_the_published_one() {
+    fn the_acceptable_boundary_is_the_published_one() -> Result<(), TestError> {
         // Walk loss upward on a grounded codec until the verdict turns, and
         // check the turn happens exactly where R crosses the constant rather
         // than at some number this test hard-codes independently.
@@ -2127,8 +2185,8 @@ mod interval_quality_tests {
                 _ => {}
             }
         }
-        let last = last_acceptable.expect("a clean G.711 interval must be acceptable");
-        let first = first_degraded.expect("enough loss must eventually degrade it");
+        let last = last_acceptable.ok_or("a clean G.711 interval must be acceptable")?;
+        let first = first_degraded.ok_or("enough loss must eventually degrade it")?;
         assert!(
             last.r_factor >= R_ACCEPTABLE,
             "the last acceptable interval scored R={}, below the boundary",
@@ -2139,6 +2197,7 @@ mod interval_quality_tests {
             "the first degraded interval scored R={}, at or above the boundary",
             first.r_factor
         );
+        Ok(())
     }
 
     /// The wrapper must read the INTERVAL, not the stream it hangs off.
@@ -2150,7 +2209,7 @@ mod interval_quality_tests {
     /// looks completely correct doing it, because every number it published
     /// is a real number about a real stream.
     #[test]
-    fn the_wrapper_scores_the_interval_and_not_the_stream() {
+    fn the_wrapper_scores_the_interval_and_not_the_stream() -> Result<(), TestError> {
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream::{QualityInterval, RtpStream, StreamKey};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -2207,6 +2266,7 @@ mod interval_quality_tests {
              equal means the interval's own numbers were never read",
             scored.mos
         );
+        Ok(())
     }
 
     /// Owed, for a mutation that survived: swapping the interval's jitter for
@@ -2216,7 +2276,7 @@ mod interval_quality_tests {
     /// that can move the answer. A wrapper reading `stream.jitter` returns the
     /// same R for a calm interval and a violently jittery one.
     #[test]
-    fn the_wrapper_reads_the_intervals_own_jitter() {
+    fn the_wrapper_reads_the_intervals_own_jitter() -> Result<(), TestError> {
         use crate::rtp::stream::QualityInterval;
 
         let mut stream = interval_fixture_stream();
@@ -2246,6 +2306,7 @@ mod interval_quality_tests {
             "200 ms of jitter scored R={jittery_r} against R={calm_r} for 1 ms; \
              equal means the interval's jitter was never read"
         );
+        Ok(())
     }
 
     /// Owed, same mutation: a trend is only a trend if the entries can differ.
@@ -2255,7 +2316,7 @@ mod interval_quality_tests {
     /// returns one answer for every entry and draws a flat line through a call
     /// that fell apart halfway.
     #[test]
-    fn two_intervals_of_one_stream_can_disagree() {
+    fn two_intervals_of_one_stream_can_disagree() -> Result<(), TestError> {
         use crate::rtp::stream::QualityInterval;
 
         let mut stream = interval_fixture_stream();
@@ -2290,6 +2351,7 @@ mod interval_quality_tests {
             vec![IntervalVerdict::Acceptable, IntervalVerdict::Degraded],
             "one stream, two intervals, two answers"
         );
+        Ok(())
     }
 
     /// A PCMU stream with nothing folded into it yet.
@@ -2330,10 +2392,11 @@ mod interval_quality_tests {
     /// disagrees with the MOS beside it is the defect the stream-level pair
     /// already avoids by being computed together.
     #[test]
-    fn the_mos_and_the_r_describe_the_same_interval() {
+    fn the_mos_and_the_r_describe_the_same_interval() -> Result<(), TestError> {
         let a = score_interval(30.0, 4.0, Some("G729"), 150.0);
         let b = score_interval(1.0, 0.0, Some("G729"), 20.0);
         assert!(a.r_factor < b.r_factor, "the worse path must score lower R");
         assert!(a.mos < b.mos, "and the MOS must move with it");
+        Ok(())
     }
 }

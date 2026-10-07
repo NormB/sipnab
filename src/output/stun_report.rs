@@ -550,23 +550,37 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Utc};
 
-    fn ts(ms: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp_millis(ms).expect("valid timestamp")
+    type TestError = Box<dyn std::error::Error>;
+
+    fn ts(ms: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::from_timestamp_millis(ms).ok_or("valid timestamp")?)
     }
 
-    fn tx(id: &str, answered: bool, requests: u32) -> StunTransaction {
-        StunTransaction {
+    fn tx(id: &str, answered: bool, requests: u32) -> Result<StunTransaction, TestError> {
+        Ok(StunTransaction {
             transaction_id: id.to_string(),
-            client: "192.0.2.223:5060".parse().expect("valid addr"),
-            server: "198.51.100.39:3478".parse().expect("valid addr"),
+            client: "192.0.2.223:5060"
+                .parse()
+                .map_err(|e| format!("valid addr: {e:?}"))?,
+            server: "198.51.100.39:3478"
+                .parse()
+                .map_err(|e| format!("valid addr: {e:?}"))?,
             method: 0x001,
             method_name: "Binding".to_string(),
-            first_request: ts(0),
-            last_request: ts(0),
+            first_request: ts(0)?,
+            last_request: ts(0)?,
             request_count: requests,
-            responded_at: answered.then(|| ts(7)),
+            responded_at: if answered { Some(ts(7)?) } else { None },
             rtt_ms: answered.then_some(7.0),
-            mapped_address: answered.then(|| "203.0.113.5:12262".parse().expect("valid addr")),
+            mapped_address: if answered {
+                Some(
+                    "203.0.113.5:12262"
+                        .parse()
+                        .map_err(|e| format!("valid addr: {e:?}"))?,
+                )
+            } else {
+                None
+            },
             relayed_address: None,
             peer_address: None,
             lifetime_secs: None,
@@ -578,7 +592,7 @@ mod tests {
             use_candidate: false,
             priority: None,
             fingerprint_valid: None,
-        }
+        })
     }
 
     fn report_of(transactions: Vec<StunTransaction>, packets: u64, dropped: u64) -> StunReport {
@@ -590,32 +604,45 @@ mod tests {
         }
     }
 
-    fn allocation(lifetime: u32, refreshed_ms: Option<i64>, last_ms: i64) -> TurnAllocation {
-        TurnAllocation {
-            client: "192.0.2.10:50000".parse().expect("valid addr"),
-            server: "198.51.100.20:3478".parse().expect("valid addr"),
-            relayed_address: Some("198.51.100.77:49160".parse().expect("valid addr")),
+    fn allocation(
+        lifetime: u32,
+        refreshed_ms: Option<i64>,
+        last_ms: i64,
+    ) -> Result<TurnAllocation, TestError> {
+        Ok(TurnAllocation {
+            client: "192.0.2.10:50000"
+                .parse()
+                .map_err(|e| format!("valid addr: {e:?}"))?,
+            server: "198.51.100.20:3478"
+                .parse()
+                .map_err(|e| format!("valid addr: {e:?}"))?,
+            relayed_address: Some(
+                "198.51.100.77:49160"
+                    .parse()
+                    .map_err(|e| format!("valid addr: {e:?}"))?,
+            ),
             lifetime_secs: Some(lifetime),
-            allocated_at: ts(0),
-            refreshed_at: refreshed_ms.map(ts),
+            allocated_at: ts(0)?,
+            refreshed_at: refreshed_ms.map(ts).transpose()?,
             refreshes: u32::from(refreshed_ms.is_some()),
-            last_activity: ts(last_ms),
+            last_activity: ts(last_ms)?,
             released: false,
             channels: Vec::new(),
             unattributed_frames: 0,
-        }
+        })
     }
 
     /// No STUN means no section, not an empty header — a capture without STUN
     /// must render exactly as it did before this report existed.
     #[test]
-    fn empty_report_renders_nothing() {
+    fn empty_report_renders_nothing() -> Result<(), TestError> {
         assert_eq!(print_stun_report(&StunReport::default()), "");
+        Ok(())
     }
 
     #[test]
-    fn answered_transaction_shows_mapped_address_and_rtt() {
-        let report = report_of(vec![tx("aa", true, 1)], 2, 0);
+    fn answered_transaction_shows_mapped_address_and_rtt() -> Result<(), TestError> {
+        let report = report_of(vec![tx("aa", true, 1)?], 2, 0);
         let out = print_stun_report(&report);
         assert!(out.contains("203.0.113.5:12262"), "{out}");
         assert!(out.contains("7.0ms"), "{out}");
@@ -624,83 +651,94 @@ mod tests {
             !out.contains("drew no response"),
             "an answered probe must not be flagged: {out}"
         );
+        Ok(())
     }
 
     /// The motivating capture: a retransmitted request that never drew a
     /// reply. The table must say NONE and the prose must explain the SDP
     /// consequence, because that consequence is the whole finding.
     #[test]
-    fn unanswered_retransmission_is_called_out() {
-        let report = report_of(vec![tx("bb", false, 2)], 2, 0);
+    fn unanswered_retransmission_is_called_out() -> Result<(), TestError> {
+        let report = report_of(vec![tx("bb", false, 2)?], 2, 0);
         let out = print_stun_report(&report);
         assert!(out.contains("NONE"), "{out}");
         assert!(out.contains("1 transaction(s) drew no response"), "{out}");
         assert!(out.contains("retransmitted"), "{out}");
         assert!(out.contains("advertises the private one"), "{out}");
+        Ok(())
     }
 
     /// A cap that bit must be stated. A truncated table that looks complete
     /// understates the problem.
     #[test]
-    fn retention_cap_is_stated_when_it_bit() {
-        let report = report_of(vec![tx("cc", true, 1)], 900, 41);
+    fn retention_cap_is_stated_when_it_bit() -> Result<(), TestError> {
+        let report = report_of(vec![tx("cc", true, 1)?], 900, 41);
         let out = print_stun_report(&report);
         assert!(out.contains("41 further transaction(s)"), "{out}");
+        Ok(())
     }
 
     #[test]
-    fn markdown_format_emits_a_pipe_table() {
-        let report = report_of(vec![tx("dd", true, 1)], 2, 0);
+    fn markdown_format_emits_a_pipe_table() -> Result<(), TestError> {
+        let report = report_of(vec![tx("dd", true, 1)?], 2, 0);
         let out = print_stun_report_as(&report, crate::output::ReportFormat::Markdown);
         assert!(out.contains("| Transaction |"), "{out}");
         assert!(out.contains("|---|"), "{out}");
+        Ok(())
     }
 
     /// The method has to be on the row. A table of transactions that all look
     /// like Bindings cannot tell an Allocate from a connectivity check.
     #[test]
-    fn transaction_row_names_the_method() {
-        let mut allocate = tx("ee", true, 1);
+    fn transaction_row_names_the_method() -> Result<(), TestError> {
+        let mut allocate = tx("ee", true, 1)?;
         allocate.method = 0x003;
         allocate.method_name = "Allocate".to_string();
         let out = print_stun_report(&report_of(vec![allocate], 2, 0));
         assert!(out.contains("Method"), "{out}");
         assert!(out.contains("Allocate"), "{out}");
+        Ok(())
     }
 
     /// The relayed column appears only when a relay was in the capture. A
     /// column of dashes on a pure-STUN capture is noise.
     #[test]
-    fn relayed_column_is_absent_until_a_relayed_address_exists() {
-        let out = print_stun_report(&report_of(vec![tx("ff", true, 1)], 2, 0));
+    fn relayed_column_is_absent_until_a_relayed_address_exists() -> Result<(), TestError> {
+        let out = print_stun_report(&report_of(vec![tx("ff", true, 1)?], 2, 0));
         assert!(!out.contains("Relayed Address"), "{out}");
 
-        let mut allocate = tx("gg", true, 1);
+        let mut allocate = tx("gg", true, 1)?;
         allocate.method_name = "Allocate".to_string();
-        allocate.relayed_address = Some("198.51.100.77:49160".parse().expect("valid addr"));
+        allocate.relayed_address = Some(
+            "198.51.100.77:49160"
+                .parse()
+                .map_err(|e| format!("valid addr: {e:?}"))?,
+        );
         let out = print_stun_report(&report_of(vec![allocate], 2, 0));
         assert!(out.contains("Relayed Address"), "{out}");
         assert!(out.contains("198.51.100.77:49160"), "{out}");
+        Ok(())
     }
 
     /// The ICE role column is the same bargain: absent on a capture with no
     /// ICE in it, present when a capture holds a role conflict to find.
     #[test]
-    fn ice_role_column_is_absent_until_a_role_is_claimed() {
-        let out = print_stun_report(&report_of(vec![tx("hh", true, 1)], 2, 0));
+    fn ice_role_column_is_absent_until_a_role_is_claimed() -> Result<(), TestError> {
+        let out = print_stun_report(&report_of(vec![tx("hh", true, 1)?], 2, 0));
         assert!(!out.contains("Role"), "{out}");
 
-        let mut check = tx("ii", true, 1);
+        let mut check = tx("ii", true, 1)?;
         check.ice_role = Some(crate::stun::IceRole::Controlling);
         let out = print_stun_report(&report_of(vec![check], 2, 0));
         assert!(out.contains("controlling"), "{out}");
+        Ok(())
     }
 
     /// A fingerprint that FAILED is a finding; one that passed is the normal
     /// case and gets no column. `None` must never render as a failure.
     #[test]
-    fn only_a_failed_fingerprint_earns_a_column() {
-        let mut good = tx("jj", true, 1);
+    fn only_a_failed_fingerprint_earns_a_column() -> Result<(), TestError> {
+        let mut good = tx("jj", true, 1)?;
         good.fingerprint_valid = Some(true);
         let out = print_stun_report(&report_of(vec![good], 2, 0));
         assert!(
@@ -708,28 +746,30 @@ mod tests {
             "a valid fingerprint says nothing: {out}"
         );
 
-        let mut bad = tx("kk", true, 1);
+        let mut bad = tx("kk", true, 1)?;
         bad.fingerprint_valid = Some(false);
         let out = print_stun_report(&report_of(vec![bad], 2, 0));
         assert!(out.contains("BAD"), "{out}");
+        Ok(())
     }
 
     /// A 401 with a realm is a CHALLENGE, not a blocked path, and the response
     /// cell is where a reader is already looking for that.
     #[test]
-    fn an_auth_challenge_is_marked_on_the_response_cell() {
-        let mut challenged = tx("ll", true, 1);
+    fn an_auth_challenge_is_marked_on_the_response_cell() -> Result<(), TestError> {
+        let mut challenged = tx("ll", true, 1)?;
         challenged.error_code = Some(401);
         challenged.auth_challenge = true;
         let out = print_stun_report(&report_of(vec![challenged], 2, 0));
         assert!(out.contains("error 401 (auth)"), "{out}");
+        Ok(())
     }
 
     #[test]
-    fn allocation_table_states_the_lifetime_and_refreshes() {
+    fn allocation_table_states_the_lifetime_and_refreshes() -> Result<(), TestError> {
         let report = StunReport {
             packets: 4,
-            allocations: vec![allocation(600, Some(300_000), 400_000)],
+            allocations: vec![allocation(600, Some(300_000), 400_000)?],
             ..StunReport::default()
         };
         let out = print_stun_report(&report);
@@ -738,16 +778,17 @@ mod tests {
         assert!(out.contains("198.51.100.77:49160"), "{out}");
         assert!(out.contains("active"), "{out}");
         assert!(!out.contains("LAPSED"), "{out}");
+        Ok(())
     }
 
     /// The finding LIFETIME exists for: traffic still on the relay after the
     /// allocation could have survived. It has to be named in prose, not just
     /// implied by a status cell.
     #[test]
-    fn a_lapsed_allocation_is_flagged_in_the_table_and_in_prose() {
+    fn a_lapsed_allocation_is_flagged_in_the_table_and_in_prose() -> Result<(), TestError> {
         let report = StunReport {
             packets: 4,
-            allocations: vec![allocation(600, None, 700_000)],
+            allocations: vec![allocation(600, None, 700_000)?],
             ..StunReport::default()
         };
         let out = print_stun_report(&report);
@@ -758,13 +799,14 @@ mod tests {
         );
         assert!(out.contains("100s past expiry"), "{out}");
         assert!(out.contains("the relayed media stops with it"), "{out}");
+        Ok(())
     }
 
     /// A capture whose only STUN was Send/Data indications has no transaction
     /// to table — they draw no response by design — but it is not an empty
     /// capture, and printing nothing for it would be the original defect.
     #[test]
-    fn an_indication_only_capture_still_says_what_it_held() {
+    fn an_indication_only_capture_still_says_what_it_held() -> Result<(), TestError> {
         let report = StunReport {
             packets: 40,
             indications: 40,
@@ -773,16 +815,17 @@ mod tests {
         let out = print_stun_report(&report);
         assert!(out.contains("40 packet(s)"), "{out}");
         assert!(out.contains("40 indication(s)"), "{out}");
+        Ok(())
     }
 
     /// NDJSON tags each record so a consumer never has to infer the kind from
     /// which keys happen to be present.
     #[test]
-    fn ndjson_tags_every_record_with_its_kind() {
+    fn ndjson_tags_every_record_with_its_kind() -> Result<(), TestError> {
         let report = StunReport {
             packets: 4,
-            transactions: vec![tx("mm", true, 1)],
-            allocations: vec![allocation(600, None, 700_000)],
+            transactions: vec![tx("mm", true, 1)?],
+            allocations: vec![allocation(600, None, 700_000)?],
             ..StunReport::default()
         };
         let ndjson = stun_report_ndjson(&report);
@@ -803,32 +846,33 @@ mod tests {
             "the derived verdict must ride along: {}",
             lines[1]
         );
+        Ok(())
     }
 
     /// An ICE check, which is a Binding Request carrying the attributes
     /// [RFC 8445 section 7.1](https://www.rfc-editor.org/rfc/rfc8445#section-7.1)
     /// requires (PRIORITY, ICE-CONTROLLING, and USE-CANDIDATE to nominate). Built as a modification of `tx` so the two cannot
     /// drift apart in any field the ICE code does not care about.
-    fn ice_check(id: &str, answered: bool, nominates: bool) -> StunTransaction {
-        StunTransaction {
+    fn ice_check(id: &str, answered: bool, nominates: bool) -> Result<StunTransaction, TestError> {
+        Ok(StunTransaction {
             priority: Some(2_130_706_431),
             ice_role: Some(crate::stun::IceRole::Controlling),
             use_candidate: nominates,
-            ..tx(id, answered, 1)
-        }
+            ..tx(id, answered, 1)?
+        })
     }
 
     /// Every check going unanswered is ICE never completing, and the report
     /// says so as a CONSEQUENCE of the unanswered rows below rather than as a
     /// second finding over the same transactions.
     #[test]
-    fn an_ice_exchange_where_nothing_answered_says_ice_never_completed() {
+    fn an_ice_exchange_where_nothing_answered_says_ice_never_completed() -> Result<(), TestError> {
         let report = StunReport {
             packets: 3,
             transactions: vec![
-                ice_check("a1", false, false),
-                ice_check("a2", false, false),
-                ice_check("a3", false, true),
+                ice_check("a1", false, false)?,
+                ice_check("a2", false, false)?,
+                ice_check("a3", false, true)?,
             ],
             ..StunReport::default()
         };
@@ -846,24 +890,26 @@ mod tests {
             !out.contains("nominated "),
             "an unanswered USE-CANDIDATE nominated nothing: {out}"
         );
+        Ok(())
     }
 
     /// A capture holding plain NAT probes has no ICE in it and must gain no
     /// ICE section — the quiet-run rule the whole report follows.
     #[test]
-    fn a_capture_without_ice_gains_no_ice_section() {
-        let report = report_of(vec![tx("nn", true, 1)], 2, 0);
+    fn a_capture_without_ice_gains_no_ice_section() -> Result<(), TestError> {
+        let report = report_of(vec![tx("nn", true, 1)?], 2, 0);
         let out = print_stun_report(&report);
         assert!(!out.contains("ICE:"), "{out}");
+        Ok(())
     }
 
     /// The `ice` record rides the same NDJSON stream, tagged like the others,
     /// and appears exactly once.
     #[test]
-    fn ndjson_carries_one_tagged_ice_record() {
+    fn ndjson_carries_one_tagged_ice_record() -> Result<(), TestError> {
         let report = StunReport {
             packets: 2,
-            transactions: vec![ice_check("i1", true, true), ice_check("i2", true, false)],
+            transactions: vec![ice_check("i1", true, true)?, ice_check("i2", true, false)?],
             ..StunReport::default()
         };
         let ndjson = stun_report_ndjson(&report);
@@ -874,5 +920,6 @@ mod tests {
         assert_eq!(ice.len(), 1, "one ice record, not one per pair");
         assert!(ice[0].contains("\"checks\":2"), "{}", ice[0]);
         assert!(ice[0].contains("\"nominated_total\":1"), "{}", ice[0]);
+        Ok(())
     }
 }

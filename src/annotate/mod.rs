@@ -649,44 +649,52 @@ mod tests {
     use super::*;
     use crate::capture::resolve::parse_pointer;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A pointer with a digest, the form a replayed capture mints.
-    fn frame(text: &str) -> FrameRef {
-        parse_pointer(text).expect("a well-formed test pointer")
+    fn frame(text: &str) -> Result<FrameRef, TestError> {
+        Ok(parse_pointer(text).map_err(|e| format!("a well-formed test pointer: {e:?}"))?)
     }
 
     /// `NoteText::new(text)`, asserting it was accepted.
-    fn accepted(text: &str) -> NoteText {
-        match NoteText::new(text) {
+    fn accepted(text: &str) -> Result<NoteText, TestError> {
+        Ok(match NoteText::new(text) {
             Ok(note) => note,
-            Err(refusal) => panic!("an ordinary note was refused: {refusal}"),
-        }
+            Err(refusal) => return Err(format!("an ordinary note was refused: {refusal}").into()),
+        })
     }
 
     /// `NoteText::new(text)`, asserting it was refused, and the refusal.
-    fn refused(text: &str) -> NoteRefusal {
-        match NoteText::new(text) {
-            Ok(note) => panic!("this note had to be refused and was accepted as {note:?}"),
+    fn refused(text: &str) -> Result<NoteRefusal, TestError> {
+        Ok(match NoteText::new(text) {
+            Ok(note) => {
+                return Err(
+                    format!("this note had to be refused and was accepted as {note:?}").into(),
+                );
+            }
             Err(refusal) => refusal,
-        }
+        })
     }
 
     // ── Accepted ─────────────────────────────────────────────────────────────
 
     /// An ordinary note, with the two control characters a note may hold.
     #[test]
-    fn an_ordinary_note_is_accepted_with_its_newlines_and_tabs() {
-        let note = accepted("this 183 is where the SDP changed\n\tsee the a=sendonly");
+    fn an_ordinary_note_is_accepted_with_its_newlines_and_tabs() -> Result<(), TestError> {
+        let note = accepted("this 183 is where the SDP changed\n\tsee the a=sendonly")?;
         assert_eq!(note.byte_len(), 53);
+        Ok(())
     }
 
     // ── Empty ────────────────────────────────────────────────────────────────
 
     /// Whitespace is no note; one visible character is.
     #[test]
-    fn an_empty_note_is_refused_and_one_character_is_not() {
-        assert_eq!(refused(""), NoteRefusal::Empty);
-        assert_eq!(refused(" \n\t "), NoteRefusal::Empty);
-        accepted("x");
+    fn an_empty_note_is_refused_and_one_character_is_not() -> Result<(), TestError> {
+        assert_eq!(refused("")?, NoteRefusal::Empty);
+        assert_eq!(refused(" \n\t ")?, NoteRefusal::Empty);
+        accepted("x")?;
+        Ok(())
     }
 
     // ── Size ─────────────────────────────────────────────────────────────────
@@ -696,29 +704,31 @@ mod tests {
     /// Bytes because the pcapng option length is a `u16` of bytes. A cap counted
     /// in characters would admit 4,096 four-byte characters, 16 KiB.
     #[test]
-    fn a_note_over_the_byte_cap_is_refused_whole() {
-        accepted(&"a".repeat(MAX_NOTE_BYTES));
+    fn a_note_over_the_byte_cap_is_refused_whole() -> Result<(), TestError> {
+        accepted(&"a".repeat(MAX_NOTE_BYTES))?;
         assert_eq!(
-            refused(&"a".repeat(MAX_NOTE_BYTES + 1)),
+            refused(&"a".repeat(MAX_NOTE_BYTES + 1))?,
             NoteRefusal::TooLong {
                 bytes: MAX_NOTE_BYTES + 1
             }
         );
         // 2,048 two-byte characters are exactly the cap; one more is over it,
         // though it is only 2,049 characters.
-        accepted(&"é".repeat(MAX_NOTE_BYTES / 2));
+        accepted(&"é".repeat(MAX_NOTE_BYTES / 2))?;
         assert_eq!(
-            refused(&"é".repeat(MAX_NOTE_BYTES / 2 + 1)),
+            refused(&"é".repeat(MAX_NOTE_BYTES / 2 + 1))?,
             NoteRefusal::TooLong {
                 bytes: MAX_NOTE_BYTES + 2
             }
         );
+        Ok(())
     }
 
     /// The cap sits well below the 16-bit option length it protects.
     #[test]
-    fn the_byte_cap_leaves_room_below_the_option_length_field() {
+    fn the_byte_cap_leaves_room_below_the_option_length_field() -> Result<(), TestError> {
         const _: () = assert!(MAX_NOTE_BYTES * 2 < u16::MAX as usize);
+        Ok(())
     }
 
     // ── Control characters ───────────────────────────────────────────────────
@@ -729,24 +739,25 @@ mod tests {
     /// A note is drawn in a terminal (the TUI pane) and in Wireshark. An escape
     /// sequence in one could clear the operator's screen or forge a line.
     #[test]
-    fn control_characters_are_refused_but_newline_and_tab_are_not() {
+    fn control_characters_are_refused_but_newline_and_tab_are_not() -> Result<(), TestError> {
         assert_eq!(
-            refused("ok\u{1b}[2J"),
+            refused("ok\u{1b}[2J")?,
             NoteRefusal::ControlCharacter { offset: 2 }
         );
         assert_eq!(
-            refused("line\r\nline"),
+            refused("line\r\nline")?,
             NoteRefusal::ControlCharacter { offset: 4 }
         );
         assert_eq!(
-            refused("\u{7f}"),
+            refused("\u{7f}")?,
             NoteRefusal::ControlCharacter { offset: 0 }
         );
         assert_eq!(
-            refused("é\u{9b}"),
+            refused("é\u{9b}")?,
             NoteRefusal::ControlCharacter { offset: 2 }
         );
-        accepted("line\nline\tcolumn");
+        accepted("line\nline\tcolumn")?;
+        Ok(())
     }
 
     // ── Key and credential shapes ────────────────────────────────────────────
@@ -754,27 +765,29 @@ mod tests {
     /// The `a=crypto` line from the SDP parser's own test, whole or as the bare
     /// key, in either case.
     #[test]
-    fn an_sdes_inline_key_is_refused() {
+    fn an_sdes_inline_key_is_refused() -> Result<(), TestError> {
         for sample in [
             "a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj",
             "key was inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj|2^20|1:32",
             "INLINE:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1c",
         ] {
-            assert_eq!(refused(sample), NoteRefusal::SdesKey);
+            assert_eq!(refused(sample)?, NoteRefusal::SdesKey);
         }
+        Ok(())
     }
 
     /// Talking ABOUT SDES is fine.
     #[test]
-    fn a_note_about_sdes_keying_is_accepted() {
-        accepted("the offer used inline: keying and the answer dropped it");
-        accepted("a=crypto was present on the 183 but not the 200");
-        accepted("inline:short");
+    fn a_note_about_sdes_keying_is_accepted() -> Result<(), TestError> {
+        accepted("the offer used inline: keying and the answer dropped it")?;
+        accepted("a=crypto was present on the 183 but not the 200")?;
+        accepted("inline:short")?;
+        Ok(())
     }
 
     /// A key-log line, whole, wrapped by the paste, or lowercased.
     #[test]
-    fn a_tls_keylog_line_is_refused() {
+    fn a_tls_keylog_line_is_refused() -> Result<(), TestError> {
         // Hex runs of a client random's and a traffic secret's lengths.
         let first_hex = "a".repeat(64);
         let second_hex = "b".repeat(96);
@@ -783,36 +796,40 @@ mod tests {
             format!("see\nSERVER_TRAFFIC_SECRET_0\n{first_hex}\n{second_hex}"),
             format!("client_handshake_traffic_secret {first_hex} {second_hex}"),
         ] {
-            assert_eq!(refused(&sample), NoteRefusal::KeylogLine);
+            assert_eq!(refused(&sample)?, NoteRefusal::KeylogLine);
         }
+        Ok(())
     }
 
     /// The label as a word, and a long hex run as a Call-ID, are both fine.
     #[test]
-    fn a_note_naming_a_keylog_label_or_a_hex_call_id_is_accepted() {
-        accepted("no CLIENT_RANDOM for this session in the key log");
-        accepted("Call-ID 3c2a8f4e9b1d4c7a8e2f6b0d1a3c5e7f matches the B leg");
-        accepted("RSA 1024 certificate on the SBC");
+    fn a_note_naming_a_keylog_label_or_a_hex_call_id_is_accepted() -> Result<(), TestError> {
+        accepted("no CLIENT_RANDOM for this session in the key log")?;
+        accepted("Call-ID 3c2a8f4e9b1d4c7a8e2f6b0d1a3c5e7f matches the B leg")?;
+        accepted("RSA 1024 certificate on the SBC")?;
+        Ok(())
     }
 
     /// A digest response, quoted or bare, in an Authorization header or alone.
     #[test]
-    fn a_digest_response_value_is_refused() {
+    fn a_digest_response_value_is_refused() -> Result<(), TestError> {
         for sample in [
             "Authorization: Digest username=\"alice\", response=\"6629fae49393a05397450978507c4ef1\"",
             "response=deadbeef",
             "Response = \"0123456789abcdef\"",
         ] {
-            assert_eq!(refused(sample), NoteRefusal::DigestResponse);
+            assert_eq!(refused(sample)?, NoteRefusal::DigestResponse);
         }
+        Ok(())
     }
 
     /// The word "response", and a status code after `=`, are fine.
     #[test]
-    fn a_note_about_a_response_is_accepted() {
-        accepted("no response from the SBC for 32 s");
-        accepted("the response=401 came before the retransmission");
-        accepted("response= empty in the second REGISTER");
+    fn a_note_about_a_response_is_accepted() -> Result<(), TestError> {
+        accepted("no response from the SBC for 32 s")?;
+        accepted("the response=401 came before the retransmission")?;
+        accepted("response= empty in the second REGISTER")?;
+        Ok(())
     }
 
     /// A refusal explains itself without repeating what it refused.
@@ -821,115 +838,125 @@ mod tests {
     /// quoted the key would put it exactly where the refusal exists to keep it
     /// out of.
     #[test]
-    fn a_refusal_never_repeats_the_note() {
+    fn a_refusal_never_repeats_the_note() -> Result<(), TestError> {
         let marker = "d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj";
-        let refusal = refused(&format!("inline:{marker}"));
+        let refusal = refused(&format!("inline:{marker}"))?;
         let shown = format!("{refusal} {refusal:?}");
         assert!(
             !shown.contains(marker),
             "the refusal text carried the refused material"
         );
+        Ok(())
     }
 
     /// `{:?}` shows the length, never the text.
     #[test]
-    fn debug_output_carries_the_length_and_not_the_text() {
-        let note = accepted("the sentinel phrase");
+    fn debug_output_carries_the_length_and_not_the_text() -> Result<(), TestError> {
+        let note = accepted("the sentinel phrase")?;
         let shown = format!("{note:?}");
         assert!(!shown.contains("sentinel"), "{shown}");
         assert!(shown.contains("19 bytes"), "{shown}");
+        Ok(())
     }
 
     // ── The notes set ────────────────────────────────────────────────────────
 
     /// Set, replace, remove, and the unsaved flag that the quit prompt reads.
     #[test]
-    fn notes_are_kept_per_frame_and_track_whether_they_are_saved() {
+    fn notes_are_kept_per_frame_and_track_whether_they_are_saved() -> Result<(), TestError> {
         let mut notes = Notes::new();
-        let a = frame("cap.pcap#3@00000000deadbeef");
-        let b = frame("cap.pcap#4@00000000feedface");
+        let a = frame("cap.pcap#3@00000000deadbeef")?;
+        let b = frame("cap.pcap#4@00000000feedface")?;
         assert!(!notes.is_unsaved(), "a fresh set has nothing to lose");
 
-        notes.set(&a, accepted("first")).expect("room");
+        notes
+            .set(&a, accepted("first")?)
+            .map_err(|e| format!("room: {e:?}"))?;
         assert!(notes.is_unsaved());
-        assert_eq!(notes.get(&a), Some(&accepted("first")));
+        assert_eq!(notes.get(&a), Some(&accepted("first")?));
         assert_eq!(notes.get(&b), None);
 
         notes
-            .set(&a, accepted("second"))
-            .expect("replacing never needs room");
+            .set(&a, accepted("second")?)
+            .map_err(|e| format!("replacing never needs room: {e:?}"))?;
         assert_eq!(notes.len(), 1, "one frame, one note");
-        assert_eq!(notes.get(&a), Some(&accepted("second")));
+        assert_eq!(notes.get(&a), Some(&accepted("second")?));
 
         assert!(notes.remove(&a));
         assert!(!notes.remove(&a), "nothing left to remove");
         assert!(notes.is_empty());
+        Ok(())
     }
 
     /// A pointer narrowed to a byte range is still the same frame's note.
     #[test]
-    fn a_byte_range_does_not_make_a_second_note_for_the_same_frame() {
+    fn a_byte_range_does_not_make_a_second_note_for_the_same_frame() -> Result<(), TestError> {
         let mut notes = Notes::new();
         notes
-            .set(&frame("cap.pcap#3@00000000deadbeef"), accepted("whole"))
-            .expect("room");
+            .set(&frame("cap.pcap#3@00000000deadbeef")?, accepted("whole")?)
+            .map_err(|e| format!("room: {e:?}"))?;
         assert_eq!(
-            notes.get(&frame("cap.pcap#3@00000000deadbeef+10-20")),
-            Some(&accepted("whole"))
+            notes.get(&frame("cap.pcap#3@00000000deadbeef+10-20")?),
+            Some(&accepted("whole")?)
         );
+        Ok(())
     }
 
     /// The cap refuses a NEW note, and says so, while an existing one can still
     /// be edited.
     #[test]
-    fn the_note_count_is_bounded_and_the_bound_refuses() {
+    fn the_note_count_is_bounded_and_the_bound_refuses() -> Result<(), TestError> {
         let mut notes = Notes::new();
         for i in 0..MAX_NOTES {
             notes
-                .set(&frame(&format!("cap.pcap#{i}")), accepted("n"))
-                .expect("under the cap");
+                .set(&frame(&format!("cap.pcap#{i}"))?, accepted("n")?)
+                .map_err(|e| format!("under the cap: {e:?}"))?;
         }
         assert_eq!(
-            notes.set(&frame(&format!("cap.pcap#{MAX_NOTES}")), accepted("n")),
+            notes.set(&frame(&format!("cap.pcap#{MAX_NOTES}"))?, accepted("n")?),
             Err(NotesFull)
         );
         assert_eq!(notes.len(), MAX_NOTES, "nothing was evicted to make room");
         notes
-            .set(&frame("cap.pcap#0"), accepted("edited"))
-            .expect("an existing note is always editable");
+            .set(&frame("cap.pcap#0")?, accepted("edited")?)
+            .map_err(|e| format!("an existing note is always editable: {e:?}"))?;
+        Ok(())
     }
 
     // ── The notes file ───────────────────────────────────────────────────────
 
     /// Save, read back, compare; the file is `0600` and marks the set saved.
     #[test]
-    fn a_saved_notes_file_reads_back_the_same_notes() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_saved_notes_file_reads_back_the_same_notes() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("session.notes.jsonl");
-        let a = frame("cap.pcap#3@00000000deadbeef");
-        let b = frame("uprobe:opensips/12#7");
+        let a = frame("cap.pcap#3@00000000deadbeef")?;
+        let b = frame("uprobe:opensips/12#7")?;
         let mut notes = Notes::new();
         notes
-            .set(&a, accepted("where the SDP changed\n\"quoted\""))
-            .expect("room");
-        notes.set(&b, accepted("plaintext read")).expect("room");
+            .set(&a, accepted("where the SDP changed\n\"quoted\"")?)
+            .map_err(|e| format!("room: {e:?}"))?;
+        notes
+            .set(&b, accepted("plaintext read")?)
+            .map_err(|e| format!("room: {e:?}"))?;
 
-        notes.save(&path).expect("save");
+        notes.save(&path).map_err(|e| format!("save: {e:?}"))?;
         assert!(!notes.is_unsaved(), "a save clears the unsaved flag");
 
-        let back = Notes::load(&path).expect("load what was saved");
+        let back = Notes::load(&path).map_err(|e| format!("load what was saved: {e:?}"))?;
         assert_eq!(back.len(), 2);
         assert_eq!(back.get(&a), notes.get(&a));
         assert_eq!(back.get(&b), notes.get(&b));
         assert!(!back.is_unsaved(), "a loaded set matches its file");
 
-        let text = std::fs::read_to_string(&path).expect("read");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("read: {e:?}"))?;
         assert_eq!(text.lines().count(), 2, "one note per line: {text}");
         for line in text.lines() {
-            let v: serde_json::Value = serde_json::from_str(line).expect("each line is JSON");
+            let v: serde_json::Value =
+                serde_json::from_str(line).map_err(|e| format!("each line is JSON: {e:?}"))?;
             let keys: Vec<&str> = v
                 .as_object()
-                .expect("an object")
+                .ok_or("an object")?
                 .keys()
                 .map(String::as_str)
                 .collect();
@@ -939,37 +966,46 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path)
+                .map_err(|e| format!("stat: {e:?}"))?
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600, "the notes file holds free text about a call");
         }
+        Ok(())
     }
 
     /// Blank lines are skipped; a note written by hand with its pointer is read.
     #[test]
-    fn a_hand_written_notes_file_is_read() {
+    fn a_hand_written_notes_file_is_read() -> Result<(), TestError> {
         let notes = Notes::from_jsonl(
             "\n{\"frame\":\"a.pcap#0@00000000deadbeef\",\"note\":\"first\"}\n\n\
              {\"note\":\"second\",\"frame\":\"a.pcap#1\"}\n",
         )
-        .expect("two notes");
+        .map_err(|e| format!("two notes: {e:?}"))?;
         assert_eq!(notes.len(), 2);
-        assert_eq!(notes.get(&frame("a.pcap#1")), Some(&accepted("second")));
+        assert_eq!(notes.get(&frame("a.pcap#1")?), Some(&accepted("second")?));
+        Ok(())
     }
 
     /// `from_jsonl(text)`, asserting it was refused, and the refusal text.
-    fn file_refused(text: &str) -> String {
-        match Notes::from_jsonl(text) {
-            Ok(notes) => panic!(
-                "this notes file had to be refused; it read {} notes",
-                notes.len()
-            ),
+    fn file_refused(text: &str) -> Result<String, TestError> {
+        Ok(match Notes::from_jsonl(text) {
+            Ok(notes) => {
+                return Err(format!(
+                    "this notes file had to be refused; it read {} notes",
+                    notes.len()
+                )
+                .into());
+            }
             Err(e) => e.to_string(),
-        }
+        })
     }
 
     /// Each way a line can be wrong names its line number and why.
     #[test]
-    fn a_bad_notes_line_refuses_the_file_and_names_the_line() {
+    fn a_bad_notes_line_refuses_the_file_and_names_the_line() -> Result<(), TestError> {
         let good = "{\"frame\":\"a.pcap#0\",\"note\":\"ok\"}\n";
         for (bad, why) in [
             ("not json", "not a notes line"),
@@ -986,43 +1022,46 @@ mod tests {
             ("{\"frame\":\"a.pcap#0\",\"note\":\"again\"}", "second note"),
             ("{\"frame\":\"a.pcap#1\",\"note\":\"\"}", "refused"),
         ] {
-            let msg = file_refused(&format!("{good}{bad}\n"));
+            let msg = file_refused(&format!("{good}{bad}\n"))?;
             assert!(msg.contains("line 2"), "must name line 2 for {bad}: {msg}");
             assert!(msg.contains(why), "must say `{why}` for {bad}: {msg}");
         }
+        Ok(())
     }
 
     /// A refused note in a file is refused for the same reasons, and the error
     /// does not quote it.
     #[test]
-    fn a_notes_file_is_screened_like_a_typed_note() {
+    fn a_notes_file_is_screened_like_a_typed_note() -> Result<(), TestError> {
         let marker = "d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj";
         let msg = file_refused(&format!(
             "{{\"frame\":\"a.pcap#0\",\"note\":\"inline:{marker}\"}}\n"
-        ));
+        ))?;
         assert!(msg.contains("SDES"), "{msg}");
         assert!(
             !msg.contains(marker),
             "the error carried the refused material"
         );
+        Ok(())
     }
 
     /// A line longer than any note needs is refused before it is parsed.
     #[test]
-    fn an_overlong_notes_line_is_refused() {
+    fn an_overlong_notes_line_is_refused() -> Result<(), TestError> {
         let msg = file_refused(&format!(
             "{{\"frame\":\"a.pcap#0\",\"note\":\"{}\"}}\n",
             "a".repeat(MAX_LINE_BYTES)
-        ));
+        ))?;
         assert!(
             msg.contains("line 1") && msg.contains("longer than"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// More notes than the cap refuses the file rather than keeping a prefix.
     #[test]
-    fn a_notes_file_over_the_cap_is_refused() {
+    fn a_notes_file_over_the_cap_is_refused() -> Result<(), TestError> {
         let mut text = String::new();
         for i in 0..=MAX_NOTES {
             text.push_str(&format!("{{\"frame\":\"a.pcap#{i}\",\"note\":\"n\"}}\n"));
@@ -1031,5 +1070,6 @@ mod tests {
             Notes::from_jsonl(&text),
             Err(NotesFileError::TooMany)
         ));
+        Ok(())
     }
 }
