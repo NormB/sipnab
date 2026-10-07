@@ -140,19 +140,22 @@ mod tests {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A REGISTER carrying `contact` and no `Expires` header.
-    fn contact_msg(contact: &str) -> SipMessage {
+    fn contact_msg(contact: &str) -> Result<SipMessage, TestError> {
         build(contact, None)
     }
 
     /// A REGISTER carrying `contact` and an `Expires` header.
-    fn contact_msg_with_expires(contact: &str, expires: &str) -> SipMessage {
+    fn contact_msg_with_expires(contact: &str, expires: &str) -> Result<SipMessage, TestError> {
         build(contact, Some(expires))
     }
 
     /// Parse a minimal REGISTER so the tests exercise the real accessors
     /// rather than a hand-built struct.
-    fn build(contact: &str, expires: Option<&str>) -> SipMessage {
+    fn build(contact: &str, expires: Option<&str>) -> Result<SipMessage, TestError> {
         let mut raw = String::from("REGISTER sip:example.com SIP/2.0\r\n");
         raw.push_str("From: <sip:alice@example.com>;tag=t1\r\n");
         raw.push_str("To: <sip:alice@example.com>\r\n");
@@ -164,7 +167,7 @@ mod tests {
         }
         raw.push_str("Content-Length: 0\r\n\r\n");
         let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        parse_sip(
+        Ok(parse_sip(
             raw.as_bytes(),
             Utc::now(),
             ip,
@@ -173,7 +176,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("the fixture must parse")
+        .map_err(|e| format!("the fixture must parse: {e:?}"))?)
     }
 
     /// A URI parameter is not the binding lifetime.
@@ -184,9 +187,10 @@ mod tests {
     /// reported a registration granted for 60s against 3600s requested — a
     /// finding fabricated from a parameter about the URI.
     #[test]
-    fn a_uri_expires_parameter_is_not_the_binding_lifetime() {
-        let msg = contact_msg("<sip:alice@10.0.0.1;expires=60;transport=udp>;expires=3600");
+    fn a_uri_expires_parameter_is_not_the_binding_lifetime() -> Result<(), TestError> {
+        let msg = contact_msg("<sip:alice@10.0.0.1;expires=60;transport=udp>;expires=3600")?;
         assert_eq!(registration_expiry(&msg), Some(3600));
+        Ok(())
     }
 
     /// A quoted display name that contains `>;expires=…` is not the header
@@ -195,9 +199,10 @@ mod tests {
     /// (`;expires=0`) as a normal registration, or fabricating a shortened
     /// grant. [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) admits `>` and `;` inside a `quoted-string`.
     #[test]
-    fn a_quoted_display_name_does_not_steal_the_registration_expiry() {
-        let msg = contact_msg(r#""x>;expires=99;y" <sip:alice@10.0.0.1>;expires=3600"#);
+    fn a_quoted_display_name_does_not_steal_the_registration_expiry() -> Result<(), TestError> {
+        let msg = contact_msg(r#""x>;expires=99;y" <sip:alice@10.0.0.1>;expires=3600"#)?;
         assert_eq!(registration_expiry(&msg), Some(3600));
+        Ok(())
     }
 
     /// A URI parameter alone leaves the header fallback reachable.
@@ -206,9 +211,10 @@ mod tests {
     /// the function returned early, and the `Expires:` header beneath it was
     /// never consulted — so an unregister read as no expiry at all.
     #[test]
-    fn a_uri_expires_alone_falls_through_to_the_expires_header() {
-        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1;expires=0>", "3600");
+    fn a_uri_expires_alone_falls_through_to_the_expires_header() -> Result<(), TestError> {
+        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1;expires=0>", "3600")?;
         assert_eq!(registration_expiry(&msg), Some(3600));
+        Ok(())
     }
 
     /// The header parameter still wins over the `Expires` header.
@@ -217,9 +223,10 @@ mod tests {
     /// [RFC 3261 section 10.2.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-10.2.1.1), which the fix
     /// must not invert.
     #[test]
-    fn the_contact_header_parameter_still_beats_the_expires_header() {
-        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1>;expires=60", "3600");
+    fn the_contact_header_parameter_still_beats_the_expires_header() -> Result<(), TestError> {
+        let msg = contact_msg_with_expires("<sip:alice@10.0.0.1>;expires=60", "3600")?;
         assert_eq!(registration_expiry(&msg), Some(60));
+        Ok(())
     }
 
     /// A bare addr-spec carries header parameters directly.
@@ -228,16 +235,18 @@ mod tests {
     /// URI parameters, so every `;` in it is a header parameter. Skipping to
     /// after a `>` that is not there must not skip the whole value.
     #[test]
-    fn a_bare_addr_spec_contact_still_yields_its_expires() {
-        let msg = contact_msg("sip:alice@10.0.0.1;expires=120");
+    fn a_bare_addr_spec_contact_still_yields_its_expires() -> Result<(), TestError> {
+        let msg = contact_msg("sip:alice@10.0.0.1;expires=120")?;
         assert_eq!(registration_expiry(&msg), Some(120));
+        Ok(())
     }
 
     /// An unregister is still an unregister.
     #[test]
-    fn a_zero_expiry_is_read_as_zero() {
-        let msg = contact_msg("<sip:alice@10.0.0.1>;expires=0");
+    fn a_zero_expiry_is_read_as_zero() -> Result<(), TestError> {
+        let msg = contact_msg("<sip:alice@10.0.0.1>;expires=0")?;
         assert_eq!(registration_expiry(&msg), Some(0));
+        Ok(())
     }
 
     use super::*;
@@ -251,7 +260,7 @@ mod tests {
     /// later parse it. Zero additional messages on the local corpus — this
     /// pins the CONSISTENCY, not a recovered loss.
     #[test]
-    fn an_extension_method_is_sip_to_both_sniffers() {
+    fn an_extension_method_is_sip_to_both_sniffers() -> Result<(), TestError> {
         // SERVICE: a real SIP method, and one the old fourteen-entry table
         // did not list. (PUBLISH would NOT demonstrate anything — it was in
         // that table.)
@@ -271,50 +280,57 @@ mod tests {
         let rtp = [0x80u8, 0x08, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0];
         assert!(!is_sip_message(&rtp), "RTP must not sniff as SIP");
         assert_eq!(is_sip_message(&rtp), parser::starts_sip_message(&rtp));
+        Ok(())
     }
 
     /// An INVITE request line is detected as SIP.
     #[test]
-    fn detect_invite_request() {
+    fn detect_invite_request() -> Result<(), TestError> {
         let data = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP ...\r\n\r\n";
         assert!(is_sip_message(data));
+        Ok(())
     }
 
     /// A `SIP/2.0` status line is detected as SIP.
     #[test]
-    fn detect_response() {
+    fn detect_response() -> Result<(), TestError> {
         let data = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP ...\r\n\r\n";
         assert!(is_sip_message(data));
+        Ok(())
     }
 
     /// A REGISTER request line is detected as SIP.
     #[test]
-    fn detect_register() {
+    fn detect_register() -> Result<(), TestError> {
         let data = b"REGISTER sip:registrar.example.com SIP/2.0\r\n\r\n";
         assert!(is_sip_message(data));
+        Ok(())
     }
 
     /// HTTP, free text, empty, and too-short inputs are all rejected.
     #[test]
-    fn reject_non_sip() {
+    fn reject_non_sip() -> Result<(), TestError> {
         assert!(!is_sip_message(b"GET / HTTP/1.1\r\n\r\n"));
         assert!(!is_sip_message(b"Hello world"));
         assert!(!is_sip_message(b""));
         assert!(!is_sip_message(b"SIP"));
+        Ok(())
     }
 
     /// Non-text bytes with no SIP first line are rejected.
     #[test]
-    fn reject_binary_garbage() {
+    fn reject_binary_garbage() -> Result<(), TestError> {
         assert!(!is_sip_message(&[
             0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05
         ]));
+        Ok(())
     }
 
     /// The version token must be SP-anchored: `ASIP/2.0` glued onto the URI
     /// (matched only by an unanchored `ends_with`) must not be sniffed as SIP.
     #[test]
-    fn reject_unanchored_version_token() {
+    fn reject_unanchored_version_token() -> Result<(), TestError> {
         assert!(!is_sip_message(b"INVITE sip:alice ASIP/2.0\r\n\r\n"));
+        Ok(())
     }
 }

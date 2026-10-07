@@ -399,28 +399,34 @@ impl Watcher {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A digest that ignores its input would make every change invisible.
     #[test]
-    fn different_bytes_digest_differently() {
+    fn different_bytes_digest_differently() -> Result<(), TestError> {
         assert_ne!(digest(b"one dialog"), digest(b"two dialogs"));
         assert_eq!(
             digest(b"one dialog"),
             digest(b"one dialog"),
             "the same bytes must digest the same, or every tick notifies"
         );
+        Ok(())
     }
 
     /// An empty input still produces the basis rather than zero, so "no
     /// content" and "not yet rendered" cannot be confused.
     #[test]
-    fn an_empty_render_is_not_the_zero_digest() {
+    fn an_empty_render_is_not_the_zero_digest() -> Result<(), TestError> {
         assert_ne!(digest(b""), 0);
+        Ok(())
     }
 
     /// A fresh connection watches nothing.
     #[test]
-    fn a_new_registry_is_empty() {
+    fn a_new_registry_is_empty() -> Result<(), TestError> {
         assert!(Subscriptions::new().is_empty());
+        Ok(())
     }
 
     /// Cloning is a new connection, not a copy of this one.
@@ -429,10 +435,10 @@ mod tests {
     /// session on the server shares one registry, so one agent's unsubscribe
     /// silences another's subscription.
     #[test]
-    fn a_clone_starts_with_no_subscriptions() {
+    fn a_clone_starts_with_no_subscriptions() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         subs.add("sipnab://live/dialogs", 1, 7, Instant::now())
-            .expect("first subscription fits");
+            .map_err(|e| format!("first subscription fits: {e:?}"))?;
         assert_eq!(subs.len(), 1);
 
         let other = subs.clone();
@@ -442,25 +448,27 @@ mod tests {
              session unsubscribe another"
         );
         assert_eq!(subs.len(), 1, "and cloning must not disturb the original");
+        Ok(())
     }
 
     /// Removing from a clone cannot reach the original's subscription.
     #[test]
-    fn one_connection_cannot_unsubscribe_another() {
+    fn one_connection_cannot_unsubscribe_another() -> Result<(), TestError> {
         let a = Subscriptions::new();
         a.add("sipnab://live/dialogs", 1, 7, Instant::now())
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let b = a.clone();
         assert!(!b.remove("sipnab://live/dialogs"));
         assert!(
             a.contains("sipnab://live/dialogs"),
             "session B removed session A's subscription"
         );
+        Ok(())
     }
 
     /// Subscribing twice to one URI is idempotent and starts one watcher.
     #[test]
-    fn a_repeated_subscribe_does_not_start_a_second_watcher() {
+    fn a_repeated_subscribe_does_not_start_a_second_watcher() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         assert_eq!(subs.add("sipnab://live/dialogs", 1, 7, t), Ok(true));
@@ -472,16 +480,17 @@ mod tests {
              nothing a client could observe to reveal it"
         );
         assert_eq!(subs.len(), 1);
+        Ok(())
     }
 
     /// The per-connection ceiling is enforced.
     #[test]
-    fn the_subscription_ceiling_refuses_the_next_uri() {
+    fn the_subscription_ceiling_refuses_the_next_uri() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         for i in 0..MAX_SUBSCRIPTIONS {
             subs.add(&format!("sipnab://live/dialogs/{i}"), 1, 7, t)
-                .expect("inside the ceiling");
+                .map_err(|e| format!("inside the ceiling: {e:?}"))?;
         }
         assert_eq!(
             subs.add("sipnab://live/dialogs/one-too-many", 1, 7, t),
@@ -490,6 +499,7 @@ mod tests {
             }),
             "an uncapped registry is unbounded work bought with one cheap request"
         );
+        Ok(())
     }
 
     /// An unchanged generation costs nothing: the render is never called.
@@ -498,11 +508,11 @@ mod tests {
     /// re-renders and re-hashes its dialog list once a second per subscriber,
     /// forever, to conclude nothing happened.
     #[test]
-    fn an_unchanged_store_is_never_rendered() {
+    fn an_unchanged_store_is_never_rendered() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 9, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let mut rendered = false;
         let tick = subs.watcher("sipnab://live/dialogs").tick(9, t, || {
             rendered = true;
@@ -513,15 +523,16 @@ mod tests {
             !rendered,
             "the render ran on an untouched store; the cheap gate is not gating"
         );
+        Ok(())
     }
 
     /// A generation that moved without changing the answer sends nothing.
     #[test]
-    fn a_generation_bump_with_identical_content_sends_nothing() {
+    fn a_generation_bump_with_identical_content_sends_nothing() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 9, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         assert_eq!(
             subs.watcher("sipnab://live/dialogs")
                 .tick(10, t + DEBOUNCE * 2, || 7),
@@ -529,15 +540,16 @@ mod tests {
             "DialogStore::get_mut bumps the generation on a MISS; notifying on \
              that would wake a client for nothing"
         );
+        Ok(())
     }
 
     /// A real change, past the window, notifies exactly once.
     #[test]
-    fn a_change_past_the_window_notifies_once() {
+    fn a_change_past_the_window_notifies_once() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 9, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let w = subs.watcher("sipnab://live/dialogs");
         let later = t + DEBOUNCE + Duration::from_millis(1);
         assert_eq!(w.tick(10, later, || 42), Tick::Notify);
@@ -546,15 +558,16 @@ mod tests {
             Tick::Unchanged,
             "the same change must not be announced twice"
         );
+        Ok(())
     }
 
     /// A burst inside one window is ONE notification, and nothing is lost.
     #[test]
-    fn a_burst_inside_the_window_collapses_to_one_notification() {
+    fn a_burst_inside_the_window_collapses_to_one_notification() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 0, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let w = subs.watcher("sipnab://live/dialogs");
 
         // Twenty mutations inside one second, each with different content.
@@ -578,6 +591,7 @@ mod tests {
             Tick::Unchanged,
             "the burst must produce one notification, not one per mutation"
         );
+        Ok(())
     }
 
     /// A debounced change is HELD, not dropped.
@@ -586,11 +600,11 @@ mod tests {
     /// sampler: a dropped change means a client that is told nothing happened
     /// when something did.
     #[test]
-    fn a_debounced_change_is_retried_rather_than_lost() {
+    fn a_debounced_change_is_retried_rather_than_lost() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 1, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let w = subs.watcher("sipnab://live/dialogs");
         assert_eq!(
             w.tick(2, t + Duration::from_millis(10), || 42),
@@ -601,15 +615,16 @@ mod tests {
             Tick::Notify,
             "a change suppressed by the window must still reach the client"
         );
+        Ok(())
     }
 
     /// After `unsubscribe`, a change produces nothing at all.
     #[test]
-    fn an_unsubscribed_uri_notifies_nothing() {
+    fn an_unsubscribed_uri_notifies_nothing() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 1, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let w = subs.watcher("sipnab://live/dialogs");
         assert!(subs.remove("sipnab://live/dialogs"));
         assert_eq!(
@@ -617,12 +632,14 @@ mod tests {
             Tick::Gone,
             "an unsubscribed URI must not produce another notification"
         );
+        Ok(())
     }
 
     /// Unsubscribing something that was never subscribed says so.
     #[test]
-    fn removing_an_unwatched_uri_reports_false() {
+    fn removing_an_unwatched_uri_reports_false() -> Result<(), TestError> {
         assert!(!Subscriptions::new().remove("sipnab://live/dialogs"));
+        Ok(())
     }
 
     /// A watcher whose connection is gone stops, with nobody telling it.
@@ -631,11 +648,11 @@ mod tests {
     /// so": the registry is owned by the connection, so dropping the
     /// connection drops the registry and every watcher sees it.
     #[test]
-    fn a_watcher_stops_when_its_connection_is_dropped() {
+    fn a_watcher_stops_when_its_connection_is_dropped() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         let t = Instant::now();
         subs.add("sipnab://live/dialogs", 1, 7, t)
-            .expect("subscribe");
+            .map_err(|e| format!("subscribe: {e:?}"))?;
         let w = subs.watcher("sipnab://live/dialogs");
         drop(subs);
         assert_eq!(
@@ -643,23 +660,26 @@ mod tests {
             Tick::Gone,
             "a watcher must not outlive the connection that asked for it"
         );
+        Ok(())
     }
 
     /// The watcher knows which URI it serves, so the notification names it.
     #[test]
-    fn a_watcher_carries_its_uri() {
+    fn a_watcher_carries_its_uri() -> Result<(), TestError> {
         let subs = Subscriptions::new();
         assert_eq!(
             subs.watcher("sipnab://live/dialogs").uri(),
             "sipnab://live/dialogs"
         );
+        Ok(())
     }
 
     /// The refusal names the ceiling rather than saying "no".
     #[test]
-    fn the_refusal_names_the_ceiling() {
+    fn the_refusal_names_the_ceiling() -> Result<(), TestError> {
         let text = Refusal::TooMany { limit: 16 }.explain();
         assert!(text.contains("16"), "{text}");
         assert!(text.contains("unsubscribe"), "{text}");
+        Ok(())
     }
 }

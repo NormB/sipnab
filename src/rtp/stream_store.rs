@@ -2005,13 +2005,18 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A cleared store forgets relay retries. Re-scanning a capture clears
     /// and reads it again; without this every command of the second pass
     /// would count as a retry of the first.
     #[test]
-    fn clearing_the_store_forgets_relay_retries() {
+    fn clearing_the_store_forgets_relay_retries() -> Result<(), TestError> {
         let cookie = crate::relay_vocab::ControlCookie {
-            relay: "192.0.2.40:7722".parse().expect("addr"),
+            relay: "192.0.2.40:7722"
+                .parse()
+                .map_err(|e| format!("addr: {e:?}"))?,
             implementation: crate::relay_vocab::RelayImplementation::Rtpproxy,
             cookie: "c1".to_string(),
             command: true,
@@ -2023,6 +2028,7 @@ mod tests {
         let rows = store.relay_control_summary();
         assert_eq!(rows[0].commands, 1);
         assert_eq!(rows[0].retried_commands, 0, "the first pass was forgotten");
+        Ok(())
     }
     /// The buffering gate and the export gate must answer identically.
     ///
@@ -2035,7 +2041,7 @@ mod tests {
     /// agree" while checking two predicates in that same file, so it could not
     /// see the pair that actually disagreed. This one spans the boundary.
     #[test]
-    fn the_buffering_gate_agrees_with_the_export_gate() {
+    fn the_buffering_gate_agrees_with_the_export_gate() -> Result<(), TestError> {
         for codec in [
             Some("PCMU"),
             Some("PCMA"),
@@ -2061,6 +2067,7 @@ mod tests {
                  export explains with the wrong reason"
             );
         }
+        Ok(())
     }
 
     /// RE3: an endpoint rtpengine asserted about ITSELF is not the same claim
@@ -2071,7 +2078,7 @@ mod tests {
     /// over HEP, so `origin` alone cannot tell them apart. That is the whole
     /// reason this is a field rather than a fourth `InputOrigin`.
     #[test]
-    fn a_relay_asserted_endpoint_is_distinguishable_from_a_signaled_one() {
+    fn a_relay_asserted_endpoint_is_distinguishable_from_a_signaled_one() -> Result<(), TestError> {
         use super::{EndpointAssertion, SdpProvenance};
         let t = chrono::Utc::now();
         let origin = crate::capture::parse::InputOrigin::Hep;
@@ -2101,6 +2108,7 @@ mod tests {
             EndpointAssertion::Signaled,
             "the no-message default must not silently claim a relay said it"
         );
+        Ok(())
     }
 
     use std::net::Ipv4Addr;
@@ -2115,7 +2123,7 @@ mod tests {
     /// RE4's second trigger needs to know a stream turned up that nothing
     /// explains -- at the moment it is CREATED, not by rescanning the store.
     #[test]
-    fn a_stream_nothing_explains_reports_both_its_sockets() {
+    fn a_stream_nothing_explains_reports_both_its_sockets() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.record_new_orphans(true);
 
@@ -2141,12 +2149,13 @@ mod tests {
             "a drained socket must not be reported twice -- the reconciler \
              would spend a transaction re-asking about it"
         );
+        Ok(())
     }
 
     /// A stream the signaling already explains is not an orphan, and asking a
     /// relay about it would spend a transaction to learn what sipnab knows.
     #[test]
-    fn a_stream_the_signaling_explains_reports_nothing() {
+    fn a_stream_the_signaling_explains_reports_nothing() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.record_new_orphans(true);
         store.link_endpoint(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "call-a", &[]);
@@ -2161,6 +2170,7 @@ mod tests {
             store.drain_new_orphan_sockets().is_empty(),
             "the SDP endpoint named this stream's dialog at creation"
         );
+        Ok(())
     }
 
     /// The buffer has a ceiling, and reaching it is COUNTED. A capture full
@@ -2168,16 +2178,19 @@ mod tests {
     /// the streams it could not hold must not read as streams that did not
     /// exist.
     #[test]
-    fn a_full_orphan_buffer_counts_what_it_could_not_hold() {
+    fn a_full_orphan_buffer_counts_what_it_could_not_hold() -> Result<(), TestError> {
         let mut store = StreamStore::new(10_000);
         store.record_new_orphans(true);
 
         let fits = MAX_PENDING_ORPHAN_SOCKETS / 2;
         for i in 0..fits {
-            let port = 20_000 + u16::try_from(i).expect("fits in u16");
+            let port = 20_000 + u16::try_from(i).map_err(|e| format!("fits in u16: {e:?}"))?;
             store.process_rtp(
                 &make_parsed(port, 30000, 160),
-                &make_rtp_header(0xC000_0000 + u32::try_from(i).expect("fits"), 1),
+                &make_rtp_header(
+                    0xC000_0000 + u32::try_from(i).map_err(|e| format!("fits: {e:?}"))?,
+                    1,
+                ),
                 ts(0),
             );
         }
@@ -2187,7 +2200,7 @@ mod tests {
             "everything up to the ceiling is offered"
         );
 
-        let port = 20_000 + u16::try_from(fits).expect("fits in u16");
+        let port = 20_000 + u16::try_from(fits).map_err(|e| format!("fits in u16: {e:?}"))?;
         store.process_rtp(
             &make_parsed(port, 30000, 160),
             &make_rtp_header(0xD000_0000, 1),
@@ -2203,11 +2216,12 @@ mod tests {
             MAX_PENDING_ORPHAN_SOCKETS,
             "and the buffer stops at its ceiling"
         );
+        Ok(())
     }
 
     /// Off by default: a run with no relay to ask pays nothing.
     #[test]
-    fn orphan_sockets_are_not_recorded_unless_asked_for() {
+    fn orphan_sockets_are_not_recorded_unless_asked_for() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
 
         store.process_rtp(
@@ -2220,13 +2234,14 @@ mod tests {
             store.drain_new_orphan_sockets().is_empty(),
             "recording must cost nothing on a run that will never ask a relay"
         );
+        Ok(())
     }
 
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {
         ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+            timestamp: DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port,
@@ -2251,7 +2266,7 @@ mod tests {
     /// per-packet update to an existing stream must NOT, or the cache
     /// would miss on every RTP packet of a live call.
     #[test]
-    fn generation_bumps_on_structural_changes_not_per_packet_updates() {
+    fn generation_bumps_on_structural_changes_not_per_packet_updates() -> Result<(), TestError> {
         let mut store = StreamStore::new(16);
         let g0 = store.generation();
 
@@ -2301,12 +2316,13 @@ mod tests {
         // clear() → bump.
         store.clear();
         assert!(store.generation() > g2, "clear must bump the generation");
+        Ok(())
     }
 
     /// One INVITE offering audio (static PT) and video (dynamic PT) yields
     /// two codec-resolved streams linked to the same dialog.
     #[test]
-    fn multi_mline_audio_and_video_both_link_and_resolve_codecs() {
+    fn multi_mline_audio_and_video_both_link_and_resolve_codecs() -> Result<(), TestError> {
         // A single INVITE offering audio (m=audio, PCMU) AND video (m=video,
         // dynamic PT 96 = H264) must produce two independently-tracked,
         // codec-resolved streams associated with the same dialog.
@@ -2319,7 +2335,7 @@ m=audio 30000 RTP/AVP 0\r\n\
 a=rtpmap:0 PCMU/8000\r\n\
 m=video 30002 RTP/AVP 96\r\n\
 a=rtpmap:96 H264/90000\r\n";
-        let sdp = crate::sip::sdp::parse_sdp(sdp_body).expect("SDP parses");
+        let sdp = crate::sip::sdp::parse_sdp(sdp_body).map_err(|e| format!("SDP parses: {e:?}"))?;
         assert_eq!(sdp.media.len(), 2, "both m= lines must be parsed");
 
         let mut store = StreamStore::new(16);
@@ -2327,7 +2343,7 @@ a=rtpmap:96 H264/90000\r\n";
         for media in &sdp.media {
             let addr = crate::sip::sdp::effective_address(media, &sdp)
                 .and_then(|a| a.parse::<IpAddr>().ok())
-                .expect("media address");
+                .ok_or("media address")?;
             store.link_to_dialog_with_sdp(addr, media.port, "av-call@test", media);
         }
 
@@ -2348,33 +2364,34 @@ a=rtpmap:96 H264/90000\r\n";
         let audio = linked
             .iter()
             .find(|s| s.key.dst.port() == 30000)
-            .expect("audio stream linked");
+            .ok_or("audio stream linked")?;
         let video = linked
             .iter()
             .find(|s| s.key.dst.port() == 30002)
-            .expect("video stream linked");
+            .ok_or("video stream linked")?;
         assert_eq!(audio.codec.as_deref(), Some("PCMU"));
         assert_eq!(
             video.codec.as_deref(),
             Some("H264"),
             "dynamic video PT must resolve from the second m= line's rtpmap"
         );
+        Ok(())
     }
 
     /// streams_for yields only streams linked to the requested Call-ID.
     #[test]
-    fn streams_for_returns_only_linked_streams() {
+    fn streams_for_returns_only_linked_streams() -> Result<(), TestError> {
         let mut store = StreamStore::new(16);
         // Two streams on different endpoints.
         store.process_rtp(
             &make_parsed(20000, 30000, 160),
             &make_rtp_header(0x1111, 1),
-            DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+            DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
         );
         store.process_rtp(
             &make_parsed(22000, 32000, 160),
             &make_rtp_header(0x2222, 1),
-            DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+            DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000),
         );
         // Link only the first to a dialog.
         store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, "call-a");
@@ -2383,6 +2400,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(linked.len(), 1);
         assert_eq!(linked[0].key.ssrc, 0x1111);
         assert!(store.streams_for("call-b").next().is_none());
+        Ok(())
     }
 
     /// Build a PT 0 (PCMU) RtpHeader with a 160-ticks-per-packet timestamp.
@@ -2422,7 +2440,7 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// One audio media description, parsed from real SDP text.
-    fn sdp_media(rtpmap: &str, fmtp: Option<&str>) -> crate::sip::sdp::SdpMedia {
+    fn sdp_media(rtpmap: &str, fmtp: Option<&str>) -> Result<crate::sip::sdp::SdpMedia, TestError> {
         let mut sdp = format!(
             "v=0\r\no=- 1 1 IN IP4 10.0.0.2\r\ns=-\r\nc=IN IP4 10.0.0.2\r\nt=0 0\r\n\
              m=audio 30000 RTP/AVP 96\r\na=rtpmap:{rtpmap}\r\n"
@@ -2430,10 +2448,10 @@ a=rtpmap:96 H264/90000\r\n";
         if let Some(f) = fmtp {
             sdp.push_str(&format!("a=fmtp:{f}\r\n"));
         }
-        crate::sip::sdp::parse_sdp(sdp.as_bytes())
-            .expect("test SDP parses")
+        Ok(crate::sip::sdp::parse_sdp(sdp.as_bytes())
+            .map_err(|e| format!("test SDP parses: {e:?}"))?
             .media
-            .remove(0)
+            .remove(0))
     }
 
     /// Link the endpoint 10.0.0.2:30000 to a dialog with the given media.
@@ -2448,23 +2466,27 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// Feed `n` AMR packets carrying frame type `ft`.
-    fn feed_amr(store: &mut StreamStore, ssrc: u32, fts: &[u8]) {
+    fn feed_amr(store: &mut StreamStore, ssrc: u32, fts: &[u8]) -> Result<(), TestError> {
         for (i, ft) in fts.iter().enumerate() {
-            let seq = u16::try_from(i).expect("few packets");
+            let seq = u16::try_from(i).map_err(|e| format!("few packets: {e:?}"))?;
             let parsed = make_parsed_with_payload(20000, 30000, &amr_octet_aligned_payload(*ft));
             let rtp = rtp_pkt(ssrc, seq, 96, u32::from(seq) * 320);
             store.process_rtp(&parsed, &rtp, ts(i64::from(seq)));
         }
+        Ok(())
     }
 
-    fn only_stream(store: &StreamStore, ssrc: u32) -> &crate::rtp::stream::RtpStream {
-        store
+    fn only_stream(
+        store: &StreamStore,
+        ssrc: u32,
+    ) -> Result<&crate::rtp::stream::RtpStream, TestError> {
+        Ok(store
             .get(&StreamKey {
                 ssrc,
                 src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
             })
-            .expect("stream exists")
+            .ok_or("stream exists")?)
     }
 
     /// An AMR-WB stream whose SDP pinned the packing records the mode its
@@ -2474,18 +2496,19 @@ a=rtpmap:96 H264/90000\r\n";
     /// written: `crate::rtp::emodel_wb` can score all nine modes and needs the
     /// mode, which the codec name does not carry.
     #[test]
-    fn an_amr_wb_stream_records_the_mode_its_payloads_carried() {
+    fn an_amr_wb_stream_records_the_mode_its_payloads_carried() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA1, &[2, 2, 2]);
+        feed_amr(&mut store, 0xA1, &[2, 2, 2])?;
 
-        let stream = only_stream(&store, 0xA1);
+        let stream = only_stream(&store, 0xA1)?;
         assert_eq!(stream.codec.as_deref(), Some("AMR-WB"));
         assert_eq!(stream.amr_modes_observed(), 1);
         assert_eq!(stream.amr_mode_kbps(), Some(12.65));
+        Ok(())
     }
 
     /// The stream's very FIRST packet is read, not only the ones after it.
@@ -2495,103 +2518,109 @@ a=rtpmap:96 H264/90000\r\n";
     /// assertion, so removing the recording at creation changed nothing —
     /// this is the one-packet case that tells them apart.
     #[test]
-    fn the_first_packet_of_a_stream_is_read() {
+    fn the_first_packet_of_a_stream_is_read() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xAA, &[4]);
+        feed_amr(&mut store, 0xAA, &[4])?;
 
-        assert_eq!(only_stream(&store, 0xAA).amr_mode_kbps(), Some(15.85));
+        assert_eq!(only_stream(&store, 0xAA)?.amr_mode_kbps(), Some(15.85));
+        Ok(())
     }
 
     /// The SDP may arrive AFTER the first RTP packet, which is the ordering a
     /// live capture produces, and the mode must still be read from the
     /// packets that follow.
     #[test]
-    fn the_mode_is_read_when_the_sdp_arrives_after_the_rtp() {
+    fn the_mode_is_read_when_the_sdp_arrives_after_the_rtp() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
-        feed_amr(&mut store, 0xA2, &[2]);
+        feed_amr(&mut store, 0xA2, &[2])?;
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA2, &[2, 2]);
+        feed_amr(&mut store, 0xA2, &[2, 2])?;
 
-        let stream = only_stream(&store, 0xA2);
+        let stream = only_stream(&store, 0xA2)?;
         assert_eq!(stream.amr_mode_kbps(), Some(12.65));
+        Ok(())
     }
 
     /// A sender that switched mode pins nothing, and says so as a count
     /// rather than by returning one of the modes it used.
     #[test]
-    fn a_stream_that_switched_modes_pins_no_single_mode() {
+    fn a_stream_that_switched_modes_pins_no_single_mode() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA3, &[2, 5, 2, 8]);
+        feed_amr(&mut store, 0xA3, &[2, 5, 2, 8])?;
 
-        let stream = only_stream(&store, 0xA3);
+        let stream = only_stream(&store, 0xA3)?;
         assert_eq!(stream.amr_modes_observed(), 3);
         assert_eq!(stream.amr_mode_kbps(), None);
+        Ok(())
     }
 
     /// Comfort noise is not a mode, and a stream carrying only comfort noise
     /// reports nothing observed rather than the slowest mode.
     #[test]
-    fn comfort_noise_alone_records_no_mode() {
+    fn comfort_noise_alone_records_no_mode() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA4, &[9, 9, 15]);
+        feed_amr(&mut store, 0xA4, &[9, 9, 15])?;
 
-        let stream = only_stream(&store, 0xA4);
+        let stream = only_stream(&store, 0xA4)?;
         assert_eq!(stream.amr_modes_observed(), 0);
         assert_eq!(stream.amr_mode_kbps(), None);
+        Ok(())
     }
 
     /// Without a media description the packing is unknown, and a guess would
     /// produce a plausible wrong mode rather than an error.
     #[test]
-    fn without_the_sdp_no_mode_is_read() {
+    fn without_the_sdp_no_mode_is_read() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
-        feed_amr(&mut store, 0xA5, &[2, 2, 2]);
+        feed_amr(&mut store, 0xA5, &[2, 2, 2])?;
 
-        let stream = only_stream(&store, 0xA5);
+        let stream = only_stream(&store, 0xA5)?;
         assert_eq!(stream.amr_packing, None);
         assert_eq!(stream.amr_modes_observed(), 0);
+        Ok(())
     }
 
     /// Interleaving moves every offset in the payload, so the reader is kept
     /// away from it entirely.
     #[test]
-    fn an_interleaved_stream_is_not_read() {
+    fn an_interleaved_stream_is_not_read() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1; interleaving=2")),
+            &sdp_media("96 AMR-WB/16000", Some("96 octet-align=1; interleaving=2"))?,
         );
-        feed_amr(&mut store, 0xA6, &[2, 2, 2]);
+        feed_amr(&mut store, 0xA6, &[2, 2, 2])?;
 
-        let stream = only_stream(&store, 0xA6);
+        let stream = only_stream(&store, 0xA6)?;
         assert_eq!(stream.amr_packing, None);
         assert_eq!(stream.amr_modes_observed(), 0);
+        Ok(())
     }
 
     /// A stream that is not AMR at all records nothing, whatever its payload
     /// bytes happen to look like.
     #[test]
-    fn a_non_amr_stream_records_no_mode() {
+    fn a_non_amr_stream_records_no_mode() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
-        link_media(&mut store, &sdp_media("96 opus/48000/2", None));
-        feed_amr(&mut store, 0xA7, &[2, 2, 2]);
+        link_media(&mut store, &sdp_media("96 opus/48000/2", None)?);
+        feed_amr(&mut store, 0xA7, &[2, 2, 2])?;
 
-        let stream = only_stream(&store, 0xA7);
+        let stream = only_stream(&store, 0xA7)?;
         assert_eq!(stream.codec.as_deref(), Some("opus"));
         assert_eq!(stream.amr_modes_observed(), 0);
         assert_eq!(stream.amr_mode_kbps(), None);
@@ -2601,6 +2630,7 @@ a=rtpmap:96 H264/90000\r\n";
         // the only thing keeping the recorder off it would be a second check
         // somewhere else.
         assert_eq!(stream.amr_packing, None);
+        Ok(())
     }
 
     /// A non-AMR stream that already existed when its SDP arrived learns no
@@ -2612,16 +2642,17 @@ a=rtpmap:96 H264/90000\r\n";
     /// `remember_media_formats` — so removing the second check broke nothing
     /// that any test could see.
     #[test]
-    fn a_non_amr_stream_learns_no_packing_when_the_sdp_follows_the_rtp() {
+    fn a_non_amr_stream_learns_no_packing_when_the_sdp_follows_the_rtp() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
-        feed_amr(&mut store, 0xAB, &[2]);
-        link_media(&mut store, &sdp_media("96 opus/48000/2", None));
-        feed_amr(&mut store, 0xAB, &[2]);
+        feed_amr(&mut store, 0xAB, &[2])?;
+        link_media(&mut store, &sdp_media("96 opus/48000/2", None)?);
+        feed_amr(&mut store, 0xAB, &[2])?;
 
-        let stream = only_stream(&store, 0xAB);
+        let stream = only_stream(&store, 0xAB)?;
         assert_eq!(stream.codec.as_deref(), Some("opus"));
         assert_eq!(stream.amr_packing, None);
         assert_eq!(stream.amr_modes_observed(), 0);
+        Ok(())
     }
 
     /// An endpoint learned WITHOUT a media description pins no packing, even
@@ -2635,7 +2666,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// as the first would let a relay's port allocation assert a packing no
     /// party negotiated.
     #[test]
-    fn an_endpoint_with_no_media_description_pins_no_packing() {
+    fn an_endpoint_with_no_media_description_pins_no_packing() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.link_endpoint(
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
@@ -2643,12 +2674,13 @@ a=rtpmap:96 H264/90000\r\n";
             "amr-call-2",
             &[(96, "AMR-WB".to_string(), 16000)],
         );
-        feed_amr(&mut store, 0xAC, &[2, 2]);
+        feed_amr(&mut store, 0xAC, &[2, 2])?;
 
-        let stream = only_stream(&store, 0xAC);
+        let stream = only_stream(&store, 0xAC)?;
         assert_eq!(stream.codec.as_deref(), Some("AMR-WB"));
         assert_eq!(stream.amr_packing, None);
         assert_eq!(stream.amr_modes_observed(), 0);
+        Ok(())
     }
 
     /// Narrowband AMR is read too, against its own eight-mode table.
@@ -2658,36 +2690,37 @@ a=rtpmap:96 H264/90000\r\n";
     /// sounds thin, and the two tables must not be crossed: narrowband frame
     /// type 8 is comfort noise where wideband frame type 8 is 23.85 kbit/s.
     #[test]
-    fn narrowband_amr_is_read_against_its_own_table() {
+    fn narrowband_amr_is_read_against_its_own_table() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR/8000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR/8000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA8, &[7, 7]);
-        assert_eq!(only_stream(&store, 0xA8).amr_mode_kbps(), Some(12.2));
+        feed_amr(&mut store, 0xA8, &[7, 7])?;
+        assert_eq!(only_stream(&store, 0xA8)?.amr_mode_kbps(), Some(12.2));
 
         let mut store = StreamStore::new(100);
         link_media(
             &mut store,
-            &sdp_media("96 AMR/8000", Some("96 octet-align=1")),
+            &sdp_media("96 AMR/8000", Some("96 octet-align=1"))?,
         );
-        feed_amr(&mut store, 0xA9, &[8, 8]);
+        feed_amr(&mut store, 0xA9, &[8, 8])?;
         assert_eq!(
-            only_stream(&store, 0xA9).amr_modes_observed(),
+            only_stream(&store, 0xA9)?.amr_modes_observed(),
             0,
             "narrowband frame type 8 is comfort noise, not 23.85 kbit/s"
         );
+        Ok(())
     }
 
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
     fn ts(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid")
+        DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_000_000 + secs)
     }
 
     /// Fixed-epoch test clock with millisecond resolution.
     fn ts_ms(ms: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid")
+        DateTime::UNIX_EPOCH + chrono::TimeDelta::milliseconds(1_700_000_000_000 + ms)
     }
 
     /// Build an RtpHeader with explicit payload type and RTP timestamp.
@@ -2707,7 +2740,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// SDP-before-RTP ordering: a stream created after its SDP resolves
     /// codec, clock rate, and dialog at creation (SNB-0007).
     #[test]
-    fn dynamic_pt_resolved_at_creation_when_sdp_seen_first() {
+    fn dynamic_pt_resolved_at_creation_when_sdp_seen_first() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let port = 20000u16;
@@ -2726,7 +2759,7 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(addr, port),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let s = store.get(&key).expect("stream should exist");
+        let s = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
             s.codec.as_deref(),
             Some("H264"),
@@ -2734,13 +2767,14 @@ a=rtpmap:96 H264/90000\r\n";
         );
         assert_eq!(s.clock_rate, 90000, "clock resolved from rtpmap");
         assert_eq!(s.associated_dialog.as_deref(), Some("call-1"), "associated");
+        Ok(())
     }
 
     /// clear() must drop remembered SDP endpoints along with the streams:
     /// a stream created *after* a clear must not resolve its dialog from an
     /// endpoint learned before the clear, resurrecting a dead association.
     #[test]
-    fn clear_drops_remembered_sdp_endpoints() {
+    fn clear_drops_remembered_sdp_endpoints() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let port = 20000u16;
@@ -2755,11 +2789,12 @@ a=rtpmap:96 H264/90000\r\n";
             &make_rtp_header(0xDEAD, 1),
             ts(0),
         );
-        let s = store.iter().next().expect("stream should exist");
+        let s = store.iter().next().ok_or("stream should exist")?;
         assert_eq!(
             s.associated_dialog, None,
             "a post-clear stream must not re-link to a pre-clear dialog via a stale SDP endpoint"
         );
+        Ok(())
     }
 
     /// Under a unique-endpoint flood, the `sdp_endpoints` cap must evict the
@@ -2769,7 +2804,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// batching amortizes the O(n) `shift_remove_index(0)` but must not change
     /// which endpoints survive (newest-in, oldest-out).
     #[test]
-    fn sdp_endpoint_eviction_keeps_newest_drops_oldest() {
+    fn sdp_endpoint_eviction_keeps_newest_drops_oldest() -> Result<(), TestError> {
         let cap = 100usize;
         let flood = 300u16;
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
@@ -2793,7 +2828,7 @@ a=rtpmap:96 H264/90000\r\n";
         let s_new = store
             .iter()
             .find(|s| s.key.src.port() == 20_000 + newest)
-            .expect("newest-endpoint stream exists");
+            .ok_or("newest-endpoint stream exists")?;
         assert_eq!(
             s_new.associated_dialog.as_deref(),
             Some(format!("call-{newest}").as_str()),
@@ -2810,11 +2845,12 @@ a=rtpmap:96 H264/90000\r\n";
         let s_old = store
             .iter()
             .find(|s| s.key.src.port() == 20_000 && s.key.dst.port() == 31_000)
-            .expect("oldest-endpoint stream exists");
+            .ok_or("oldest-endpoint stream exists")?;
         assert_eq!(
             s_old.associated_dialog, None,
             "the oldest remembered endpoint must have been evicted (no stale resolution)"
         );
+        Ok(())
     }
 
     // SNB-0015 (eviction): once the store is at capacity, evicting streams
@@ -2827,7 +2863,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// Sustained cap pressure keeps cumulative eviction shift work ~O(N)
     /// (batched eviction), with the store bounded and indexes consistent.
     #[test]
-    fn eviction_shift_work_is_amortized_and_correct() {
+    fn eviction_shift_work_is_amortized_and_correct() -> Result<(), TestError> {
         let cap = 1_000usize;
         let overflow = 3_000usize;
         let mut store = StreamStore::new(cap);
@@ -2864,6 +2900,7 @@ a=rtpmap:96 H264/90000\r\n";
         // Indexes stayed consistent: no dangling endpoint/ssrc keys for evicted streams.
         let live: usize = store.iter().count();
         assert_eq!(live, store.len(), "iter and len agree after eviction");
+        Ok(())
     }
 
     // SNB-0015: linking an SDP endpoint to its stream(s) must NOT scan the whole
@@ -2874,7 +2911,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// SDP-endpoint linking visits O(N) streams via the endpoint index
     /// (not O(N²)) while linking exactly the streams a full scan would.
     #[test]
-    fn endpoint_linking_is_subquadratic_and_correct() {
+    fn endpoint_linking_is_subquadratic_and_correct() -> Result<(), TestError> {
         let n: u16 = 300;
         let mut store = StreamStore::new(100_000);
         let src_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -2912,6 +2949,7 @@ a=rtpmap:96 H264/90000\r\n";
             store.link_scan_iters() - before <= 1,
             "an endpoint with no streams must visit ~0, not scan the store"
         );
+        Ok(())
     }
 
     // Multi-core (--cores): a call's SDP (SIP) and its RTP can be sharded to
@@ -2923,7 +2961,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// merge + reassociate_all links a stream whose SDP was processed on a
     /// different worker, matching the single-threaded result.
     #[test]
-    fn merge_reassociates_streams_whose_sdp_was_on_another_worker() {
+    fn merge_reassociates_streams_whose_sdp_was_on_another_worker() -> Result<(), TestError> {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
         let port = 20000u16;
 
@@ -2936,22 +2974,35 @@ a=rtpmap:96 H264/90000\r\n";
         b.process_rtp(&parsed, &make_rtp_header(0xABCD, 1), ts(0));
         assert_eq!(b.len(), 1);
         assert!(
-            b.iter().next().unwrap().associated_dialog.is_none(),
+            b.iter()
+                .next()
+                .ok_or("b.iter().next() is None")?
+                .associated_dialog
+                .is_none(),
             "no SDP on the RTP worker → stream is unassociated"
         );
 
         a.merge(b);
         assert_eq!(a.len(), 1, "merge unions the stream in");
         assert!(
-            a.iter().next().unwrap().associated_dialog.is_none(),
+            a.iter()
+                .next()
+                .ok_or("a.iter().next() is None")?
+                .associated_dialog
+                .is_none(),
             "still unlinked until the global pass"
         );
         a.reassociate_all();
         assert_eq!(
-            a.iter().next().unwrap().associated_dialog.as_deref(),
+            a.iter()
+                .next()
+                .ok_or("a.iter().next() is None")?
+                .associated_dialog
+                .as_deref(),
             Some("call-1"),
             "reassociate_all links the merged stream to its call's SDP"
         );
+        Ok(())
     }
 
     // The other ordering: RTP first (stream exists, dynamic PT unknown), then
@@ -2959,7 +3010,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// RTP-before-SDP ordering: link_endpoint enriches and associates the
     /// already-existing stream.
     #[test]
-    fn dynamic_pt_resolved_when_rtp_precedes_sdp() {
+    fn dynamic_pt_resolved_when_rtp_precedes_sdp() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let port = 20000u16;
@@ -2972,15 +3023,20 @@ a=rtpmap:96 H264/90000\r\n";
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
         assert!(
-            store.get(&key).unwrap().codec.is_none(),
+            store
+                .get(&key)
+                .ok_or("store.get(&key) is None")?
+                .codec
+                .is_none(),
             "dynamic PT 96 has no static codec before SDP"
         );
 
         store.link_endpoint(addr, port, "call-1", &[(96, "H264".to_string(), 90000)]);
-        let s = store.get(&key).unwrap();
+        let s = store.get(&key).ok_or("store.get(&key) is None")?;
         assert_eq!(s.codec.as_deref(), Some("H264"));
         assert_eq!(s.clock_rate, 90000);
         assert_eq!(s.associated_dialog.as_deref(), Some("call-1"));
+        Ok(())
     }
 
     // Resolving the clock at creation is what keeps jitter correct: a 90 kHz
@@ -2991,7 +3047,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// An SDP-resolved dynamic PT produces the same near-zero jitter as
     /// the static 90 kHz PT, unlike the inflated 8 kHz-default estimate.
     #[test]
-    fn dynamic_pt_jitter_matches_static_clock() {
+    fn dynamic_pt_jitter_matches_static_clock() -> Result<(), TestError> {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let port = 20000u16;
         let parsed = make_parsed(port, 30000, 160);
@@ -3002,7 +3058,7 @@ a=rtpmap:96 H264/90000\r\n";
         };
         // Feed a 90 kHz, 33 ms-spaced stream of `pt` to a store, optionally
         // seeding the SDP for the endpoint first; return the final jitter (ms).
-        let run = |pt: u8, sdp: bool| -> f64 {
+        let run = |pt: u8, sdp: bool| -> Result<f64, TestError> {
             let mut store = StreamStore::new(100);
             if sdp {
                 store.link_endpoint(addr, port, "c", &[(96, "H264".to_string(), 90000)]);
@@ -3014,12 +3070,12 @@ a=rtpmap:96 H264/90000\r\n";
                     ts_ms(i as i64 * 33),
                 );
             }
-            store.get(&key).unwrap().jitter
+            Ok(store.get(&key).ok_or("the stream is tracked")?.jitter)
         };
 
-        let static_90k = run(34, false); // static 90 kHz reference
-        let dynamic_resolved = run(96, true); // PT 96 resolved to 90 kHz via SDP
-        let dynamic_unresolved = run(96, false); // PT 96 left at 8 kHz default (the bug)
+        let static_90k = run(34, false)?; // static 90 kHz reference
+        let dynamic_resolved = run(96, true)?; // PT 96 resolved to 90 kHz via SDP
+        let dynamic_unresolved = run(96, false)?; // PT 96 left at 8 kHz default (the bug)
 
         assert!(
             static_90k < 5.0,
@@ -3033,11 +3089,12 @@ a=rtpmap:96 H264/90000\r\n";
             dynamic_unresolved > 10.0 * dynamic_resolved.max(0.1),
             "unresolved (8 kHz) jitter ({dynamic_unresolved}) is wildly inflated vs resolved ({dynamic_resolved})"
         );
+        Ok(())
     }
 
     /// The first packet of a new 5-tuple+SSRC creates a tracked stream.
     #[test]
-    fn process_rtp_creates_stream() {
+    fn process_rtp_creates_stream() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         let rtp = make_rtp_header(0xAAAA, 1);
@@ -3050,9 +3107,10 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 1);
         assert_eq!(stream.payload_type, 0);
+        Ok(())
     }
 
     /// A stream cites the frame it began in, and never moves that pointer.
@@ -3068,7 +3126,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// two implementations genuinely disagree here. With both packets carrying
     /// the same frame the test would pass either way and prove nothing.
     #[test]
-    fn a_stream_cites_the_frame_it_began_in_not_its_latest() {
+    fn a_stream_cites_the_frame_it_began_in_not_its_latest() -> Result<(), TestError> {
         use crate::capture::packet::FrameOrigin;
 
         // A parsed packet now carries the Copy locator, so the fixture builds
@@ -3098,7 +3156,7 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 2, "both packets must reach the stream");
         assert_eq!(
             stream.first_frame,
@@ -3121,17 +3179,18 @@ a=rtpmap:96 H264/90000\r\n";
         assert!(
             store
                 .get(&orphan_key)
-                .expect("second stream should exist")
+                .ok_or("second stream should exist")?
                 .first_frame
                 .is_none(),
             "a packet with no pointer must not yield a stream that claims one"
         );
+        Ok(())
     }
 
     /// A second packet on the same key updates the stream instead of
     /// creating a duplicate.
     #[test]
-    fn process_same_ssrc_updates_not_duplicates() {
+    fn process_same_ssrc_updates_not_duplicates() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         let rtp1 = make_rtp_header(0xBBBB, 1);
@@ -3146,13 +3205,14 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(stream.packet_count, 2);
+        Ok(())
     }
 
     /// Exceeding the capacity of 2 evicts the oldest stream.
     #[test]
-    fn max_streams_evicts_oldest() {
+    fn max_streams_evicts_oldest() -> Result<(), TestError> {
         let mut store = StreamStore::new(2);
 
         // Stream 1: ts=0
@@ -3184,12 +3244,13 @@ a=rtpmap:96 H264/90000\r\n";
             store.get(&key1).is_none(),
             "oldest stream should be evicted"
         );
+        Ok(())
     }
 
     /// Linking a media endpoint sets the stream's Call-ID and clears
     /// orphaned.
     #[test]
-    fn link_to_dialog_sets_call_id() {
+    fn link_to_dialog_sets_call_id() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         let rtp = make_rtp_header(0xCCCC, 1);
@@ -3206,12 +3267,13 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
             stream.associated_dialog.as_deref(),
             Some("call-123@example.com")
         );
         assert!(!stream.orphaned());
+        Ok(())
     }
 
     /// An unclaimed stream counts as an orphan from its FIRST packet.
@@ -3226,13 +3288,13 @@ a=rtpmap:96 H264/90000\r\n";
     /// orphaned" is the whole claim — a test that only counted would still pass
     /// against a 30-second rule.
     #[test]
-    fn an_unclaimed_stream_is_orphaned_from_its_first_packet() {
+    fn an_unclaimed_stream_is_orphaned_from_its_first_packet() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         let rtp = make_rtp_header(0xDDDD, 1);
         store.process_rtp(&parsed, &rtp, ts(0));
 
-        let stream = store.iter().next().expect("one stream");
+        let stream = store.iter().next().ok_or("one stream")?;
         assert_eq!(
             stream.first_seen, stream.last_seen,
             "the fixture must be a stream of exactly one packet, or this test \
@@ -3245,11 +3307,12 @@ a=rtpmap:96 H264/90000\r\n";
              invisible"
         );
         assert_eq!(store.orphaned_count(), 1);
+        Ok(())
     }
 
     /// A dialog-linked stream is never an orphan, however young or old.
     #[test]
-    fn linked_streams_not_orphaned() {
+    fn linked_streams_not_orphaned() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         let rtp = make_rtp_header(0xEEEE, 1);
@@ -3268,6 +3331,7 @@ a=rtpmap:96 H264/90000\r\n";
             "linking to a dialog is what ends orphan status, and nothing else \
              has to happen for the answer to change"
         );
+        Ok(())
     }
 
     /// A reception report names the frame it arrived in.
@@ -3277,7 +3341,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// now the frame stopped at the pipeline boundary: `process_rtcp` took the
     /// parsed packets and a timestamp and nothing that could be followed.
     #[test]
-    fn a_reception_report_names_the_frame_it_arrived_in() {
+    fn a_reception_report_names_the_frame_it_arrived_in() -> Result<(), TestError> {
         use crate::capture::packet::{FrameLocator, FrameOrigin};
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
 
@@ -3316,9 +3380,9 @@ a=rtpmap:96 H264/90000\r\n";
 
         let origin = store
             .remote_report(&key)
-            .expect("the report was filed")
+            .ok_or("the report was filed")?
             .origin
-            .expect("and it names its frame");
+            .ok_or("and it names its frame")?;
         assert_eq!(
             origin.source, "capture.pcap",
             "both halves, or it names no frame"
@@ -3326,6 +3390,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(origin.origin.ordinal, 4_212);
         assert_eq!(origin.origin.digest, Some(0xDEAD_BEEF));
         assert!(origin.origin.verifiable, "a capture file can be read again");
+        Ok(())
     }
 
     /// A report from a source nobody can re-read says so.
@@ -3336,7 +3401,8 @@ a=rtpmap:96 H264/90000\r\n";
     /// bytes nobody can fetch. The report carries the source's own answer
     /// rather than implying a resolver could check it.
     #[test]
-    fn a_report_from_an_unreadable_source_does_not_claim_to_be_verifiable() {
+    fn a_report_from_an_unreadable_source_does_not_claim_to_be_verifiable() -> Result<(), TestError>
+    {
         use crate::capture::packet::{FrameLocator, FrameOrigin};
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
 
@@ -3375,14 +3441,15 @@ a=rtpmap:96 H264/90000\r\n";
 
         let origin = store
             .remote_report(&key)
-            .expect("filed")
+            .ok_or("filed")?
             .origin
-            .expect("a live frame still has an ordinal");
+            .ok_or("a live frame still has an ordinal")?;
         assert_eq!(origin.origin.ordinal, 7);
         assert!(
             origin.origin.digest.is_none() && !origin.origin.verifiable,
             "a pointer into bytes nobody can re-read must not look checkable"
         );
+        Ok(())
     }
 
     /// A report about a stream nobody is tracking files no pointer.
@@ -3391,7 +3458,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// naming an SSRC this store has never seen leaves nothing behind, so no
     /// later reader can be handed a frame for a fact that was never recorded.
     #[test]
-    fn a_report_for_an_unknown_stream_files_no_pointer() {
+    fn a_report_for_an_unknown_stream_files_no_pointer() -> Result<(), TestError> {
         use crate::capture::packet::{FrameLocator, FrameOrigin};
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
 
@@ -3432,6 +3499,7 @@ a=rtpmap:96 H264/90000\r\n";
             store.remote_report(&key).is_none(),
             "a report about another SSRC must not attach its frame to this              stream, which would hand a reader bytes that say nothing about it"
         );
+        Ok(())
     }
 
     /// An XR VoIP Metrics block names its frame too.
@@ -3441,7 +3509,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// quote onward, so it is the one that most needs to be traceable to the
     /// packet that carried it.
     #[test]
-    fn an_xr_voip_metrics_block_names_the_frame_it_arrived_in() {
+    fn an_xr_voip_metrics_block_names_the_frame_it_arrived_in() -> Result<(), TestError> {
         use crate::capture::packet::{FrameLocator, FrameOrigin};
         use crate::rtp::rtcp::{ExtendedReport, VoipMetrics, XrBlock};
 
@@ -3495,11 +3563,12 @@ a=rtpmap:96 H264/90000\r\n";
 
         let origin = store
             .remote_voip_metrics(&key)
-            .expect("the XR block was filed")
+            .ok_or("the XR block was filed")?
             .origin
-            .expect("and it names its frame");
+            .ok_or("and it names its frame")?;
         assert_eq!(origin.origin.ordinal, 31);
         assert_eq!(origin.origin.digest, Some(0xFEED));
+        Ok(())
     }
 
     /// An RR block is recorded beside the stream, never over it.
@@ -3508,7 +3577,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// stream keeps what sipnab observed, `remote_report` holds what the far
     /// end claimed, and each carries its units.
     #[test]
-    fn process_rtcp_records_the_report_without_touching_the_measurement() {
+    fn process_rtcp_records_the_report_without_touching_the_measurement() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         store.process_rtp(&parsed, &make_rtp_header(0xFFFF, 1), ts(0));
@@ -3519,8 +3588,11 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let measured_jitter = store.get(&key).unwrap().jitter;
-        let measured_lost = store.get(&key).unwrap().lost_packets;
+        let measured_jitter = store.get(&key).ok_or("store.get(&key) is None")?.jitter;
+        let measured_lost = store
+            .get(&key)
+            .ok_or("store.get(&key) is None")?
+            .lost_packets;
         assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
 
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
@@ -3541,7 +3613,7 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
 
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
             stream.lost_packets, measured_lost,
             "a stream with no observed gaps must not acquire loss from a \
@@ -3554,7 +3626,7 @@ a=rtpmap:96 H264/90000\r\n";
             "the far end's jitter must not replace the measured estimate"
         );
 
-        let remote = store.remote_report(&key).expect("report recorded");
+        let remote = store.remote_report(&key).ok_or("report recorded")?;
         assert_eq!(remote.reporter_ssrc, 0x1111);
         assert_eq!(remote.cumulative_lost, 10);
         assert_eq!(remote.jitter_timestamp_units, 42);
@@ -3563,6 +3635,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(remote.jitter_ms, Some(5.25));
         assert_eq!(remote.reports_seen, 1);
         assert!((remote.fraction_lost_pct() - 25.0 * 100.0 / 256.0).abs() < 1e-9);
+        Ok(())
     }
 
     /// A VoIP Metrics block whose every field disagrees with the fixture, so
@@ -3611,7 +3684,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// through its `_ => continue`, so the far end's own R factor, MOS and
     /// burst/gap densities were parsed and then dropped on the floor.
     #[test]
-    fn process_rtcp_retains_xr_voip_metrics() {
+    fn process_rtcp_retains_xr_voip_metrics() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0xABCD);
 
@@ -3626,7 +3699,7 @@ a=rtpmap:96 H264/90000\r\n";
 
         let xr = store
             .remote_voip_metrics(&key)
-            .expect("XR VoIP Metrics must be retained, not dropped");
+            .ok_or("XR VoIP Metrics must be retained, not dropped")?;
         assert_eq!(xr.reporter_ssrc, 0x2222);
         assert_eq!(xr.reports_seen, 1);
         assert_eq!(xr.metrics.r_factor(), Some(32));
@@ -3635,6 +3708,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(xr.metrics.ext_r_factor(), None, "127 means unavailable");
         assert_eq!(xr.metrics.signal_level_dbm0(), Some(-20));
         assert_eq!(xr.metrics.round_trip_delay, 450);
+        Ok(())
     }
 
     /// The far end's XR figures never become sipnab's.
@@ -3645,19 +3719,26 @@ a=rtpmap:96 H264/90000\r\n";
     /// Merging the two would replace a measurement with a claim, and an
     /// unauthenticated one.
     #[test]
-    fn xr_voip_metrics_never_overwrite_the_measurement() {
+    fn xr_voip_metrics_never_overwrite_the_measurement() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0xBEEF);
 
-        let mos_of = |store: &StreamStore| {
-            let s = store.get(&key).unwrap();
+        let mos_of = |store: &StreamStore| -> Result<_, TestError> {
+            let s = store.get(&key).ok_or("the stream is tracked")?;
             let total = s.packet_count + s.lost_packets;
             let loss_pct = s.lost_packets as f64 / total as f64 * 100.0;
-            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+            Ok(crate::rtp::quality::estimate_mos(
+                s.jitter,
+                loss_pct,
+                s.codec.as_deref(),
+            ))
         };
-        let measured_jitter = store.get(&key).unwrap().jitter;
-        let measured_lost = store.get(&key).unwrap().lost_packets;
-        let measured_mos = mos_of(&store);
+        let measured_jitter = store.get(&key).ok_or("store.get(&key) is None")?.jitter;
+        let measured_lost = store
+            .get(&key)
+            .ok_or("store.get(&key) is None")?
+            .lost_packets;
+        let measured_mos = mos_of(&store)?;
         assert_eq!(measured_lost, 0, "the fixture stream has no sequence gaps");
 
         store.process_rtcp(
@@ -3669,7 +3750,7 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
 
-        let stream = store.get(&key).expect("stream should exist");
+        let stream = store.get(&key).ok_or("stream should exist")?;
         assert_eq!(
             stream.lost_packets, measured_lost,
             "an endpoint's claimed loss rate must not become sipnab's loss count"
@@ -3679,15 +3760,16 @@ a=rtpmap:96 H264/90000\r\n";
             "an endpoint's claimed delay must not become sipnab's jitter"
         );
         assert!(
-            (mos_of(&store) - measured_mos).abs() < f64::EPSILON,
+            (mos_of(&store)? - measured_mos).abs() < f64::EPSILON,
             "an endpoint asserting MOS 1.5 must not move the MOS sipnab scored"
         );
+        Ok(())
     }
 
     /// Successive XRs replace the figures and count up, so a reader can tell a
     /// single sample from a long-running report.
     #[test]
-    fn xr_voip_metrics_count_reports_and_keep_the_latest() {
+    fn xr_voip_metrics_count_reports_and_keep_the_latest() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0xC0DE);
 
@@ -3704,15 +3786,16 @@ a=rtpmap:96 H264/90000\r\n";
             );
         }
 
-        let xr = store.remote_voip_metrics(&key).expect("XR recorded");
+        let xr = store.remote_voip_metrics(&key).ok_or("XR recorded")?;
         assert_eq!(xr.reports_seen, 2, "both blocks counted");
         assert_eq!(xr.metrics.r_factor(), Some(80), "the latest block wins");
+        Ok(())
     }
 
     /// An XR about an SSRC no stream carries is ignored rather than filed
     /// against an arbitrary stream.
     #[test]
-    fn xr_for_an_unknown_ssrc_is_ignored() {
+    fn xr_for_an_unknown_ssrc_is_ignored() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0x1234);
 
@@ -3729,12 +3812,13 @@ a=rtpmap:96 H264/90000\r\n";
             store.remote_voip_metrics(&key).is_none(),
             "a report about another SSRC must not attach to this stream"
         );
+        Ok(())
     }
 
     /// An XR carrying only block types sipnab does not record leaves no trace,
     /// and does not invent an empty entry that reads as "the far end reported".
     #[test]
-    fn xr_without_voip_metrics_records_nothing() {
+    fn xr_without_voip_metrics_records_nothing() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let key = xr_fixture(&mut store, 0x4321);
 
@@ -3751,13 +3835,14 @@ a=rtpmap:96 H264/90000\r\n";
         );
 
         assert!(store.remote_voip_metrics(&key).is_none());
+        Ok(())
     }
 
     /// MOS is scored from sipnab's own measurement, so a forged RTCP report
     /// cannot move it. RTCP is unauthenticated; before this, a single spoofed
     /// datagram claiming heavy loss dropped a clean stream to the MOS floor.
     #[test]
-    fn a_spoofed_rtcp_report_cannot_move_mos() {
+    fn a_spoofed_rtcp_report_cannot_move_mos() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         for seq in 1..=40u16 {
@@ -3772,13 +3857,17 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let mos_of = |store: &StreamStore| {
-            let s = store.get(&key).unwrap();
+        let mos_of = |store: &StreamStore| -> Result<_, TestError> {
+            let s = store.get(&key).ok_or("the stream is tracked")?;
             let total = s.packet_count + s.lost_packets;
             let loss_pct = s.lost_packets as f64 / total as f64 * 100.0;
-            crate::rtp::quality::estimate_mos(s.jitter, loss_pct, s.codec.as_deref())
+            Ok(crate::rtp::quality::estimate_mos(
+                s.jitter,
+                loss_pct,
+                s.codec.as_deref(),
+            ))
         };
-        let before = mos_of(&store);
+        let before = mos_of(&store)?;
         assert!(before > 4.0, "clean fixture stream scores well: {before}");
 
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
@@ -3800,21 +3889,22 @@ a=rtpmap:96 H264/90000\r\n";
         );
 
         assert_eq!(
-            mos_of(&store),
+            mos_of(&store)?,
             before,
             "MOS must be computed from what sipnab measured, not from what a \
              datagram asserted"
         );
         // The claim is not discarded — it is just labeled.
-        let remote = store.remote_report(&key).expect("claim recorded");
+        let remote = store.remote_report(&key).ok_or("claim recorded")?;
         assert_eq!(remote.cumulative_lost, 100_000);
+        Ok(())
     }
 
     /// One SSRC on two 5-tuples is one source seen at two points; a report
     /// about it is recorded against both, not against whichever happened to be
     /// inserted first.
     #[test]
-    fn rtcp_reaches_every_stream_carrying_the_reported_ssrc() {
+    fn rtcp_reaches_every_stream_carrying_the_reported_ssrc() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let p1 = make_parsed(20000, 30000, 160);
         let p2 = make_parsed(21000, 30000, 160);
@@ -3837,7 +3927,7 @@ a=rtpmap:96 H264/90000\r\n";
         for key in [&first, &second] {
             let r = store
                 .remote_report(key)
-                .unwrap_or_else(|| panic!("report missing for {key:?}"));
+                .ok_or_else(|| format!("report missing for {key:?}"))?;
             // 77 RTP-ts units at 8 kHz → 9.625 ms.
             assert_eq!(r.jitter_ms, Some(9.625));
             assert_eq!(r.cumulative_lost, 3);
@@ -3845,17 +3935,18 @@ a=rtpmap:96 H264/90000\r\n";
         // And neither measurement moved.
         for (label, key) in [("first-inserted", &first), ("second-inserted", &second)] {
             assert_eq!(
-                store.get(key).unwrap().lost_packets,
+                store.get(key).ok_or("store.get(key) is None")?.lost_packets,
                 0,
                 "the {label} stream observed no sequence gap, so it has no loss \
                  to report whatever the far end claims"
             );
         }
+        Ok(())
     }
 
     /// Repeated reports about one stream update in place and count.
     #[test]
-    fn repeated_reports_keep_the_latest_and_count_them() {
+    fn repeated_reports_keep_the_latest_and_count_them() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
@@ -3866,16 +3957,17 @@ a=rtpmap:96 H264/90000\r\n";
         };
         store.process_rtcp(&rr_for(0xCAFE, 8), chrono::Utc::now(), None);
         store.process_rtcp(&rr_for(0xCAFE, 16), chrono::Utc::now(), None);
-        let r = store.remote_report(&key).expect("recorded");
+        let r = store.remote_report(&key).ok_or("recorded")?;
         assert_eq!(r.jitter_timestamp_units, 16, "latest report wins");
         assert_eq!(r.reports_seen, 2);
+        Ok(())
     }
 
     /// A stream whose clock rate is assumed must not have the report's jitter
     /// dressed up as milliseconds — the conversion needs a clock rate, and
     /// there is not one.
     #[test]
-    fn remote_jitter_has_no_millisecond_form_without_a_clock_rate() {
+    fn remote_jitter_has_no_millisecond_form_without_a_clock_rate() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         // PT 100: outside RFC 3551, no rtpmap ever seen.
@@ -3891,18 +3983,19 @@ a=rtpmap:96 H264/90000\r\n";
             "a dynamic PT with no rtpmap has no knowable clock rate"
         );
         store.process_rtcp(&rr_for(0xB0B0, 77), chrono::Utc::now(), None);
-        let r = store.remote_report(&key).expect("recorded");
+        let r = store.remote_report(&key).ok_or("recorded")?;
         assert_eq!(r.jitter_timestamp_units, 77, "the wire value is kept");
         assert_eq!(
             r.jitter_ms, None,
             "no clock rate, no milliseconds — 9.625 would be a fabrication"
         );
+        Ok(())
     }
 
     /// Evicting a stream drops its provenance with it, so a later stream that
     /// reuses the same 5-tuple + SSRC does not inherit a stranger's report.
     #[test]
-    fn eviction_drops_provenance() {
+    fn eviction_drops_provenance() -> Result<(), TestError> {
         let mut store = StreamStore::new(2);
         let p1 = make_parsed(20000, 30000, 160);
         store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(0));
@@ -3934,6 +4027,7 @@ a=rtpmap:96 H264/90000\r\n";
         // Re-create the same key: it starts with no remote claim.
         store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(3));
         assert!(store.remote_report(&key).is_none());
+        Ok(())
     }
 
     /// RFC 3551 fixes a clock rate for every assigned static payload type, and
@@ -3941,7 +4035,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// each jitter sample 11.25x too large — not an approximation, a different
     /// quantity.
     #[test]
-    fn static_payload_types_get_their_rfc3551_clock_rate() {
+    fn static_payload_types_get_their_rfc3551_clock_rate() -> Result<(), TestError> {
         let cases = [
             (0u8, 8000u32), // PCMU
             (6, 16000),     // DVI4 16 kHz
@@ -3969,12 +4063,13 @@ a=rtpmap:96 H264/90000\r\n";
                 dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
             };
             assert_eq!(
-                store.get(&key).unwrap().clock_rate,
+                store.get(&key).ok_or("store.get(&key) is None")?.clock_rate,
                 want,
                 "PT {pt} is {want} Hz in RFC 3551"
             );
             assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Rfc3551));
         }
+        Ok(())
     }
 
     /// A payload type RFC 3551 does not assign, with no rtpmap to resolve it,
@@ -3982,7 +4077,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// report, and `measured_jitter_ms` says so instead of returning the
     /// number the 8 kHz placeholder produced.
     #[test]
-    fn jitter_is_withheld_when_the_clock_rate_is_a_guess() {
+    fn jitter_is_withheld_when_the_clock_rate_is_a_guess() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         // A 90 kHz video stream at 33 ms per frame, payload type 96, no SDP.
@@ -4000,7 +4095,7 @@ a=rtpmap:96 H264/90000\r\n";
         };
         assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Assumed));
         assert!(
-            store.get(&key).unwrap().jitter > 100.0,
+            store.get(&key).ok_or("store.get(&key) is None")?.jitter > 100.0,
             "the 8 kHz placeholder inflates this stream's jitter by 11.25x — \
              the number the field still carries"
         );
@@ -4009,6 +4104,7 @@ a=rtpmap:96 H264/90000\r\n";
             None,
             "with no basis for the clock rate there is no jitter measurement"
         );
+        Ok(())
     }
 
     /// An SDP that arrives after the media resolves the clock rate, but the
@@ -4017,7 +4113,8 @@ a=rtpmap:96 H264/90000\r\n";
     /// restarted, and withheld until it has re-converged rather than published
     /// as the zero it was seeded with.
     #[test]
-    fn late_sdp_restarts_the_jitter_estimate_and_withholds_it_until_converged() {
+    fn late_sdp_restarts_the_jitter_estimate_and_withholds_it_until_converged()
+    -> Result<(), TestError> {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let port = 20000u16;
         let parsed = make_parsed(port, 30000, 160);
@@ -4034,14 +4131,17 @@ a=rtpmap:96 H264/90000\r\n";
                 ts_ms(i64::from(i) * 33),
             );
         }
-        let stale = store.get(&key).unwrap().jitter;
+        let stale = store.get(&key).ok_or("store.get(&key) is None")?.jitter;
         assert!(stale > 100.0, "accumulated at 8 kHz: {stale}");
 
         store.link_endpoint(addr, port, "late@call", &[(96, "H264".to_string(), 90000)]);
-        assert_eq!(store.get(&key).unwrap().clock_rate, 90000);
+        assert_eq!(
+            store.get(&key).ok_or("store.get(&key) is None")?.clock_rate,
+            90000
+        );
         assert_eq!(store.clock_grounding(&key), Some(ClockGrounding::Rtpmap));
         assert_eq!(
-            store.get(&key).unwrap().jitter,
+            store.get(&key).ok_or("store.get(&key) is None")?.jitter,
             0.0,
             "the estimate accumulated at the wrong clock is discarded, not kept"
         );
@@ -4062,18 +4162,19 @@ a=rtpmap:96 H264/90000\r\n";
         }
         let j = store
             .measured_jitter_ms(&key)
-            .expect("re-converged, so reportable again");
+            .ok_or("re-converged, so reportable again")?;
         assert!(
             j < 5.0,
             "at the true 90 kHz clock this evenly paced stream is near-zero \
              jitter, got {j}"
         );
+        Ok(())
     }
 
     /// With audio capture disabled (batch mode: nothing ever reads the
     /// buffer), G.711 payloads must not be cloned into payload_buffer.
     #[test]
-    fn no_audio_buffering_when_capture_disabled() {
+    fn no_audio_buffering_when_capture_disabled() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.set_audio_capture(false);
         let parsed = make_parsed(20000, 30000, 160);
@@ -4081,12 +4182,13 @@ a=rtpmap:96 H264/90000\r\n";
         // this is exactly the packet that would otherwise be buffered.
         store.process_rtp(&parsed, &make_rtp_header(0xA0D1, 1), ts(0));
         store.process_rtp(&parsed, &make_rtp_header(0xA0D1, 2), ts(1));
-        let stream = store.iter().next().expect("stream exists");
+        let stream = store.iter().next().ok_or("stream exists")?;
         assert!(
             stream.payload_buffer.is_empty(),
             "audio payloads must not be buffered when capture is disabled"
         );
         assert_eq!(stream.packet_count, 2, "stats still update normally");
+        Ok(())
     }
 
     /// A ring that wraps must COUNT what it dropped.
@@ -4100,7 +4202,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// increment still compiles, and `wrap_clause`'s test still passes,
     /// because it is handed a number rather than measuring one.
     #[test]
-    fn a_wrapping_payload_ring_counts_what_it_dropped() {
+    fn a_wrapping_payload_ring_counts_what_it_dropped() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.set_max_audio_frames(3);
         let parsed = make_parsed(20000, 30000, 160);
@@ -4109,7 +4211,7 @@ a=rtpmap:96 H264/90000\r\n";
             store.process_rtp(&parsed, &make_rtp_header(0xA0D3, seq), ts(i64::from(seq)));
         }
 
-        let stream = store.iter().next().expect("stream exists");
+        let stream = store.iter().next().ok_or("stream exists")?;
         assert_eq!(
             stream.payload_buffer.len(),
             3,
@@ -4120,21 +4222,23 @@ a=rtpmap:96 H264/90000\r\n";
             "ten frames into a ring of three drops seven; a silent drop is what \
              made the exported duration read as the call's length"
         );
+        Ok(())
     }
 
     /// Default (TUI / library use): G.711 payloads ARE buffered so
     /// on-demand WAV export and playback keep working.
     #[test]
-    fn audio_buffering_on_by_default_for_g711() {
+    fn audio_buffering_on_by_default_for_g711() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let parsed = make_parsed(20000, 30000, 160);
         store.process_rtp(&parsed, &make_rtp_header(0xA0D2, 1), ts(0));
-        let stream = store.iter().next().expect("stream exists");
+        let stream = store.iter().next().ok_or("stream exists")?;
         assert_eq!(
             stream.payload_buffer.len(),
             1,
             "default behavior must keep buffering for TUI export/playback"
         );
+        Ok(())
     }
 
     /// Build a one-block Receiver Report targeting `ssrc` with the given
@@ -4158,7 +4262,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// After a stream sharing an SSRC is evicted, a report must still reach
     /// the survivor — a stale SSRC index would miss it or address a ghost.
     #[test]
-    fn rtcp_after_eviction_reaches_surviving_stream() {
+    fn rtcp_after_eviction_reaches_surviving_stream() -> Result<(), TestError> {
         let mut store = StreamStore::new(2);
         let p1 = make_parsed(20000, 30000, 160);
         let p2 = make_parsed(21000, 30000, 160);
@@ -4182,23 +4286,25 @@ a=rtpmap:96 H264/90000\r\n";
             Some(Some(6.875)),
             "RTCP must reach the surviving stream after eviction"
         );
+        Ok(())
     }
 
     /// RTCP arriving after clear() must be a safe no-op.
     #[test]
-    fn rtcp_after_clear_is_noop() {
+    fn rtcp_after_clear_is_noop() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
         store.clear();
         store.process_rtcp(&rr_for(0xCAFE, 11), chrono::Utc::now(), None); // must not panic
         assert!(store.is_empty());
+        Ok(())
     }
 
     /// An RTCP report for an untracked SSRC leaves existing streams
     /// untouched and records nothing.
     #[test]
-    fn rtcp_unknown_ssrc_is_noop() {
+    fn rtcp_unknown_ssrc_is_noop() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         let p = make_parsed(20000, 30000, 160);
         store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
@@ -4208,21 +4314,26 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        assert_eq!(store.get(&key).unwrap().jitter, 0.0);
+        assert_eq!(
+            store.get(&key).ok_or("store.get(&key) is None")?.jitter,
+            0.0
+        );
         assert!(store.remote_report(&key).is_none());
+        Ok(())
     }
 
     /// A fresh store reports empty with zero length.
     #[test]
-    fn is_empty_and_len() {
+    fn is_empty_and_len() -> Result<(), TestError> {
         let store = StreamStore::new(100);
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
+        Ok(())
     }
 
     /// iter() visits every tracked stream exactly once.
     #[test]
-    fn iter_yields_all_streams() {
+    fn iter_yields_all_streams() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         for i in 0..5u16 {
             let parsed = make_parsed(20000 + i, 30000, 160);
@@ -4231,6 +4342,7 @@ a=rtpmap:96 H264/90000\r\n";
         }
 
         assert_eq!(store.iter().count(), 5);
+        Ok(())
     }
 
     // -- attributing an ICMP quote to media ------------------------------
@@ -4275,7 +4387,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// packets, such a stream would stay an orphan and the operator would be
     /// told media exists for no call.
     #[test]
-    fn linking_an_sdp_claims_a_stream_that_already_arrived() {
+    fn linking_an_sdp_claims_a_stream_that_already_arrived() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.process_rtp(
             &make_parsed(20000, 30000, 160),
@@ -4295,6 +4407,7 @@ a=rtpmap:96 H264/90000\r\n";
             ["call-late"],
             "linking the SDP claims the stream that was already there"
         );
+        Ok(())
     }
 
     /// An association already made is never overwritten by a later SDP for the
@@ -4305,7 +4418,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// stream, the quality figures an operator reads would move between calls
     /// depending on the order the capture happened to be processed in.
     #[test]
-    fn a_second_sdp_for_the_same_socket_does_not_steal_the_stream() {
+    fn a_second_sdp_for_the_same_socket_does_not_steal_the_stream() -> Result<(), TestError> {
         let mut store = store_with_one_stream();
         // Only the rival SDP, and then the re-link pass. Linking "call-1"
         // again here would restore the value a stolen association overwrote,
@@ -4321,12 +4434,13 @@ a=rtpmap:96 H264/90000\r\n";
             ["call-1"],
             "the first call keeps its stream through a rival SDP and the re-link pass"
         );
+        Ok(())
     }
 
     /// Tier 1: the quoted 5-tuple is exactly a tracked stream. Strongest tie
     /// available, and it names the call.
     #[test]
-    fn an_exact_five_tuple_matches_the_stream_it_names() {
+    fn an_exact_five_tuple_matches_the_stream_it_names() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             SocketAddr::new(a(), 20000),
@@ -4336,6 +4450,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(att.matched, MediaMatch::Flow);
         assert_eq!(att.streams, 1);
         assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+        Ok(())
     }
 
     /// Both halves of the 5-tuple are part of the key. Two senders can be
@@ -4344,7 +4459,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// Matching on the destination alone would report the wrong stream, and
     /// with it the wrong call, for the other.
     #[test]
-    fn a_different_sender_to_the_same_socket_is_not_the_same_flow() {
+    fn a_different_sender_to_the_same_socket_is_not_the_same_flow() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             // Same destination socket, a different source port.
@@ -4358,12 +4473,13 @@ a=rtpmap:96 H264/90000\r\n";
             "the source socket is half the key: this is not that stream's flow"
         );
         assert_eq!(att.matched, MediaMatch::Endpoint);
+        Ok(())
     }
 
     /// The same, the other way round: the tracked source socket aiming at a
     /// destination no stream ever used is not the tracked flow either.
     #[test]
-    fn the_same_sender_to_a_different_socket_is_not_the_same_flow() {
+    fn the_same_sender_to_a_different_socket_is_not_the_same_flow() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             SocketAddr::new(a(), 20000),
@@ -4376,6 +4492,7 @@ a=rtpmap:96 H264/90000\r\n";
             "the destination socket is the other half of the key"
         );
         assert_eq!(att.matched, MediaMatch::Endpoint);
+        Ok(())
     }
 
     /// Direction is part of the key. A quote of the reverse datagram describes
@@ -4383,7 +4500,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// wrong socket failed. It still matches — both sockets belong to the same
     /// media — but at the weaker endpoint tier, which says so.
     #[test]
-    fn the_reverse_direction_is_not_an_exact_flow_match() {
+    fn the_reverse_direction_is_not_an_exact_flow_match() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             SocketAddr::new(b(), 30000),
@@ -4391,13 +4508,14 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
         assert_eq!(att.matched, MediaMatch::Endpoint);
+        Ok(())
     }
 
     /// Tier 2: RTCP runs one port above RTP, so its 5-tuple can never be a
     /// stream's. The SSRC in the quoted report is the tie that survives, and
     /// it is what carries the commonest real case.
     #[test]
-    fn an_rtcp_port_pair_matches_on_ssrc_alone() {
+    fn an_rtcp_port_pair_matches_on_ssrc_alone() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             SocketAddr::new(a(), 20001),
@@ -4406,13 +4524,14 @@ a=rtpmap:96 H264/90000\r\n";
         );
         assert_eq!(att.matched, MediaMatch::Ssrc);
         assert_eq!(att.call_ids, vec!["call-1".to_string()]);
+        Ok(())
     }
 
     /// Tier 4: with no media captured at all, the SDP-advertised port one
     /// below still places an RTCP failure on the call. This is the case an
     /// operator is describing when they say the call connected silently.
     #[test]
-    fn an_rtcp_port_falls_back_to_the_sdp_port_one_below() {
+    fn an_rtcp_port_falls_back_to_the_sdp_port_one_below() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.link_endpoint(b(), 30000, "call-2", &[]);
         assert_eq!(store.len(), 0, "an SDP link creates no stream");
@@ -4425,13 +4544,14 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(att.matched, MediaMatch::SdpEndpoint);
         assert_eq!(att.streams, 0, "an SDP match has no stream behind it");
         assert_eq!(att.call_ids, vec!["call-2".to_string()]);
+        Ok(())
     }
 
     /// The companion rule is one port up from an EVEN media port, per
     /// [RFC 3550 section 11](https://www.rfc-editor.org/rfc/rfc3550#section-11). Reading it as "any port, minus one" would attach an error on an
     /// even port to whatever odd port happened to be advertised below it.
     #[test]
-    fn the_rtcp_companion_rule_only_applies_above_an_even_port() {
+    fn the_rtcp_companion_rule_only_applies_above_an_even_port() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         // An odd advertised port: nothing may be inferred one above it.
         store.link_endpoint(b(), 30001, "call-3", &[]);
@@ -4441,12 +4561,13 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
         assert_eq!(att.matched, MediaMatch::None);
+        Ok(())
     }
 
     /// Nothing matched is a real answer, not a failure: the caller counts it
     /// as unattributed and still reports the endpoint.
     #[test]
-    fn an_unrelated_flow_matches_nothing() {
+    fn an_unrelated_flow_matches_nothing() -> Result<(), TestError> {
         let store = store_with_one_stream();
         let att = store.attribute_media_quote(
             SocketAddr::new(a(), 41000),
@@ -4456,12 +4577,13 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(att.matched, MediaMatch::None);
         assert_eq!(att.streams, 0);
         assert!(att.call_ids.is_empty());
+        Ok(())
     }
 
     /// A stream never linked to a dialog still matches — the flow is real —
     /// but names no call, and must not invent one.
     #[test]
-    fn a_stream_without_a_dialog_matches_but_names_no_call() {
+    fn a_stream_without_a_dialog_matches_but_names_no_call() -> Result<(), TestError> {
         let mut store = StreamStore::new(100);
         store.process_rtp(
             &make_parsed(20000, 30000, 160),
@@ -4479,13 +4601,14 @@ a=rtpmap:96 H264/90000\r\n";
             att.call_ids.is_empty(),
             "an unlinked stream has no call to name"
         );
+        Ok(())
     }
 
     /// An empty store matches nothing, which is the answer for a capture that
     /// holds no media — and it must not panic reaching for indexes that are
     /// empty.
     #[test]
-    fn an_empty_store_matches_nothing() {
+    fn an_empty_store_matches_nothing() -> Result<(), TestError> {
         let store = StreamStore::new(100);
         let att = store.attribute_media_quote(
             SocketAddr::new(a(), 20000),
@@ -4493,6 +4616,7 @@ a=rtpmap:96 H264/90000\r\n";
             Some(1),
         );
         assert_eq!(att, MediaAttribution::default());
+        Ok(())
     }
 
     /// An RR carrying an SR echo yields a round trip on the stream.
@@ -4507,7 +4631,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// stamped whenever the capture was taken — anchoring on `Utc::now()` would
     /// compute the age of the capture instead of the round trip.
     #[test]
-    fn an_sr_echo_yields_a_round_trip_on_the_stream() {
+    fn an_sr_echo_yields_a_round_trip_on_the_stream() -> Result<(), TestError> {
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
 
         let mut store = StreamStore::new(10);
@@ -4535,12 +4659,13 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
 
-        let (ms, source) = store.round_trip(&key).expect("an SR echo is a round trip");
+        let (ms, source) = store.round_trip(&key).ok_or("an SR echo is a round trip")?;
         assert!(
             (ms - 200.0).abs() < 2.0,
             "expected ~200 ms (250 ms elapsed less 50 ms of reporter delay), got {ms}"
         );
         assert_eq!(source, RttSource::SenderReportEcho);
+        Ok(())
     }
 
     /// No report is NOT a round trip of zero.
@@ -4549,7 +4674,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// with one unanswered question, not a healthy one. Reporting the unknown
     /// as 0 ms is how a call that is unusable on delay alone reads as fine.
     #[test]
-    fn a_stream_nobody_reported_on_has_no_round_trip_rather_than_zero() {
+    fn a_stream_nobody_reported_on_has_no_round_trip_rather_than_zero() -> Result<(), TestError> {
         let mut store = StreamStore::new(10);
         let key = xr_fixture(&mut store, 0xCAFE);
 
@@ -4567,6 +4692,7 @@ a=rtpmap:96 H264/90000\r\n";
         // Anti-vacuity: the report DID land, so this is about the round trip
         // and not about the report being dropped.
         assert!(store.remote_report(&key).is_some());
+        Ok(())
     }
 
     /// An endpoint's own XR figure beats one derived here.
@@ -4576,7 +4702,7 @@ a=rtpmap:96 H264/90000\r\n";
     /// is the whole round trip only when the tap sits with the SR sender, so it
     /// loses whenever a real measurement exists.
     #[test]
-    fn an_endpoints_own_xr_figure_beats_one_derived_here() {
+    fn an_endpoints_own_xr_figure_beats_one_derived_here() -> Result<(), TestError> {
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
 
         let mut store = StreamStore::new(10);
@@ -4601,7 +4727,7 @@ a=rtpmap:96 H264/90000\r\n";
             seen_at,
             None,
         );
-        let (echo_ms, echo_src) = store.round_trip(&key).expect("echo present");
+        let (echo_ms, echo_src) = store.round_trip(&key).ok_or("echo present")?;
         assert_eq!(echo_src, RttSource::SenderReportEcho);
         assert!((echo_ms - 600.0).abs() < 2.0, "got {echo_ms}");
 
@@ -4616,11 +4742,12 @@ a=rtpmap:96 H264/90000\r\n";
             None,
         );
 
-        let (ms, source) = store.round_trip(&key).expect("xr present");
+        let (ms, source) = store.round_trip(&key).ok_or("xr present")?;
         assert_eq!(source, RttSource::XrVoipMetrics);
         assert!(
             (ms - 90.0).abs() < f64::EPSILON,
             "the endpoint's own 90 ms must win over the derived 600 ms, got {ms}"
         );
+        Ok(())
     }
 }

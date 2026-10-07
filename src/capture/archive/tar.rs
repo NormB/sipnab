@@ -658,6 +658,9 @@ mod tests {
     use super::testutil::{Spec, build, header, seal};
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Walk a whole archive, returning each entry and its data.
     fn walk(bytes: &[u8]) -> Result<Vec<(EntryHeader, Vec<u8>)>, TarError> {
         let mut tar = TarReader::new(bytes);
@@ -671,12 +674,12 @@ mod tests {
     }
 
     #[test]
-    fn regular_files_come_back_with_their_names_and_data() {
+    fn regular_files_come_back_with_their_names_and_data() -> Result<(), TestError> {
         let tar = build(&[
             Spec::file("a.pcap", b"first"),
             Spec::file("dir/b.pcap", &[7u8; 1300]),
         ]);
-        let got = walk(&tar).expect("walk");
+        let got = walk(&tar).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got.len(), 2);
         assert_eq!(got[0].0.name, b"a.pcap");
         assert_eq!(got[0].0.kind, EntryKind::File);
@@ -687,32 +690,42 @@ mod tests {
             got[1].0.offset, 1024,
             "second header follows one data block"
         );
+        Ok(())
     }
 
     /// An entry the caller does not read is skipped whole, padding included,
     /// so the next header is found where it is.
     #[test]
-    fn an_unread_entry_is_skipped_and_the_next_one_still_found() {
+    fn an_unread_entry_is_skipped_and_the_next_one_still_found() -> Result<(), TestError> {
         let tar = build(&[
             Spec::file("skip.bin", &[1u8; 700]),
             Spec::file("keep", b"k"),
         ]);
         let mut r = TarReader::new(&tar[..]);
-        let first = r.next_entry().expect("first").expect("some");
+        let first = r
+            .next_entry()
+            .map_err(|e| format!("first: {e:?}"))?
+            .ok_or("some")?;
         assert_eq!(first.size, 700);
-        let second = r.next_entry().expect("second").expect("some");
+        let second = r
+            .next_entry()
+            .map_err(|e| format!("second: {e:?}"))?
+            .ok_or("some")?;
         assert_eq!(second.name, b"keep");
         let mut d = Vec::new();
-        r.data().read_to_end(&mut d).expect("data");
+        r.data()
+            .read_to_end(&mut d)
+            .map_err(|e| format!("data: {e:?}"))?;
         assert_eq!(d, b"k");
-        assert!(r.next_entry().expect("end").is_none());
+        assert!(r.next_entry().map_err(|e| format!("end: {e:?}"))?.is_none());
+        Ok(())
     }
 
     /// POSIX: links, directories, devices and fifos store no data, whatever
     /// the size field says. A reader that skipped `size` bytes for them would
     /// land in the middle of the next member.
     #[test]
-    fn kinds_without_data_never_consume_the_next_member() {
+    fn kinds_without_data_never_consume_the_next_member() -> Result<(), TestError> {
         let tar = build(&[
             Spec {
                 name: b"link",
@@ -735,7 +748,7 @@ mod tests {
             },
             Spec::file("after", b"still here"),
         ]);
-        let got = walk(&tar).expect("walk");
+        let got = walk(&tar).map_err(|e| format!("walk: {e:?}"))?;
         let kinds: Vec<EntryKind> = got.iter().map(|(h, _)| h.kind).collect();
         assert_eq!(
             kinds,
@@ -749,19 +762,21 @@ mod tests {
         );
         assert!(got[..4].iter().all(|(h, d)| h.size == 0 && d.is_empty()));
         assert_eq!(got[4].1, b"still here");
+        Ok(())
     }
 
     #[test]
-    fn a_gnu_long_name_names_the_next_entry() {
+    fn a_gnu_long_name_names_the_next_entry() -> Result<(), TestError> {
         let long = format!("{}/capture.pcap", "d".repeat(150));
         let tar = build(&[Spec::file(&long, b"x")]);
-        let got = walk(&tar).expect("walk");
+        let got = walk(&tar).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got.len(), 1, "the L entry is metadata, not a member");
         assert_eq!(got[0].0.name, long.as_bytes());
+        Ok(())
     }
 
     #[test]
-    fn a_pax_header_overrides_name_and_size() {
+    fn a_pax_header_overrides_name_and_size() -> Result<(), TestError> {
         let path = "pax/very-long-name.pcap";
         let record = |k: &str, v: &str| {
             // "LEN key=value\n", where LEN counts its own digits too.
@@ -786,14 +801,15 @@ mod tests {
             out.push(0);
         }
         out.extend_from_slice(&[0u8; 1024]);
-        let got = walk(&out).expect("walk");
+        let got = walk(&out).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0.name, path.as_bytes());
         assert_eq!(got[0].1, b"abc");
+        Ok(())
     }
 
     #[test]
-    fn the_ustar_prefix_is_joined_to_the_name() {
+    fn the_ustar_prefix_is_joined_to_the_name() -> Result<(), TestError> {
         let mut h = header(b"file.pcap", b'0', 1, true);
         h[345..345 + 7].copy_from_slice(b"a/b/c/d");
         seal(&mut h);
@@ -801,57 +817,73 @@ mod tests {
         out.push(b'z');
         out.resize(1024, 0);
         out.extend_from_slice(&[0u8; 1024]);
-        let got = walk(&out).expect("walk");
+        let got = walk(&out).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got[0].0.name, b"a/b/c/d/file.pcap");
+        Ok(())
     }
 
     /// A header whose checksum fails cannot be trusted to say where the next
     /// one is; the walk must stop, not guess.
     #[test]
-    fn a_corrupt_header_stops_the_walk() {
+    fn a_corrupt_header_stops_the_walk() -> Result<(), TestError> {
         let mut tar = build(&[Spec::file("a", b"1"), Spec::file("b", b"2")]);
         tar[1024 + 10] ^= 0xff;
         let mut r = TarReader::new(&tar[..]);
-        assert!(r.next_entry().expect("first ok").is_some());
+        assert!(
+            r.next_entry()
+                .map_err(|e| format!("first ok: {e:?}"))?
+                .is_some()
+        );
         match r.next_entry() {
             Err(TarError::BadChecksum { offset }) => assert_eq!(offset, 1024),
-            other => panic!("expected BadChecksum, got {other:?}"),
+            other => return Err(format!("expected BadChecksum, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// Data cut short is an error the caller sees, not a short member.
     #[test]
-    fn a_member_cut_short_reports_unexpected_eof() {
+    fn a_member_cut_short_reports_unexpected_eof() -> Result<(), TestError> {
         let tar = build(&[Spec::file("big", &[9u8; 2000])]);
         let cut = &tar[..512 + 1000];
         let mut r = TarReader::new(cut);
-        let h = r.next_entry().expect("header").expect("some");
+        let h = r
+            .next_entry()
+            .map_err(|e| format!("header: {e:?}"))?
+            .ok_or("some")?;
         assert_eq!(h.size, 2000);
         let mut data = Vec::new();
-        let err = r.data().read_to_end(&mut data).expect_err("truncated");
+        let err = r.data().read_to_end(&mut data).err().ok_or("truncated")?;
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(data.len(), 1000, "what WAS there is still delivered");
+        Ok(())
     }
 
     #[test]
-    fn a_stream_ending_inside_a_header_is_truncated() {
+    fn a_stream_ending_inside_a_header_is_truncated() -> Result<(), TestError> {
         let tar = build(&[Spec::file("a", b"1")]);
         let cut = &tar[..1024 + 100];
         let mut r = TarReader::new(cut);
-        assert!(r.next_entry().expect("first").is_some());
+        assert!(
+            r.next_entry()
+                .map_err(|e| format!("first: {e:?}"))?
+                .is_some()
+        );
         assert!(matches!(r.next_entry(), Err(TarError::Truncated { .. })));
+        Ok(())
     }
 
     /// Some writers stop at the last member without the zero blocks.
     #[test]
-    fn a_missing_end_marker_is_a_clean_end() {
+    fn a_missing_end_marker_is_a_clean_end() -> Result<(), TestError> {
         let tar = build(&[Spec::file("a", b"1")]);
-        let got = walk(&tar[..1024]).expect("walk");
+        let got = walk(&tar[..1024]).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn a_huge_long_name_is_refused_not_buffered() {
+    fn a_huge_long_name_is_refused_not_buffered() -> Result<(), TestError> {
         let mut out = header(b"././@LongLink", b'L', MAX_META_BYTES + 1, true).to_vec();
         out.extend_from_slice(&[b'a'; 512]);
         let mut r = TarReader::new(&out[..]);
@@ -859,10 +891,11 @@ mod tests {
             r.next_entry(),
             Err(TarError::MetaTooLarge { size, .. }) if size == MAX_META_BYTES + 1
         ));
+        Ok(())
     }
 
     #[test]
-    fn base256_sizes_are_read() {
+    fn base256_sizes_are_read() -> Result<(), TestError> {
         let mut h = header(b"huge", b'0', 0, true);
         h[124..136].fill(0);
         h[124] = 0x80;
@@ -871,12 +904,16 @@ mod tests {
         h[128..136].copy_from_slice(&size.to_be_bytes());
         seal(&mut h);
         let mut r = TarReader::new(&h[..]);
-        let e = r.next_entry().expect("header").expect("some");
+        let e = r
+            .next_entry()
+            .map_err(|e| format!("header: {e:?}"))?
+            .ok_or("some")?;
         assert_eq!(e.size, size);
+        Ok(())
     }
 
     #[test]
-    fn a_non_numeric_size_is_refused() {
+    fn a_non_numeric_size_is_refused() -> Result<(), TestError> {
         let mut h = header(b"bad", b'0', 0, true);
         h[124..136].copy_from_slice(b"12x45678901\0");
         seal(&mut h);
@@ -885,22 +922,24 @@ mod tests {
             r.next_entry(),
             Err(TarError::BadNumber { field: "size", .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn a_sparse_member_is_named_as_sparse() {
+    fn a_sparse_member_is_named_as_sparse() -> Result<(), TestError> {
         let tar = build(&[Spec {
             name: b"holes",
             typeflag: b'S',
             data: b"frag",
             size_field: None,
         }]);
-        let got = walk(&tar).expect("walk");
+        let got = walk(&tar).map_err(|e| format!("walk: {e:?}"))?;
         assert_eq!(got[0].0.kind, EntryKind::Sparse);
+        Ok(())
     }
 
     #[test]
-    fn header_recognition() {
+    fn header_recognition() -> Result<(), TestError> {
         let tar = build(&[Spec::file("a.pcap", b"x")]);
         assert!(looks_like_header(&tar[..512]), "a ustar header");
         assert!(
@@ -914,17 +953,19 @@ mod tests {
         // A v7 header: no magic, but a type flag and a name.
         let v7 = header(b"old.pcap", b'0', 1, false);
         assert!(looks_like_header(&v7));
+        Ok(())
     }
 
     /// The historical signed checksum, which some old writers produced, is
     /// accepted alongside the unsigned one POSIX specifies.
     #[test]
-    fn a_signed_checksum_is_accepted() {
+    fn a_signed_checksum_is_accepted() -> Result<(), TestError> {
         let mut h = header("é.pcap".as_bytes(), b'0', 0, true);
         h[148..156].copy_from_slice(b"        ");
         let signed: i64 = h.iter().map(|&b| i64::from(b as i8)).sum();
         let text = format!("{signed:06o}\0 ");
         h[148..156].copy_from_slice(text.as_bytes());
         assert!(looks_like_header(&h));
+        Ok(())
     }
 }

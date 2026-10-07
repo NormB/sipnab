@@ -237,6 +237,9 @@ mod tests {
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
@@ -244,13 +247,13 @@ mod tests {
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) tests offset from.
     fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build an INVITE request captured at `ts`.
-    fn make_invite(ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite(ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -262,7 +265,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -271,7 +274,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE")
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// Build a response with the given status, reason, and CSeq method,
@@ -281,7 +284,7 @@ mod tests {
         reason: &str,
         cseq_method: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -293,7 +296,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -302,11 +305,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse response")
+        .map_err(|e| format!("should parse response: {e:?}"))?)
     }
 
     /// Build a BYE request captured at `ts`.
-    fn make_bye(ts: DateTime<Utc>) -> SipMessage {
+    fn make_bye(ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "BYE sip:bob@example.com SIP/2.0",
             &[
@@ -318,7 +321,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -327,34 +330,35 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse BYE")
+        .map_err(|e| format!("should parse BYE: {e:?}"))?)
     }
 
     /// PDD equals the INVITE→180 interval.
     #[test]
-    fn pdd_calculation() {
+    fn pdd_calculation() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(1500);
 
-        let invite = make_invite(t0);
-        let ringing = make_response(180, "Ringing", "INVITE", t1);
+        let invite = make_invite(t0)?;
+        let ringing = make_response(180, "Ringing", "INVITE", t1)?;
 
         update_timing(&mut timing, &invite, &SipMethod::Invite);
         update_timing(&mut timing, &ringing, &SipMethod::Invite);
 
         assert_eq!(timing.pdd_ms(), Some(1500));
+        Ok(())
     }
 
     /// A 200 whose CSeq does not belong to the initial INVITE (e.g. a
     /// re-INVITE's 200, when the original 200 was not captured) must not be
     /// recorded as the call's answer time.
     #[test]
-    fn reinvite_200_is_not_recorded_as_answer() {
+    fn reinvite_200_is_not_recorded_as_answer() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         // Initial INVITE (CSeq 1); its 200 is never captured.
-        update_timing(&mut timing, &make_invite(t0), &SipMethod::Invite);
+        update_timing(&mut timing, &make_invite(t0)?, &SipMethod::Invite);
 
         // A 200 belonging to a later re-INVITE (CSeq 2).
         let raw = build_sip(
@@ -377,13 +381,14 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse re-INVITE 200");
+        .map_err(|e| format!("parse re-INVITE 200: {e:?}"))?;
         update_timing(&mut timing, &reinvite_200, &SipMethod::Invite);
 
         assert_eq!(
             timing.answered_at, None,
             "a re-INVITE's 200 must not be recorded as the answer time"
         );
+        Ok(())
     }
 
     /// Build an in-dialog re-INVITE: an INVITE that carries a To-tag.
@@ -393,7 +398,7 @@ mod tests {
     /// is what separates a call's one initial INVITE from every later
     /// re-INVITE, and it is stated on the message itself, so it holds however
     /// late the capture started.
-    fn make_reinvite(ts: DateTime<Utc>, cseq: u32) -> SipMessage {
+    fn make_reinvite(ts: DateTime<Utc>, cseq: u32) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -405,7 +410,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -414,7 +419,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse re-INVITE")
+        .map_err(|e| format!("should parse re-INVITE: {e:?}"))?)
     }
 
     /// A capture that opens mid-call must report no setup time, not a negative
@@ -429,20 +434,20 @@ mod tests {
     /// came from the earlier transaction, and the call report read
     /// `Setup: -27.98s`.
     #[test]
-    fn a_capture_opening_mid_call_reports_no_setup_time() {
+    fn a_capture_opening_mid_call_reports_no_setup_time() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
 
         // The tail of a transaction whose INVITE preceded the capture.
         update_timing(
             &mut timing,
-            &make_response(200, "OK", "INVITE", t0),
+            &make_response(200, "OK", "INVITE", t0)?,
             &SipMethod::Invite,
         );
         // 28 s on, the far end re-INVITEs, reusing 102 from its own CSeq space.
         update_timing(
             &mut timing,
-            &make_reinvite(t0 + TimeDelta::seconds(28), 102),
+            &make_reinvite(t0 + TimeDelta::seconds(28), 102)?,
             &SipMethod::Invite,
         );
 
@@ -455,6 +460,7 @@ mod tests {
             None,
             "the initial INVITE was never captured, so setup time is unknown — not negative"
         );
+        Ok(())
     }
 
     /// An in-dialog INVITE is not the initial INVITE even when it is the very
@@ -463,11 +469,11 @@ mod tests {
     /// The To-tag settles this without reference to what was seen earlier,
     /// which is why the tag is the test rather than the arrival order.
     #[test]
-    fn an_in_dialog_invite_is_never_the_initial_invite() {
+    fn an_in_dialog_invite_is_never_the_initial_invite() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         update_timing(
             &mut timing,
-            &make_reinvite(base_ts(), 7),
+            &make_reinvite(base_ts(), 7)?,
             &SipMethod::Invite,
         );
 
@@ -475,6 +481,7 @@ mod tests {
             timing.invite_sent, None,
             "an INVITE bearing a To-tag is in-dialog (RFC 3261 §8.1.1.2)"
         );
+        Ok(())
     }
 
     /// An initial INVITE — no To-tag — still opens the dialog.
@@ -482,16 +489,17 @@ mod tests {
     /// The anti-vacuity half of the test above: a guard that rejected every
     /// INVITE would also pass it.
     #[test]
-    fn an_initial_invite_still_starts_the_clock() {
+    fn an_initial_invite_still_starts_the_clock() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
-        update_timing(&mut timing, &make_invite(t0), &SipMethod::Invite);
+        update_timing(&mut timing, &make_invite(t0)?, &SipMethod::Invite);
 
         assert_eq!(
             timing.invite_sent,
             Some(t0),
             "an INVITE with no To-tag is the dialog's initial INVITE"
         );
+        Ok(())
     }
 
     /// No derived interval is ever negative.
@@ -502,7 +510,7 @@ mod tests {
     /// surface reads these accessors — report, JSON, REST, MCP, DSL, TUI and
     /// WASM — so the rule belongs here rather than in any one renderer.
     #[test]
-    fn derived_intervals_are_never_negative() {
+    fn derived_intervals_are_never_negative() -> Result<(), TestError> {
         let late = base_ts();
         let early = late - TimeDelta::seconds(28);
 
@@ -560,119 +568,127 @@ mod tests {
             None,
             "BYE answered before it was sent is not a teardown time"
         );
+        Ok(())
     }
 
     /// Setup time equals the INVITE→200 interval.
     #[test]
-    fn setup_time_calculation() {
+    fn setup_time_calculation() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t3 = t0 + TimeDelta::milliseconds(3000);
 
-        let invite = make_invite(t0);
-        let ok = make_response(200, "OK", "INVITE", t3);
+        let invite = make_invite(t0)?;
+        let ok = make_response(200, "OK", "INVITE", t3)?;
 
         update_timing(&mut timing, &invite, &SipMethod::Invite);
         update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.setup_ms(), Some(3000));
+        Ok(())
     }
 
     /// Ring duration equals the 180→200 interval.
     #[test]
-    fn ring_duration_calculation() {
+    fn ring_duration_calculation() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(1000);
         let t2 = t0 + TimeDelta::milliseconds(4000);
 
-        let invite = make_invite(t0);
-        let ringing = make_response(180, "Ringing", "INVITE", t1);
-        let ok = make_response(200, "OK", "INVITE", t2);
+        let invite = make_invite(t0)?;
+        let ringing = make_response(180, "Ringing", "INVITE", t1)?;
+        let ok = make_response(200, "OK", "INVITE", t2)?;
 
         update_timing(&mut timing, &invite, &SipMethod::Invite);
         update_timing(&mut timing, &ringing, &SipMethod::Invite);
         update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.ring_ms(), Some(3000));
+        Ok(())
     }
 
     /// Trying delay equals the INVITE→100 interval.
     #[test]
-    fn trying_delay_calculation() {
+    fn trying_delay_calculation() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(50);
 
-        let invite = make_invite(t0);
-        let trying = make_response(100, "Trying", "INVITE", t1);
+        let invite = make_invite(t0)?;
+        let trying = make_response(100, "Trying", "INVITE", t1)?;
 
         update_timing(&mut timing, &invite, &SipMethod::Invite);
         update_timing(&mut timing, &trying, &SipMethod::Invite);
 
         assert_eq!(timing.trying_delay_ms(), Some(50));
+        Ok(())
     }
 
     /// Teardown time equals the BYE→200 interval.
     #[test]
-    fn teardown_time_calculation() {
+    fn teardown_time_calculation() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(200);
 
-        let bye = make_bye(t0);
-        let ok = make_response(200, "OK", "BYE", t1);
+        let bye = make_bye(t0)?;
+        let ok = make_response(200, "OK", "BYE", t1)?;
 
         update_timing(&mut timing, &bye, &SipMethod::Invite);
         update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.teardown_ms(), Some(200));
+        Ok(())
     }
 
     /// `total_retransmits` sums counts across all transactions.
     #[test]
-    fn retransmit_counting() {
+    fn retransmit_counting() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         timing.retransmit_counts.insert("1 INVITE".to_string(), 2);
         timing.retransmit_counts.insert("2 BYE".to_string(), 1);
 
         assert_eq!(timing.total_retransmits(), 3);
+        Ok(())
     }
 
     /// Every derived metric is `None` on a default (empty) timing record.
     #[test]
-    fn missing_timestamps_return_none() {
+    fn missing_timestamps_return_none() -> Result<(), TestError> {
         let timing = DialogTiming::default();
         assert_eq!(timing.pdd_ms(), None);
         assert_eq!(timing.setup_ms(), None);
         assert_eq!(timing.ring_ms(), None);
         assert_eq!(timing.trying_delay_ms(), None);
         assert_eq!(timing.teardown_ms(), None);
+        Ok(())
     }
 
     /// A duplicate 180 does not overwrite the first ringing timestamp.
     #[test]
-    fn first_milestone_wins() {
+    fn first_milestone_wins() -> Result<(), TestError> {
         // Sending a second 180 Ringing should not overwrite the first one
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(1000);
         let t2 = t0 + TimeDelta::milliseconds(2000);
 
-        let invite = make_invite(t0);
-        let ringing1 = make_response(180, "Ringing", "INVITE", t1);
-        let ringing2 = make_response(180, "Ringing", "INVITE", t2);
+        let invite = make_invite(t0)?;
+        let ringing1 = make_response(180, "Ringing", "INVITE", t1)?;
+        let ringing2 = make_response(180, "Ringing", "INVITE", t2)?;
 
         update_timing(&mut timing, &invite, &SipMethod::Invite);
         update_timing(&mut timing, &ringing1, &SipMethod::Invite);
         update_timing(&mut timing, &ringing2, &SipMethod::Invite);
 
         assert_eq!(timing.pdd_ms(), Some(1000)); // First ringing, not second
+        Ok(())
     }
 
     /// REFER sets refer_sent_at; a terminated-NOTIFY sets transfer_completed_at.
     #[test]
-    fn transfer_timing_fields_set() {
+    fn transfer_timing_fields_set() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::seconds(5);
@@ -700,7 +716,7 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse REFER")
+            .map_err(|e| format!("should parse REFER: {e:?}"))?
         };
         update_timing(&mut timing, &refer, &SipMethod::Invite);
         assert_eq!(timing.refer_sent_at, Some(t0));
@@ -729,15 +745,16 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse NOTIFY")
+            .map_err(|e| format!("should parse NOTIFY: {e:?}"))?
         };
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t1));
+        Ok(())
     }
 
     /// Build a NOTIFY carrying the given `Subscription-State` value, captured
     /// at `ts`.
-    fn make_notify_substate(sub_state: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_notify_substate(sub_state: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
             &[
@@ -750,7 +767,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -759,43 +776,46 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse NOTIFY")
+        .map_err(|e| format!("should parse NOTIFY: {e:?}"))?)
     }
 
     /// A `Subscription-State` value that merely *starts with* "terminated"
     /// (e.g. "terminatedfoo") is a different token and must NOT complete the
     /// transfer — the old `starts_with("terminated")` check false-matched it.
     #[test]
-    fn notify_terminatedfoo_does_not_complete_transfer() {
+    fn notify_terminatedfoo_does_not_complete_transfer() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
-        let notify = make_notify_substate("terminatedfoo", t0);
+        let notify = make_notify_substate("terminatedfoo", t0)?;
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(
             timing.transfer_completed_at, None,
             "'terminatedfoo' is not the 'terminated' token and must not complete a transfer"
         );
+        Ok(())
     }
 
     /// A bare `Subscription-State: terminated` token (no parameters)
     /// completes the transfer — the token match must not require a `;`.
     #[test]
-    fn notify_bare_terminated_completes_transfer() {
+    fn notify_bare_terminated_completes_transfer() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
-        let notify = make_notify_substate("terminated", t0);
+        let notify = make_notify_substate("terminated", t0)?;
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t0));
+        Ok(())
     }
 
     /// `terminated;reason=noresource` (token plus parameters) still completes
     /// the transfer — anchoring on the token must tolerate trailing params.
     #[test]
-    fn notify_terminated_with_params_completes_transfer() {
+    fn notify_terminated_with_params_completes_transfer() -> Result<(), TestError> {
         let mut timing = DialogTiming::default();
         let t0 = base_ts();
-        let notify = make_notify_substate("terminated;reason=noresource", t0);
+        let notify = make_notify_substate("terminated;reason=noresource", t0)?;
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t0));
+        Ok(())
     }
 }

@@ -312,12 +312,16 @@ pub fn write_record(cli: &Cli) -> Result<Option<PathBuf>, String> {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The record carries the invocation, not a reconstruction of it.
     #[test]
-    fn the_record_holds_argv_cwd_user_version_and_the_capture_instance() {
+    fn the_record_holds_argv_cwd_user_version_and_the_capture_instance() -> Result<(), TestError> {
         let rec = RunProvenance::of_this_run();
         let line = rec.to_line(1, chrono::Utc::now());
-        let v: serde_json::Value = serde_json::from_str(&line).expect("valid JSON record");
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("valid JSON record: {e:?}"))?;
 
         assert_eq!(v["record"], "run");
         assert!(
@@ -344,6 +348,7 @@ mod tests {
         );
         assert_eq!(v["capture"]["dialog_generation"], 0);
         assert_eq!(v["capture"]["stream_generation"], 0);
+        Ok(())
     }
 
     /// A hostile capture path cannot forge a second record or end a field.
@@ -354,7 +359,7 @@ mod tests {
     /// never happened, which is worse than a missing record: it is a false
     /// one.
     #[test]
-    fn a_newline_in_argv_cannot_forge_a_second_record() {
+    fn a_newline_in_argv_cannot_forge_a_second_record() -> Result<(), TestError> {
         let mut rec = RunProvenance::of_this_run();
         rec.argv = vec![
             "sipnab".into(),
@@ -367,20 +372,22 @@ mod tests {
             1,
             "the path forged a second record: {line}"
         );
-        let v: serde_json::Value = serde_json::from_str(&line).expect("one valid JSON line");
+        let v: serde_json::Value =
+            serde_json::from_str(&line).map_err(|e| format!("one valid JSON line: {e:?}"))?;
         assert!(
             v["argv"][2]
                 .as_str()
-                .expect("argv[2]")
+                .ok_or("argv[2]")?
                 .contains("--everything"),
             "the hostile text must still be RECORDED, only defanged: {v}"
         );
+        Ok(())
     }
 
     /// The uid resolves to the name of the account running the test, when the
     /// host names it at all.
     #[test]
-    fn the_effective_uid_resolves_or_reports_nothing() {
+    fn the_effective_uid_resolves_or_reports_nothing() -> Result<(), TestError> {
         let name = user_name(effective_uid());
         // Not asserted non-empty: a container uid with no passwd entry is a
         // legitimate answer, and this must not fail there. What it must never
@@ -401,5 +408,6 @@ mod tests {
             !name.contains('\0'),
             "a resolved name must be a real string: {name:?}"
         );
+        Ok(())
     }
 }

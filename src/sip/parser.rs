@@ -851,6 +851,9 @@ pub(super) fn find_crlf(data: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod find_crlf_tests {
     use super::find_crlf;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
     // The memchr-based find_crlf must be byte-identical to a scalar windows(2)
     // scan across the adversarial boundary cases.
     /// Reference implementation: naive `windows(2)` scan for `\r\n` in `data`.
@@ -859,7 +862,7 @@ mod find_crlf_tests {
     }
     /// `find_crlf` matches the scalar reference on adversarial boundary cases.
     #[test]
-    fn parity_with_scalar() {
+    fn parity_with_scalar() -> Result<(), TestError> {
         let cases: &[&[u8]] = &[
             b"",
             b"\r",
@@ -876,6 +879,7 @@ mod find_crlf_tests {
         for c in cases {
             assert_eq!(find_crlf(c), scalar(c), "mismatch on {c:?}");
         }
+        Ok(())
     }
 }
 
@@ -886,6 +890,9 @@ mod find_crlf_tests {
 /// security caps on header size/count.
 #[cfg(test)]
 mod tests {
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
     /// A response with an empty Reason-Phrase parses.
     ///
     /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1): `Status-Line = SIP-Version SP Status-Code SP
@@ -901,8 +908,9 @@ mod tests {
     /// response was discarded. At the default log level nothing was printed, so
     /// a capture simply lost every such response.
     #[test]
-    fn a_response_with_an_empty_reason_phrase_is_accepted() {
-        let parsed = parse_first_line("SIP/2.0 100 ").expect("RFC 4475 3.1.1.13 must parse");
+    fn a_response_with_an_empty_reason_phrase_is_accepted() -> Result<(), TestError> {
+        let parsed = parse_first_line("SIP/2.0 100 ")
+            .map_err(|e| format!("RFC 4475 3.1.1.13 must parse: {e:?}"))?;
         assert!(!parsed.is_request);
         assert_eq!(parsed.status_code, Some(100));
         assert_eq!(
@@ -910,6 +918,7 @@ mod tests {
             Some(""),
             "an empty phrase, not a missing one"
         );
+        Ok(())
     }
 
     /// A status-line with no SP after the code at all still parses.
@@ -920,10 +929,11 @@ mod tests {
     /// tolerance `parse_first_line` already applies to multiple spaces in a
     /// request-line. Pinned so the choice is deliberate rather than accidental.
     #[test]
-    fn a_status_line_missing_the_required_space_is_still_read() {
-        let parsed = parse_first_line("SIP/2.0 486").expect("tolerated");
+    fn a_status_line_missing_the_required_space_is_still_read() -> Result<(), TestError> {
+        let parsed = parse_first_line("SIP/2.0 486").map_err(|e| format!("tolerated: {e:?}"))?;
         assert_eq!(parsed.status_code, Some(486));
         assert_eq!(parsed.reason.as_deref(), Some(""));
+        Ok(())
     }
 
     /// An ordinary response is unchanged.
@@ -931,10 +941,12 @@ mod tests {
     /// The regression guard: every capture is mostly these, and the fix
     /// touched the line that parses all of them.
     #[test]
-    fn an_ordinary_reason_phrase_still_parses() {
-        let parsed = parse_first_line("SIP/2.0 486 Busy Here").expect("parses");
+    fn an_ordinary_reason_phrase_still_parses() -> Result<(), TestError> {
+        let parsed =
+            parse_first_line("SIP/2.0 486 Busy Here").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(parsed.status_code, Some(486));
         assert_eq!(parsed.reason.as_deref(), Some("Busy Here"));
+        Ok(())
     }
 
     /// A UTF-8 reason phrase survives, empty-phrase handling notwithstanding.
@@ -943,9 +955,11 @@ mod tests {
     /// `Reason-Phrase` admits `UTF8-NONASCII`. Slicing by byte index near a
     /// multi-byte character is exactly where a fix like this goes wrong.
     #[test]
-    fn a_utf8_reason_phrase_survives() {
-        let parsed = parse_first_line("SIP/2.0 200 Всё хорошо").expect("parses");
+    fn a_utf8_reason_phrase_survives() -> Result<(), TestError> {
+        let parsed =
+            parse_first_line("SIP/2.0 200 Всё хорошо").map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(parsed.reason.as_deref(), Some("Всё хорошо"));
+        Ok(())
     }
 
     /// `COMPACT_HEADERS` matches the IANA registry exactly.
@@ -962,7 +976,7 @@ mod tests {
     /// <https://www.iana.org/assignments/sip-parameters/sip-parameters-2.csv>,
     /// mirrored in `docs/sip-header-fields.md`.
     #[test]
-    fn compact_headers_match_the_iana_registry() {
+    fn compact_headers_match_the_iana_registry() -> Result<(), TestError> {
         const REGISTRY: [(u8, &str); 19] = [
             (b'a', "Accept-Contact"),
             (b'b', "Referred-By"),
@@ -1012,6 +1026,7 @@ mod tests {
                 c as char
             );
         }
+        Ok(())
     }
 
     use super::*;
@@ -1024,14 +1039,14 @@ mod tests {
 
     /// Fixed capture timestamp (2024-06-15 12:00:00 UTC) used in tests.
     fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_718_452_800) // 2024-06-15T12:00:00Z
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// A full RFC 3261 example INVITE parses with all fields extracted.
     #[test]
-    fn parse_invite_request() {
+    fn parse_invite_request() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@biloxi.example.com SIP/2.0",
             &[
@@ -1057,7 +1072,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE");
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?;
 
         assert!(sip.is_request);
         assert_eq!(sip.method, Some(SipMethod::Invite));
@@ -1080,11 +1095,12 @@ mod tests {
         assert_eq!(sip.content_type(), Some("application/sdp"));
         assert_eq!(sip.body[..], b"test"[..]);
         assert!(!sip.parse_error);
+        Ok(())
     }
 
     /// A 200 OK status-line parses with code/reason and no request fields.
     #[test]
-    fn parse_200_ok_response() {
+    fn parse_200_ok_response() -> Result<(), TestError> {
         let msg = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1107,7 +1123,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse 200 OK");
+        .map_err(|e| format!("should parse 200 OK: {e:?}"))?;
 
         assert!(!sip.is_request);
         assert_eq!(sip.status_code, Some(200));
@@ -1115,11 +1131,12 @@ mod tests {
         assert!(sip.method.is_none());
         assert!(sip.request_uri.is_none());
         assert!(!sip.parse_error);
+        Ok(())
     }
 
     /// Core RFC 3261 compact forms (v/f/t/i/m/l) expand to long names.
     #[test]
-    fn compact_headers() {
+    fn compact_headers() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1142,7 +1159,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse compact headers");
+        .map_err(|e| format!("should parse compact headers: {e:?}"))?;
 
         assert_eq!(sip.call_id(), Some("call-id-12345@example.com"));
         assert_eq!(
@@ -1159,11 +1176,12 @@ mod tests {
         assert!(sip.headers.iter().any(|h| h.name == "To"));
         assert!(sip.headers.iter().any(|h| h.name == "Contact"));
         assert!(sip.headers.iter().any(|h| h.name == "Content-Length"));
+        Ok(())
     }
 
     /// All nine IANA extension compact forms expand, case-insensitively.
     #[test]
-    fn extension_compact_headers_expand() {
+    fn extension_compact_headers_expand() -> Result<(), TestError> {
         // All nine IANA-registered extension compact forms (beyond the RFC
         // 3261 core ten), in mixed case to pin case-insensitive matching:
         // a=Accept-Contact, b=Referred-By, d=Request-Disposition,
@@ -1199,7 +1217,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         for name in [
             "Accept-Contact",
@@ -1223,11 +1241,12 @@ mod tests {
             "unexpanded single-letter header remains"
         );
         assert_eq!(sip.header("Refer-To"), Some("<sip:target@example.com>"));
+        Ok(())
     }
 
     /// Single-letter headers with no registered compact form pass through.
     #[test]
-    fn unknown_single_letter_headers_keep_their_name() {
+    fn unknown_single_letter_headers_keep_their_name() -> Result<(), TestError> {
         // Letters with no registered compact form must pass through as-is.
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -1248,14 +1267,15 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(sip.headers.iter().any(|h| h.name == "z"));
         assert!(sip.headers.iter().any(|h| h.name == "q"));
+        Ok(())
     }
 
     /// Mixed long-form and compact duplicates both survive under one name.
     #[test]
-    fn mixed_long_and_compact_duplicates_are_both_kept() {
+    fn mixed_long_and_compact_duplicates_are_both_kept() -> Result<(), TestError> {
         // RFC 3261 §7.3.3: forms may be mixed freely in one message; both
         // instances of a repeated header must survive under the long name.
         let msg = build_sip(
@@ -1277,16 +1297,17 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         let vias: Vec<_> = sip.headers.iter().filter(|h| h.name == "Via").collect();
         assert_eq!(vias.len(), 2, "both Via instances must be kept");
         assert!(vias[0].value.contains("proxy1"));
         assert!(vias[1].value.contains("proxy2"));
+        Ok(())
     }
 
     /// Non-canonical header-name casing (e.g. "VIA") is preserved verbatim.
     #[test]
-    fn non_canonical_case_header_name_is_preserved() {
+    fn non_canonical_case_header_name_is_preserved() -> Result<(), TestError> {
         // Pins WS4.1's canonical-name table to exact-match only: "VIA" must
         // survive as "VIA" (lookups are case-insensitive anyway), never get
         // rewritten to "Via".
@@ -1308,17 +1329,18 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(sip.headers.iter().any(|h| h.name == "VIA"));
         assert!(!sip.headers.iter().any(|h| h.name == "Via"));
         assert!(sip.headers.iter().any(|h| h.name == "CALL-id"));
         // Case-insensitive lookup still resolves it.
         assert_eq!(sip.call_id(), Some("weird-case@example.com"));
+        Ok(())
     }
 
     /// An orphan continuation line before any header is dropped.
     #[test]
-    fn leading_continuation_line_produces_no_header() {
+    fn leading_continuation_line_produces_no_header() -> Result<(), TestError> {
         // A continuation (SP-prefixed) line with no header before it must be
         // dropped, not parsed into a bogus header.
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n \
@@ -1335,18 +1357,19 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(sip.call_id(), Some("orphan-fold@example.com"));
         assert!(
             !sip.headers
                 .iter()
                 .any(|h| h.value.contains("orphan-continuation"))
         );
+        Ok(())
     }
 
     /// A truncated trailing continuation still folds, with parse_error set.
     #[test]
-    fn trailing_continuation_without_crlf_still_folds() {
+    fn trailing_continuation_without_crlf_still_folds() -> Result<(), TestError> {
         // Message truncated mid-fold: the SP-prefixed remainder (no trailing
         // CRLF) must still fold into the pending header, with parse_error set.
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n\
@@ -1361,14 +1384,15 @@ Subject: first-part\r\n continued-tail";
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(sip.parse_error, "truncated message must set parse_error");
         let subject = sip
             .headers
             .iter()
             .find(|h| h.name == "Subject")
-            .expect("subject parsed");
+            .ok_or("subject parsed")?;
         assert_eq!(subject.value, "first-part continued-tail");
+        Ok(())
     }
 
     /// Every test that can move the process-global oversize counter is
@@ -1387,7 +1411,7 @@ Subject: first-part\r\n continued-tail";
     /// the cap must carry the key. Integration tests cannot race with these,
     /// running in their own process.
     #[test]
-    fn every_test_that_moves_the_oversize_counter_is_serialized() {
+    fn every_test_that_moves_the_oversize_counter_is_serialized() -> Result<(), TestError> {
         let src = include_str!("parser.rs");
         // Split on the attribute so each chunk is one test function, and the
         // key (when present) sits at its head.
@@ -1447,6 +1471,7 @@ Subject: first-part\r\n continued-tail";
              serial key, so they can land between another test's reset and its \
              read: {unserialized:?}"
         );
+        Ok(())
     }
 
     /// A single *unfolded* header line longer than `MAX_HEADER_LINE_LEN` is
@@ -1454,7 +1479,7 @@ Subject: first-part\r\n continued-tail";
     /// cap must bound unfolded lines, not only folded continuations.
     #[test]
     #[serial_test::serial(oversize_headers)]
-    fn oversized_unfolded_header_line_rejected() {
+    fn oversized_unfolded_header_line_rejected() -> Result<(), TestError> {
         let big_value = "A".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 100);
         let raw = format!("Subject: {big_value}\r\nCall-ID: ok@example.com\r\n\r\n");
         let (headers, _body, parse_error) = parse_headers_and_body(raw.as_bytes(), 0);
@@ -1475,6 +1500,7 @@ Subject: first-part\r\n continued-tail";
                 .any(|h| h.name.eq_ignore_ascii_case("Call-ID")),
             "a following normal header must still parse"
         );
+        Ok(())
     }
 
     /// An over-long last line with no CRLF after it is dropped, and the
@@ -1483,7 +1509,8 @@ Subject: first-part\r\n continued-tail";
     /// flush stored it a second time.
     #[test]
     #[serial_test::serial(oversize_headers)]
-    fn an_oversize_unterminated_last_line_does_not_repeat_the_header_before_it() {
+    fn an_oversize_unterminated_last_line_does_not_repeat_the_header_before_it()
+    -> Result<(), TestError> {
         let big_value = "A".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 100);
         let raw = format!("Call-ID: ok@example.com\r\nSubject: {big_value}");
         let (headers, _body, parse_error) = parse_headers_and_body(raw.as_bytes(), 0);
@@ -1499,11 +1526,12 @@ Subject: first-part\r\n continued-tail";
                 .any(|h| h.name.eq_ignore_ascii_case("Subject")),
             "the over-long line must be dropped"
         );
+        Ok(())
     }
 
     /// A SP-folded Via header ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) is unfolded into one value.
     #[test]
-    fn header_folding() {
+    fn header_folding() -> Result<(), TestError> {
         // RFC 3261 SS7.3.1: continuation line starts with SP
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n\
 Via: SIP/2.0/UDP first.example.com\r\n \
@@ -1521,7 +1549,7 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse folded headers");
+        .map_err(|e| format!("should parse folded headers: {e:?}"))?;
 
         let via = sip.via_headers();
         assert_eq!(via.len(), 1);
@@ -1530,11 +1558,12 @@ Content-Length: 0\r\n\
             "Folded Via should be unfolded: got '{}'",
             via[0]
         );
+        Ok(())
     }
 
     /// Three Via headers are all kept, in message order.
     #[test]
-    fn multiple_via_headers() {
+    fn multiple_via_headers() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1556,18 +1585,19 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse multiple Via");
+        .map_err(|e| format!("should parse multiple Via: {e:?}"))?;
 
         let vias = sip.via_headers();
         assert_eq!(vias.len(), 3);
         assert!(vias[0].contains("proxy2"));
         assert!(vias[1].contains("proxy1"));
         assert!(vias[2].contains("client"));
+        Ok(())
     }
 
     /// `CSeq: 1 INVITE` splits into sequence number and method.
     #[test]
-    fn cseq_parsing() {
+    fn cseq_parsing() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &["CSeq: 1 INVITE", "Content-Length: 0"],
@@ -1583,16 +1613,17 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse CSeq");
+        .map_err(|e| format!("should parse CSeq: {e:?}"))?;
 
-        let (num, method) = sip.cseq().expect("CSeq should be present");
+        let (num, method) = sip.cseq().ok_or("CSeq should be present")?;
         assert_eq!(num, 1);
         assert_eq!(method, "INVITE");
+        Ok(())
     }
 
     /// A body exactly matching Content-Length parses cleanly.
     #[test]
-    fn body_matches_content_length() {
+    fn body_matches_content_length() -> Result<(), TestError> {
         let body = b"v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n";
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -1609,15 +1640,16 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse body");
+        .map_err(|e| format!("should parse body: {e:?}"))?;
 
         assert_eq!(sip.body[..], body[..]);
         assert!(!sip.parse_error);
+        Ok(())
     }
 
     /// The user part is extracted from the From URI.
     #[test]
-    fn from_user_extraction() {
+    fn from_user_extraction() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:1002@example.com SIP/2.0",
             &["From: <sip:1001@example.com>;tag=abc", "Content-Length: 0"],
@@ -1633,13 +1665,14 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(sip.from_user(), Some("1001".to_string()));
+        Ok(())
     }
 
     /// The user part is extracted from the To URI.
     #[test]
-    fn to_user_extraction() {
+    fn to_user_extraction() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:1002@example.com SIP/2.0",
             &["To: <sip:1002@example.com>", "Content-Length: 0"],
@@ -1655,14 +1688,15 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(sip.to_user(), Some("1002".to_string()));
+        Ok(())
     }
 
     /// A message with no blank-line separator still yields a partial parse
     /// with parse_error set.
     #[test]
-    fn malformed_truncated_message() {
+    fn malformed_truncated_message() -> Result<(), TestError> {
         // Has a first line and one header but no \r\n\r\n separator
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP x\r\n";
 
@@ -1675,17 +1709,18 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("partial parse should succeed");
+        .map_err(|e| format!("partial parse should succeed: {e:?}"))?;
 
         assert!(sip.is_request);
         assert_eq!(sip.method, Some(SipMethod::Invite));
         assert!(sip.parse_error);
         assert!(sip.body.is_empty());
+        Ok(())
     }
 
     /// Binary garbage with no SIP first line returns an error.
     #[test]
-    fn malformed_binary_garbage() {
+    fn malformed_binary_garbage() -> Result<(), TestError> {
         let garbage: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x01, 0x80, 0x90, 0xA0, 0xB0];
         let result = parse_sip(
             &garbage,
@@ -1697,12 +1732,13 @@ Content-Length: 0\r\n\
             TransportProto::Udp,
         );
         assert!(result.is_err(), "Binary garbage should return an error");
+        Ok(())
     }
 
     /// Headers ending without a blank line parse with an empty body and
     /// parse_error set.
     #[test]
-    fn malformed_missing_body_separator() {
+    fn malformed_missing_body_separator() -> Result<(), TestError> {
         // Headers end with \r\n but no blank line separator
         let msg = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP host\r\nContent-Length: 0\r\n";
 
@@ -1715,17 +1751,18 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse with empty body");
+        .map_err(|e| format!("should parse with empty body: {e:?}"))?;
 
         assert!(!sip.is_request);
         assert_eq!(sip.status_code, Some(200));
         assert!(sip.body.is_empty());
         assert!(sip.parse_error);
+        Ok(())
     }
 
     /// An HTTP request is rejected as not SIP.
     #[test]
-    fn non_sip_data() {
+    fn non_sip_data() -> Result<(), TestError> {
         let msg = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
         let result = parse_sip(
             msg,
@@ -1737,11 +1774,12 @@ Content-Length: 0\r\n\
             TransportProto::Tcp,
         );
         assert!(result.is_err());
+        Ok(())
     }
 
     /// `header()` lookups match regardless of the queried name's casing.
     #[test]
-    fn case_insensitive_header_lookup() {
+    fn case_insensitive_header_lookup() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &["Call-ID: test-case@example.com", "Content-Length: 0"],
@@ -1757,16 +1795,17 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert_eq!(sip.header("call-id"), Some("test-case@example.com"));
         assert_eq!(sip.header("CALL-ID"), Some("test-case@example.com"));
         assert_eq!(sip.header("Call-Id"), Some("test-case@example.com"));
+        Ok(())
     }
 
     /// Empty input returns an error rather than a message.
     #[test]
-    fn empty_data_returns_error() {
+    fn empty_data_returns_error() -> Result<(), TestError> {
         let result = parse_sip(
             b"",
             ts(),
@@ -1777,11 +1816,12 @@ Content-Length: 0\r\n\
             TransportProto::Udp,
         );
         assert!(result.is_err());
+        Ok(())
     }
 
     /// From and To `tag` parameters are extracted.
     #[test]
-    fn from_tag_extraction() {
+    fn from_tag_extraction() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1801,15 +1841,16 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert_eq!(sip.from_tag(), Some("from-tag-123"));
         assert_eq!(sip.to_tag(), Some("to-tag-456"));
+        Ok(())
     }
 
     /// `user_agent()` falls back to the Server header on responses.
     #[test]
-    fn user_agent_fallback_to_server() {
+    fn user_agent_fallback_to_server() -> Result<(), TestError> {
         let msg = build_sip(
             "SIP/2.0 200 OK",
             &["Server: sipnab/0.1", "Content-Length: 0"],
@@ -1825,14 +1866,15 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert_eq!(sip.user_agent(), Some("sipnab/0.1"));
+        Ok(())
     }
 
     /// An HTAB-folded header ([RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1)) is unfolded like SP.
     #[test]
-    fn header_folding_with_tab() {
+    fn header_folding_with_tab() -> Result<(), TestError> {
         // RFC 3261 SS7.3.1: continuation line starts with HTAB
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n\
 Via: SIP/2.0/UDP host.example.com\r\n\
@@ -1849,17 +1891,18 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse tab-folded header");
+        .map_err(|e| format!("should parse tab-folded header: {e:?}"))?;
 
         let via = sip.via_headers();
         assert_eq!(via.len(), 1);
         assert!(via[0].contains(";branch=z9hG4bKtab"));
+        Ok(())
     }
 
     /// A body shorter than the declared Content-Length sets parse_error but
     /// keeps the bytes that are present.
     #[test]
-    fn body_shorter_than_content_length_sets_parse_error() {
+    fn body_shorter_than_content_length_sets_parse_error() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &["Content-Length: 100"],
@@ -1875,17 +1918,18 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse with error flag");
+        .map_err(|e| format!("should parse with error flag: {e:?}"))?;
 
         assert!(sip.parse_error);
         assert_eq!(sip.body[..], b"short"[..]);
+        Ok(())
     }
 
     /// A body separator with ZERO body bytes but a non-zero Content-Length is
     /// truncated and must set parse_error. The short-body check skipped the
     /// case where there were no body bytes at all (`pos == data.len()`).
     #[test]
-    fn empty_body_shorter_than_content_length_sets_parse_error() {
+    fn empty_body_shorter_than_content_length_sets_parse_error() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &["Content-Length: 100"],
@@ -1900,11 +1944,12 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse with error flag");
+        .map_err(|e| format!("should parse with error flag: {e:?}"))?;
         assert!(
             sip.parse_error,
             "a separator with zero body but Content-Length: 100 is truncated"
         );
+        Ok(())
     }
 
     // ── Security regression tests ────────────────────────────────────
@@ -1913,7 +1958,7 @@ Content-Length: 0\r\n\
     /// with parse_error set (no unbounded allocation).
     #[test]
     #[serial_test::serial(oversize_headers)]
-    fn header_folding_capped_at_8kb() {
+    fn header_folding_capped_at_8kb() -> Result<(), TestError> {
         // Construct a Via header followed by 500 continuation lines of ~100
         // bytes each, totalling ~50KB of folded content. The parser must not
         // allocate an unbounded string — the MAX_HEADER_LINE_LEN (8KB) cap
@@ -1939,7 +1984,7 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse without panic");
+        .map_err(|e| format!("should parse without panic: {e:?}"))?;
 
         assert!(
             sip.parse_error,
@@ -1955,11 +2000,12 @@ Content-Length: 0\r\n\
                 via[0].len()
             );
         }
+        Ok(())
     }
 
     /// 300 headers are truncated to the 200-per-message cap.
     #[test]
-    fn header_count_capped_at_200() {
+    fn header_count_capped_at_200() -> Result<(), TestError> {
         // Send 300 headers; the parser must stop at MAX_HEADERS_PER_MESSAGE (200).
         let mut headers: Vec<String> = (1..=300)
             .map(|i| format!("X-Junk-{i:03}: value-{i}"))
@@ -1978,19 +2024,20 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse with capped headers");
+        .map_err(|e| format!("should parse with capped headers: {e:?}"))?;
 
         assert!(
             sip.headers.len() <= DEFAULT_MAX_HEADERS_PER_MESSAGE,
             "headers should be capped at {DEFAULT_MAX_HEADERS_PER_MESSAGE}, got {}",
             sip.headers.len()
         );
+        Ok(())
     }
 
     /// CRLF embedded in a header value splits into a separate header instead
     /// of surviving inside the value (log-injection defense).
     #[test]
-    fn crlf_injection_in_header_value_no_log_injection() {
+    fn crlf_injection_in_header_value_no_log_injection() -> Result<(), TestError> {
         // A malicious User-Agent embeds \r\n to try to inject a fake header.
         // The parser should treat the CRLF as a header boundary, so the
         // User-Agent value must NOT contain a newline.
@@ -2009,11 +2056,11 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let ua = sip
             .header("User-Agent")
-            .expect("User-Agent header should exist");
+            .ok_or("User-Agent header should exist")?;
 
         assert!(
             !ua.contains('\n') && !ua.contains('\r'),
@@ -2028,12 +2075,13 @@ Content-Length: 0\r\n\
             Some("injected"),
             "CRLF should split into a separate header, not embed in UA value"
         );
+        Ok(())
     }
 
     /// Headers dropped past `MAX_HEADERS_PER_MESSAGE` must set parse_error so
     /// the silent truncation is visible, not swallowed.
     #[test]
-    fn header_count_overflow_sets_parse_error() {
+    fn header_count_overflow_sets_parse_error() -> Result<(), TestError> {
         let mut headers: Vec<String> = (1..=300)
             .map(|i| format!("X-Junk-{i:03}: value-{i}"))
             .collect();
@@ -2050,20 +2098,21 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert!(sip.headers.len() <= DEFAULT_MAX_HEADERS_PER_MESSAGE);
         assert!(
             sip.parse_error,
             "dropping headers past the cap must set parse_error"
         );
+        Ok(())
     }
 
     /// A present-but-non-numeric Content-Length must set parse_error rather
     /// than being silently ignored (treated as absent), so a garbage length
     /// carries a signal. The body bytes present are still retained.
     #[test]
-    fn non_numeric_content_length_sets_parse_error() {
+    fn non_numeric_content_length_sets_parse_error() -> Result<(), TestError> {
         let msg = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &["Content-Length: abc"],
@@ -2079,7 +2128,7 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         assert!(
             sip.parse_error,
@@ -2090,13 +2139,14 @@ Content-Length: 0\r\n\
             b"hello"[..],
             "present body bytes must be retained, not dropped"
         );
+        Ok(())
     }
 
     /// A request line with a double space after the method (RFC 3261 grammar
     /// is single-SP, but sloppy input is tolerated) must yield a trimmed
     /// Request-URI, not one with a leading space.
     #[test]
-    fn request_uri_with_double_space_is_trimmed() {
+    fn request_uri_with_double_space_is_trimmed() -> Result<(), TestError> {
         let raw = b"INVITE  sip:x SIP/2.0\r\nContent-Length: 0\r\n\r\n";
         let sip = parse_sip(
             raw,
@@ -2107,16 +2157,17 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(sip.is_request);
         assert_eq!(sip.request_uri.as_deref(), Some("sip:x"));
+        Ok(())
     }
 
     /// The version token must be SP-anchored: `ASIP/2.0` glued onto the URI is
     /// not a valid `SIP/2.0` version and the line must be rejected as NotSip,
     /// not accepted as a request via an unanchored `ends_with`.
     #[test]
-    fn request_line_requires_space_before_version() {
+    fn request_line_requires_space_before_version() -> Result<(), TestError> {
         let raw = b"INVITE sip:alice ASIP/2.0\r\nContent-Length: 0\r\n\r\n";
         let err = parse_sip(
             raw,
@@ -2127,17 +2178,22 @@ Content-Length: 0\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect_err("ASIP/2.0 must not parse as a SIP request");
+        .err()
+        .ok_or("ASIP/2.0 must not parse as a SIP request")?;
         assert!(
             matches!(err, ParseError::NotSip { .. }),
             "expected NotSip, got {err:?}"
         );
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod oversize_header_tests {
     use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A header past the cap is dropped and COUNTED; an ordinary one is not.
     ///
@@ -2157,7 +2213,7 @@ mod oversize_header_tests {
     /// pointed the other way.
     #[test]
     #[serial_test::serial(oversize_headers)]
-    fn an_oversize_header_is_counted_and_an_ordinary_one_is_not() {
+    fn an_oversize_header_is_counted_and_an_ordinary_one_is_not() -> Result<(), TestError> {
         let ordinary = "INVITE sip:b@example.com SIP/2.0\r\nVia: SIP/2.0/UDP 192.0.2.1\r\n\
                         Call-ID: c1@192.0.2.1\r\nCSeq: 1 INVITE\r\nContent-Length: 0\r\n\r\n";
 
@@ -2191,5 +2247,6 @@ mod oversize_header_tests {
             "the drop must be counted; parse_error alone cannot tell a withheld \
              header from a bad Content-Length"
         );
+        Ok(())
     }
 }
