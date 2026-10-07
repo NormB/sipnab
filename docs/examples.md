@@ -2694,12 +2694,16 @@ sipnab -N -I capture.pcap --run-provenance-file runs.jsonl --report --no-cli-pri
 Under systemd, point it somewhere durable — `--run-provenance-file /var/log/sipnab/runs.jsonl` — and every restart appends rather than replaces.
 
 ```json
-{"record":"run","seq":1,"argv":["sipnab","-N","-I","capture.pcap","--report"],
- "cwd":"/var/captures","user":"sipnab","uid":993,
- "version":"0.5.142 (d2965454) features: native,tui,audio,tls,hep,api,mcp,metrics,plugins,vcon",
- "capture":{"instance":"3f9b0718d158c64087d09c-1","node":"capture-01"},
- "started":"2026-05-05T12:34:56Z"}
+{"argv":["sipnab","-N","-I","capture.pcap","--run-provenance-file","runs.jsonl","--report","--no-cli-print"],
+ "capture":{"dialog_generation":0,"instance":"3f9b0718d158c64087d09c-1","node":"capture-01","stream_generation":0},
+ "cwd":"/var/captures","features":["native","tui","audio","tls","hep","api","mcp","mcp-http","metrics","plugins","vcon","archive"],
+ "pid":41207,"record":"run","seq":1,
+ "started":"2026-05-05T12:34:56.095918671+00:00","ts":"2026-05-05T12:34:56.096437745+00:00",
+ "uid":993,"user":"sipnab",
+ "version":"0.5.142 (d2965454) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,archive"}
 ```
+
+sipnab records a secret given on the command line as `[redacted]`: the value of `--api-key`, `--api-signing-key`, `--archive-password`, `--hep-auth`, `--mcp-signing-key`, `--mcp-token`, `--metrics-auth` and `--vcon-forward-auth`, whether the value follows the flag after a space or after `=`, and the user name and password in a URL such as `--vcon-forward-url https://user:pass@store.example.com/`.
 
 **What to look for:**
 

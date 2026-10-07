@@ -315,7 +315,9 @@ pub const REDACTED: &str = "[redacted]";
 
 /// `argv` with the value of every [`crate::cli::SECRET_FLAGS`] flag replaced
 /// by [`REDACTED`], in both the `--flag value` and the `--flag=value` form.
-/// Arguments after `--` are positionals and are kept as given.
+/// Arguments after `--` are positionals and are kept as given, except that
+/// the userinfo of any argument holding a URL (`scheme://user:pass@host`) is
+/// replaced by [`redact_url_userinfo`], before or after `--`, in either form.
 #[must_use]
 pub fn redact_argv(argv: Vec<String>) -> Vec<String> {
     let is_secret = |name: &str| crate::cli::SECRET_FLAGS.contains(&name);
@@ -323,6 +325,11 @@ pub fn redact_argv(argv: Vec<String>) -> Vec<String> {
     let mut options = true;
     let mut redact_next = false;
     for arg in argv {
+        let arg = if arg.contains("://") {
+            redact_url_userinfo(&arg)
+        } else {
+            arg
+        };
         if redact_next {
             redact_next = false;
             out.push(REDACTED.to_string());
@@ -347,6 +354,30 @@ pub fn redact_argv(argv: Vec<String>) -> Vec<String> {
         }
     }
     out
+}
+
+/// `text` with the userinfo of the URL it holds (`user:password@`) replaced
+/// by [`REDACTED`]: `https://u:p@host/x` becomes `https://[redacted]@host/x`.
+///
+/// The authority starts after the first `://`, or at the start of `text` when
+/// there is none, and ends at the first `/`; everything in it up to its last
+/// `@` is the userinfo. A `?` or `#` does not end it here, as it does in a
+/// valid URL, so a password typed with one of them unescaped is still
+/// replaced, at the cost of also replacing an `@` in a query that follows no
+/// path. Text whose authority holds no `@` is returned as given. Every
+/// message or record that quotes a URL a person typed goes through this one
+/// function.
+#[must_use]
+pub fn redact_url_userinfo(text: &str) -> String {
+    let start = text.find("://").map_or(0, |i| i + 3);
+    let authority = &text[start..];
+    let authority = authority
+        .find('/')
+        .map_or(authority, |end| &authority[..end]);
+    match authority.rfind('@') {
+        Some(at) => format!("{}{REDACTED}{}", &text[..start], &text[start + at..]),
+        None => text.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -394,6 +425,94 @@ mod tests {
         // Named `planted`, not `secret`: CodeQL's cleartext-logging rule reads
         // variable names, and these are fixture strings.
         for planted in ["k-one", "k-two", "pw", "k3"] {
+            assert!(
+                !out.iter().any(|a| a.contains(planted)),
+                "a planted value survived redaction: {out:?}"
+            );
+        }
+    }
+
+    /// A URL's userinfo (`user:password@`) is replaced by `[redacted]`; the
+    /// scheme, host, port and path stay, and text with no userinfo is
+    /// returned as given.
+    #[test]
+    fn url_userinfo_is_replaced_and_the_rest_of_the_url_kept() {
+        for (given, wanted) in [
+            (
+                "https://user:pw@store.example.com:8443/v1?x=1",
+                "https://[redacted]@store.example.com:8443/v1?x=1",
+            ),
+            (
+                "udp://tok@[2001:db8::1]:9060",
+                "udp://[redacted]@[2001:db8::1]:9060",
+            ),
+            (
+                "http://a@b@store.example.com/",
+                "http://[redacted]@store.example.com/",
+            ),
+            (
+                "user:pw@store.example.com/v1",
+                "[redacted]@store.example.com/v1",
+            ),
+            (
+                "https://user:pw#x@store.example.com/v1",
+                "https://[redacted]@store.example.com/v1",
+            ),
+            (
+                "https://user:pw?x@store.example.com/v1",
+                "https://[redacted]@store.example.com/v1",
+            ),
+            (
+                "--hep-send=tcp://user:pw@collector.example.com:9060",
+                "--hep-send=tcp://[redacted]@collector.example.com:9060",
+            ),
+            (
+                "https://store.example.com/v1?mail=a@b",
+                "https://store.example.com/v1?mail=a@b",
+            ),
+            (
+                "https://store.example.com/v1",
+                "https://store.example.com/v1",
+            ),
+            ("calls.pcap", "calls.pcap"),
+        ] {
+            assert_eq!(redact_url_userinfo(given), wanted, "{given}");
+        }
+    }
+
+    /// A URL with userinfo is not written to the record from any flag, in
+    /// either the `--flag value` or the `--flag=value` form, and an argument
+    /// that is not a URL keeps its `@`. Before 2026-10-07 a password in
+    /// `--vcon-forward-url` reached the record unchanged.
+    #[test]
+    fn url_userinfo_is_redacted_from_every_recorded_argument() {
+        let argv: Vec<String> = [
+            "sipnab",
+            "--vcon-forward-url",
+            "https://user:planted-a@store.example.com/v1",
+            "--hep-send=tcp://planted-b@collector.example.com:9060",
+            "--match",
+            "alice@example.com",
+            "--",
+            "http://user:planted-c@store.example.com/x",
+        ]
+        .map(String::from)
+        .to_vec();
+        let out = redact_argv(argv);
+        assert_eq!(
+            out,
+            [
+                "sipnab",
+                "--vcon-forward-url",
+                "https://[redacted]@store.example.com/v1",
+                "--hep-send=tcp://[redacted]@collector.example.com:9060",
+                "--match",
+                "alice@example.com",
+                "--",
+                "http://[redacted]@store.example.com/x",
+            ]
+        );
+        for planted in ["planted-a", "planted-b", "planted-c"] {
             assert!(
                 !out.iter().any(|a| a.contains(planted)),
                 "a planted value survived redaction: {out:?}"

@@ -283,6 +283,70 @@ container it cannot deliver because the server is down waits and goes again.
 everything it does with each answer. Remove the demo directory with
 `rm -r ~/vcon-forward-demo` when you finish: the delivered copy is call data.
 
+### The same delivery with the conserver kind
+
+`--vcon-forward-kind conserver` supplies the two values this server needs, so
+you give less: the kind adds the ingest path
+`/vcon/external-ingress?ingress_list=sipnab` to a base URL with no path, and
+sends a bare key as `x-conserver-api-token: <key>`. Run these in the demo
+directory, before you remove it.
+
+<!-- NOT YET RUN: parent session runs these steps -->
+
+With the bare key in a file:
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+KEY=$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)
+(umask 077; printf '%s\n' "$KEY" > conserver.key)
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --vcon-forward-kind conserver \
+  --vcon-forward-url http://127.0.0.1:8000 \
+  --vcon-forward-auth-file conserver.key --vcon-forward-once
+echo "exit $?"
+ls spool/delivered
+```
+
+With the bare key in the `SIPNAB_VCON_FORWARD_AUTH` environment variable
+instead of a file. sipnab refuses the variable beside an auth file, so the last
+line removes it from the shell:
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+export SIPNAB_VCON_FORWARD_AUTH="$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)"
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --vcon-forward-kind conserver --vcon-forward-url http://127.0.0.1:8000 --vcon-forward-once
+echo "exit $?"
+unset SIPNAB_VCON_FORWARD_AUTH
+```
+
+With the settings in a config file. The `[vcon_forward]` section holds every
+setting but the spool and `--vcon-forward-once`. This one names the key file
+from the first block:
+
+```toml
+[vcon_forward]
+kind = "conserver"
+url = "http://127.0.0.1:8000"
+auth_file = "/home/you/vcon-forward-demo/conserver.key"
+```
+
+```bash
+# Run all of these, in order.
+cd ~/vcon-forward-demo
+printf '[vcon_forward]\nkind = "conserver"\nurl = "http://127.0.0.1:8000"\nauth_file = "%s/vcon-forward-demo/conserver.key"\n' "$HOME" > forward.toml
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool --config forward.toml --vcon-forward-once
+echo "exit $?"
+```
+
+Each run logs one `delivered` line naming the file and the server's `204`, and
+exits `0`. The `conserver` kind sends the container unchanged, as the first
+command in this section does. Every forwarder setting and its key:
+[`[vcon_forward]` in the configuration reference](@/docs/config.md#vcon-forward).
+
 ## With Kamailio
 
 Set up the vCon server with the vCon server guide's first two steps,

@@ -4426,7 +4426,8 @@ pub struct VconForwardArgs {
 
     /// Make one pass over the spool and exit: 0 when every container was
     /// delivered (or there was none), 1 when any was refused or is still
-    /// waiting. Without it the forwarder polls until SIGTERM.
+    /// waiting, 3 when the store answered 401 or 403. Without it the
+    /// forwarder polls until SIGTERM.
     #[arg(
         help_heading = "vCon forwarder",
         long = "vcon-forward-once",
@@ -6926,8 +6927,6 @@ pub fn resolve_named_secret(
     }
 }
 
-/// Unit tests for CLI parsing, flag defaults, argument validation, and
-/// file-vs-inline secret resolution.
 /// `--vcon-forward-auth`: any value but an empty or blank one. A malformed
 /// header is refused when the forwarder starts, by a message that does not
 /// quote it; clap quotes a value it refuses, so this parser refuses only what
@@ -7106,6 +7105,8 @@ fn parse_quality_threshold(s: &str) -> Result<f64, String> {
     Ok(v)
 }
 
+/// Unit tests for CLI parsing, flag defaults, argument validation, and
+/// file-vs-inline secret resolution.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9115,6 +9116,38 @@ mod tests {
                  needs it for the JSON-RPC wire"
             );
         }
+    }
+
+    /// The test module's description documents the test module, and every
+    /// function's doc comment is its own. On 2026-10-07 the two lines that
+    /// describe this module sat above `parse_forward_auth`, and rustdoc
+    /// joined them into that function's documentation.
+    #[test]
+    fn the_test_module_description_documents_the_test_module() {
+        let whole = include_str!("cli.rs");
+        let marker = "/// Unit tests for CLI parsing, flag defaults, argument validation, and";
+        let module = "\n/// file-vs-inline secret resolution.\n#[cfg(test)]\nmod tests {";
+        assert_eq!(
+            whole.matches(marker).count(),
+            2,
+            "the description and this test's copy of it"
+        );
+        assert!(
+            whole.contains(&format!("{marker}{module}")),
+            "the test module's description is not directly above `mod tests`"
+        );
+        let at = whole.find("\nfn parse_forward_auth(").unwrap_or(0);
+        let doc: Vec<&str> = whole[..at]
+            .lines()
+            .rev()
+            .take_while(|l| l.starts_with("///"))
+            .collect();
+        assert!(at > 0, "cli.rs no longer has parse_forward_auth");
+        assert_eq!(
+            doc.last().copied(),
+            Some("/// `--vcon-forward-auth`: any value but an empty or blank one. A malformed"),
+            "parse_forward_auth's doc comment starts with another item's text: {doc:?}"
+        );
     }
 
     /// No help text claims an implication the binary does not perform.

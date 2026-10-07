@@ -129,37 +129,42 @@ impl Endpoint {
     /// Any other scheme, whitespace, an empty host, a bad port, credentials
     /// in the URL (they would reach the log) or a fragment.
     pub fn parse(url: &str) -> Result<Self, String> {
+        // Every refusal below quotes the URL; none may quote its userinfo.
+        let shown = crate::app::run_provenance::redact_url_userinfo(url);
         let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
             (true, rest)
         } else if let Some(rest) = url.strip_prefix("http://") {
             (false, rest)
         } else {
             return Err(format!(
-                "'{url}': the forwarder speaks http:// and https:// only"
+                "'{shown}': the forwarder speaks http:// and https:// only"
             ));
         };
         if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return Err(format!("'{url}': a URL cannot hold whitespace"));
+            return Err(format!("'{shown}': a URL cannot hold whitespace"));
         }
         if url.contains('#') {
-            return Err(format!("'{url}': a URL sent to a store has no fragment"));
+            return Err(format!("'{shown}': a URL sent to a store has no fragment"));
         }
         let (authority, target) = match rest.find(['/', '?']) {
             Some(i) => rest.split_at(i),
             None => (rest, "/"),
         };
-        if authority.contains('@') {
+        // Userinfo by the redaction rule, not by `authority`: a password
+        // typed with an unescaped `?` ends `authority` early, and its tail
+        // would otherwise be read, and quoted, as the port.
+        if shown != url {
             return Err(format!(
-                "'{url}': put credentials in --vcon-forward-auth-file, not in the URL"
+                "'{shown}': put credentials in --vcon-forward-auth-file, not in the URL"
             ));
         }
-        let (host, port) = split_authority(authority).map_err(|e| format!("'{url}': {e}"))?;
+        let (host, port) = split_authority(authority).map_err(|e| format!("'{shown}': {e}"))?;
         let port = match port {
             Some(p) => p
                 .parse::<u16>()
                 .ok()
                 .filter(|p| *p != 0)
-                .ok_or_else(|| format!("'{url}': '{p}' is not a port"))?,
+                .ok_or_else(|| format!("'{shown}': '{p}' is not a port"))?,
             None if tls => 443,
             None => 80,
         };
@@ -1658,7 +1663,10 @@ impl Forwarder {
 /// setting the template came from.
 fn replace_endpoint(template: &str, uuid: &str) -> Result<Endpoint, String> {
     if !template.contains("{uuid}") {
-        return Err(format!("'{template}' has no {{uuid}} to fill in"));
+        return Err(format!(
+            "'{}' has no {{uuid}} to fill in",
+            crate::app::run_provenance::redact_url_userinfo(template)
+        ));
     }
     Endpoint::parse(&template.replace("{uuid}", uuid))
 }
@@ -2024,6 +2032,8 @@ mod tests {
         );
         let e = Endpoint::parse("https://api.vcon.store/v1/vcons")?;
         assert_eq!((e.tls, e.port, e.target.as_str()), (true, 443, "/v1/vcons"));
+        let e = Endpoint::parse("https://store.example.com/v1?mail=a@b")?;
+        assert_eq!(e.target, "/v1?mail=a@b");
         let e = Endpoint::parse("http://store.example.com")?;
         assert_eq!((e.port, e.target.as_str()), (80, "/"));
         let e = Endpoint::parse("https://[2001:db8::1]:8443/x")?;
@@ -2050,6 +2060,35 @@ mod tests {
         ] {
             assert!(Endpoint::parse(bad).is_err(), "{bad} accepted");
         }
+    }
+
+    /// A refused URL is quoted in the message with its userinfo replaced by
+    /// `[redacted]`, whichever check refuses it: the message reaches the
+    /// terminal and the log. Before 2026-10-07 the userinfo refusal itself
+    /// printed the password it was refusing.
+    #[test]
+    fn a_refused_url_never_echoes_its_userinfo() {
+        for bad in [
+            "https://user:planted-pw@store.example.com/v1",
+            "ftp://user:planted-pw@store.example.com/",
+            "user:planted-pw@store.example.com/v1",
+            "https://user:planted-pw@store.example.com /v1",
+            "https://user:planted-pw@store.example.com/v1#frag",
+            "https://user:planted-pw@store.example.com:99999/",
+            "https://user:planted-pw#x@store.example.com/v1",
+            "https://user:planted-pw?x@store.example.com/v1",
+        ] {
+            let message = Endpoint::parse(bad).err().unwrap_or_default();
+            assert!(!message.is_empty(), "{bad} accepted");
+            assert!(!message.contains("planted-pw"), "{bad}: {message}");
+            assert!(!message.contains("user:"), "{bad}: {message}");
+            assert!(message.contains("[redacted]@"), "{bad}: {message}");
+        }
+        let message = replace_endpoint("https://user:planted-pw@store.example.com/v1", "0")
+            .err()
+            .unwrap_or_default();
+        assert!(!message.contains("planted-pw"), "{message}");
+        assert!(message.contains("[redacted]@"), "{message}");
     }
 
     /// Both header forms the stores use parse, surrounding spaces and the

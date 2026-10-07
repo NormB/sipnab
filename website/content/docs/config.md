@@ -117,7 +117,7 @@ Packet capture defaults.
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default. `--no-rtp` turns it on. `--rtp` forces it off |
 | `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
-| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does. For a proxy that mirrors HEP to a loopback port which every reader sniffs instead of binding (`device = "lo"`). `--no-hep-parse` turns it off for one run. Feature: `hep` |
+| `hep_parse` | boolean | `false` | Unwrap HEP-encapsulated SIP found in the capture, as `-E` / `--hep-parse` does: each message takes the addresses and the time the HEP packet carries. For a proxy that mirrors HEP to a loopback port that sipnab sniffs (`device = "lo"`), so that several readers can see the same copies. Keep a receiver bound to that port: with no process bound to it, some senders lose messages, as the note below this table describes. `--no-hep-parse` turns it off for one run. Feature: `hep` |
 | `bpf_filter` | string | -- | Capture (BPF) filter, as the trailing positional filter on the command line takes, handed to libpcap as typed. Not the display filter, which is `[filter] expression`. While it holds a filter, sipnab generates none from `portrange`. The trailing positional filter (`<BPF_FILTER>`) or `--bpf-file` replaces it. It applies to capture files too, and a run that reads a file through it says so on stderr |
 
 ```toml
@@ -161,7 +161,7 @@ Output and TUI display settings.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. `--color` overrides it |
+| `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"`. sipnab refuses any other value, naming the key. `--color` overrides it |
 | `payload_limit` | integer | -- | Maximum payload bytes to display. `--payload-limit` overrides it |
 | `delta_time` | boolean | `false` | Show delta time between messages by default. `--delta-time` turns it on. `--no-delta-time` forces it off |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
@@ -320,8 +320,8 @@ runs, and does nothing about TFPS at any other time.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs. On a machine with no `tfps_ctl` anywhere, every read answers `installed: false`, and sipnab refuses a ban that actions allow, as one it could not ask TFPS about (`502` over REST) |
-| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default |
+| `ctl` | string | -- | Path to `tfps_ctl`. `--tfps-ctl` overrides it. Absent: sipnab looks on `PATH` the moment a TFPS tool runs. On a machine with no `tfps_ctl` anywhere, every read answers `installed: false`, and sipnab refuses a ban that actions allow, as one it could not ask TFPS about (`502` over REST). An empty string fails validation and names the key |
+| `db` | string | -- | The TFPS database, passed to every `tfps_ctl` call as `--db <path>`: two arguments, which a wrapper script standing in for `tfps_ctl` receives as `"$@"`. Absent: `tfps_ctl` uses its own default. An empty string fails validation and names the key |
 
 ```toml
 [tfps]
@@ -390,7 +390,7 @@ each limit it has spent. `sipnab --journal-show` prints what it holds, and
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `dir` | string | `/var/lib/sipnab/journal` | The journal directory. `--journal-dir` overrides it. sipnab creates it with mode 0700 if absent, and the packaged service gets `/var/lib/sipnab` from systemd. Each record reaches the disk before the action it describes runs, and the files hold no token or request body. Files close at 16 MiB, and sipnab deletes closed files more than 90 days old when the next one starts |
+| `dir` | string | `/var/lib/sipnab/journal` | The journal directory. `--journal-dir` overrides it. sipnab creates it with mode 0700 if absent, and the packaged service gets `/var/lib/sipnab` from systemd. Each record reaches the disk before the action it describes runs, and the files hold no token or request body. Files close at 16 MiB, and sipnab deletes closed files more than 90 days old when the next one starts. An empty string fails validation and names the key |
 
 ```toml
 [journal]
@@ -403,8 +403,10 @@ Thresholds the signaling and media checks compare against. A number here
 decides whether a call that is working gets reported as broken, so the defaults
 are standards figures and a network that knows its own numbers beats a
 recommendation written for the general case. Every value must be a finite
-number greater than zero, and a value that is not fails validation and names
-the key.
+number greater than zero: sipnab refuses `0`, a negative number, `nan` and
+`inf`, naming the key. `duration_asymmetry_pct` must also be 100 or less,
+`cn_suppression_ratio` 1 or less, and `late_media_ms` is a whole number of at
+least 1. The matching flags follow the same rules.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -503,8 +505,8 @@ Resource limits to prevent unbounded memory growth.
 |-----|------|---------|-------------|
 | `dialog_limit` | integer | `100000` | Maximum tracked dialogs. `--limit` overrides it |
 | `mcp_max_rows` | integer | `1000` | Maximum rows in ONE list-style MCP response. Distinct from `dialog_limit` above, which bounds the whole run; these differ by 100x and bound different things. `0` fails validation and names the key. `--mcp-max-rows` overrides it |
-| `max_streams` | integer | `50000` | Maximum RTP streams. `--max-streams` overrides it |
-| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `--max-reassembly` overrides it |
+| `max_streams` | integer | `50000` | Maximum RTP streams. `0` fails validation and names the key. `--max-streams` overrides it |
+| `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions. `0` fails validation and names the key. `--max-reassembly` overrides it |
 | `reassembly_ttl_secs` | integer | `30` | Seconds sipnab holds an incomplete IP datagram or half-read TCP stream before a sweep drops it. `max_reassembly` bounds how MANY entries sipnab holds and says nothing about how long. Thirty seconds describes IP fragments in flight, and the TCP reassembler inherited it: a persistent SIP/TCP or SIP/TLS trunk to a carrier goes quiet for far longer on any ordinary night, and sweeping its half-read stream means the next segment re-initializes mid-message, so the peer that sent a valid message is the one reported broken. Raise it on such a trunk; `max_reassembly` caps the extra state either way. `--reassembly-ttl` overrides it. `0` fails validation and names the key |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second. `--hep-rate-limit` overrides it |
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
@@ -526,7 +528,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_gunzip_bytes` | integer | `1073741824` | Bytes a gzip-compressed capture may inflate to where sipnab does the inflating: the embedded names and TLS secrets read out of a `.pcapng.gz`, the copy `--strip-secrets` rewrites, and the whole capture in the browser build. libpcap inflates the packet stream of a `-I capture.pcap.gz` run and this does not bound it. **A gzip-bomb guard.** Inflation stops one byte past the ceiling, so raising it to N lets a few kilobytes claim N bytes of RAM. Raise it for archives you compressed yourself. `--max-gunzip-bytes` overrides it |
 | `max_tcp_buffer` | integer | `65536` | Bytes one SIP/TCP direction may buffer before sipnab flushes it. **The only limit here that destroys data rather than truncating a report.** TCP sets no such ceiling and neither does RFC 3261: on a carrier trunk a message carrying ISUP encapsulation, a long `Record-Route` set or a fat SDP offer passes 64 KiB legitimately, and sipnab then flushes the buffer mid-message so both halves parse as malformed — the peer that sent a valid message is the one reported broken. Raise it on such a trunk. The floor is one SIP header line (8192); below that no message survives, and sipnab refuses the value by name. `--max-tcp-buffer` overrides it |
 | `api_max_rows` | integer | `1000` | Rows one list-style REST response returns. The REST counterpart of `mcp_max_rows`, settable for the same reason: the right ceiling belongs to the consumer, not to sipnab. A batch consumer piping `/v1/dialogs` to a file wants every row; a dashboard drawing a table wants far fewer. `--api-max-rows` overrides it. `0` fails validation and names the key |
-| `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. `--api-rate-limit-per-peer` overrides it |
+| `api_rate_limit_per_peer` | integer | `100` | REST requests one client IP may make per second. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance and see `503` (`503` rather than `429` because the limiter runs before authentication, so the refusal says nothing about the credential). `0` disables the cap, the reading `hep_rate_limit` and `mcp_rate_limit_per_peer` also give it. At most 4294967295; a larger value fails validation and names the key. `--api-rate-limit-per-peer` overrides it |
 | `metrics_max_conn` | integer | `16` | Metrics scrapes served at once before further ones get `503`. The gate stops a burst of slow clients exhausting threads and taking monitoring down, and sixteen suits one Prometheus; an HA pair, a federating parent, a `remote_write` shard, an alertmanager sidecar and one engineer's `curl` reach it without anything unusual happening. A refused scrape leaves a hole in the series that reads as a capture that died rather than as a busy endpoint, so raise it where several collectors share one sipnab. `--metrics-max-conn` overrides it. `0` fails validation and names the key: the gate would then refuse every scrape |
 | `max_tracked_peers` | integer | `4096` | Distinct peers one rate-limit window holds, across every surface sipnab meters: HEP source addresses and MCP callers. Past it sipnab REFUSES a peer it has not already seen this second rather than waving it through, so on a collector aggregating from more agents than this the surplus never enters the capture. Raise it there. The floor is 2, and sipnab refuses a smaller value by name: at 1 the first peer to send in a window takes the only slot and sipnab turns every other peer away for the rest of it |
 | `max_capture_sources` | integer | `65536` | Distinct capture sources sipnab remembers by name: each input file, the device, every HEP sender (`capture_id@address`) and every traced process. The table holds a name so a packet can point back at the bytes it came from: the `frame` field of `--json`, which `--show-frame` follows and `--mcp-evidence-ring` keys on. Past the limit a packet from a NEW source is still analyzed, but carries no `frame` pointer, and sipnab counts it in `sipnab_capture_sources_refused_total` and warns once. sipnab refuses to start when the limit cannot hold every source the run can have: the input files, or the device, plus `max_tracked_peers` senders on a HEP listener. Raise it, or lower `max_tracked_peers`. The floor is 1. Flag: `--max-capture-sources` |
@@ -648,10 +650,10 @@ collector's certificate against, and the certificate a TLS listener
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. `--hep-tls-ca` overrides it |
-| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. `--hep-tls-extra-ca` overrides it |
-| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. `--hep-tls-cert` overrides it |
-| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. `--hep-tls-key` overrides it |
+| `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. `--hep-tls-ca` overrides it |
+| `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. `--hep-tls-extra-ca` overrides it |
+| `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. `--hep-tls-cert` overrides it |
+| `tls_key` | path | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--hep-tls-key` overrides it |
 
 The sender's trust is one setting. When the command line names
 `--hep-tls-ca` or `--hep-tls-extra-ca`, it replaces both `tls_ca` and
@@ -676,7 +678,7 @@ other than `generic` supplies the value, and then the default applies.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `kind` | string | `"generic"` | The kind of store: `generic`, `vcon-store` or `conserver`. A kind supplies the ingest path when `url` names no path, the header when the credential is a bare key, and the payload adaptation. `generic` supplies nothing. `--vcon-forward-kind` overrides it |
-| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows |
+| `url` | string | -- | Where the forwarder POSTs each container, `http://` or `https://`. With a `kind` other than `generic` and no path, the store's base URL. Checked when the forwarder starts, by the rule `--vcon-forward-url` follows: sipnab refuses a URL with a user name or password in it, and the message shows that part as `[redacted]`. `--vcon-forward-url` overrides it |
 | `replace_url` | string | -- | URL template the forwarder PUTs a container to when the POST answers `409`, with `{uuid}` replaced by the container's `uuid`. Checked when the forwarder starts. `--vcon-forward-replace-url` overrides it |
 | `auth_file` | path | -- | File holding the credential: one `Header-Name: value` line, or the bare key with a `kind` other than `generic`. Refused when other users can read it, and beside `--vcon-forward-auth` or `SIPNAB_VCON_FORWARD_AUTH`. `--vcon-forward-auth-file` overrides it |
 | `ca` | path | host bundle | The only CA (PEM) trusted for an `https://` store. `--vcon-forward-ca` overrides it |
@@ -754,7 +756,7 @@ or aborts so the OS can produce a core dump.
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) land in |
+| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) land in. An empty string fails validation and names the key |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml

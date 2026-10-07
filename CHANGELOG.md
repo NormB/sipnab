@@ -25,6 +25,13 @@ entry that carries them.
   `tests/secret_flags_test.rs` fails when a flag read from an environment
   variable, or one whose value is named as a key, token, password, header or
   `user:pass`, is missing from it.
+- **sipnab no longer echoes or records the user name and password in a URL.**
+  sipnab refused `--vcon-forward-url https://user:pass@host/` with a message
+  that quoted the whole URL, password included, and the run provenance record
+  kept any URL argument as given. Every refusal of a forwarder URL, and every
+  URL argument in the provenance record (`--flag value` and `--flag=value`),
+  now shows the user name and password as `[redacted]`. Both use one
+  function, `run_provenance::redact_url_userinfo`.
 
 ### Added
 
@@ -119,6 +126,12 @@ entry that carries them.
   expression` did not name the setting at all.
 - A malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
 - The `exec_queue_depth` refusal message no longer contains runs of spaces.
+- `--vcon-forward-once --help` names exit `3`, which a `401` or `403` from the
+  store already produced. The man page describes `--vcon-forward-kind`,
+  `--vcon-forward-auth`, `SIPNAB_VCON_FORWARD_AUTH`, the back-off and size
+  flags, `[vcon_forward]` and every forwarder exit status, and lists exit `3`.
+- The command reference and configuration reference state the range each
+  setting accepts, for every value listed under Changed above.
 
 ## [0.5.205] - 2026-10-07
 
