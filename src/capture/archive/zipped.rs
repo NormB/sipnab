@@ -386,6 +386,9 @@ pub(crate) mod testutil {
 
     use std::io::Write;
 
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub type TestError = Box<dyn std::error::Error>;
+
     /// How to encrypt a fixture's members.
     #[derive(Clone, Copy)]
     pub enum Lock<'a> {
@@ -398,8 +401,7 @@ pub(crate) mod testutil {
     }
 
     /// A ZIP holding `entries`, each encrypted per `lock`, deflated.
-    #[must_use]
-    pub fn build(entries: &[(&str, &[u8])], lock: Lock<'_>) -> Vec<u8> {
+    pub fn build(entries: &[(&str, &[u8])], lock: Lock<'_>) -> Result<Vec<u8>, TestError> {
         build_each(
             &entries
                 .iter()
@@ -409,15 +411,13 @@ pub(crate) mod testutil {
     }
 
     /// A ZIP holding `entries`, each with its own lock, deflated.
-    #[must_use]
-    pub fn build_each(entries: &[(&str, &[u8], Lock<'_>)]) -> Vec<u8> {
+    pub fn build_each(entries: &[(&str, &[u8], Lock<'_>)]) -> Result<Vec<u8>, TestError> {
         build_with(entries, zip::CompressionMethod::Deflated)
     }
 
     /// A ZIP holding `entries`, each encrypted per `lock`, stored without
     /// compression.
-    #[must_use]
-    pub fn build_stored(entries: &[(&str, &[u8])], lock: Lock<'_>) -> Vec<u8> {
+    pub fn build_stored(entries: &[(&str, &[u8])], lock: Lock<'_>) -> Result<Vec<u8>, TestError> {
         build_with(
             &entries
                 .iter()
@@ -429,20 +429,29 @@ pub(crate) mod testutil {
 
     /// A ZIP holding `entries`, each with its own lock, compressed per
     /// `method`.
-    fn build_with(entries: &[(&str, &[u8], Lock<'_>)], method: zip::CompressionMethod) -> Vec<u8> {
+    fn build_with(
+        entries: &[(&str, &[u8], Lock<'_>)],
+        method: zip::CompressionMethod,
+    ) -> Result<Vec<u8>, TestError> {
         use zip::unstable::write::FileOptionsExt;
         let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         for (name, data, lock) in entries {
             let base = zip::write::SimpleFileOptions::default().compression_method(method);
             let opts = match lock {
                 Lock::None => base,
-                Lock::ZipCrypto(pw) => base.with_deprecated_encryption(pw).expect("zipcrypto"),
+                Lock::ZipCrypto(pw) => base
+                    .with_deprecated_encryption(pw)
+                    .map_err(|e| format!("zipcrypto options for {name}: {e}"))?,
                 Lock::Aes(mode, pw) => base.with_aes_encryption_bytes(*mode, pw),
             };
-            w.start_file(*name, opts).expect("start");
-            w.write_all(data).expect("write");
+            w.start_file(*name, opts)
+                .map_err(|e| format!("start {name}: {e}"))?;
+            w.write_all(data)
+                .map_err(|e| format!("write {name}: {e}"))?;
         }
-        w.finish().expect("finish").into_inner()
+        Ok(w.finish()
+            .map_err(|e| format!("finish the zip: {e}"))?
+            .into_inner())
     }
 }
 
@@ -542,7 +551,7 @@ mod tests {
     fn an_unencrypted_zip_reads_like_a_tar() -> Result<(), TestError> {
         let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"alpha");
-        let zip = build(&[("set/a.pcap", &a), ("README.txt", b"notes")], Lock::None);
+        let zip = build(&[("set/a.pcap", &a), ("README.txt", b"notes")], Lock::None)?;
         let path = write(tmp.path(), "set.zip", &zip)?;
         let exp = expand_with(&path, None)?;
         assert_eq!(exp.members.len(), 1, "{:?}", exp.skipped);
@@ -573,7 +582,7 @@ mod tests {
             (zip::AesMode::Aes192, Encryption::Aes192),
             (zip::AesMode::Aes256, Encryption::Aes256),
         ] {
-            let zip = build(&[("a.pcap", &a)], Lock::Aes(mode, secret("aes-right")));
+            let zip = build(&[("a.pcap", &a)], Lock::Aes(mode, secret("aes-right")))?;
             let path = write(tmp.path(), "aes.zip", &zip)?;
 
             let mut right = ring(&["aes-right"])?;
@@ -607,7 +616,7 @@ mod tests {
     fn a_zipcrypto_zip_opens_with_the_second_candidate() -> Result<(), TestError> {
         let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"legacy");
-        let zip = build(&[("a.pcap", &a)], Lock::ZipCrypto(secret("zc-right")));
+        let zip = build(&[("a.pcap", &a)], Lock::ZipCrypto(secret("zc-right")))?;
         let path = write(tmp.path(), "zc.zip", &zip)?;
         let mut keys = ring(&["zc-wrong", "zc-right"])?;
         let exp = expand_with(&path, Some(&mut keys))?;
@@ -628,7 +637,7 @@ mod tests {
         let zip = build(
             &[("a.pcap.gz", &gzip(&a)?)],
             Lock::Aes(zip::AesMode::Aes256, secret("gz")),
-        );
+        )?;
         let path = write(tmp.path(), "gz.zip", &zip)?;
         let exp = expand_with(&path, Some(&mut ring(&["gz"])?))?;
         assert_eq!(exp.members.len(), 1, "{:?}", exp.skipped);
@@ -647,7 +656,7 @@ mod tests {
         let zip = build(
             &[("a.pcap", &a)],
             Lock::Aes(zip::AesMode::Aes256, secret("n")),
-        );
+        )?;
         let tgz = gzip(&build_tar(&[Spec::file("inner.zip", &zip)]))?;
         let path = write(tmp.path(), "outer.tgz", &tgz)?;
         let exp = expand_with(&path, Some(&mut ring(&["n"])?))?;
@@ -681,7 +690,7 @@ mod tests {
         let zip = build(
             &[("bomb.pcap.gz", &bomb)],
             Lock::Aes(zip::AesMode::Aes256, secret("bomb")),
-        );
+        )?;
         let path = write(tmp.path(), "bomb.zip", &zip)?;
         let small = Limits {
             max_inflated_bytes: 1024 * 1024,
@@ -720,13 +729,13 @@ mod tests {
         let a = pcap_bytes(&[7u8; 600]);
         // Deflated, a false positive's garbage breaks the inflater at once.
         false_positive_case(
-            &build(&[("a.pcap", &a)], Lock::ZipCrypto(secret("fp-right"))),
+            &build(&[("a.pcap", &a)], Lock::ZipCrypto(secret("fp-right")))?,
             &a,
         )?;
         // Stored, the garbage reads cleanly and only the CRC at the member's
         // end gives it away.
         false_positive_case(
-            &build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("fp-right"))),
+            &build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("fp-right")))?,
             &a,
         )?;
         Ok(())
@@ -785,7 +794,7 @@ mod tests {
         let zip = build(
             &[("a.pcap", &a), ("b.pcap", &b)],
             Lock::Aes(zip::AesMode::Aes256, secret("mem-right")),
-        );
+        )?;
         let path = write(tmp.path(), "two.zip", &zip)?;
         let mut keys = ring(&["mem-w1", "mem-w2", "mem-right"])?;
         let exp = expand_with(&path, Some(&mut keys))?;
@@ -807,7 +816,7 @@ mod tests {
                 &b,
                 Lock::Aes(zip::AesMode::Aes256, secret("mixed")),
             ),
-        ]);
+        ])?;
         let path = write(tmp.path(), "mixed.zip", &zip)?;
         let exp = expand_with(&path, None)?;
         assert_eq!(exp.members.len(), 1);
@@ -833,7 +842,7 @@ mod tests {
         let zip = build(
             &[("d/a.pcap", &a)],
             Lock::Aes(zip::AesMode::Aes256, secret("ptr")),
-        );
+        )?;
         let path = write(tmp.path(), "ptr.zip", &zip)?;
         let label = format!("{}/d/a.pcap", path.display());
         let (member, _dir) =
@@ -857,7 +866,7 @@ mod tests {
         let zip = build(
             &[("a.pcap", &pcap_bytes(b"m"))],
             Lock::Aes(zip::AesMode::Aes256, secret("mode")),
-        );
+        )?;
         let path = write(tmp.path(), "mode.zip", &zip)?;
         let exp = expand_with(&path, Some(&mut ring(&["mode"])?))?;
         let mode = std::fs::metadata(&exp.members[0].path)
@@ -877,9 +886,13 @@ mod tests {
             &build(
                 &[("a.pcap", b"x")],
                 Lock::Aes(zip::AesMode::Aes256, secret("l")),
-            ),
+            )?,
         )?;
-        let open = write(tmp.path(), "o.zip", &build(&[("a.pcap", b"x")], Lock::None))?;
+        let open = write(
+            tmp.path(),
+            "o.zip",
+            &build(&[("a.pcap", b"x")], Lock::None)?,
+        )?;
         assert!(super::has_encrypted_members(&locked).map_err(|e| format!("read: {e:?}"))?);
         assert!(!super::has_encrypted_members(&open).map_err(|e| format!("read: {e:?}"))?);
         Ok(())

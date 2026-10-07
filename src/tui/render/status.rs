@@ -1195,7 +1195,7 @@ mod tests {
     /// including the split percentage.
     #[test]
     fn render_status_line3_call_flow_branch() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::CallFlow("call-1@test".to_string());
         app.flow.raw_preview = true;
         let mut terminal = Terminal::new(TestBackend::new(100, 4))?;

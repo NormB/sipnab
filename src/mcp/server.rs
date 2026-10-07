@@ -16258,9 +16258,9 @@ mod tests {
             }))?);
             let rendered = caller
                 .strip_prefix("unknown-peer bearer-verified scope=full token=")
-                .unwrap_or_else(|| {
-                    panic!("the id must render as the caller's token field: {caller}")
-                });
+                .ok_or_else(|| {
+                    format!("the id must render as the caller's token field: {caller}")
+                })?;
             Ok(rendered.to_string())
         }
 
@@ -17352,9 +17352,9 @@ mod in_process_handler_tests {
     ) -> Result<Value, TestError> {
         client
             .send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
-            .await;
+            .await?;
         for _ in 0..32 {
-            let message = client.next().await;
+            let message = client.next().await?;
             if message["id"] == id {
                 return Ok(message);
             }
@@ -17367,7 +17367,7 @@ mod in_process_handler_tests {
     #[tokio::test]
     async fn prompts_are_listed_fetched_by_name_and_refused_when_unknown() -> Result<(), TestError>
     {
-        let (running, mut client) = connect(empty(), json!({})).await;
+        let (running, mut client) = connect(empty(), json!({})).await?;
         let served = super::super::prompts::all();
 
         let listed = ask(&mut client, 2, "prompts/list", json!({})).await?;
@@ -17415,7 +17415,7 @@ mod in_process_handler_tests {
                 })
                 .unwrap_or_default()
         };
-        let (running, mut client) = connect(empty(), json!({})).await;
+        let (running, mut client) = connect(empty(), json!({})).await?;
         let bare = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await?);
         drop(running);
         assert!(
@@ -17428,7 +17428,7 @@ mod in_process_handler_tests {
         );
 
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
-        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
+        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await?;
         let rooted = templates(&ask(&mut client, 2, "resources/templates/list", json!({})).await?);
         drop(running);
         assert!(
@@ -17445,7 +17445,7 @@ mod in_process_handler_tests {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         std::fs::write(dir.path().join("listed.pcap"), b"not really a pcap")
             .map_err(|e| format!("write: {e:?}"))?;
-        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await;
+        let (running, mut client) = connect(empty().with_file_root(dir.path()), json!({})).await?;
         let v = ask(&mut client, 2, "resources/list", json!({})).await?;
         drop(running);
         assert!(
@@ -17470,7 +17470,7 @@ mod in_process_handler_tests {
             ]),
             StreamStore::new(16),
         );
-        let (running, mut client) = connect(server, json!({})).await;
+        let (running, mut client) = connect(server, json!({})).await?;
         let reference = json!({"type": "ref/resource", "uri": "sipnab://live/dialogs/{call_id}"});
         let hit = ask(
             &mut client,
@@ -17507,7 +17507,7 @@ mod in_process_handler_tests {
     #[tokio::test]
     async fn only_a_live_view_subscribes_and_an_unheld_subscription_cannot_be_removed()
     -> Result<(), TestError> {
-        let (running, mut client) = connect(empty(), json!({})).await;
+        let (running, mut client) = connect(empty(), json!({})).await?;
         let live = super::super::live::DIALOG_LIST_URI;
 
         let file = ask(
@@ -17598,7 +17598,7 @@ mod archive_password_tests {
                     zip::AesMode::Aes256,
                     secret(label).as_bytes(),
                 ),
-            ),
+            )?,
         )
         .map_err(|e| format!("write zip: {e:?}"))?;
         Ok(root)

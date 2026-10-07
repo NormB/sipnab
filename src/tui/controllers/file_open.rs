@@ -2259,7 +2259,7 @@ mod archive_password_tests {
             build(
                 &[("calls/call.pcap", &pcap)],
                 Lock::Aes(zip::AesMode::Aes256, password.as_bytes()),
-            ),
+            )?,
         )
         .map_err(|e| format!("write: {e:?}"))?;
         Ok(path)
@@ -2292,7 +2292,7 @@ mod archive_password_tests {
         handle_popup_key(app, KeyEvent::new(code, mods));
     }
 
-    fn screen(app: &mut App) -> String {
+    fn screen(app: &mut App) -> Result<String, TestError> {
         crate::tui::render::test_support::render_to_string(app, 110, 30)
     }
 
@@ -2311,7 +2311,7 @@ mod archive_password_tests {
 
         // Masked, one dot per character, and the title does not say visible.
         type_in(&mut app, &secret("tui-wrong")[..10]);
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains(&"\u{2022}".repeat(10)), "{text}");
         assert!(text.contains("Attempt 1 of 3"), "{text}");
         assert!(!text.contains("password visible"), "{text}");
@@ -2319,7 +2319,7 @@ mod archive_password_tests {
 
         // Ctrl-R reveals, and says so.
         press(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains(&secret("tui-wrong")[..10]), "{text}");
         assert!(text.contains("password visible"), "{text}");
 
@@ -2330,7 +2330,7 @@ mod archive_password_tests {
                 .as_ref()
                 .is_some_and(|e| e.request().attempt == 2)
         });
-        let text = screen(&mut app);
+        let text = screen(&mut app)?;
         assert!(text.contains("Wrong password"), "{text}");
         assert!(!text.contains("password visible"), "re-masked: {text}");
 

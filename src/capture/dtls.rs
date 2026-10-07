@@ -711,7 +711,7 @@ mod tests {
             55,
             0,
             b"dtls-srtp media payload",
-        );
+        )?;
         let mut ctx = SrtpContext::new(vec![c2s], backend());
         let out = ctx.decrypt(&packet, 12).ok_or("exported key decrypts")?;
         assert_eq!(&out[12..], b"dtls-srtp media payload");

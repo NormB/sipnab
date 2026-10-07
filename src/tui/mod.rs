@@ -2454,8 +2454,8 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![
-            make_invite("once-1@test", "1001", "1002", base_ts()),
-            make_invite("once-2@test", "1003", "1004", base_ts()),
+            make_invite("once-1@test", "1001", "1002", base_ts())?,
+            make_invite("once-2@test", "1003", "1004", base_ts())?,
         ]);
         let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
@@ -2493,7 +2493,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
         app.sync_caches(); // initial derivation
 
@@ -2505,7 +2505,7 @@ mod tests {
                 "1001",
                 "1002",
                 base_ts(),
-            ));
+            )?);
             app.sync_caches(); // the tick that follows a keypress
         }
         assert_eq!(
@@ -2534,8 +2534,8 @@ mod tests {
     fn user_input_changes_bypass_the_displayed_rebuild_floor() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![
-            make_invite("bypass-1@test", "1001", "1002", base_ts()),
-            make_invite("bypass-2@test", "2001", "2002", base_ts()),
+            make_invite("bypass-1@test", "1001", "1002", base_ts())?,
+            make_invite("bypass-2@test", "2001", "2002", base_ts())?,
         ]);
         let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
         app.sync_caches(); // initial derivation — floor starts now
@@ -2825,7 +2825,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         app.current_view = View::Statistics;
         app.sync_caches();
         assert!(
@@ -2837,7 +2837,7 @@ mod tests {
         app.dialog_store
             .clone()
             .write()
-            .process_message(make_invite("stats-2@test", "1003", "1004", base_ts()));
+            .process_message(make_invite("stats-2@test", "1003", "1004", base_ts())?);
         app.sync_caches();
         assert!(
             app.stats.text.contains("Dialogs:           1"),
@@ -2862,8 +2862,8 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite};
         let later = base_ts() + chrono::TimeDelta::seconds(10);
         let mut app = App::with_processed_messages(vec![
-            make_invite("m-late@test", "1001", "1002", later),
-            make_invite("m-early@test", "1003", "1004", base_ts()),
+            make_invite("m-late@test", "1001", "1002", later)?,
+            make_invite("m-early@test", "1003", "1004", base_ts())?,
         ]);
         app.current_view = View::CallFlow("m-late@test".to_string());
         app.flow.merged_calls = vec!["m-late@test".to_string(), "m-early@test".to_string()];
@@ -2890,7 +2890,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         app.current_view = View::CallFlow("nobars@test".to_string());
         app.flow.show_rtp = false;
         app.sync_caches();
@@ -2908,13 +2908,13 @@ mod tests {
     fn a_dialog_ladder_annotates_its_post_dial_delay() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite, make_response};
         let mut app = App::with_processed_messages(vec![
-            make_invite("pdd@test", "1001", "1002", base_ts()),
+            make_invite("pdd@test", "1001", "1002", base_ts())?,
             make_response(
                 "180 Ringing",
                 "pdd@test",
                 "INVITE",
                 base_ts() + chrono::TimeDelta::milliseconds(250),
-            ),
+            )?,
         ]);
         app.current_view = View::CallFlow("pdd@test".to_string());
         app.sync_caches();
@@ -2940,7 +2940,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         app.current_view = View::CallFlow("ext-1@test".to_string());
         app.flow.extended = true;
         app.sync_caches();
@@ -2955,7 +2955,7 @@ mod tests {
         app.dialog_store
             .clone()
             .write()
-            .process_message(make_invite("ext-2@test", "1003", "1004", base_ts()));
+            .process_message(make_invite("ext-2@test", "1003", "1004", base_ts())?);
         app.sync_caches();
         match &app.flow.ladder.key {
             Some(LadderKey {
@@ -3016,7 +3016,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
         assert!(draw_frame(&mut terminal, &mut app)?);
@@ -3051,7 +3051,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
         assert!(draw_frame(&mut terminal, &mut app)?);
@@ -3094,7 +3094,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
         assert!(draw_frame(&mut terminal, &mut app)?);
@@ -3127,7 +3127,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
         app.sync_caches();
         assert!(draw_frame(&mut terminal, &mut app)?);
@@ -3170,7 +3170,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         app.current_view = View::CallFlow("flow-1@test".to_string());
         let calls = || call_flow::prepare::LAYOUT_CALLS.with(|c| c.get());
         let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
@@ -3204,7 +3204,7 @@ mod tests {
         app.dialog_store.write().process_message(make_ok(
             "flow-1@test",
             base_ts() + chrono::TimeDelta::seconds(1),
-        ));
+        )?);
         terminal.draw(|f| app.render(f))?;
         assert_eq!(
             calls() - mid,
@@ -3220,8 +3220,8 @@ mod tests {
     fn sync_caches_refreshes_dialog_counts_without_rendering() -> Result<(), TestError> {
         use controllers::test_support::{base_ts, make_invite};
         let mut app = App::with_processed_messages(vec![
-            make_invite("sync-1@test", "1001", "1002", base_ts()),
-            make_invite("sync-2@test", "1003", "1004", base_ts()),
+            make_invite("sync-1@test", "1001", "1002", base_ts())?,
+            make_invite("sync-2@test", "1003", "1004", base_ts())?,
         ]);
         assert_eq!(app.cached_dialog_count, 0, "no tick has run yet");
         app.sync_caches();
@@ -3241,7 +3241,7 @@ mod tests {
             "1001",
             "1002",
             base_ts(),
-        )]);
+        )?]);
         app.call_list.autoscroll = true;
         app.sync_caches(); // selection on row 0 == last row; rows recorded
         assert_eq!(app.last_rendered_dialog_rows, 1);
@@ -3249,7 +3249,7 @@ mod tests {
         // Two more dialogs arrive; the churn floor elapses before the next
         // tick (sticky-bottom follows at the refresh cadence, ≤300 ms).
         for cid in ["auto-2@test", "auto-3@test"] {
-            let msg = make_invite(cid, "1005", "1006", base_ts());
+            let msg = make_invite(cid, "1005", "1006", base_ts())?;
             app.dialog_store.write().process_message(msg);
         }
         app.elapse_churn_floors_for_test();
@@ -3274,10 +3274,10 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite};
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![
-            make_invite("keep-1@test", "1001", "1002", base_ts()),
-            make_invite("keep-2@test", "1003", "1004", base_ts()),
-            make_invite("drop-3@test", "1005", "1006", base_ts()),
-            make_invite("drop-4@test", "1007", "1008", base_ts()),
+            make_invite("keep-1@test", "1001", "1002", base_ts())?,
+            make_invite("keep-2@test", "1003", "1004", base_ts())?,
+            make_invite("drop-3@test", "1005", "1006", base_ts())?,
+            make_invite("drop-4@test", "1007", "1008", base_ts())?,
         ]);
         // 6-row terminal: 3 status lines + f-key bar + table header leave
         // exactly ONE visible data row, so selecting the bottom row stores
@@ -3378,19 +3378,19 @@ mod tests {
         use crossterm::event::KeyCode;
         use ratatui::{Terminal, backend::TestBackend};
         let mut app = App::with_processed_messages(vec![
-            make_invite("a@test", "1001", "1002", base_ts()),
+            make_invite("a@test", "1001", "1002", base_ts())?,
             make_invite(
                 "b@test",
                 "1003",
                 "1004",
                 base_ts() + chrono::TimeDelta::seconds(5),
-            ),
+            )?,
             make_invite(
                 "c@test",
                 "1005",
                 "1006",
                 base_ts() + chrono::TimeDelta::seconds(10),
-            ),
+            )?,
         ]);
         let mut terminal = Terminal::new(TestBackend::new(120, 24))?;
         terminal.draw(|f| app.render(f))?;
@@ -3441,13 +3441,13 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite};
         use crossterm::event::KeyCode;
         let mut app = App::with_processed_messages(vec![
-            make_invite("a@test", "1001", "1002", base_ts()),
+            make_invite("a@test", "1001", "1002", base_ts())?,
             make_invite(
                 "b@test",
                 "1003",
                 "1004",
                 base_ts() + chrono::TimeDelta::seconds(5),
-            ),
+            )?,
         ]);
         app.sync_caches();
         // No checkboxes: cursor row wins.
@@ -3484,8 +3484,8 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite};
         use crossterm::event::KeyCode;
         let mut app = App::with_processed_messages(vec![
-            make_invite("x559@test", "1001", "1002", base_ts()),
-            make_invite("other@test", "1003", "1004", base_ts()),
+            make_invite("x559@test", "1001", "1002", base_ts())?,
+            make_invite("other@test", "1003", "1004", base_ts())?,
         ]);
         app.handle_key(KeyCode::F(3));
         for c in "559".chars() {
@@ -3531,19 +3531,19 @@ mod tests {
                     base_ts() + chrono::TimeDelta::seconds(i),
                 )
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         messages.push(make_invite(
             "inv-559@test",
             "1001",
             "1002",
             base_ts() + chrono::TimeDelta::seconds(10),
-        ));
+        )?);
         messages.push(make_invite(
             "inv-2@test",
             "1003",
             "1004",
             base_ts() + chrono::TimeDelta::seconds(11),
-        ));
+        )?);
         let mut app = App::with_processed_messages(messages);
 
         // The incident's exact match expression: matches ALL 8 dialogs.
@@ -3589,32 +3589,32 @@ mod tests {
         use controllers::test_support::{base_ts, make_invite, make_request, make_response};
         let t0 = base_ts();
         let mut app = App::with_processed_messages(vec![
-            make_invite("call-pdd@test", "1001", "1002", t0),
+            make_invite("call-pdd@test", "1001", "1002", t0)?,
             make_response(
                 "180 Ringing",
                 "call-pdd@test",
                 "INVITE",
                 t0 + chrono::TimeDelta::milliseconds(1500),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 "call-pdd@test",
                 "INVITE",
                 t0 + chrono::TimeDelta::seconds(3),
-            ),
+            )?,
             make_request(
                 "BYE",
                 "call-pdd@test",
                 "1001",
                 "1002",
                 t0 + chrono::TimeDelta::seconds(61),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 "call-pdd@test",
                 "BYE",
                 t0 + chrono::TimeDelta::milliseconds(61_500),
-            ),
+            )?,
         ]);
         app.sync_caches();
 

@@ -27,7 +27,7 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     ("crates", 9, 3, 0),
     ("examples", 0, 3, 0),
     ("fuzz", 0, 0, 0),
-    ("src", 1848, 4441, 238),
+    ("src", 5, 3, 7),
     ("tests", 0, 0, 2),
 ];
 

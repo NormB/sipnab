@@ -125,14 +125,20 @@ pub fn join_fanout_group(_fd: std::os::fd::RawFd, _group_id: u16) -> std::io::Re
 mod non_linux_tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     #[test]
-    fn fanout_is_reported_unsupported_not_silently_ok() {
-        let err = join_fanout_group(-1, 1).expect_err("there is no PACKET_FANOUT here");
+    fn fanout_is_reported_unsupported_not_silently_ok() -> Result<(), TestError> {
+        let err = join_fanout_group(-1, 1)
+            .err()
+            .ok_or("there is no PACKET_FANOUT here, so joining must fail")?;
         assert_eq!(
             err.kind(),
             std::io::ErrorKind::Unsupported,
             "the caller distinguishes 'unavailable' from a real failure by kind"
         );
+        Ok(())
     }
 }
 
@@ -140,6 +146,9 @@ mod non_linux_tests {
 mod tests {
     use super::*;
     use std::os::fd::AsRawFd;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
 
     /// A socket that is not `AF_PACKET` must be REFUSED, not silently accepted.
     ///
@@ -150,10 +159,12 @@ mod tests {
     /// every non-packet fd the caller might hand over — a `-I` file handle, or
     /// a pcap backend that is not `AF_PACKET`.
     #[test]
-    fn a_non_packet_socket_is_refused() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+    fn a_non_packet_socket_is_refused() -> Result<(), TestError> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind ephemeral: {e}"))?;
         let err = join_fanout_group(listener.as_raw_fd(), 1)
-            .expect_err("a TCP socket must not join a packet fanout group");
+            .err()
+            .ok_or("a TCP socket must not join a packet fanout group")?;
         // The kernel's exact errno varies (ENOPROTOOPT on current Linux); what
         // must hold is that it is an error the caller can fall back on, not a
         // success. Asserting a specific errno would pin a kernel detail this
@@ -162,15 +173,19 @@ mod tests {
             err.raw_os_error().is_some(),
             "expected an OS error to fall back on, got {err:?}"
         );
+        Ok(())
     }
 
     /// A closed/invalid descriptor is an error rather than a panic or a
     /// success, because the caller's fallback path is driven entirely by the
     /// return value.
     #[test]
-    fn an_invalid_descriptor_is_an_error() {
-        let err = join_fanout_group(-1, 1).expect_err("-1 is not a socket");
+    fn an_invalid_descriptor_is_an_error() -> Result<(), TestError> {
+        let err = join_fanout_group(-1, 1)
+            .err()
+            .ok_or("-1 is not a socket, so joining must fail")?;
         assert_eq!(err.raw_os_error(), Some(libc::EBADF));
+        Ok(())
     }
 
     /// The claim this whole module rests on: `PACKET_FANOUT` applies to a
@@ -197,26 +212,29 @@ mod tests {
     /// which is `AF_PACKET`-capable and carries no production traffic.
     #[test]
     #[ignore = "needs CAP_NET_RAW"]
-    fn fanout_applies_to_an_open_pcap_handle() {
+    fn fanout_applies_to_an_open_pcap_handle() -> Result<(), TestError> {
         let dev = std::env::var("SIPNAB_FANOUT_DEV").unwrap_or_else(|_| "lo".to_string());
         let cap = pcap::Capture::from_device(dev.as_str())
-            .expect("device lookup")
+            .map_err(|e| format!("device lookup: {e}"))?
             .immediate_mode(true)
             .open()
-            .expect("open (needs CAP_NET_RAW)");
+            .map_err(|e| format!("open (needs CAP_NET_RAW): {e}"))?;
 
-        join_fanout_group(cap.as_raw_fd(), 0x5150)
-            .expect("PACKET_FANOUT on an already-open, ring-mapped pcap handle");
+        join_fanout_group(cap.as_raw_fd(), 0x5150).map_err(|e| {
+            format!("PACKET_FANOUT on an already-open, ring-mapped pcap handle: {e}")
+        })?;
 
         // A second handle joining the SAME group must also succeed — one
         // socket in a group proves nothing, since the interesting case is N
         // sockets agreeing on mode and flags. A mismatch here is EINVAL.
         let cap2 = pcap::Capture::from_device(dev.as_str())
-            .expect("device lookup")
+            .map_err(|e| format!("device lookup: {e}"))?
             .immediate_mode(true)
             .open()
-            .expect("second open");
-        join_fanout_group(cap2.as_raw_fd(), 0x5150).expect("second socket joins the same group");
+            .map_err(|e| format!("second open: {e}"))?;
+        join_fanout_group(cap2.as_raw_fd(), 0x5150)
+            .map_err(|e| format!("second socket joins the same group: {e}"))?;
+        Ok(())
     }
 
     /// The group id occupies the low 16 bits and the mode the high 16, so a

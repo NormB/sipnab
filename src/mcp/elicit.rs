@@ -452,7 +452,7 @@ mod round_trip_tests {
     async fn ask_answered_with(
         reply: impl FnOnce(Value) -> Value,
     ) -> Result<(Value, Answer), TestError> {
-        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
+        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await?;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
             confirm.available(),
@@ -463,8 +463,8 @@ mod round_trip_tests {
                 .ask("Stop the sipnab server?", "Stop", "ends the run")
                 .await
         });
-        let request = client.next().await;
-        client.send(reply(request["id"].clone())).await;
+        let request = client.next().await?;
+        client.send(reply(request["id"].clone())).await?;
         let answer = asking
             .await
             .map_err(|e| format!("the ask completes: {e:?}"))?;
@@ -574,11 +574,11 @@ mod round_trip_tests {
     /// A client that goes away mid-question has not said yes.
     #[tokio::test]
     async fn a_pipe_that_closes_mid_question_is_a_refusal() -> Result<(), TestError> {
-        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
+        let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await?;
         let confirm = Confirm::to(running.peer().clone());
         let asking =
             tokio::spawn(async move { confirm.ask("Stop?", "Stop", "ends the run").await });
-        let request = client.next().await;
+        let request = client.next().await?;
         assert_eq!(request["method"], "elicitation/create");
         drop(client);
         let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asking)
@@ -602,7 +602,7 @@ mod round_trip_tests {
     /// anyway would arrive first.
     #[tokio::test]
     async fn a_client_that_declared_nothing_is_never_sent_the_question() -> Result<(), TestError> {
-        let (running, mut client) = connect(Bare, json!({})).await;
+        let (running, mut client) = connect(Bare, json!({})).await?;
         let confirm = Confirm::to(running.peer().clone());
         assert!(!confirm.available());
         assert_eq!(
@@ -611,8 +611,8 @@ mod round_trip_tests {
         );
         client
             .send(json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
-            .await;
-        let next = client.next().await;
+            .await?;
+        let next = client.next().await?;
         assert_eq!(
             next["id"], 2,
             "the next line must answer the ping; anything else was sent unasked: {next}"
@@ -625,7 +625,7 @@ mod round_trip_tests {
     /// A client that can only open a URL is not reachable for a form.
     #[tokio::test]
     async fn a_url_only_client_is_not_reachable_through_the_peer() -> Result<(), TestError> {
-        let (running, _client) = connect(Bare, json!({"elicitation": {"url": {}}})).await;
+        let (running, _client) = connect(Bare, json!({"elicitation": {"url": {}}})).await?;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
             !confirm.available(),
@@ -643,7 +643,7 @@ mod round_trip_tests {
             format!("{:?}", Confirm::unavailable()),
             "Confirm { available: false }"
         );
-        let (running, _client) = connect(Bare, json!({"elicitation": {"form": {}}})).await;
+        let (running, _client) = connect(Bare, json!({"elicitation": {"form": {}}})).await?;
         assert_eq!(
             format!("{:?}", Confirm::to(running.peer().clone())),
             "Confirm { available: true }"
@@ -665,6 +665,9 @@ pub(crate) mod wire {
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
 
+    /// Any error a wire step can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// The client's end of one session, driven by hand.
     pub(crate) struct Client {
         lines: tokio::io::Lines<BufReader<ReadHalf<DuplexStream>>>,
@@ -673,24 +676,30 @@ pub(crate) mod wire {
 
     impl Client {
         /// Write one JSON-RPC message.
-        pub(crate) async fn send(&mut self, message: Value) {
+        pub(crate) async fn send(&mut self, message: Value) -> Result<(), TestError> {
             let line = format!("{message}\n");
             self.writer
                 .write_all(line.as_bytes())
                 .await
-                .expect("the pipe accepts a line");
-            self.writer.flush().await.expect("the pipe flushes");
+                .map_err(|e| format!("the pipe accepts a line: {e}"))?;
+            self.writer
+                .flush()
+                .await
+                .map_err(|e| format!("the pipe flushes: {e}"))?;
+            Ok(())
         }
 
         /// Read one JSON-RPC message, bounded so a hang fails the test.
-        pub(crate) async fn next(&mut self) -> Value {
+        pub(crate) async fn next(&mut self) -> Result<Value, TestError> {
             let line =
                 tokio::time::timeout(std::time::Duration::from_secs(10), self.lines.next_line())
                     .await
-                    .expect("the server wrote nothing within 10 s")
-                    .expect("the pipe reads")
-                    .expect("the server closed the pipe");
-            serde_json::from_str(&line).expect("each line is one JSON-RPC message")
+                    .map_err(|e| format!("the server wrote nothing within 10 s: {e}"))?
+                    .map_err(|e| format!("the pipe reads: {e}"))?
+                    .ok_or("the server closed the pipe")?;
+            let message = serde_json::from_str(&line)
+                .map_err(|e| format!("each line is one JSON-RPC message: {e}: {line}"))?;
+            Ok(message)
         }
     }
 
@@ -699,7 +708,7 @@ pub(crate) mod wire {
     pub(crate) async fn connect<S: rmcp::ServerHandler>(
         server: S,
         capabilities: Value,
-    ) -> (rmcp::service::RunningService<rmcp::RoleServer, S>, Client) {
+    ) -> Result<(rmcp::service::RunningService<rmcp::RoleServer, S>, Client), TestError> {
         let (server_end, client_end) = tokio::io::duplex(64 * 1024);
         let (server_read, server_write) = tokio::io::split(server_end);
         let (client_read, client_write) = tokio::io::split(client_end);
@@ -719,19 +728,19 @@ pub(crate) mod wire {
                     "clientInfo": {"name": "in-process-test", "version": "1"}
                 }
             }))
-            .await;
-        let initialized = client.next().await;
+            .await?;
+        let initialized = client.next().await?;
         assert!(
             initialized["result"].is_object(),
             "handshake failed: {initialized}"
         );
         client
             .send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-            .await;
+            .await?;
         let running = serving
             .await
-            .expect("the serving task completes")
-            .expect("the handshake succeeds");
-        (running, client)
+            .map_err(|e| format!("the serving task completes: {e}"))?
+            .map_err(|e| format!("the handshake succeeds: {e}"))?;
+        Ok((running, client))
     }
 }

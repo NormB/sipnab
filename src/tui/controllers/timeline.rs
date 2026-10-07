@@ -89,23 +89,25 @@ mod tests {
     /// Shift+T on a selected call opens the timeline; Esc returns to the
     /// call list.
     #[test]
-    fn timeline_opens_from_call_list_and_esc_returns() {
-        let mut app = app_with_dialogs();
+    fn timeline_opens_from_call_list_and_esc_returns() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         assert!(matches!(app.current_view, View::CallTimeline(_)));
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// The quit key closes the timeline (back to the call list) rather
     /// than quitting the app.
     #[test]
-    fn timeline_q_also_returns_to_call_list() {
-        let mut app = app_with_dialogs();
+    fn timeline_q_also_returns_to_call_list() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         assert!(matches!(app.current_view, View::CallTimeline(_)));
         app.handle_key(KeyCode::Char('q'));
         assert_eq!(app.current_view, View::CallList);
+        Ok(())
     }
 
     /// A rebound quit key maps to `Close` and the old key unbinds.
@@ -172,10 +174,10 @@ mod tests {
     /// The call-list selection is deliberately moved off row 0 first. Left at
     /// 0, a stray `move_up()` clamps to 0 and reads as inert.
     #[test]
-    fn timeline_wheel_moves_no_selection_and_no_scroll_offset() {
+    fn timeline_wheel_moves_no_selection_and_no_scroll_offset() -> Result<(), TestError> {
         use crossterm::event::MouseEventKind as MK;
 
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.handle_key(KeyCode::Down);
         app.handle_key(KeyCode::Char('T'));
         assert!(
@@ -233,5 +235,6 @@ mod tests {
             app.current_view, view_before,
             "and the wheel must not navigate out of the view either"
         );
+        Ok(())
     }
 }

@@ -534,49 +534,49 @@ mod tests {
     }
 
     /// A fully-completed call: INVITE, 100, 180, 200, BYE, 200-to-BYE.
-    fn completed_call(call_id: &str) -> Vec<crate::sip::SipMessage> {
+    fn completed_call(call_id: &str) -> Result<Vec<crate::sip::SipMessage>, TestError> {
         let t0 = base_ts();
-        vec![
-            make_invite(call_id, "alice", "bob", t0),
+        Ok(vec![
+            make_invite(call_id, "alice", "bob", t0)?,
             make_response(
                 "100 Trying",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(50),
-            ),
+            )?,
             make_response(
                 "180 Ringing",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(1500),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 call_id,
                 "INVITE",
                 t0 + TimeDelta::milliseconds(4500),
-            ),
+            )?,
             make_request(
                 "BYE",
                 call_id,
                 "alice",
                 "bob",
                 t0 + TimeDelta::milliseconds(20000),
-            ),
+            )?,
             make_response(
                 "200 OK",
                 call_id,
                 "BYE",
                 t0 + TimeDelta::milliseconds(20200),
-            ),
-        ]
+            )?,
+        ])
     }
 
     /// A fully-completed call yields the five canonical phases in order
     /// with exact per-phase durations, offsets, and total.
     #[test]
     fn completed_call_yields_ordered_segments_with_durations() -> Result<(), TestError> {
-        let app = app_with(completed_call("done@test"));
+        let app = app_with(completed_call("done@test")?);
         let store = app.dialog_store.read();
         let dialog = store.get("done@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
@@ -607,7 +607,7 @@ mod tests {
     /// duration, the PDD metric, the legend, and the total.
     #[test]
     fn completed_call_renders_labels_metrics_and_legend() -> Result<(), TestError> {
-        let app = app_with(completed_call("done@test"));
+        let app = app_with(completed_call("done@test")?);
         let text = render_to_string(&app, "done@test", 100, 24)?;
 
         // Phase labels.
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn invite_only_call_has_setup_but_no_in_call() -> Result<(), TestError> {
         let t0 = base_ts();
-        let app = app_with(vec![make_invite("ringing@test", "alice", "bob", t0)]);
+        let app = app_with(vec![make_invite("ringing@test", "alice", "bob", t0)?]);
         let store = app.dialog_store.read();
         let dialog = store.get("ringing@test").ok_or("dialog present")?;
         let segs = timeline_segments(dialog);
@@ -650,25 +650,25 @@ mod tests {
     fn failed_call_appends_marker_without_in_call() -> Result<(), TestError> {
         let t0 = base_ts();
         let app = app_with(vec![
-            make_invite("busy@test", "alice", "bob", t0),
+            make_invite("busy@test", "alice", "bob", t0)?,
             make_response(
                 "100 Trying",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(40),
-            ),
+            )?,
             make_response(
                 "180 Ringing",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(900),
-            ),
+            )?,
             make_response(
                 "486 Busy Here",
                 "busy@test",
                 "INVITE",
                 t0 + TimeDelta::milliseconds(2000),
-            ),
+            )?,
         ]);
         let store = app.dialog_store.read();
         let dialog = store.get("busy@test").ok_or("dialog present")?;
@@ -696,9 +696,9 @@ mod tests {
         let t0 = base_ts();
         // All milestones at the same instant.
         let app = app_with(vec![
-            make_invite("zero@test", "alice", "bob", t0),
-            make_response("180 Ringing", "zero@test", "INVITE", t0),
-            make_response("200 OK", "zero@test", "INVITE", t0),
+            make_invite("zero@test", "alice", "bob", t0)?,
+            make_response("180 Ringing", "zero@test", "INVITE", t0)?,
+            make_response("200 OK", "zero@test", "INVITE", t0)?,
         ]);
         let store = app.dialog_store.read();
         let dialog = store.get("zero@test").ok_or("dialog present")?;
@@ -723,7 +723,7 @@ mod tests {
         // A non-INVITE dialog: exists in the store but records no milestones.
         let app = app_with(vec![make_request(
             "OPTIONS", "opt@test", "alice", "bob", t0,
-        )]);
+        )?]);
         let store = app.dialog_store.read();
         let dialog = store.get("opt@test").ok_or("dialog present")?;
         assert!(timeline_segments(dialog).is_empty());
@@ -751,7 +751,7 @@ mod tests {
     /// A 12x16 terminal shrinks the bar and clips content, not panics.
     #[test]
     fn narrow_terminal_still_renders_without_panic() -> Result<(), TestError> {
-        let app = app_with(completed_call("done@test"));
+        let app = app_with(completed_call("done@test")?);
         // Extremely narrow: bar must degrade, not panic.
         let text = render_to_string(&app, "done@test", 12, 16)?;
         assert!(text.contains("Total") || text.contains("In-Call"));

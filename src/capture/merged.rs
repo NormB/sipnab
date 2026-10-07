@@ -270,9 +270,12 @@ fn epoch_to_utc(d: std::time::Duration) -> DateTime<Utc> {
 
 #[cfg(test)]
 pub(crate) mod testutil {
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Write to `path` a pcapng whose two interfaces disagree on BOTH link
     /// type and snaplen, holding one 40-byte frame on each interface.
-    pub(crate) fn merged_fixture(path: &std::path::Path) {
+    pub(crate) fn merged_fixture(path: &std::path::Path) -> Result<(), TestError> {
         fn block(kind: u32, body: &[u8]) -> Vec<u8> {
             let pad = (4 - body.len() % 4) % 4;
             let total = 12 + body.len() + pad;
@@ -311,7 +314,8 @@ pub(crate) mod testutil {
             epb.extend_from_slice(&data);
             out.extend_from_slice(&block(0x0000_0006, &epb));
         }
-        std::fs::write(path, out).expect("write fixture");
+        std::fs::write(path, out).map_err(|e| format!("write fixture {}: {e}", path.display()))?;
+        Ok(())
     }
 }
 
@@ -354,7 +358,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
 
         let merged = dir.path().join("merged.pcapng");
-        merged_fixture(&merged);
+        merged_fixture(&merged)?;
         assert!(
             is_merged(&merged),
             "interfaces disagreeing on link type and snaplen is the definition"
@@ -422,7 +426,7 @@ mod tests {
     fn each_frame_carries_its_own_interfaces_link_type() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("merged.pcapng");
-        merged_fixture(&path);
+        merged_fixture(&path)?;
 
         let mut r =
             MergedPcapNg::open(&path).map_err(|e| format!("merged pcapng must open: {e:?}"))?;

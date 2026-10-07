@@ -181,7 +181,7 @@ mod tests {
     fn enter_defers_the_write_and_paints_saving_first() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.txt");
-        let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+        let mut app = crate::tui::controllers::test_support::app_with_dialogs()?;
         app.save.format = SaveFormat::Txt;
         app.save.path = path.to_string_lossy().into_owned();
         app.active_popup = Some(Popup::SaveDialog);
@@ -217,7 +217,7 @@ mod tests {
     /// but the save dialog was missing.
     #[test]
     fn delete_removes_char_at_cursor() -> Result<(), TestError> {
-        let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+        let mut app = crate::tui::controllers::test_support::app_with_dialogs()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.save.path = "/tmp/x".to_string();
         app.save.cursor = 0;
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn enter_with_blank_path_is_rejected_without_queuing() -> Result<(), TestError> {
         for blank in ["", "   ", "\t "] {
-            let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+            let mut app = crate::tui::controllers::test_support::app_with_dialogs()?;
             app.save.format = SaveFormat::Txt;
             app.save.path = blank.to_string();
             app.active_popup = Some(Popup::SaveDialog);

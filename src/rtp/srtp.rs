@@ -1253,6 +1253,9 @@ pub(crate) mod test_support {
     use super::*;
     use crate::crypto::{CryptoBackend, RingCryptoBackend};
 
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Build a fully valid SRTP packet (AES-CM-encrypted payload + correct
     /// 80-bit HMAC-SHA1 auth tag) for the given master key/salt and identifiers.
     ///
@@ -1263,10 +1266,10 @@ pub(crate) mod test_support {
     ///   and the authenticated ROC.
     /// * `plaintext` — the payload to encrypt.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics (via `unwrap`) on invalid key/salt lengths — acceptable in
-    /// test code.
+    /// Returns an error naming the failed step when the key/salt lengths are
+    /// invalid for key derivation, the keystream, or the auth tag.
     pub fn build_srtp_packet(
         master_key: &[u8],
         master_salt: &[u8],
@@ -1274,7 +1277,7 @@ pub(crate) mod test_support {
         seq: u16,
         roc: u32,
         plaintext: &[u8],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, TestError> {
         let crypto = RingCryptoBackend;
 
         let mut header = vec![0x80, 0x00];
@@ -1282,11 +1285,14 @@ pub(crate) mod test_support {
         header.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
         header.extend_from_slice(&ssrc.to_be_bytes());
 
-        let session_key = aes_cm_prf(master_key, master_salt, 0x00, master_key.len()).unwrap();
-        let session_salt = aes_cm_prf(master_key, master_salt, 0x02, 14).unwrap();
+        let session_key = aes_cm_prf(master_key, master_salt, 0x00, master_key.len())
+            .map_err(|e| format!("derive the session key: {e:?}"))?;
+        let session_salt = aes_cm_prf(master_key, master_salt, 0x02, 14)
+            .map_err(|e| format!("derive the session salt: {e:?}"))?;
         let index = ((roc as u64) << 16) | seq as u64;
         let iv = srtp_cipher_iv(&session_salt, ssrc, index);
-        let ks = srtp_aes_cm_keystream(&session_key, iv, plaintext.len()).unwrap();
+        let ks = srtp_aes_cm_keystream(&session_key, iv, plaintext.len())
+            .map_err(|e| format!("generate the keystream: {e:?}"))?;
         let ciphertext: Vec<u8> = plaintext.iter().zip(&ks).map(|(p, k)| p ^ k).collect();
 
         let mut packet = header;
@@ -1294,12 +1300,14 @@ pub(crate) mod test_support {
 
         let auth_key =
             derive_session_key(master_key, master_salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN)
-                .unwrap();
+                .map_err(|e| format!("derive the auth key: {e:?}"))?;
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&roc.to_be_bytes());
-        let tag = crypto.hmac_sha1(&auth_key, &hmac_input).unwrap();
+        let tag = crypto
+            .hmac_sha1(&auth_key, &hmac_input)
+            .map_err(|e| format!("compute the auth tag: {e:?}"))?;
         packet.extend_from_slice(&tag[..10]); // 80-bit tag
-        packet
+        Ok(packet)
     }
 }
 
@@ -1771,7 +1779,7 @@ mod tests {
         seq: u16,
         roc: u32,
         plaintext: &[u8],
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, TestError> {
         super::test_support::build_srtp_packet(master_key, master_salt, ssrc, seq, roc, plaintext)
     }
 
@@ -1784,7 +1792,7 @@ mod tests {
         let ms = vec![0x44u8; 14];
         let ssrc = 0xDEAD_BEEFu32;
         let plaintext = b"\x00\x01\x02\x03 decrypted media frame payload".to_vec();
-        let packet = build_valid_srtp_packet(&mk, &ms, ssrc, 42, 0, &plaintext);
+        let packet = build_valid_srtp_packet(&mk, &ms, ssrc, 42, 0, &plaintext)?;
 
         let material = SrtpKeyMaterial {
             tag: 1,
@@ -1814,7 +1822,7 @@ mod tests {
     fn srtp_context_rejects_wrong_key() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
         let packet =
-            build_valid_srtp_packet(&[0x33u8; 16], &[0x44u8; 14], 0xCAFE, 7, 0, b"payload");
+            build_valid_srtp_packet(&[0x33u8; 16], &[0x44u8; 14], 0xCAFE, 7, 0, b"payload")?;
         // Context holds an unrelated key: auth tag must not verify ⇒ no plaintext.
         let wrong = SrtpKeyMaterial {
             tag: 1,
@@ -1854,7 +1862,7 @@ mod tests {
         assert_eq!(added, 1);
         assert_eq!(ctx.key_count(), 1);
 
-        let packet = build_valid_srtp_packet(&mk, &ms, 0x1111_2222, 100, 0, b"hello srtp");
+        let packet = build_valid_srtp_packet(&mk, &ms, 0x1111_2222, 100, 0, b"hello srtp")?;
         let out = ctx.decrypt(&packet, 12).ok_or("SDES key decrypts")?;
         assert_eq!(&out[12..], b"hello srtp");
         Ok(())
@@ -1879,10 +1887,10 @@ mod tests {
         let crypto = RingCryptoBackend;
         let mut tr = SrtpRocTracker::new();
         // First packet for the SSRC authenticates at ROC 0.
-        let p0 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 65000, 0, b"a");
+        let p0 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 65000, 0, b"a")?;
         assert_eq!(tr.verify_roc(&p0, &material, &crypto)?, Some(0));
         // After a sequence wrap, it authenticates at ROC 1.
-        let p1 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 5, 1, b"b");
+        let p1 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 5, 1, b"b")?;
         assert_eq!(tr.verify_roc(&p1, &material, &crypto)?, Some(1));
         // A forged tag yields None (state untouched).
         let mut bad = p1.clone();

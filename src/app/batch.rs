@@ -14998,7 +14998,7 @@ mod tests {
                     response_bytes: b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),
                 })
                 .collect();
-            let outcomes = decisions_for_argv(&argv, requests);
+            let outcomes = decisions_for_argv(&argv, requests)?;
             assert_eq!(
                 outcomes.len(),
                 usize::from(n),

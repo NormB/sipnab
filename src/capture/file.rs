@@ -2053,7 +2053,7 @@ mod tests {
     fn a_merged_capture_numbers_its_frames_and_stops_at_the_count() -> Result<(), TestError> {
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("merged.pcapng");
-        crate::capture::merged::testutil::merged_fixture(&path);
+        crate::capture::merged::testutil::merged_fixture(&path)?;
 
         let (tx, rx) = packet_channel(TEST_CAP);
         capture_file(&path, &CaptureConfig::default(), tx, None)

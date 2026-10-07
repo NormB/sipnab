@@ -291,7 +291,7 @@ mod tests {
     /// turns name resolution on so the change is visible.
     #[test]
     fn name_dialog_sets_mapping_and_enables_resolution() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for c in "sbc-edge".chars() {
             handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
@@ -312,7 +312,7 @@ mod tests {
     /// each keeps its own edited name, and Enter applies them all.
     #[test]
     fn name_dialog_tab_edits_multiple_endpoints() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         open_name_dialog_for(&mut app, vec![addr_a(), addr_b()], 0);
         assert_eq!(app.name_dialog.active_ip(), addr_a().to_string());
         for c in "alice".chars() {
@@ -349,7 +349,7 @@ mod tests {
     /// first, silently hiding the names-file error the operator most needs.
     #[test]
     fn both_write_failures_are_reported_together() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         // A regular file used as a fake parent directory: any write beneath
         // it fails (create_dir_all / open both refuse to treat a file as a
         // directory), so both persistence paths error out.
@@ -381,7 +381,7 @@ mod tests {
     /// mapping (the plain IP shows again).
     #[test]
     fn name_dialog_empty_clears_mapping() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.resolver().set_manual(addr_a(), "old".into());
         open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for _ in 0.."old".len() {

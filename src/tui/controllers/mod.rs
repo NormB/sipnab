@@ -1817,6 +1817,9 @@ pub(crate) mod test_support {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
+
     /// Fixture "caller" endpoint address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
@@ -1853,7 +1856,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -1864,7 +1867,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -1873,7 +1876,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE")
+        .map_err(|e| format!("parse INVITE: {e:?}"))?)
     }
 
     /// Method-generic request builder (OPTIONS, REGISTER, ...) for tests
@@ -1884,7 +1887,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("{method} sip:{to}@example.com SIP/2.0"),
             &[
@@ -1895,7 +1898,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -1904,7 +1907,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse request")
+        .map_err(|e| format!("parse request: {e:?}"))?)
     }
 
     /// Response builder with an arbitrary status line (e.g. "180 Ringing")
@@ -1914,7 +1917,7 @@ pub(crate) mod test_support {
         call_id: &str,
         cseq_method: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("SIP/2.0 {status}"),
             &[
@@ -1925,7 +1928,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -1934,11 +1937,11 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse response")
+        .map_err(|e| format!("parse response: {e:?}"))?)
     }
 
     /// Parsed 200 OK answering `call_id`'s INVITE at `ts`, sent B→A.
-    pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1949,7 +1952,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -1958,20 +1961,20 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse 200")
+        .map_err(|e| format!("parse 200: {e:?}"))?)
     }
 
     /// App pre-populated with three answered dialogs (call-1..call-3).
-    pub(crate) fn app_with_dialogs() -> App {
+    pub(crate) fn app_with_dialogs() -> Result<App, TestError> {
         let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_ok("call-1@test", t0 + TimeDelta::seconds(1)),
-            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
-            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_ok("call-3@test", t0 + TimeDelta::seconds(11)),
-        ])
+        Ok(App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_ok("call-1@test", t0 + TimeDelta::seconds(1))?,
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5))?,
+            make_ok("call-2@test", t0 + TimeDelta::seconds(6))?,
+            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10))?,
+            make_ok("call-3@test", t0 + TimeDelta::seconds(11))?,
+        ]))
     }
 
     /// Build an unmodified `KeyEvent` for `code`.
@@ -2060,7 +2063,7 @@ mod tests {
     /// both directions, for any number of laps.
     #[test]
     fn save_popup_extension_tracks_format_without_accumulating() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.save.format = SaveFormat::Pcap;
         app.set_save_path("/tmp/x.pcap");
@@ -2098,7 +2101,7 @@ mod tests {
     /// With a popup open, keys go to the popup handler before the view.
     #[test]
     fn key_event_routes_to_popup_first() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.active_popup = Some(Popup::SaveDialog);
         // Esc inside save popup closes it (handled by popup handler, not view)
         handle_key_event(&mut app, key(KeyCode::Esc));
@@ -2233,31 +2236,31 @@ mod tests {
     /// Three dialogs of which exactly two match the query "5595" — the
     /// user's report: typing /5595 narrowed the list to two INVITE rows
     /// but the rows could neither be arrowed between nor starred.
-    fn app_with_5595_dialogs() -> App {
+    fn app_with_5595_dialogs() -> Result<App, TestError> {
         use chrono::TimeDelta;
         let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("inv-5595-a@test", "alice", "bob", t0),
+        Ok(App::with_processed_messages(vec![
+            make_invite("inv-5595-a@test", "alice", "bob", t0)?,
             make_invite(
                 "inv-5595-b@test",
                 "carol",
                 "dave",
                 t0 + TimeDelta::seconds(1),
-            ),
+            )?,
             make_invite(
                 "unrelated@test",
                 "erin",
                 "frank",
                 t0 + TimeDelta::seconds(2),
-            ),
-        ])
+            )?,
+        ]))
     }
 
     /// Arrow keys walk the narrowed list (clamping at both ends) without
     /// leaving search mode or editing the query.
     #[test]
     fn search_input_arrows_navigate_narrowed_list() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
         assert_eq!(
@@ -2304,7 +2307,7 @@ mod tests {
     /// Home/End jump within the narrowed list while search stays active.
     #[test]
     fn search_input_home_end_jump_in_narrowed_list() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
 
@@ -2327,7 +2330,7 @@ mod tests {
     /// Enter commits the query and opens the merged flow of both stars.
     #[test]
     fn search_input_space_stars_highlighted_row() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
 
@@ -2354,7 +2357,7 @@ mod tests {
     /// and the committed query survives for highlighting.
     #[test]
     fn search_input_enter_opens_highlighted_row_flow() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "5595".to_string();
         handle_key_event(&mut app, key(KeyCode::Down));
@@ -2373,7 +2376,7 @@ mod tests {
     /// stuck in search mode.
     #[test]
     fn search_input_enter_in_stream_list_commits_and_delegates() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::StreamList;
         app.search_active = true;
         app.search_query = "pcmu".to_string();
@@ -2386,7 +2389,7 @@ mod tests {
     /// Space and navigation on an empty narrowed list are safe no-ops.
     #[test]
     fn search_input_space_on_empty_narrowed_list_is_noop() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.search_active = true;
         app.search_query = "zzz-matches-nothing".to_string();
         handle_key_event(&mut app, key(KeyCode::Char(' ')));
@@ -2401,7 +2404,7 @@ mod tests {
     /// In the call-flow search, Space stays a query character.
     #[test]
     fn search_input_space_still_types_in_call_flow_search() -> Result<(), TestError> {
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::CallFlow("inv-5595-a@test".to_string());
         app.search_active = true;
         app.search_query = "180".to_string();
@@ -2418,7 +2421,7 @@ mod tests {
     fn search_input_space_types_in_stream_list() -> Result<(), TestError> {
         // The stream list has no row starring, so Space must stay a query
         // character there — stealing it would make it a dead key.
-        let mut app = app_with_5595_dialogs();
+        let mut app = app_with_5595_dialogs()?;
         app.current_view = View::StreamList;
         app.search_active = true;
         app.search_query = "pcmu".to_string();
@@ -2773,7 +2776,7 @@ mod tests {
     /// Without a filter, the displayed count equals the store size.
     #[test]
     fn filtered_dialog_count_no_filter() -> Result<(), TestError> {
-        let app = app_with_dialogs();
+        let app = app_with_dialogs()?;
         assert_eq!(filtered_dialog_count(&app), 3);
         Ok(())
     }
@@ -2781,7 +2784,7 @@ mod tests {
     /// With dialogs present, the initial selection resolves to a Call-ID.
     #[test]
     fn get_selected_call_id_returns_first() -> Result<(), TestError> {
-        let app = app_with_dialogs();
+        let app = app_with_dialogs()?;
         assert!(get_selected_call_id(&app).is_some());
         Ok(())
     }
@@ -3062,13 +3065,13 @@ mod search_match_nav_tests {
     type TestError = Box<dyn std::error::Error>;
 
     /// App on the RawMessage view of call-1's first message.
-    fn raw_view_app() -> App {
-        let mut app = app_with_dialogs();
+    fn raw_view_app() -> Result<App, TestError> {
+        let mut app = app_with_dialogs()?;
         app.current_view = View::RawMessage {
             call_id: "call-1@test".to_string(),
             message_index: 0,
         };
-        app
+        Ok(app)
     }
 
     /// vim/less muscle memory: with an active search in the raw-message
@@ -3077,7 +3080,7 @@ mod search_match_nav_tests {
     /// CSeq line.
     #[test]
     fn n_and_shift_n_jump_between_matches_in_raw_view() -> Result<(), TestError> {
-        let mut app = raw_view_app();
+        let mut app = raw_view_app()?;
         app.search_query = "invite".to_string();
 
         handle_key_event(
@@ -3117,7 +3120,7 @@ mod search_match_nav_tests {
     /// in the raw view.
     #[test]
     fn n_still_cycles_name_mode_without_a_query() -> Result<(), TestError> {
-        let mut app = raw_view_app();
+        let mut app = raw_view_app()?;
         assert_eq!(app.name_mode, crate::names::NameMode::Off);
         handle_key_event(
             &mut app,
@@ -3135,7 +3138,7 @@ mod search_match_nav_tests {
     /// search query narrows the list.
     #[test]
     fn n_cycles_name_mode_in_call_list_even_with_query() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.search_query = "invite".to_string();
         handle_key_event(
             &mut app,
@@ -3722,7 +3725,7 @@ mod panel_view_tests {
     /// its own Up/Down so the clamp lives in one place).
     #[test]
     fn the_wheel_moves_the_selection_one_row_in_the_list_views() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         for want in [1, 2, 2] {
             handle_mouse_event(&mut app, MouseEventKind::ScrollDown);
             assert_eq!(app.call_list.selected(), want, "call list down");

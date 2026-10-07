@@ -124,6 +124,9 @@ pub fn capture_logs(level: tracing::Level, f: impl FnOnce()) -> String {
 mod tests {
     use super::capture_logs;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The one call site of the event below. Nothing else in the suite
     /// reaches it, so the thread that reaches it first decides its cached
     /// interest.
@@ -150,17 +153,20 @@ mod tests {
     /// Inside the full suite another test's capture may happen to be alive,
     /// which hides the defect, so run it alone to see it fail.
     #[test]
-    fn capture_logs_sees_a_call_site_another_thread_registered_first() {
+    fn capture_logs_sees_a_call_site_another_thread_registered_first() -> Result<(), TestError> {
+        let mut joined = None;
         let logs = capture_logs(tracing::Level::INFO, || {
-            std::thread::spawn(|| announce(1))
-                .join()
-                .expect("the probe thread does not panic");
+            joined = Some(std::thread::spawn(|| announce(1)).join());
             announce(2);
         });
+        joined
+            .ok_or("capture_logs ran the closure")?
+            .map_err(|e| format!("the probe thread does not panic: {e:?}"))?;
         assert!(
             logs.contains("capture_logs interest probe 2"),
             "the capturing thread's event was dropped because a thread with \
              no subscriber registered its call site first: {logs:?}"
         );
+        Ok(())
     }
 }

@@ -445,7 +445,7 @@ mod tests {
 
     /// A reader over one stand-in ring holding `records`, with no probes.
     fn reader_over(records: &[u8]) -> Result<(UprobeReader, std::fs::File), TestError> {
-        let (ring, file) = fake::ring(1, 0, records);
+        let (ring, file) = fake::ring(1, 0, records)?;
         let reader = UprobeReader {
             bands: vec![Band {
                 ring,
@@ -461,17 +461,17 @@ mod tests {
     /// application wrote travel in it -- never the fetch padding.
     #[test]
     fn a_drain_sends_only_accepted_sip_and_only_what_was_written() -> Result<(), TestError> {
-        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
+        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
         // Not SIP: the probes see every process that maps the library.
         records.extend(fake::sample(&tracepoint(
             NO_SUCH_PID,
             b"GET / HTTP/1.1\r\n",
             16,
-        )));
+        ))?);
         // A zero-length write: padding only.
-        records.extend(fake::sample(&tracepoint(NO_SUCH_PID, INVITE, 0)));
+        records.extend(fake::sample(&tracepoint(NO_SUCH_PID, INVITE, 0))?);
         // Shorter than the layout: refused rather than decoded partially.
-        records.extend(fake::sample(&[0u8; 40]));
+        records.extend(fake::sample(&[0u8; 40])?);
         let (mut reader, _file) = reader_over(&records)?;
         let (tx, rx) = packet_channel(16);
 
@@ -500,7 +500,7 @@ mod tests {
     /// sweeps; this pins the tracefs one to the same rule.
     #[test]
     fn frame_ordinals_keep_counting_across_sweeps() -> Result<(), TestError> {
-        let first = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
+        let first = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
         let (mut reader, file) = reader_over(&first)?;
         let (tx, rx) = packet_channel(16);
 
@@ -508,8 +508,8 @@ mod tests {
         fake::append(
             &file,
             1,
-            &fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32)),
-        );
+            &fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?,
+        )?;
         assert_eq!(reader.drain_once(&tx), 1);
 
         let refs: Vec<String> = rx
@@ -535,13 +535,13 @@ mod tests {
     /// packets that exist, so the next one delivered is still `#0`.
     #[test]
     fn a_closed_channel_sends_nothing_and_counts_nothing() -> Result<(), TestError> {
-        let rec = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
+        let rec = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
         let (mut reader, file) = reader_over(&rec)?;
         let (closed_tx, closed_rx) = packet_channel(16);
         drop(closed_rx);
         assert_eq!(reader.drain_once(&closed_tx), 0, "nothing reached anyone");
 
-        fake::append(&file, 1, &rec);
+        fake::append(&file, 1, &rec)?;
         let (tx, rx) = packet_channel(16);
         assert_eq!(reader.drain_once(&tx), 1);
         let origin = rx
@@ -560,8 +560,8 @@ mod tests {
     /// understate the hole in the capture.
     #[test]
     fn records_lost_on_every_ring_are_summed() -> Result<(), TestError> {
-        let (ring_a, _fa) = fake::ring(1, 0, &fake::lost(1, 3));
-        let (ring_b, _fb) = fake::ring(1, 0, &fake::lost(2, 4));
+        let (ring_a, _fa) = fake::ring(1, 0, &fake::lost(1, 3)?)?;
+        let (ring_b, _fb) = fake::ring(1, 0, &fake::lost(2, 4)?)?;
         let mut reader = UprobeReader {
             bands: vec![
                 Band {
@@ -587,8 +587,8 @@ mod tests {
     /// kernel threw away -- a capture with a hole in it must be able to say so.
     #[test]
     fn run_drains_until_stopped_and_reports_what_the_kernel_dropped() -> Result<(), TestError> {
-        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32));
-        records.extend(fake::lost(9, 5));
+        let mut records = fake::sample(&tracepoint(NO_SUCH_PID, INVITE, INVITE.len() as i32))?;
+        records.extend(fake::lost(9, 5)?);
         let (mut reader, _file) = reader_over(&records)?;
         let (tx, rx) = packet_channel(16);
         let stop = Arc::new(AtomicBool::new(false));

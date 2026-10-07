@@ -2371,7 +2371,9 @@ pub(crate) mod test_support {
     pub(crate) use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
 
-    type TestError = Box<dyn std::error::Error>;
+    /// Any error a fixture builder or render can fail with; `?` converts
+    /// into it.
+    pub(crate) type TestError = Box<dyn std::error::Error>;
 
     /// Fixture caller address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
@@ -2384,8 +2386,11 @@ pub(crate) mod test_support {
     }
 
     /// Fixed fixture timestamp (2024-06-15 12:00:00 UTC).
-    pub(crate) fn base_ts() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    pub(crate) fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("2024-06-15 12:00:00 is one unambiguous UTC instant")?)
     }
 
     /// Assemble raw SIP bytes from a start line and header lines, with
@@ -2409,7 +2414,7 @@ pub(crate) mod test_support {
         from: &str,
         to: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -2420,7 +2425,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -2429,7 +2434,7 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE")
+        .map_err(|e| format!("parse INVITE: {e:?}"))?)
     }
 
     /// Build and parse a fixture response (B → A) to the INVITE with the
@@ -2439,7 +2444,7 @@ pub(crate) mod test_support {
         status: u16,
         reason: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -2450,7 +2455,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -2459,11 +2464,11 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse response")
+        .map_err(|e| format!("parse response: {e:?}"))?)
     }
 
     /// Build and parse a fixture BYE (A → B) ending the dialog.
-    pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
             &[
@@ -2474,7 +2479,7 @@ pub(crate) mod test_support {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -2483,18 +2488,18 @@ pub(crate) mod test_support {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse BYE")
+        .map_err(|e| format!("parse BYE: {e:?}"))?)
     }
 
     /// App with one populated, completed dialog (INVITE/180/200/BYE).
-    pub(crate) fn app_with_dialog() -> App {
-        let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1)),
-            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2)),
-            make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
-        ])
+    pub(crate) fn app_with_dialog() -> Result<App, TestError> {
+        let t0 = base_ts()?;
+        Ok(App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1))?,
+            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2))?,
+            make_bye("call-1@test", t0 + TimeDelta::seconds(62))?,
+        ]))
     }
 
     /// Below the minimum size the layout collapses to nothing usable; the
@@ -2502,7 +2507,7 @@ pub(crate) mod test_support {
     #[test]
     fn tiny_terminal_shows_min_size_notice() -> Result<(), TestError> {
         let mut app = App::new_test();
-        let text = render_to_string(&mut app, 30, 4);
+        let text = render_to_string(&mut app, 30, 4)?;
         assert!(
             text.contains("too small"),
             "expected a terminal-too-small notice, got: {text}"
@@ -2516,7 +2521,7 @@ pub(crate) mod test_support {
     #[test]
     fn empty_state_hint_matches_capture_source() -> Result<(), TestError> {
         let mut app = App::new_test(); // capture mode defaults to Online
-        let text = render_to_string(&mut app, 80, 20);
+        let text = render_to_string(&mut app, 80, 20)?;
         assert!(
             text.contains("Waiting for SIP traffic"),
             "live empty state must say it is waiting: {text}"
@@ -2527,7 +2532,7 @@ pub(crate) mod test_support {
         );
 
         app.set_capture_mode("Offline (foo.pcap)".to_string());
-        let text = render_to_string(&mut app, 80, 20);
+        let text = render_to_string(&mut app, 80, 20)?;
         assert!(
             text.contains("may not contain SIP traffic"),
             "offline empty state keeps the pcap hint: {text}"
@@ -2538,8 +2543,9 @@ pub(crate) mod test_support {
     /// Render one full tick of `app` (cache sync, render, feedback
     /// write-back — the event loop's sequence) at the given size and
     /// return the buffer as a string.
-    pub(crate) fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    pub(crate) fn render_to_string(app: &mut App, w: u16, h: u16) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(w, h))
+            .map_err(|e| format!("create the test terminal: {e}"))?;
         app.sync_caches();
         let mut fb = RenderFeedback::default();
         let dialogs = app.dialog_store.clone();
@@ -2547,7 +2553,7 @@ pub(crate) mod test_support {
         let (ds, ss) = (dialogs.read(), streams.read());
         terminal
             .draw(|frame| fb = render_app(frame, app, &ds, &ss))
-            .unwrap();
+            .map_err(|e| format!("draw the frame: {e}"))?;
         drop((ds, ss));
         app.apply_render_feedback(fb);
         let buf = terminal.backend().buffer();
@@ -2555,11 +2561,14 @@ pub(crate) mod test_support {
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                let cell = buf
+                    .cell((x, y))
+                    .ok_or_else(|| format!("cell ({x}, {y}) is inside the buffer area"))?;
+                out.push_str(cell.symbol());
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     // ── render_app dispatch across views & widths ──────────────────
@@ -2578,12 +2587,12 @@ mod tests {
     #[test]
     fn render_app_call_list_empty_and_populated() -> Result<(), TestError> {
         let mut empty = App::new_test();
-        let out = render_to_string(&mut empty, 80, 24);
+        let out = render_to_string(&mut empty, 80, 24)?;
         assert!(out.contains("Live capture:"));
         assert!(out.contains("Dialogs:"));
 
-        let mut app = app_with_dialog();
-        let out = render_to_string(&mut app, 80, 24);
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, 80, 24)?;
         // The dialog count should reflect one dialog.
         assert!(out.contains("Dialogs: 1"));
         Ok(())
@@ -3197,10 +3206,10 @@ mod tests {
     /// advertises the Open hotkey when wide.
     #[test]
     fn render_app_call_list_narrow_and_wide() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
-        let narrow = render_to_string(&mut app, 60, 12);
+        let mut app = app_with_dialog()?;
+        let narrow = render_to_string(&mut app, 60, 12)?;
         assert!(narrow.contains("Esc"));
-        let wide = render_to_string(&mut app, 130, 40);
+        let wide = render_to_string(&mut app, 130, 40)?;
         // Wide call list f-key bar advertises the Open hotkey.
         assert!(wide.contains("Open"));
         Ok(())
@@ -3211,7 +3220,7 @@ mod tests {
     fn render_app_stream_list_view() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.current_view = View::StreamList;
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         // Stream-list f-key bar advertises Calls (Tab to switch back).
         assert!(out.contains("Calls"));
         Ok(())
@@ -3221,17 +3230,17 @@ mod tests {
     /// layouts, with the mode hints on status line 3.
     #[test]
     fn render_app_call_flow_view_split_and_nosplit() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::CallFlow("call-1@test".to_string());
         // Default raw_preview = true → split layout; renders detail panel.
-        let split = render_to_string(&mut app, 120, 30);
+        let split = render_to_string(&mut app, 120, 30)?;
         assert!(split.contains("Back"));
         // status line 3 shows the call-flow mode hints
         assert!(split.contains("Time:") || split.contains("SDP:"));
 
         // No split.
         app.flow.raw_preview = false;
-        let nosplit = render_to_string(&mut app, 120, 30);
+        let nosplit = render_to_string(&mut app, 120, 30)?;
         assert!(nosplit.contains("Back"));
         Ok(())
     }
@@ -3239,10 +3248,10 @@ mod tests {
     /// Extended (merged multi-dialog) call flow renders without panic.
     #[test]
     fn render_app_call_flow_extended_flow() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::CallFlow("call-1@test".to_string());
         app.flow.extended = true;
-        let out = render_to_string(&mut app, 120, 30);
+        let out = render_to_string(&mut app, 120, 30)?;
         assert!(out.contains("Back"));
         Ok(())
     }
@@ -3250,12 +3259,12 @@ mod tests {
     /// The raw-message view renders with its Highlight f-key hint.
     #[test]
     fn render_app_raw_message_view() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::RawMessage {
             call_id: "call-1@test".to_string(),
             message_index: 0,
         };
-        let out = render_to_string(&mut app, 90, 30);
+        let out = render_to_string(&mut app, 90, 30)?;
         // Raw message f-key bar advertises Highlight.
         assert!(out.contains("Highlight"));
         Ok(())
@@ -3264,13 +3273,13 @@ mod tests {
     /// The diff view shows both message panes with their index titles.
     #[test]
     fn render_app_message_diff_view() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::MessageDiff {
             call_id: "call-1@test".to_string(),
             msg1_idx: 0,
             msg2_idx: 1,
         };
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Message 1"));
         assert!(out.contains("Message 2"));
         Ok(())
@@ -3279,13 +3288,13 @@ mod tests {
     /// Help renders non-empty; statistics shows its title and counts.
     #[test]
     fn render_app_help_and_statistics_views() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.current_view = View::Help;
-        let help = render_to_string(&mut app, 80, 30);
+        let help = render_to_string(&mut app, 80, 30)?;
         assert!(!help.is_empty());
 
         app.current_view = View::Statistics;
-        let stats = render_to_string(&mut app, 80, 30);
+        let stats = render_to_string(&mut app, 80, 30)?;
         assert!(stats.contains("Statistics"));
         assert!(stats.contains("Dialogs:"));
         Ok(())
@@ -3296,9 +3305,9 @@ mod tests {
     /// Status line 1 shows PAUSED and says autoscroll is on.
     #[test]
     fn render_app_status_line1_paused_and_autoscroll() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.paused = true;
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("PAUSED"));
         // Autoscroll defaults to on for the call list, and says so in words.
         assert!(out.contains("Autoscroll: on"));
@@ -3308,9 +3317,9 @@ mod tests {
     /// Status line 1 shows the Offline capture mode text.
     #[test]
     fn render_app_status_line1_offline_mode() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.capture_mode = "Offline (capture.pcap)".to_string();
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("File: capture.pcap"));
         Ok(())
     }
@@ -3318,10 +3327,10 @@ mod tests {
     /// With search active, status line 3 shows the `/query` overlay.
     #[test]
     fn render_app_status_line3_search_active() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.search_active = true;
         app.search_query = "invite".to_string();
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("/invite"));
         Ok(())
     }
@@ -3330,9 +3339,9 @@ mod tests {
     /// path.
     #[test]
     fn render_app_status_line3_error_message() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.set_status_error("save failed: disk full");
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("save failed"));
         Ok(())
     }
@@ -3341,10 +3350,10 @@ mod tests {
     /// (foreground) color path.
     #[test]
     fn render_app_status_line3_info_message() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         // Written directly, not raised: the information color path.
         app.status_error = Some("saved 3 dialogs".to_string());
-        let out = render_to_string(&mut app, 100, 24);
+        let out = render_to_string(&mut app, 100, 24)?;
         assert!(out.contains("saved 3 dialogs"));
         Ok(())
     }
@@ -3352,10 +3361,10 @@ mod tests {
     /// Line 2 shows the capture filter and line 3 the view filter.
     #[test]
     fn render_app_status_line2_filter_and_bpf() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_filter_text = "method == 'INVITE'".to_string();
         app.bpf_filter = "udp port 5060".to_string();
-        let out = render_to_string(&mut app, 120, 24);
+        let out = render_to_string(&mut app, 120, 24)?;
         assert!(out.contains("Capture filter (BPF): udp port 5060"));
         assert!(out.contains("View filter: method == 'INVITE'"));
         Ok(())
@@ -3519,7 +3528,7 @@ mod tests {
             .map(|i| format!("udp port {}", 5000 + i))
             .collect::<Vec<_>>()
             .join(" or ");
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.bpf_filter = filter.clone();
 
         // Narrow + short: 40 columns, 12 rows. The input box takes the bottom
@@ -3575,7 +3584,7 @@ mod tests {
     /// typed), echoes the typed expression in the input box, and shows the mode.
     #[test]
     fn render_bpf_filter_shows_the_composed_preview_and_the_input() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.bpf_filter = "udp port 5060".to_string();
         for c in "host 192.0.2.5".chars() {
             app.bpf_editor.insert(c);
@@ -3612,10 +3621,10 @@ mod tests {
     /// The save popup overlays the frame with title and typed path.
     #[test]
     fn render_app_save_popup_overlay() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.set_save_path("/tmp/out.pcap");
-        let out = render_to_string(&mut app, 90, 30);
+        let out = render_to_string(&mut app, 90, 30)?;
         assert!(out.contains("Save capture"));
         assert!(out.contains("/tmp/out.pcap"));
         Ok(())
@@ -3627,10 +3636,10 @@ mod tests {
     /// popup never showed. On a tall terminal every format must render.
     #[test]
     fn render_app_save_popup_shows_every_format() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.set_save_path("/tmp/out.pcap");
-        let out = render_to_string(&mut app, 90, 40);
+        let out = render_to_string(&mut app, 90, 40)?;
         for label in [
             "PCAP", "TXT", "SIPp", "JSON", "CSV", "HTML", "Markdown", "WAV", "RTP JSON",
         ] {
@@ -3646,11 +3655,11 @@ mod tests {
     /// lived in the clipped tail.
     #[test]
     fn render_app_save_popup_selected_format_visible_when_short() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SaveDialog);
         app.save.format = SaveFormat::Wav;
         app.set_save_path("/tmp/out.wav");
-        let out = render_to_string(&mut app, 90, 18);
+        let out = render_to_string(&mut app, 90, 18)?;
         assert!(
             out.contains("WAV"),
             "selected WAV must be scrolled into view:\n{out}"
@@ -3661,10 +3670,10 @@ mod tests {
     /// The file-open popup in browser mode shows the directory header.
     #[test]
     fn render_app_file_open_browser_overlay() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = false;
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Open capture file"));
         assert!(out.contains("Dir:"));
         Ok(())
@@ -3673,10 +3682,10 @@ mod tests {
     /// The file-open popup in manual mode shows the Path input.
     #[test]
     fn render_app_file_open_manual_overlay() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::FileOpenDialog);
         app.file_open.manual_mode = true;
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Open capture file"));
         assert!(out.contains("Path:"));
         Ok(())
@@ -3685,9 +3694,9 @@ mod tests {
     /// The settings popup overlays with its title and first setting row.
     #[test]
     fn render_app_settings_popup_overlay() -> Result<(), TestError> {
-        let mut app = app_with_dialog();
+        let mut app = app_with_dialog()?;
         app.active_popup = Some(Popup::SettingsDialog);
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Settings"));
         assert!(out.contains("Colors:"));
         Ok(())
@@ -3698,7 +3707,7 @@ mod tests {
     fn render_app_filter_popup_overlay() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FilterDialog);
-        let out = render_to_string(&mut app, 100, 30);
+        let out = render_to_string(&mut app, 100, 30)?;
         assert!(out.contains("Filter"));
         assert!(out.contains("From user:"));
         Ok(())
@@ -3753,7 +3762,7 @@ mod tests {
         use crate::capture::parse::TransportProto;
         use crate::sip::parser::parse_sip;
 
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         // The long header is one unbroken token so word-wrap and the
         // ceil-of-width row estimate agree exactly.
         let long = format!("X-Long:{}ZZZEND", "a".repeat(120));
@@ -3855,7 +3864,7 @@ mod tests {
     /// An out-of-range message index renders "Message not found".
     #[test]
     fn render_message_diff_message_index_out_of_range() -> Result<(), TestError> {
-        let app = app_with_dialog();
+        let app = app_with_dialog()?;
         let store = app.dialog_store.read();
         let theme = Theme::default();
         let mut terminal = Terminal::new(TestBackend::new(80, 20))?;
@@ -3900,7 +3909,7 @@ mod tests {
         use crate::capture::parse::TransportProto;
         use crate::sip::parser::parse_sip;
 
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         // msg2 is msg1 with one extra header inserted after Via; every
         // other line is byte-identical so an LCS diff isolates the insert.
         let common_tail: &[&str] = &[

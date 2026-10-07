@@ -635,8 +635,8 @@ mod tests {
         use crate::capture::parse::{ParsedPacket, TransportProto};
         let t0 = base_ts();
         let mut app = App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_ok("call-1@test", t0 + chrono::TimeDelta::seconds(1)),
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_ok("call-1@test", t0 + chrono::TimeDelta::seconds(1))?,
         ]);
 
         // Inject a PCMU (PT 0) RTP stream and associate it with call-1.
@@ -835,7 +835,7 @@ mod tests {
     /// `N` opens the Name Address popup with the source endpoint focused.
     #[test]
     fn call_list_shift_n_opens_name_dialog_for_source() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Char('N')));
         assert_eq!(app.active_popup, Some(Popup::NameAddress));
         // The source endpoint is focused first (Tab switches to the dest).
@@ -846,7 +846,7 @@ mod tests {
     /// Down/j and Up/k move the row selection one row at a time.
     #[test]
     fn call_list_down_up_navigation() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         assert_eq!(app.call_list.selected(), 0);
         handle_call_list_key(&mut app, key(KeyCode::Down));
         assert_eq!(app.call_list.selected(), 1);
@@ -862,7 +862,7 @@ mod tests {
     /// Home/End jump the selection to the first/last row.
     #[test]
     fn call_list_home_end() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::End));
         assert_eq!(app.call_list.selected(), 2);
         handle_call_list_key(&mut app, key(KeyCode::Home));
@@ -873,7 +873,7 @@ mod tests {
     /// PageDown/PageUp page the selection, clamping at both ends.
     #[test]
     fn call_list_page_down_up() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::PageDown));
         // clamps to last (idx 2)
         assert_eq!(app.call_list.selected(), 2);
@@ -885,7 +885,7 @@ mod tests {
     /// Enter opens the call flow of the highlighted row.
     #[test]
     fn call_list_enter_opens_flow() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
         Ok(())
@@ -912,7 +912,7 @@ mod tests {
     /// Space checks the highlighted row ([*] multi-selection).
     #[test]
     fn call_list_space_toggles_selection() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         assert_eq!(app.call_list.selected_rows_count(), 0);
         handle_call_list_key(&mut app, key(KeyCode::Char(' ')));
         assert_eq!(app.call_list.selected_rows_count(), 1);
@@ -922,7 +922,7 @@ mod tests {
     /// Esc from the top-level call list quits the app.
     #[test]
     fn call_list_esc_asks_before_quitting() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Esc));
         assert!(
             !app.should_quit,
@@ -936,7 +936,7 @@ mod tests {
     /// Ctrl-L clears every dialog (alias for the clear-calls key).
     #[test]
     fn call_list_ctrl_l_clears() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL));
         assert_eq!(app.dialog_store.read().len(), 0);
         Ok(())
@@ -945,7 +945,7 @@ mod tests {
     /// F6 opens the raw view of the selected dialog's first message.
     #[test]
     fn call_list_f6_opens_raw() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(6)));
         assert!(matches!(app.current_view, View::RawMessage { .. }));
         Ok(())
@@ -954,7 +954,7 @@ mod tests {
     /// `r` opens the raw view (alias for F6).
     #[test]
     fn call_list_r_opens_raw() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::Char('r')));
         assert!(matches!(app.current_view, View::RawMessage { .. }));
         Ok(())
@@ -1022,7 +1022,7 @@ mod tests {
         handle_call_list_key(&mut app, key(KeyCode::F(1)));
         assert_eq!(app.current_view, View::Help);
 
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
 
@@ -1061,7 +1061,7 @@ mod tests {
     /// F9 drops the active filter and its display text.
     #[test]
     fn call_list_f9_clears_filter() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.active_filter_text = "x".to_string();
         handle_call_list_key(&mut app, key(KeyCode::F(9)));
         assert!(app.active_filter.is_none());
@@ -1075,7 +1075,7 @@ mod tests {
     /// same "clear every narrowing input" action).
     #[test]
     fn call_list_f9_clears_persisted_search() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.search_query = "5595".to_string();
         handle_call_list_key(&mut app, key(KeyCode::F(9)));
         assert!(
@@ -1098,7 +1098,7 @@ mod tests {
     #[test]
     fn timeline_opens_from_call_list_and_returns_on_close() -> Result<(), TestError> {
         // Needs a selected call: the timeline opens for the highlighted row.
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.handle_key(KeyCode::Char('T'));
         assert!(matches!(app.current_view, View::CallTimeline(_)));
         app.handle_key(KeyCode::Esc);
@@ -1109,7 +1109,7 @@ mod tests {
     /// The extended-flow key opens the flow with multi-leg mode on.
     #[test]
     fn call_list_extended_flow_key() -> Result<(), TestError> {
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         handle_call_list_key(&mut app, key(KeyCode::F(4)));
         assert!(app.flow.extended);
         assert!(matches!(app.current_view, View::CallFlow(_)));

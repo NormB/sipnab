@@ -400,16 +400,21 @@ fn worker_for(
 /// wrongly, or the worker reads wrongly, shows up here. Nothing is sent: an
 /// admitted request reports that it had nothing to send on.
 #[cfg(test)]
-pub(crate) fn decisions_for_argv(argv: &[String], requests: Vec<KillRequest>) -> Vec<KillResponse> {
-    let args = WorkerArgs::parse(argv).expect("the parent's argv parses");
+pub(crate) fn decisions_for_argv(
+    argv: &[String],
+    requests: Vec<KillRequest>,
+) -> Result<Vec<KillResponse>, Box<dyn std::error::Error>> {
+    let args = WorkerArgs::parse(argv).map_err(|e| format!("the parent's argv parses: {e}"))?;
     let (req_tx, req_rx) = crossbeam_channel::unbounded();
     let (resp_tx, resp_rx) = crossbeam_channel::unbounded();
     for request in requests {
-        req_tx.send(request).expect("unbounded");
+        req_tx
+            .send(request)
+            .map_err(|e| format!("the unbounded request channel accepts: {e}"))?;
     }
     drop(req_tx);
     worker_for(args.rate_limit, SendSockets::default(), req_rx, resp_tx).run();
-    resp_rx.try_iter().collect()
+    Ok(resp_rx.try_iter().collect())
 }
 
 /// Read request frames onto the worker's channel until the stream ends.

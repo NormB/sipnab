@@ -14257,7 +14257,7 @@ mod archive_password_tests {
                     zip::AesMode::Aes256,
                     secret(label).as_bytes(),
                 ),
-            ),
+            )?,
         )
         .map_err(|e| format!("zip: {e:?}"))?;
         std::fs::copy(&fixture, dir.path().join("plain.pcap"))

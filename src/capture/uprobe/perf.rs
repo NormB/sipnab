@@ -418,8 +418,8 @@ mod tests {
     /// more of the record than the kernel said they occupy.
     #[test]
     fn a_sample_delivers_exactly_its_raw_payload() -> Result<(), TestError> {
-        let records = fake::sample(b"INVITE sip:b@x SIP/2.0");
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let records = fake::sample(b"INVITE sip:b@x SIP/2.0")?;
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -439,9 +439,9 @@ mod tests {
     /// ring once it filled.
     #[test]
     fn draining_publishes_the_tail_up_to_the_head() -> Result<(), TestError> {
-        let mut records = fake::sample(b"one");
-        records.extend(fake::sample(b"two"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let mut records = fake::sample(b"one")?;
+        records.extend(fake::sample(b"two")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
         assert_eq!(ring.tail(), 0);
 
         ring.drain(|_| {});
@@ -459,9 +459,9 @@ mod tests {
     fn records_are_delivered_in_ring_order() -> Result<(), TestError> {
         let mut records = Vec::new();
         for m in [&b"first"[..], b"second", b"third"] {
-            records.extend(fake::sample(m));
+            records.extend(fake::sample(m)?);
         }
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 3);
@@ -476,7 +476,7 @@ mod tests {
     /// nothing and must not move the tail.
     #[test]
     fn an_empty_ring_delivers_nothing() -> Result<(), TestError> {
-        let (mut ring, _file) = fake::ring(1, 64, &[]);
+        let (mut ring, _file) = fake::ring(1, 64, &[])?;
         let mut delivered = 0usize;
         assert_eq!(ring.drain(|_| delivered += 1), 0);
         assert_eq!(delivered, 0, "nothing was written");
@@ -488,10 +488,10 @@ mod tests {
     /// counted, summed across records, and never handed on as a payload.
     #[test]
     fn a_lost_record_is_counted_and_never_delivered() -> Result<(), TestError> {
-        let mut records = fake::lost(0xABCD, 7);
-        records.extend(fake::sample(b"after the gap"));
-        records.extend(fake::lost(0xABCD, 5));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let mut records = fake::lost(0xABCD, 7)?;
+        records.extend(fake::sample(b"after the gap")?);
+        records.extend(fake::lost(0xABCD, 5)?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -510,9 +510,9 @@ mod tests {
     /// stepped over by their own size, or everything after them is lost.
     #[test]
     fn an_unknown_record_type_is_stepped_over() -> Result<(), TestError> {
-        let mut records = fake::record(99, &[0xEE; 8]);
-        records.extend(fake::sample(b"still read"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        let mut records = fake::record(99, &[0xEE; 8])?;
+        records.extend(fake::sample(b"still read")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -526,11 +526,11 @@ mod tests {
     /// everything before it and releasing nothing past it.
     #[test]
     fn a_record_too_short_to_advance_stops_the_walk_where_it_stands() -> Result<(), TestError> {
-        let mut records = fake::sample(b"kept");
+        let mut records = fake::sample(b"kept")?;
         let stuck_at = records.len() as u64;
         records.extend(fake::header(PERF_RECORD_SAMPLE, 0));
-        records.extend(fake::sample(b"unreachable"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"unreachable")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         let n = ring.drain(|raw| got.push(raw.to_vec()));
@@ -549,11 +549,11 @@ mod tests {
     /// than read past: the bytes beyond belong to the next record.
     #[test]
     fn a_raw_length_larger_than_its_record_is_not_delivered() -> Result<(), TestError> {
-        let mut lying = fake::sample(b"abcd");
+        let mut lying = fake::sample(b"abcd")?;
         lying[8..12].copy_from_slice(&1000u32.to_le_bytes());
         let mut records = lying;
-        records.extend(fake::sample(b"next"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"next")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -573,12 +573,12 @@ mod tests {
     fn a_record_that_wraps_the_end_of_the_ring_is_reassembled() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
         let payload = b"INVITE sip:wrapped@x SIP/2.0 -- long enough to straddle";
-        let records = fake::sample(payload);
+        let records = fake::sample(payload)?;
         // Start 16 bytes before the end, so the header and the length fit and
         // the payload is split between the last bytes and the first.
         let start = data_size - 16;
         assert!(start + (records.len() as u64) > data_size, "must straddle");
-        let (mut ring, _file) = fake::ring(1, start, &records);
+        let (mut ring, _file) = fake::ring(1, start, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -592,8 +592,8 @@ mod tests {
     #[test]
     fn positions_past_the_first_lap_address_the_same_ring() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
-        let records = fake::sample(b"third lap");
-        let (mut ring, _file) = fake::ring(1, 3 * data_size + 40, &records);
+        let records = fake::sample(b"third lap")?;
+        let (mut ring, _file) = fake::ring(1, 3 * data_size + 40, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -606,7 +606,7 @@ mod tests {
     /// a stand-in: polling anything else would never wake.
     #[test]
     fn the_polling_descriptor_is_the_rings_own() -> Result<(), TestError> {
-        let (ring, _file) = fake::ring(2, 0, &[]);
+        let (ring, _file) = fake::ring(2, 0, &[])?;
         let dup = ring
             .as_fd()
             .try_clone_to_owned()
@@ -639,8 +639,8 @@ mod tests {
     #[test]
     fn a_sample_too_short_to_carry_its_length_is_stepped_over() -> Result<(), TestError> {
         let mut records = fake::header(PERF_RECORD_SAMPLE, 8);
-        records.extend(fake::sample(b"after"));
-        let (mut ring, _file) = fake::ring(1, 0, &records);
+        records.extend(fake::sample(b"after")?);
+        let (mut ring, _file) = fake::ring(1, 0, &records)?;
 
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
@@ -708,6 +708,9 @@ pub(super) mod fake {
     use super::*;
     use std::os::unix::fs::FileExt;
 
+    /// Any error a fixture builder can fail with; `?` converts into it.
+    pub(in crate::capture::uprobe) type TestError = Box<dyn std::error::Error>;
+
     /// This host's page size, which is what the data area is measured in.
     pub(in crate::capture::uprobe) fn page() -> usize {
         crate::capture::mapped::page_size()
@@ -723,18 +726,23 @@ pub(super) mod fake {
     }
 
     /// A record of `ev_type` carrying `body`, padded to eight bytes.
-    pub(in crate::capture::uprobe) fn record(ev_type: u32, body: &[u8]) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn record(
+        ev_type: u32,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
         let size = (8 + body.len()).next_multiple_of(8);
-        let mut r = header(ev_type, u16::try_from(size).expect("fixture record fits"));
+        let size16 =
+            u16::try_from(size).map_err(|e| format!("fixture record of {size} bytes fits: {e}"))?;
+        let mut r = header(ev_type, size16);
         r.extend_from_slice(body);
         r.resize(size, 0);
-        r
+        Ok(r)
     }
 
     /// A `PERF_RECORD_SAMPLE` whose `PERF_SAMPLE_RAW` body is `raw`.
-    pub(in crate::capture::uprobe) fn sample(raw: &[u8]) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn sample(raw: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut body = u32::try_from(raw.len())
-            .expect("fixture payload fits")
+            .map_err(|e| format!("fixture payload of {} bytes fits: {e}", raw.len()))?
             .to_le_bytes()
             .to_vec();
         body.extend_from_slice(raw);
@@ -742,7 +750,7 @@ pub(super) mod fake {
     }
 
     /// A `PERF_RECORD_LOST`: `{ u64 id, u64 lost }`.
-    pub(in crate::capture::uprobe) fn lost(id: u64, count: u64) -> Vec<u8> {
+    pub(in crate::capture::uprobe) fn lost(id: u64, count: u64) -> Result<Vec<u8>, TestError> {
         let mut body = id.to_le_bytes().to_vec();
         body.extend_from_slice(&count.to_le_bytes());
         record(PERF_RECORD_LOST, &body)
@@ -756,18 +764,21 @@ pub(super) mod fake {
         data_pages: usize,
         start: u64,
         records: &[u8],
-    ) -> (PerfRing, std::fs::File) {
-        let file = tempfile::tempfile().expect("an anonymous file");
+    ) -> Result<(PerfRing, std::fs::File), TestError> {
+        let file = tempfile::tempfile().map_err(|e| format!("an anonymous file: {e}"))?;
         file.set_len((page() * (data_pages + 1)) as u64)
-            .expect("size the file");
+            .map_err(|e| format!("size the file: {e}"))?;
         file.write_at(&start.to_le_bytes(), MMAP_DATA_TAIL as u64)
-            .expect("write data_tail");
+            .map_err(|e| format!("write data_tail: {e}"))?;
         file.write_at(&start.to_le_bytes(), MMAP_DATA_HEAD as u64)
-            .expect("write data_head");
-        let keep = file.try_clone().expect("a second handle");
-        append(&keep, data_pages, records);
-        let ring = PerfRing::map(OwnedFd::from(file), data_pages).expect("map the file");
-        (ring, keep)
+            .map_err(|e| format!("write data_head: {e}"))?;
+        let keep = file
+            .try_clone()
+            .map_err(|e| format!("a second handle: {e}"))?;
+        append(&keep, data_pages, records)?;
+        let ring = PerfRing::map(OwnedFd::from(file), data_pages)
+            .map_err(|e| format!("map the file: {e}"))?;
+        Ok((ring, keep))
     }
 
     /// Write `records` at the current head, wrapping, then advance the head --
@@ -776,22 +787,23 @@ pub(super) mod fake {
         file: &std::fs::File,
         data_pages: usize,
         records: &[u8],
-    ) {
+    ) -> Result<(), TestError> {
         let data_size = page() * data_pages;
         let mut head = [0u8; 8];
         file.read_exact_at(&mut head, MMAP_DATA_HEAD as u64)
-            .expect("read data_head");
+            .map_err(|e| format!("read data_head: {e}"))?;
         let head = u64::from_le_bytes(head);
         let at = (head as usize) & (data_size - 1);
         let first = records.len().min(data_size - at);
         file.write_at(&records[..first], (page() + at) as u64)
-            .expect("write before the end");
+            .map_err(|e| format!("write before the end: {e}"))?;
         file.write_at(&records[first..], page() as u64)
-            .expect("write the wrapped rest");
+            .map_err(|e| format!("write the wrapped rest: {e}"))?;
         file.write_at(
             &(head + records.len() as u64).to_le_bytes(),
             MMAP_DATA_HEAD as u64,
         )
-        .expect("advance data_head");
+        .map_err(|e| format!("advance data_head: {e}"))?;
+        Ok(())
     }
 }
