@@ -155,8 +155,16 @@ mod tests {
     use super::*;
     use crate::net::TransportProto;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build a ParsedPacket with a valid RTP payload.
-    fn make_rtp_parsed(seq: u16, ssrc: u32, pt: u8, dst_port: u16) -> ParsedPacket {
+    fn make_rtp_parsed(
+        seq: u16,
+        ssrc: u32,
+        pt: u8,
+        dst_port: u16,
+    ) -> Result<ParsedPacket, TestError> {
         let mut payload = Vec::with_capacity(172);
         // byte 0: V=2, P=0, X=0, CC=0
         payload.push(0x80);
@@ -168,10 +176,10 @@ mod tests {
         // 160 bytes of audio payload
         payload.extend_from_slice(&[0xFF; 160]);
 
-        ParsedPacket {
+        Ok(ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+            timestamp: DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 50000,
@@ -187,166 +195,174 @@ mod tests {
             dscp: None,
             input_origin: crate::capture::parse::InputOrigin::Wire,
             hep: None,
-        }
+        })
     }
 
     /// The candidate map is bounded: a flood of distinct RTP-shaped flows from
     /// spoofed pairs cannot grow it without limit. Every other store in this
     /// crate is bounded; this one now is too.
     #[test]
-    fn the_candidate_map_is_bounded_against_a_flood() {
+    fn the_candidate_map_is_bounded_against_a_flood() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
         // Feed more distinct even-destination-port flows than the cap; each is
         // a fresh candidate (`make_rtp_parsed` keeps one source, so each even
         // dst port is a distinct 5-tuple key).
         for i in 0..(MAX_CANDIDATES as u32 + 100) {
             let dst_port = (2 + i * 2) as u16;
-            let _ = heuristic.check(&make_rtp_parsed(100, 0xABCD, 0, dst_port));
+            let _ = heuristic.check(&make_rtp_parsed(100, 0xABCD, 0, dst_port)?);
         }
         assert!(
             heuristic.candidates.len() <= MAX_CANDIDATES,
             "the candidate map grew past its cap: {}",
             heuristic.candidates.len()
         );
+        Ok(())
     }
 
     /// Three consecutive valid RTP packets reach the threshold and are detected.
     #[test]
-    fn three_consecutive_valid_packets_detected() {
+    fn three_consecutive_valid_packets_detected() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
         // Packets 1 and 2: not yet at threshold
         assert!(
             heuristic
-                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000)?)
                 .is_none()
         );
         assert!(
             heuristic
-                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000)?)
                 .is_none()
         );
 
         // Packet 3: threshold met
-        let result = heuristic.check(&make_rtp_parsed(102, 0xABCD, 0, 20000));
+        let result = heuristic.check(&make_rtp_parsed(102, 0xABCD, 0, 20000)?);
         assert!(
             result.is_some(),
             "Should detect RTP after 3 consecutive packets"
         );
-        let hdr = result.unwrap();
+        let hdr = result.ok_or("result was None")?;
         assert_eq!(hdr.ssrc, 0xABCD);
         assert_eq!(hdr.sequence, 102);
+        Ok(())
     }
 
     /// Two valid packets fall short of the threshold and are not detected.
     #[test]
-    fn two_packets_not_detected() {
+    fn two_packets_not_detected() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
         assert!(
             heuristic
-                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000)?)
                 .is_none()
         );
         assert!(
             heuristic
-                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000)?)
                 .is_none()
         );
-        // Only 2 — not enough
+        // Only 2 — not enough;
+        Ok(())
     }
 
     /// A payload that fails RTP parsing (bad version) is never detected.
     #[test]
-    fn invalid_packets_not_detected() {
+    fn invalid_packets_not_detected() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
         // Non-RTP payload (version != 2)
-        let mut pkt = make_rtp_parsed(100, 0xABCD, 0, 20000);
+        let mut pkt = make_rtp_parsed(100, 0xABCD, 0, 20000)?;
         let mut bad = pkt.payload.to_vec();
         bad[0] = 0x00; // V=0
         pkt.payload = bad.into();
         assert!(heuristic.check(&pkt).is_none());
+        Ok(())
     }
 
     /// Packets to an odd destination port (RTCP convention) are ignored.
     #[test]
-    fn odd_destination_port_ignored() {
+    fn odd_destination_port_ignored() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
         // RTP convention: odd port is RTCP, not RTP
         for seq in 100..110 {
             assert!(
                 heuristic
-                    .check(&make_rtp_parsed(seq, 0xABCD, 0, 20001))
+                    .check(&make_rtp_parsed(seq, 0xABCD, 0, 20001)?)
                     .is_none()
             );
         }
+        Ok(())
     }
 
     /// A change in SSRC resets the candidate's consecutive-valid counter.
     #[test]
-    fn ssrc_change_resets_candidate() {
+    fn ssrc_change_resets_candidate() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
         assert!(
             heuristic
-                .check(&make_rtp_parsed(100, 0xAAAA, 0, 20000))
+                .check(&make_rtp_parsed(100, 0xAAAA, 0, 20000)?)
                 .is_none()
         );
         assert!(
             heuristic
-                .check(&make_rtp_parsed(101, 0xAAAA, 0, 20000))
+                .check(&make_rtp_parsed(101, 0xAAAA, 0, 20000)?)
                 .is_none()
         );
         // Different SSRC → reset
         assert!(
             heuristic
-                .check(&make_rtp_parsed(102, 0xBBBB, 0, 20000))
+                .check(&make_rtp_parsed(102, 0xBBBB, 0, 20000)?)
                 .is_none()
         );
         // Need 3 more with new SSRC
         assert!(
             heuristic
-                .check(&make_rtp_parsed(103, 0xBBBB, 0, 20000))
+                .check(&make_rtp_parsed(103, 0xBBBB, 0, 20000)?)
                 .is_none()
         );
         assert!(
             heuristic
-                .check(&make_rtp_parsed(104, 0xBBBB, 0, 20000))
+                .check(&make_rtp_parsed(104, 0xBBBB, 0, 20000)?)
                 .is_some()
         );
+        Ok(())
     }
 
     /// TCP packets are ignored (heuristic only considers UDP).
     #[test]
-    fn tcp_ignored() {
+    fn tcp_ignored() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
-        let mut pkt = make_rtp_parsed(100, 0xABCD, 0, 20000);
+        let mut pkt = make_rtp_parsed(100, 0xABCD, 0, 20000)?;
         pkt.transport = TransportProto::Tcp;
         assert!(heuristic.check(&pkt).is_none());
+        Ok(())
     }
 
     /// A gap in sequence numbers resets the candidate's counter.
     #[test]
-    fn sequence_gap_resets_candidate() {
+    fn sequence_gap_resets_candidate() -> Result<(), TestError> {
         let mut heuristic = RtpHeuristic::new();
 
         assert!(
             heuristic
-                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(100, 0xABCD, 0, 20000)?)
                 .is_none()
         );
         assert!(
             heuristic
-                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(101, 0xABCD, 0, 20000)?)
                 .is_none()
         );
         // Gap: 101 → 105 (not consecutive)
         assert!(
             heuristic
-                .check(&make_rtp_parsed(105, 0xABCD, 0, 20000))
+                .check(&make_rtp_parsed(105, 0xABCD, 0, 20000)?)
                 .is_none()
         );
+        Ok(())
     }
 }

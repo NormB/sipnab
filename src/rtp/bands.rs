@@ -210,6 +210,9 @@ impl QualityBands {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The values that used to disagree now get ONE answer.
     ///
     /// 25 ms was Good in the stream list and Warning on the dashboard; 0.8%
@@ -258,13 +261,16 @@ mod tests {
 
     /// An inverted band set is refused rather than quietly reordered.
     #[test]
-    fn an_unreachable_middle_is_refused() {
+    fn an_unreachable_middle_is_refused() -> Result<(), TestError> {
         let bad = QualityBands {
             jitter_warn_ms: 80.0,
             jitter_bad_ms: 50.0,
             ..Default::default()
         };
-        let err = bad.validate().expect_err("warn above bad must be refused");
+        let err = bad
+            .validate()
+            .err()
+            .ok_or("warn above bad must be refused")?;
         assert!(
             err.contains("jitter_warn_ms"),
             "the error must name the key: {err}"
@@ -274,6 +280,7 @@ mod tests {
             QualityBands::default().validate().is_ok(),
             "the shipped defaults must be a valid band set"
         );
+        Ok(())
     }
 
     /// A boundary that is not a finite, non-negative number is refused, by name.
@@ -284,14 +291,14 @@ mod tests {
     /// outage. Refusing an unreachable middle while accepting `nan` would
     /// guard the harmless case and pass the harmful one.
     #[test]
-    fn a_boundary_that_is_not_a_finite_non_negative_number_is_refused() {
+    fn a_boundary_that_is_not_a_finite_non_negative_number_is_refused() -> Result<(), TestError> {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let b = QualityBands {
                 jitter_warn_ms: bad,
                 ..Default::default()
             };
             let Err(err) = b.validate() else {
-                panic!("{bad} must be refused as a boundary");
+                return Err(format!("{bad} must be refused as a boundary").into());
             };
             assert!(
                 err.contains("jitter_warn_ms"),
@@ -311,6 +318,7 @@ mod tests {
             Band::Good,
             "if NaN did not read as Good, this validation would be arbitrary"
         );
+        Ok(())
     }
 
     /// Zero is a setting, not a mistake: "any loss at all is worth a color".

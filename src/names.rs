@@ -701,9 +701,12 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Parse `s` into an `IpAddr`, panicking on invalid input (test helper).
-    fn ip(s: &str) -> IpAddr {
-        s.parse().unwrap()
+    fn ip(s: &str) -> Result<IpAddr, TestError> {
+        Ok(s.parse()?)
     }
 
     /// `NameMode` defaults to Off, cycles Off→Names→Dns→Off, and each
@@ -721,37 +724,39 @@ mod tests {
 
     /// In Off mode even a mapped IP stays raw.
     #[test]
-    fn off_mode_never_resolves() {
+    fn off_mode_never_resolves() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "sbc".into());
-        assert_eq!(r.name(ip("10.0.0.2"), NameMode::Off), None);
+        r.set_manual(ip("10.0.0.2")?, "sbc".into());
+        assert_eq!(r.name(ip("10.0.0.2")?, NameMode::Off), None);
         assert_eq!(
-            r.label(ip("10.0.0.2"), 5060, NameMode::Off),
+            r.label(ip("10.0.0.2")?, 5060, NameMode::Off),
             "10.0.0.2:5060"
         );
+        Ok(())
     }
 
     /// A manual mapping wins over a hosts-file entry for the same IP.
     #[test]
-    fn manual_takes_precedence_over_hosts() {
+    fn manual_takes_precedence_over_hosts() -> Result<(), TestError> {
         let r = NameResolver::new();
         r.load_hosts_str("10.0.0.2 hosts-name\n");
-        r.set_manual(ip("10.0.0.2"), "manual-name".into());
+        r.set_manual(ip("10.0.0.2")?, "manual-name".into());
         assert_eq!(
-            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("manual-name")
         );
+        Ok(())
     }
 
     /// WS4.3c: the TUI keys its cached ladder layout on the resolver
     /// generation, so EVERY mutation that can change a label must bump it —
     /// and lookups must NOT, or the cache would never hit.
     #[test]
-    fn generation_bumps_on_name_mutations_but_not_lookups() {
+    fn generation_bumps_on_name_mutations_but_not_lookups() -> Result<(), TestError> {
         let r = NameResolver::new();
         let g0 = r.generation();
 
-        r.set_manual(ip("10.0.0.2"), "sbc".into());
+        r.set_manual(ip("10.0.0.2")?, "sbc".into());
         let g1 = r.generation();
         assert!(g1 > g0, "set_manual must bump the generation");
 
@@ -759,31 +764,32 @@ mod tests {
         let g2 = r.generation();
         assert!(g2 > g1, "load_hosts_str must bump the generation");
 
-        r.load_file_names([(ip("10.0.0.4"), "nrb-host".to_string())]);
+        r.load_file_names([(ip("10.0.0.4")?, "nrb-host".to_string())]);
         let g3 = r.generation();
         assert!(g3 > g2, "load_file_names must bump the generation");
 
-        r.remove_manual(&ip("10.0.0.2"));
+        r.remove_manual(&ip("10.0.0.2")?);
         let g4 = r.generation();
         assert!(g4 > g3, "remove_manual must bump the generation");
 
-        let _ = r.name(ip("10.0.0.3"), NameMode::Names);
-        let _ = r.label(ip("10.0.0.4"), 5060, NameMode::Names);
-        let _ = r.label(ip("10.0.0.99"), 5060, NameMode::Names);
+        let _ = r.name(ip("10.0.0.3")?, NameMode::Names);
+        let _ = r.label(ip("10.0.0.4")?, 5060, NameMode::Names);
+        let _ = r.label(ip("10.0.0.99")?, 5060, NameMode::Names);
         assert_eq!(r.generation(), g4, "lookups must not bump the generation");
+        Ok(())
     }
 
     /// A `remove_manual` that removes nothing must not bump the generation —
     /// otherwise it would needlessly invalidate the TUI's cached layout.
     #[test]
-    fn remove_manual_noop_does_not_bump_generation() {
+    fn remove_manual_noop_does_not_bump_generation() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "sbc".into());
+        r.set_manual(ip("10.0.0.2")?, "sbc".into());
         let g0 = r.generation();
 
         // Removing an IP with no manual mapping returns None and must be a
         // no-op for the generation counter.
-        assert_eq!(r.remove_manual(&ip("10.0.0.99")), None);
+        assert_eq!(r.remove_manual(&ip("10.0.0.99")?), None);
         assert_eq!(
             r.generation(),
             g0,
@@ -791,114 +797,125 @@ mod tests {
         );
 
         // A real removal still bumps it.
-        assert_eq!(r.remove_manual(&ip("10.0.0.2")).as_deref(), Some("sbc"));
+        assert_eq!(r.remove_manual(&ip("10.0.0.2")?).as_deref(), Some("sbc"));
         assert!(
             r.generation() > g0,
             "removing an existing mapping must bump the generation"
         );
+        Ok(())
     }
 
     /// Hosts-file entries resolve when no manual mapping exists;
     /// unknown IPs stay unresolved.
     #[test]
-    fn hosts_used_when_no_manual() {
+    fn hosts_used_when_no_manual() -> Result<(), TestError> {
         let r = NameResolver::new();
         r.load_hosts_str("10.0.0.3  asterisk-01  alias\n# comment\n\n");
         assert_eq!(
-            r.name(ip("10.0.0.3"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.3")?, NameMode::Names).as_deref(),
             Some("asterisk-01")
         );
-        assert_eq!(r.name(ip("10.0.0.9"), NameMode::Names), None);
+        assert_eq!(r.name(ip("10.0.0.9")?, NameMode::Names), None);
+        Ok(())
     }
 
     /// `label` swaps the IP for its name but keeps the port; unknown IPs
     /// fall back to the raw `ip:port` form.
     #[test]
-    fn label_preserves_port_and_substitutes_ip() {
+    fn label_preserves_port_and_substitutes_ip() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "sbc-edge".into());
+        r.set_manual(ip("10.0.0.2")?, "sbc-edge".into());
         assert_eq!(
-            r.label(ip("10.0.0.2"), 5060, NameMode::Names),
+            r.label(ip("10.0.0.2")?, 5060, NameMode::Names),
             "sbc-edge:5060"
         );
         // Unknown IP falls back to raw.
         assert_eq!(
-            r.label(ip("10.0.0.9"), 5061, NameMode::Names),
+            r.label(ip("10.0.0.9")?, 5061, NameMode::Names),
             "10.0.0.9:5061"
         );
+        Ok(())
     }
 
     /// `label_socket` keeps the bracketed form for unresolved IPv6 and
     /// drops the brackets once a name resolves.
     #[test]
-    fn label_socket_brackets_unresolved_ipv6() {
+    fn label_socket_brackets_unresolved_ipv6() -> Result<(), TestError> {
         let r = NameResolver::new();
-        let sa: SocketAddr = "[2001:db8::1]:5060".parse().unwrap();
+        let sa: SocketAddr = "[2001:db8::1]:5060".parse()?;
         // Unresolved IPv6 keeps the bracketed socket form.
         assert_eq!(r.label_socket(sa, NameMode::Names), "[2001:db8::1]:5060");
-        r.set_manual(ip("2001:db8::1"), "v6host".into());
+        r.set_manual(ip("2001:db8::1")?, "v6host".into());
         assert_eq!(r.label_socket(sa, NameMode::Names), "v6host:5060");
+        Ok(())
     }
 
     /// `parse_hosts` skips comments, invalid IPs, and blank lines, and
     /// keeps the first name per IP.
     #[test]
-    fn hosts_parsing_skips_comments_and_bad_lines() {
+    fn hosts_parsing_skips_comments_and_bad_lines() -> Result<(), TestError> {
         let map = parse_hosts(
             "# header\n127.0.0.1 localhost\nnot-an-ip foo\n10.0.0.1\t\trouter\n  \n10.0.0.1 dup-ignored\n",
         );
         assert_eq!(
-            map.get(&ip("127.0.0.1")).map(String::as_str),
+            map.get(&ip("127.0.0.1")?).map(String::as_str),
             Some("localhost")
         );
-        assert_eq!(map.get(&ip("10.0.0.1")).map(String::as_str), Some("router"));
+        assert_eq!(
+            map.get(&ip("10.0.0.1")?).map(String::as_str),
+            Some("router")
+        );
         assert_eq!(map.len(), 2);
+        Ok(())
     }
 
     /// `manual_entries` sorts by IP, and the hosts-format serialization
     /// round-trips back through the hosts parser.
     #[test]
-    fn manual_entries_sorted_and_round_trip() {
+    fn manual_entries_sorted_and_round_trip() -> Result<(), TestError> {
         let r = NameResolver::new();
         r.set_manual(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), "five".into());
         r.set_manual(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), "two".into());
         let entries = r.manual_entries();
-        assert_eq!(entries[0].0, ip("10.0.0.2"));
-        assert_eq!(entries[1].0, ip("10.0.0.5"));
+        assert_eq!(entries[0].0, ip("10.0.0.2")?);
+        assert_eq!(entries[1].0, ip("10.0.0.5")?);
 
         // Serialized form round-trips back through the hosts parser.
         let text = r.manual_to_hosts_format();
         let r2 = NameResolver::new();
         r2.load_hosts_str(&text);
         assert_eq!(
-            r2.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r2.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("two")
         );
         assert_eq!(
-            r2.name(ip("10.0.0.5"), NameMode::Names).as_deref(),
+            r2.name(ip("10.0.0.5")?, NameMode::Names).as_deref(),
             Some("five")
         );
+        Ok(())
     }
 
     /// `remove_manual` returns the removed name and the IP stops resolving.
     #[test]
-    fn remove_manual_returns_previous() {
+    fn remove_manual_returns_previous() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "sbc".into());
-        assert_eq!(r.remove_manual(&ip("10.0.0.2")).as_deref(), Some("sbc"));
-        assert_eq!(r.name(ip("10.0.0.2"), NameMode::Names), None);
+        r.set_manual(ip("10.0.0.2")?, "sbc".into());
+        assert_eq!(r.remove_manual(&ip("10.0.0.2")?).as_deref(), Some("sbc"));
+        assert_eq!(r.name(ip("10.0.0.2")?, NameMode::Names), None);
+        Ok(())
     }
 
     /// Dns mode on a resolver without a worker behaves like a cache miss.
     #[test]
-    fn dns_mode_without_worker_does_not_panic() {
+    fn dns_mode_without_worker_does_not_panic() -> Result<(), TestError> {
         // No reverse-DNS worker: Dns mode behaves like a cache miss (raw IP).
         let r = NameResolver::new();
-        assert_eq!(r.name(ip("10.0.0.2"), NameMode::Dns), None);
+        assert_eq!(r.name(ip("10.0.0.2")?, NameMode::Dns), None);
         assert_eq!(
-            r.label(ip("10.0.0.2"), 5060, NameMode::Dns),
+            r.label(ip("10.0.0.2")?, 5060, NameMode::Dns),
             "10.0.0.2:5060"
         );
+        Ok(())
     }
 
     // ── Name validation (success + failure) ────────────────────────────
@@ -928,78 +945,82 @@ mod tests {
     /// NRB entries are sorted by IP with each IP's names in source-
     /// preference order (manual before hosts).
     #[test]
-    fn nrb_entries_orders_sources_and_dedups() {
+    fn nrb_entries_orders_sources_and_dedups() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "manual-name".into());
+        r.set_manual(ip("10.0.0.2")?, "manual-name".into());
         r.load_hosts_str("10.0.0.2 hosts-name\n10.0.0.3 only-hosts\n");
         let e = r.nrb_entries(false);
         // Sorted by IP; .2 carries manual THEN hosts (preferred first), .3 hosts only.
-        assert_eq!(e[0].0, ip("10.0.0.2"));
+        assert_eq!(e[0].0, ip("10.0.0.2")?);
         assert_eq!(
             e[0].1,
             vec!["manual-name".to_string(), "hosts-name".to_string()]
         );
-        assert_eq!(e[1].0, ip("10.0.0.3"));
+        assert_eq!(e[1].0, ip("10.0.0.3")?);
         assert_eq!(e[1].1, vec!["only-hosts".to_string()]);
+        Ok(())
     }
 
     /// The same name in two sources is emitted once, not duplicated.
     #[test]
-    fn nrb_entries_dedups_identical_names_across_sources() {
+    fn nrb_entries_dedups_identical_names_across_sources() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "same".into());
+        r.set_manual(ip("10.0.0.2")?, "same".into());
         r.load_hosts_str("10.0.0.2 same\n");
         let e = r.nrb_entries(false);
-        assert_eq!(e[0].1, vec!["same".to_string()]); // not duplicated
+        assert_eq!(e[0].1, vec!["same".to_string()]); // not duplicated;
+        Ok(())
     }
 
     /// Cached DNS names appear in NRB output only when `include_dns` is set.
     #[test]
-    fn nrb_entries_dns_gated_by_flag() {
+    fn nrb_entries_dns_gated_by_flag() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.load_file_names([(ip("10.0.0.9"), "fromfile".to_string())]);
+        r.load_file_names([(ip("10.0.0.9")?, "fromfile".to_string())]);
         // Inject a DNS cache hit directly (no worker needed for the test).
         r.inner
             .write()
             .dns_cache
-            .insert(ip("10.0.0.9"), Some("dnsname".into()));
+            .insert(ip("10.0.0.9")?, Some("dnsname".into()));
         assert_eq!(r.nrb_entries(false)[0].1, vec!["fromfile".to_string()]);
         assert_eq!(
             r.nrb_entries(true)[0].1,
             vec!["fromfile".to_string(), "dnsname".to_string()]
         );
+        Ok(())
     }
 
     /// Invalid names are dropped from NRB output, and IPs left with no
     /// valid name are omitted entirely.
     #[test]
-    fn nrb_entries_skips_invalid_names_and_empty_result() {
+    fn nrb_entries_skips_invalid_names_and_empty_result() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "ok".into());
-        r.set_manual(ip("10.0.0.3"), "bad\0name".into()); // invalid → skipped
+        r.set_manual(ip("10.0.0.2")?, "ok".into());
+        r.set_manual(ip("10.0.0.3")?, "bad\0name".into()); // invalid → skipped
         let e = r.nrb_entries(false);
         assert_eq!(e.len(), 1);
-        assert_eq!(e[0].0, ip("10.0.0.2"));
+        assert_eq!(e[0].0, ip("10.0.0.2")?);
 
         // A resolver with only invalid names yields nothing.
         let empty = NameResolver::new();
-        empty.set_manual(ip("10.0.0.4"), String::new());
+        empty.set_manual(ip("10.0.0.4")?, String::new());
         assert!(empty.nrb_entries(false).is_empty());
+        Ok(())
     }
 
     /// NRB output carries IPv4 and IPv6 entries side by side.
     #[test]
-    fn nrb_entries_handles_ipv4_and_ipv6() {
+    fn nrb_entries_handles_ipv4_and_ipv6() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.2"), "v4".into());
-        r.set_manual(ip("2001:db8::1"), "v6".into());
+        let v4 = ip("10.0.0.2")?;
+        let v6 = ip("2001:db8::1")?;
+        r.set_manual(v4, "v4".into());
+        r.set_manual(v6, "v6".into());
         let e = r.nrb_entries(false);
         assert_eq!(e.len(), 2);
-        assert!(e.iter().any(|(i, n)| *i == ip("10.0.0.2") && n == &["v4"]));
-        assert!(
-            e.iter()
-                .any(|(i, n)| *i == ip("2001:db8::1") && n == &["v6"])
-        );
+        assert!(e.iter().any(|(i, n)| *i == v4 && n == &["v4"]));
+        assert!(e.iter().any(|(i, n)| *i == v6 && n == &["v6"]));
+        Ok(())
     }
 
     // ── Read-back (success + failure) ──────────────────────────────────
@@ -1007,54 +1028,56 @@ mod tests {
     /// `load_file_names` counts only accepted entries: invalid and empty
     /// names are skipped, and the first name per IP wins.
     #[test]
-    fn load_file_names_accepts_valid_skips_invalid() {
+    fn load_file_names_accepts_valid_skips_invalid() -> Result<(), TestError> {
         let r = NameResolver::new();
         let accepted = r.load_file_names([
-            (ip("10.0.0.2"), "good".to_string()),
-            (ip("10.0.0.3"), "bad\0".to_string()), // invalid → skipped
-            (ip("10.0.0.4"), String::new()),       // empty → skipped
-            (ip("10.0.0.2"), "dup".to_string()),   // first wins
+            (ip("10.0.0.2")?, "good".to_string()),
+            (ip("10.0.0.3")?, "bad\0".to_string()), // invalid → skipped
+            (ip("10.0.0.4")?, String::new()),       // empty → skipped
+            (ip("10.0.0.2")?, "dup".to_string()),   // first wins
         ]);
         assert_eq!(accepted, 1);
         assert_eq!(r.file_name_count(), 1);
         assert_eq!(
-            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("good")
         );
-        assert_eq!(r.name(ip("10.0.0.3"), NameMode::Names), None);
+        assert_eq!(r.name(ip("10.0.0.3")?, NameMode::Names), None);
+        Ok(())
     }
 
     /// Capture-file names rank below hosts, which rank below manual.
     #[test]
-    fn file_source_ranks_below_manual_and_hosts() {
+    fn file_source_ranks_below_manual_and_hosts() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.load_file_names([(ip("10.0.0.2"), "fromfile".to_string())]);
+        r.load_file_names([(ip("10.0.0.2")?, "fromfile".to_string())]);
         assert_eq!(
-            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("fromfile")
         );
         r.load_hosts_str("10.0.0.2 fromhosts\n");
         assert_eq!(
-            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("fromhosts")
         );
-        r.set_manual(ip("10.0.0.2"), "frommanual".into());
+        r.set_manual(ip("10.0.0.2")?, "frommanual".into());
         assert_eq!(
-            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            r.name(ip("10.0.0.2")?, NameMode::Names).as_deref(),
             Some("frommanual")
         );
+        Ok(())
     }
 
     /// Names that would corrupt the hosts format (newline injection,
     /// tab/control chars) are skipped on serialization.
     #[test]
-    fn manual_to_hosts_format_skips_invalid_names() {
+    fn manual_to_hosts_format_skips_invalid_names() -> Result<(), TestError> {
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.1"), "good".into());
+        r.set_manual(ip("10.0.0.1")?, "good".into());
         // A newline-bearing name would inject a second hosts record on reload.
-        r.set_manual(ip("10.0.0.2"), "evil\n6.6.6.6 attacker".into());
+        r.set_manual(ip("10.0.0.2")?, "evil\n6.6.6.6 attacker".into());
         // A tab/control char would corrupt the IP↔name split too.
-        r.set_manual(ip("10.0.0.3"), "bad\tname".into());
+        r.set_manual(ip("10.0.0.3")?, "bad\tname".into());
         let out = r.manual_to_hosts_format();
         assert!(out.contains("good"), "valid name kept");
         assert!(
@@ -1064,6 +1087,7 @@ mod tests {
         assert!(!out.contains("bad\tname"));
         // Exactly one valid record emitted.
         assert_eq!(out.lines().count(), 1);
+        Ok(())
     }
 
     // ── Resource bounds (DNS cache/queue must not grow forever) ────────
@@ -1213,7 +1237,7 @@ mod tests {
     /// the lookup path and must not queue unbounded work: overflow requests
     /// are dropped (and un-marked, so they can be re-requested later).
     #[test]
-    fn dns_queue_full_drops_instead_of_blocking() {
+    fn dns_queue_full_drops_instead_of_blocking() -> Result<(), TestError> {
         // A resolver wired to a bounded queue with NO consumer draining it.
         let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(DNS_QUEUE_CAPACITY);
         let r = Arc::new(NameResolver {
@@ -1237,11 +1261,12 @@ mod tests {
             burst.is_finished(),
             "lookup path blocked on a full DNS queue"
         );
-        burst.join().unwrap();
+        burst.join().map_err(|e| format!("{e:?}"))?;
         // Exactly the queue capacity was accepted; the overflow was dropped.
         assert_eq!(rx.try_iter().count(), DNS_QUEUE_CAPACITY);
         // Dropped IPs were un-marked so a later lookup can retry them.
         assert_eq!(r.inner.read().dns_requested.len(), DNS_QUEUE_CAPACITY);
+        Ok(())
     }
 
     // ── Persistence (atomic, symlink-safe) ─────────────────────────────
@@ -1250,27 +1275,28 @@ mod tests {
     /// writing through it onto the link's target.
     #[test]
     #[cfg(all(unix, feature = "native"))]
-    fn save_manual_file_replaces_symlink_not_target() {
+    fn save_manual_file_replaces_symlink_not_target() -> Result<(), TestError> {
         use std::os::unix::fs::symlink;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let target = dir.path().join("real.txt");
-        std::fs::write(&target, "DO NOT CLOBBER").unwrap();
+        std::fs::write(&target, "DO NOT CLOBBER")?;
         let link = dir.path().join("names_link");
-        symlink(&target, &link).unwrap();
+        symlink(&target, &link)?;
 
         let r = NameResolver::new();
-        r.set_manual(ip("10.0.0.1"), "host-a".into());
-        r.save_manual_file(&link).unwrap();
+        r.set_manual(ip("10.0.0.1")?, "host-a".into());
+        r.save_manual_file(&link)?;
 
         // A plain `fs::write` follows the symlink and clobbers `target`; an
         // atomic temp-in-dir + rename replaces the link itself, so the original
         // target is left intact and the path becomes a regular file.
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "DO NOT CLOBBER");
-        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert_eq!(std::fs::read_to_string(&target)?, "DO NOT CLOBBER");
+        let meta = std::fs::symlink_metadata(&link)?;
         assert!(
             meta.file_type().is_file(),
             "save should replace the symlink with a regular file"
         );
-        assert!(std::fs::read_to_string(&link).unwrap().contains("host-a"));
+        assert!(std::fs::read_to_string(&link)?.contains("host-a"));
+        Ok(())
     }
 }

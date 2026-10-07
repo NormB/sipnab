@@ -203,6 +203,9 @@ mod tests {
     use crate::analysis::{CAPTURE_ANALYSIS_SCHEMA_VERSION, CountLabel, FindingKind};
     use std::collections::BTreeMap;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A finding whose evidence list is complete.
     fn finding(kind: FindingKind, occurrences: u64, evidence: Vec<Evidence>) -> Finding {
         Finding {
@@ -274,9 +277,9 @@ mod tests {
 
     /// Every finding must carry evidence a reader can take back to the pcap.
     #[test]
-    fn a_finding_renders_its_call_id_addresses_and_counts() {
+    fn a_finding_renders_its_call_id_addresses_and_counts() -> Result<(), TestError> {
         let at =
-            chrono::DateTime::from_timestamp_millis(1_700_000_000_000).expect("valid timestamp");
+            chrono::DateTime::from_timestamp_millis(1_700_000_000_000).ok_or("valid timestamp")?;
         let analysis = CaptureAnalysis {
             schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
             filter: None,
@@ -305,6 +308,7 @@ mod tests {
         assert!(out.contains("rtp_packets=412"), "{out}");
         assert!(out.contains("2023-11-14"), "{out}");
         assert!(out.contains("[CRITICAL]"), "{out}");
+        Ok(())
     }
 
     /// A capped evidence list must say it was capped — and a COMPLETE list

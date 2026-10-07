@@ -148,6 +148,9 @@ pub fn format_reg_flood_event(src_ip: &str, count: u32) -> String {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Scanner lines carry prefix, event type, src/ua/method fields, and a
     /// `YYYY-MM-DD HH:MM:SS` timestamp.
     #[test]
@@ -189,25 +192,27 @@ mod tests {
     /// about either exact spelling: it must keep holding when the absent marker
     /// changes.
     #[test]
-    fn an_absent_user_agent_is_not_the_same_line_as_a_literal_one() {
+    fn an_absent_user_agent_is_not_the_same_line_as_a_literal_one() -> Result<(), TestError> {
         let absent = format_scanner_event("10.0.0.5", None, Some("OPTIONS"));
         let literal = format_scanner_event("10.0.0.5", Some(ABSENT), Some("OPTIONS"));
 
-        let field = |line: &str| {
-            line.split(" ua=")
+        let field = |line: &str| -> Result<String, TestError> {
+            Ok(line
+                .split(" ua=")
                 .nth(1)
                 .and_then(|r| r.split(' ').next())
-                .expect("every scanner line carries a ua= field")
-                .to_string()
+                .ok_or("every scanner line carries a ua= field")?
+                .to_string())
         };
 
         assert_ne!(
-            field(&absent),
-            field(&literal),
+            field(&absent)?,
+            field(&literal)?,
             "a message with no User-Agent and one sending the marker verbatim \
              produce the same ua= field — the absent case is unrecoverable from \
              the log, which is exactly what feeds the ban decision"
         );
+        Ok(())
     }
 
     /// A crafted User-Agent cannot forge another field in the same line.
@@ -304,28 +309,30 @@ mod tests {
     /// first pass of this work fixed `ua` and left `method` behind, which made
     /// the "ONE place" claim on `render_absent` untrue for a release.
     #[test]
-    fn an_absent_method_is_not_the_same_line_as_a_literal_one() {
+    fn an_absent_method_is_not_the_same_line_as_a_literal_one() -> Result<(), TestError> {
         let absent = format_scanner_event("10.0.0.5", Some("ua"), None);
         let literal = format_scanner_event("10.0.0.5", Some("ua"), Some(ABSENT));
         let legacy = format_scanner_event("10.0.0.5", Some("ua"), Some("UNKNOWN"));
 
-        let field = |line: &str| {
-            line.split(" method=")
+        let field = |line: &str| -> Result<String, TestError> {
+            Ok(line
+                .split(" method=")
                 .nth(1)
-                .expect("every scanner line carries a method= field")
-                .to_string()
+                .ok_or("every scanner line carries a method= field")?
+                .to_string())
         };
 
         assert_ne!(
-            field(&absent),
-            field(&literal),
+            field(&absent)?,
+            field(&literal)?,
             "no method and a method of `-` produce the same field"
         );
         assert_ne!(
-            field(&absent),
-            field(&legacy),
+            field(&absent)?,
+            field(&legacy)?,
             "no method and a Custom method of `UNKNOWN` produce the same field"
         );
+        Ok(())
     }
 
     /// A `Custom` method cannot break out of its quoting.
@@ -444,7 +451,7 @@ mod tests {
     /// pattern tests the LITERAL structure around it, which is the half that
     /// drifts when a log line changes.
     #[test]
-    fn the_shipped_filter_matches_the_lines_this_module_writes() {
+    fn the_shipped_filter_matches_the_lines_this_module_writes() -> Result<(), TestError> {
         let conf = include_str!("../../contrib/fail2ban/sipnab-scanner.conf");
         let patterns: Vec<String> = conf
             .lines()
@@ -465,18 +472,22 @@ mod tests {
             format_scanner_event("198.51.100.7", Some("friendly-scanner"), Some("OPTIONS"));
         let flood = format_reg_flood_event("198.51.100.9", 42);
 
-        for (label, line) in [("scanner", &scanner), ("reg_flood", &flood)] {
-            let matched = patterns.iter().any(|p| {
+        let compiled = patterns
+            .iter()
+            .map(|p| {
                 regex::Regex::new(p)
-                    .unwrap_or_else(|e| panic!("shipped failregex does not compile: {p}: {e}"))
-                    .is_match(line)
-            });
+                    .map_err(|e| format!("shipped failregex does not compile: {p}: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (label, line) in [("scanner", &scanner), ("reg_flood", &flood)] {
+            let matched = compiled.iter().any(|r| r.is_match(line));
             assert!(
                 matched,
                 "no pattern in the shipped filter matches the {label} line \
                  sipnab writes.\npatterns: {patterns:#?}\nline: {line}"
             );
         }
+        Ok(())
     }
 
     /// The shipped patterns are not catch-alls wearing a rule name.
@@ -485,7 +496,7 @@ mod tests {
     /// and every other line in the log, so a jail built on it would ban on any
     /// syslog traffic at all.
     #[test]
-    fn the_shipped_filter_does_not_match_an_unrelated_line() {
+    fn the_shipped_filter_does_not_match_an_unrelated_line() -> Result<(), TestError> {
         let conf = include_str!("../../contrib/fail2ban/sipnab-scanner.conf");
         let patterns: Vec<String> = conf
             .lines()
@@ -503,12 +514,15 @@ mod tests {
         ] {
             for p in &patterns {
                 assert!(
-                    !regex::Regex::new(p).expect("compiles").is_match(decoy),
+                    !regex::Regex::new(p)
+                        .map_err(|e| format!("compiles: {e:?}"))?
+                        .is_match(decoy),
                     "the shipped filter matches a line it must not, so a jail \
                      on it bans the wrong host.\npattern: {p}\nline: {decoy}"
                 );
             }
         }
+        Ok(())
     }
 
     /// The value of `key` among the shipped jail's ACTIVE settings: comment
