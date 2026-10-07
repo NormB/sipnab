@@ -3245,16 +3245,33 @@ mod tests {
 
     // ── The read-ahead ledger ──────────────────────────────────────
 
-    /// Run `f` on a thread and report whether it finished promptly, so a test
-    /// about blocking does not hang the suite when the answer is wrong.
+    /// Run `f` on a thread and report whether it finished within `limit`, so
+    /// a test about blocking does not hang the suite when the answer is wrong.
     #[cfg(feature = "native")]
-    fn finishes_promptly(f: impl FnOnce() + Send + 'static) -> bool {
+    fn finishes_within(f: impl FnOnce() + Send + 'static, limit: std::time::Duration) -> bool {
         let (tx, rx) = crossbeam_channel::bounded(1);
         std::thread::spawn(move || {
             f();
             let _ = tx.send(());
         });
-        rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok()
+        rx.recv_timeout(limit).is_ok()
+    }
+
+    /// Whether `f` finishes. The bound is generous because it is only reached
+    /// when the answer is wrong: a passing run returns as soon as `f` does. A
+    /// 2 s bound failed `only_the_next_file_in_line_may_spend_the_runway` on a
+    /// host at about 2% idle, where a thread can wait that long to be run.
+    #[cfg(feature = "native")]
+    fn finishes_promptly(f: impl FnOnce() + Send + 'static) -> bool {
+        finishes_within(f, std::time::Duration::from_secs(30))
+    }
+
+    /// Whether `f` is still blocked after 2 s. Load can only make a thread
+    /// that should block look blocked, so this short window cannot fail a
+    /// correct build.
+    #[cfg(feature = "native")]
+    fn stays_blocked(f: impl FnOnce() + Send + 'static) -> bool {
+        !finishes_within(f, std::time::Duration::from_secs(2))
     }
 
     /// The reader of the file being dispatched never waits on the RUNWAY, even
@@ -3330,7 +3347,7 @@ mod tests {
 
         let waiting = std::sync::Arc::clone(&runway);
         assert!(
-            !finishes_promptly(move || {
+            stays_blocked(move || {
                 waiting.acquire(2, 100);
             }),
             "file 2 must not spend a budget file 1 has not finished with, \

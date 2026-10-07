@@ -22,6 +22,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
+#[path = "support/executable.rs"]
+mod executable;
+
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
@@ -40,30 +43,9 @@ fn script(name: &str) -> PathBuf {
 /// own status. Under host load that gap is long enough to hit
 /// (`a_fake_binary_runs_while_other_threads_are_forking`).
 fn fake_binary(dir: &Path, name: &str, body: &str) -> PathBuf {
-    use std::io::Write;
-    use std::process::Stdio;
-
     let path = dir.join(name);
-    let mut writer = Command::new("sh")
-        .arg("-c")
-        .arg("cat >\"$1\" && chmod 755 \"$1\"")
-        .arg("sh")
-        .arg(&path)
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("start the fake binary's writer");
-    writer
-        .stdin
-        .take()
-        .expect("writer stdin")
-        .write_all(format!("#!/bin/sh\n{body}\n").as_bytes())
+    executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))
         .expect("write fake binary");
-    let status = writer.wait().expect("wait for the fake binary's writer");
-    assert!(
-        status.success(),
-        "writing {} failed: {status}",
-        path.display()
-    );
     path
 }
 

@@ -32,6 +32,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "support/executable.rs"]
+mod executable;
+
 include!("support/timeout.rs");
 
 /// A long, deterministic signing key shared between the spawned server and
@@ -465,16 +468,14 @@ fn the_audit_line_names_the_token_that_made_the_call() {
 /// the name an operator revokes, and the one the per-caller limit counts.
 #[test]
 fn an_action_over_http_is_journaled_under_the_tokens_id() {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().expect("tempdir");
     let ctl = dir.path().join("tfps_ctl");
-    std::fs::write(
+    executable::write_executable(
         &ctl,
         "#!/bin/sh\necho '{\"ip\":\"198.51.100.20\",\"action\":\"ban\",\"applied\":true,\
          \"refused\":null,\"expires\":null,\"source\":\"operator\"}'\n",
     )
     .expect("write the fake");
-    std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let journal = dir.path().join("journal");
     let ctl = ctl.display().to_string();
     let journal_arg = journal.display().to_string();

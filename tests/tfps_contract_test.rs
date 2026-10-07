@@ -26,7 +26,6 @@
 
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,6 +33,9 @@ use sipnab::security::tfps::{
     Invocation, NOT_INSTALLED_REASON, Reply, TfpsAction, TfpsActionAnswer, TfpsBanned, TfpsCommand,
     TfpsDropped, TfpsError, TfpsLabel, TfpsListAnswer, TfpsLocator, TfpsStatus, TfpsStatusAnswer,
 };
+
+#[path = "support/executable.rs"]
+mod executable;
 
 const STATUS: &str = include_str!("fixtures/tfps-status-golden.json");
 const BANNED: &str = include_str!("fixtures/tfps-banned-golden.jsonl");
@@ -129,8 +131,8 @@ impl FakeCtl {
     fn with_body(body: &str) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("tfps_ctl");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the fake");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        executable::write_executable(&path, &format!("#!/bin/sh\n{body}\n"))
+            .expect("write the fake");
         Self { dir }
     }
 

@@ -55,6 +55,7 @@ with no `mod.rs` chain — each test binary compiles its own copy.
 | [`teardown.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/teardown.rs) | `terminate()`, the one way a harness stops the binary it spawned: SIGTERM, a bounded wait, and SIGKILL only for a child still running after it. `Child::kill()` is SIGKILL, and a process killed that way never writes its coverage profile. Pulled in with `include!` rather than `#[path]`. |
 | [`schema.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](https://github.com/NormB/sipnab/blob/main/tests/schemas). |
 | [`tui_fixtures.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
+| [`executable.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
 | [`fuzz.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 
 ## Fixtures and corpora

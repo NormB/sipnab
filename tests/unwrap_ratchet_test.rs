@@ -28,7 +28,7 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     ("examples", 0, 3, 0),
     ("fuzz", 0, 0, 0),
     ("src", 1848, 4441, 238),
-    ("tests", 981, 4322, 778),
+    ("tests", 977, 4310, 778),
 ];
 
 /// Every tracked `.rs` file, relative to the crate root.

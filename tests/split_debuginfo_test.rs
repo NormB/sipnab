@@ -29,6 +29,9 @@ use dbgsym::{
     split_or_panic, symbolize_or_panic, text,
 };
 
+#[path = "support/executable.rs"]
+mod executable;
+
 /// Assert everything a finished split must be, on any architecture: the
 /// shipped binary has no symbols or DWARF, keeps its build ID, and links to
 /// `debug` by name; `debug` has the line table and symbols under the same ID.
@@ -297,15 +300,13 @@ const XCODE_STANDINS: &[(&str, &str)] = &[
 /// stand-in tools first on PATH. Returns the output, the tool log, and the
 /// temp dir holding `sipnab` and `dist/`.
 fn run_macos_split(env: &[(&str, &str)]) -> (std::process::Output, String, tempfile::TempDir) {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let w = dir.path();
     let tools = w.join("tools");
     std::fs::create_dir_all(&tools).unwrap();
     for (name, body) in XCODE_STANDINS {
         let p = tools.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        executable::write_executable(&p, &format!("#!/bin/sh\n{body}")).unwrap();
     }
     let bin = w.join("sipnab");
     // MH_MAGIC_64, little-endian: the script picks its branch by magic.
