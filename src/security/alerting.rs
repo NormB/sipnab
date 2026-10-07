@@ -273,6 +273,10 @@ impl<T: WindowClock> TumblingWindow<T> {
 /// Maximum entries in the cooldowns map before eviction.
 const MAX_COOLDOWN_ENTRIES: usize = 10_000;
 
+/// The alert channels `--alert` and `[security] alert` name, lowercase.
+/// A value containing `:` is an alert rule instead.
+pub const ALERT_CHANNELS: [&str; 3] = ["syslog", "json", "exec"];
+
 /// Default capacity of the in-memory findings ring buffer (Phase 8.3).
 pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;
 

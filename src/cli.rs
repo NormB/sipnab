@@ -654,7 +654,8 @@ pub struct CaptureArgs {
         help_heading = "Capture",
         short = 'S',
         long = "limitlen",
-        value_name = "BYTES"
+        value_name = "BYTES",
+        value_parser = parse_nonzero_usize
     )]
     pub limitlen: Option<usize>,
 
@@ -765,7 +766,8 @@ pub struct CaptureArgs {
         help_heading = "Capture",
         short = 'n',
         long = "count",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub count: Option<u64>,
 
@@ -1537,7 +1539,7 @@ pub struct OutputArgs {
         help_heading = "Output",
         long,
         value_name = "WHEN",
-        value_parser = clap::builder::PossibleValuesParser::new(["auto", "always", "never"])
+        value_parser = clap::builder::PossibleValuesParser::new(crate::config::COLOR_MODES)
     )]
     pub color: Option<String>,
 
@@ -1913,7 +1915,12 @@ pub struct RtpArgs {
     pub relay_stats_interval: Option<u64>,
 
     /// Maximum number of RTP streams to track simultaneously.
-    #[arg(help_heading = "RTP", long, value_name = "N")]
+    #[arg(
+        help_heading = "RTP",
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
     pub max_streams: Option<u64>,
 
     /// Lost RTP sequence numbers retained per stream, for the Packet Loss Map
@@ -2051,7 +2058,12 @@ pub struct SecurityArgs {
     /// sipnab does not arm the detector for you. On a live capture
     /// `--kill-scanner` also arms the response path, and a flag that says
     /// "detect" must not start sending packets at third parties.
-    #[arg(help_heading = "Security", long, value_name = "PATTERN")]
+    #[arg(
+        help_heading = "Security",
+        long,
+        value_name = "PATTERN",
+        value_parser = parse_kill_ua
+    )]
     pub kill_ua: Option<String>,
 
     /// SIP response code to use in scanner kill reports.
@@ -3122,7 +3134,12 @@ pub struct McpArgs {
     /// RTCP-reported round trip, which an unauthenticated packet can move; see
     /// [`crate::rtp::quality::DelaySource`]. No clap `default_value`, for the
     /// reason given on `--mcp-max-rows`.
-    #[arg(help_heading = "Analysis", long = "one-way-delay", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "one-way-delay",
+        value_name = "MS",
+        value_parser = parse_non_negative_finite
+    )]
     pub one_way_delay_ms: Option<f64>,
 
     /// Post-dial delay, in seconds, over which a call is reported as slow.
@@ -3132,14 +3149,24 @@ pub struct McpArgs {
     /// call it holds. A network that knows its own traffic is local or toll
     /// wants a tighter number (6.0 and 8.0 respectively). Config:
     /// `[diagnosis] post_dial_delay_secs`.
-    #[arg(help_heading = "Analysis", long = "pdd-threshold", value_name = "SECS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "pdd-threshold",
+        value_name = "SECS",
+        value_parser = parse_positive_finite
+    )]
     pub pdd_threshold_secs: Option<f64>,
 
     /// Seconds a `2xx` may go unacknowledged before the missing `ACK` is
     /// reported as a fault rather than as a capture that stopped early.
     /// Default: RFC 3261 Timer H (32 s). Config:
     /// `[diagnosis] ack_timeout_secs`.
-    #[arg(help_heading = "Analysis", long = "ack-timeout", value_name = "SECS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "ack-timeout",
+        value_name = "SECS",
+        value_parser = parse_positive_finite
+    )]
     pub ack_timeout_secs: Option<f64>,
 
     /// Seconds an `INVITE` may sit without a final response before the silence
@@ -3149,7 +3176,8 @@ pub struct McpArgs {
     #[arg(
         help_heading = "Analysis",
         long = "no-final-response-timeout",
-        value_name = "SECS"
+        value_name = "SECS",
+        value_parser = parse_positive_finite
     )]
     pub no_final_response_secs: Option<f64>,
 
@@ -3158,7 +3186,8 @@ pub struct McpArgs {
     #[arg(
         help_heading = "Analysis",
         long = "duration-asymmetry-pct",
-        value_name = "PCT"
+        value_name = "PCT",
+        value_parser = parse_asymmetry_pct
     )]
     pub duration_asymmetry_pct: Option<f64>,
 
@@ -3169,13 +3198,19 @@ pub struct McpArgs {
     #[arg(
         help_heading = "Analysis",
         long = "duration-asymmetry-secs",
-        value_name = "SECS"
+        value_name = "SECS",
+        value_parser = parse_positive_finite
     )]
     pub duration_asymmetry_secs: Option<f64>,
 
     /// Milliseconds after the `200 OK` that media may start before it is
     /// reported as late. Config: `[diagnosis] late_media_ms`.
-    #[arg(help_heading = "Analysis", long = "late-media-ms", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "late-media-ms",
+        value_name = "MS",
+        value_parser = clap::value_parser!(i64).range(1..)
+    )]
     pub late_media_ms: Option<i64>,
 
     /// Share of a call's packets, as a fraction of 1, that must be comfort
@@ -3208,42 +3243,82 @@ pub struct McpArgs {
     /// reason spelled out on [`Self::mcp_max_rows`]: a populated field cannot
     /// tell "not typed" from "typed the default", and its config key would
     /// have nothing left to override.
-    #[arg(help_heading = "Analysis", long = "jitter-warn-ms", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "jitter-warn-ms",
+        value_name = "MS",
+        value_parser = parse_non_negative_finite
+    )]
     pub jitter_warn_ms: Option<f64>,
 
     /// Jitter, in milliseconds, at or above which the color column turns red.
     /// Config: `[quality] jitter_bad_ms`.
-    #[arg(help_heading = "Analysis", long = "jitter-bad-ms", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "jitter-bad-ms",
+        value_name = "MS",
+        value_parser = parse_non_negative_finite
+    )]
     pub jitter_bad_ms: Option<f64>,
 
     /// Packet loss, in percent, at or above which the color column turns
     /// yellow. Config: `[quality] loss_warn_pct`.
-    #[arg(help_heading = "Analysis", long = "loss-warn-pct", value_name = "PCT")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "loss-warn-pct",
+        value_name = "PCT",
+        value_parser = parse_loss_boundary
+    )]
     pub loss_warn_pct: Option<f64>,
 
     /// Packet loss, in percent, at or above which the color column turns red.
     /// Config: `[quality] loss_bad_pct`.
-    #[arg(help_heading = "Analysis", long = "loss-bad-pct", value_name = "PCT")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "loss-bad-pct",
+        value_name = "PCT",
+        value_parser = parse_loss_boundary
+    )]
     pub loss_bad_pct: Option<f64>,
 
     /// MOS below which the color column turns yellow. MOS bands run downward,
     /// so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn`.
-    #[arg(help_heading = "Analysis", long = "mos-warn", value_name = "MOS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "mos-warn",
+        value_name = "MOS",
+        value_parser = parse_mos_boundary
+    )]
     pub mos_warn: Option<f64>,
 
     /// MOS below which the color column turns red.
     /// Config: `[quality] mos_bad`.
-    #[arg(help_heading = "Analysis", long = "mos-bad", value_name = "MOS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "mos-bad",
+        value_name = "MOS",
+        value_parser = parse_mos_boundary
+    )]
     pub mos_bad: Option<f64>,
 
     /// Round trip, in milliseconds, at or above which the color column turns
     /// yellow. Config: `[quality] rtt_warn_ms`.
-    #[arg(help_heading = "Analysis", long = "rtt-warn-ms", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "rtt-warn-ms",
+        value_name = "MS",
+        value_parser = parse_non_negative_finite
+    )]
     pub rtt_warn_ms: Option<f64>,
 
     /// Round trip, in milliseconds, at or above which the color column turns
     /// red. Config: `[quality] rtt_bad_ms`.
-    #[arg(help_heading = "Analysis", long = "rtt-bad-ms", value_name = "MS")]
+    #[arg(
+        help_heading = "Analysis",
+        long = "rtt-bad-ms",
+        value_name = "MS",
+        value_parser = parse_non_negative_finite
+    )]
     pub rtt_bad_ms: Option<f64>,
 
     /// Maximum rows in one list-style MCP response.
@@ -3262,7 +3337,8 @@ pub struct McpArgs {
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-max-rows",
-        value_name = "N"
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
     )]
     pub mcp_max_rows: Option<u64>,
 
@@ -4040,7 +4116,12 @@ pub struct LimitsArgs {
     pub max_capture_sources: Option<u64>,
 
     /// Maximum concurrent TCP/TLS reassembly sessions.
-    #[arg(help_heading = "Resource limits", long, value_name = "N")]
+    #[arg(
+        help_heading = "Resource limits",
+        long,
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
     pub max_reassembly: Option<u64>,
 
     /// Seconds an incomplete datagram or half-read TCP stream is held before a
@@ -4144,7 +4225,8 @@ pub struct LimitsArgs {
         help_heading = "Resource limits",
         long,
         value_name = "N",
-        default_value = "1"
+        default_value = "1",
+        value_parser = parse_nonzero_usize
     )]
     pub cores: usize,
 }
@@ -5915,6 +5997,52 @@ impl Cli {
         }
     }
 
+    /// The exit code and message for a refused resolved band set, naming
+    /// each boundary by the source that set it: the flag when the operator
+    /// typed one (exit 2, an argument error), else its `[quality]` key
+    /// (exit 1, a config error). `msg` is
+    /// [`crate::rtp::bands::QualityBands::validate`]'s, which names keys.
+    #[must_use]
+    pub fn quality_band_refusal(&self, msg: &str) -> (i32, String) {
+        let a = &self.mcp_args;
+        let sources = [
+            (
+                "jitter_warn_ms",
+                "--jitter-warn-ms",
+                a.jitter_warn_ms.is_some(),
+            ),
+            (
+                "jitter_bad_ms",
+                "--jitter-bad-ms",
+                a.jitter_bad_ms.is_some(),
+            ),
+            (
+                "loss_warn_pct",
+                "--loss-warn-pct",
+                a.loss_warn_pct.is_some(),
+            ),
+            ("loss_bad_pct", "--loss-bad-pct", a.loss_bad_pct.is_some()),
+            ("mos_warn", "--mos-warn", a.mos_warn.is_some()),
+            ("mos_bad", "--mos-bad", a.mos_bad.is_some()),
+            ("rtt_warn_ms", "--rtt-warn-ms", a.rtt_warn_ms.is_some()),
+            ("rtt_bad_ms", "--rtt-bad-ms", a.rtt_bad_ms.is_some()),
+        ];
+        let mut out = msg.to_string();
+        let mut from_flag = false;
+        for (key, flag, set) in sources {
+            if !out.contains(key) {
+                continue;
+            }
+            if set {
+                out = out.replace(key, flag);
+                from_flag = true;
+            } else {
+                out = out.replace(key, &format!("[quality] {key}"));
+            }
+        }
+        (if from_flag { 2 } else { 1 }, out)
+    }
+
     /// Quality color bands: each flag, else its `[quality]` key, else the
     /// shipped boundary. See [`Self::dialog_limit`] for the precedence rule.
     ///
@@ -6104,6 +6232,28 @@ impl Cli {
         cli
     }
 
+    /// Parse CLI arguments from an iterator, returning clap's error instead
+    /// of exiting, and apply the same normalization as [`Cli::parse_args`].
+    ///
+    /// # Arguments
+    /// * `args` - full argument list; the first item must be the binary
+    ///   name, exactly as in a real `argv`.
+    ///
+    /// # Errors
+    /// The `clap::Error` the binary would print, carrying its exit code.
+    ///
+    /// # Side effects
+    /// Reads the `env = "..."`-tagged environment variables.
+    pub fn try_parse_from_args<I, T>(args: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        let mut cli = Cli::try_parse_from(args)?;
+        cli.normalize();
+        Ok(cli)
+    }
+
     /// Validate argument combinations and return an error message if invalid.
     ///
     /// Checks that output-only flags (`--json`, `--report`, `--hexdump`,
@@ -6233,8 +6383,19 @@ impl Cli {
         // is the failure mode this whole change exists to remove. `[security]
         // business_hours` is checked by `SecurityConfig::validate` for the
         // same reason; clap cannot check a range spec by itself.
+        if let Some(raw) = self.security_args.fraud_destination.as_deref()
+            && let Some(bad) = crate::security::destination::unknown_destination(raw)
+        {
+            return Err(crate::Error::CliValidation(format!(
+                "--fraud-destination {bad:?} is not a destination sipnab can match: \
+                 give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for \
+                 +1 numbers), comma-separated"
+            )));
+        }
         if let Some(spec) = self.security_args.business_hours.as_deref() {
-            crate::config::parse_business_hours(spec)?;
+            crate::config::business_hours_window(spec).map_err(|reason| {
+                crate::Error::CliValidation(format!("--business-hours {reason}"))
+            })?;
         }
         // A trail that would record nothing. `--tui-audit-file` records what an
         // OPERATOR did at the terminal, and there is no operator and no
@@ -6453,8 +6614,9 @@ impl Cli {
     /// `resolve_file_or_inline_secret` for the error and file-read
     /// semantics.
     pub fn resolve_metrics_auth(&self) -> Result<Option<String>, String> {
-        resolve_file_or_inline_secret(
+        resolve_named_secret(
             self.listener_args.metrics_auth.as_deref(),
+            "--metrics-auth",
             self.listener_args.metrics_auth_file.as_deref(),
             "--metrics-auth-file",
         )
@@ -6485,8 +6647,9 @@ impl Cli {
     /// `resolve_file_or_inline_secret` for the error and file-read
     /// semantics.
     pub fn resolve_hep_auth(&self) -> Result<Option<String>, String> {
-        resolve_file_or_inline_secret(
+        resolve_named_secret(
             self.hep_args.hep_auth.as_deref(),
+            "--hep-auth (or SIPNAB_HEP_AUTH)",
             self.hep_args.hep_auth_file.as_deref(),
             "--hep-auth-file",
         )
@@ -6517,6 +6680,28 @@ pub fn resolve_file_or_inline_secret(
     file: Option<&std::path::Path>,
     flag: &str,
 ) -> Result<Option<String>, String> {
+    resolve_named_secret(inline, flag, file, flag)
+}
+
+/// [`resolve_file_or_inline_secret`], with the inline source and the file
+/// source each named by its own flag, so a refusal names the setting the
+/// operator actually gave: an empty `--hep-auth` used to be reported as
+/// `--hep-auth-file: the value is empty`.
+///
+/// # Errors
+/// The file cannot be read, or the trimmed secret from either source is
+/// empty; the message names `inline_flag` or `file_flag`, whichever supplied
+/// it.
+///
+/// # Side effects
+/// Reads `file` from the filesystem when set.
+pub fn resolve_named_secret(
+    inline: Option<&str>,
+    inline_flag: &str,
+    file: Option<&std::path::Path>,
+    file_flag: &str,
+) -> Result<Option<String>, String> {
+    let flag = file_flag;
     if let Some(path) = file {
         let contents = std::fs::read_to_string(path)
             .map_err(|e| format!("{flag} '{}': {e}", path.display()))?;
@@ -6547,7 +6732,7 @@ pub fn resolve_file_or_inline_secret(
             let trimmed = value.trim();
             if trimmed.is_empty() {
                 return Err(format!(
-                    "{flag}: the value is empty. An empty secret authenticates \
+                    "{inline_flag}: the value is empty. An empty secret authenticates \
                      any peer that presents an empty one, and satisfies the \
                      bind policy while doing it -- set a real secret or unset \
                      the flag"
@@ -6566,6 +6751,86 @@ pub fn resolve_file_or_inline_secret(
 /// exited 0 and changed nothing — so a typo silently selected the default.
 fn parse_dialog_track(s: &str) -> Result<crate::sip::dialog_store::DialogTracking, String> {
     s.parse()
+}
+
+/// Parse a `[diagnosis]` duration threshold given as a flag: finite and
+/// above 0, the rule `crate::config::DiagnosisConfig::validate` applies to
+/// the same key, so the file and the flag accept the same numbers.
+fn parse_positive_finite(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a number: '{s}'"))?;
+    if !crate::config::positive_finite(v) {
+        return Err(format!("must be a finite number > 0, got {v}"));
+    }
+    Ok(v)
+}
+
+/// Parse `--duration-asymmetry-pct`: the `[diagnosis] duration_asymmetry_pct`
+/// rule, a finite percentage above 0 and at most 100.
+fn parse_asymmetry_pct(s: &str) -> Result<f64, String> {
+    let v = parse_positive_finite(s)?;
+    if v > 100.0 {
+        return Err(format!("is a percentage and must be <= 100, got {v}"));
+    }
+    Ok(v)
+}
+
+/// Parse a measurement boundary or a declared delay: finite and 0 or more,
+/// the rule `[quality]` and `[media] one_way_delay_ms` apply to the same
+/// numbers in the file.
+fn parse_non_negative_finite(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a number: '{s}'"))?;
+    if !crate::config::non_negative_finite(v) {
+        return Err(format!("must be a finite number of 0 or more, got {v}"));
+    }
+    Ok(v)
+}
+
+/// Parse a MOS band boundary: a measurement boundary on the 0-5 MOS scale
+/// (`crate::rtp::bands::MOS_SCALE_MAX`). Above it no score could ever reach
+/// the band.
+fn parse_mos_boundary(s: &str) -> Result<f64, String> {
+    let v = parse_non_negative_finite(s)?;
+    if v > crate::rtp::bands::MOS_SCALE_MAX {
+        return Err(format!(
+            "is a MOS and must be at most {}, got {v}",
+            crate::rtp::bands::MOS_SCALE_MAX
+        ));
+    }
+    Ok(v)
+}
+
+/// Parse a packet-loss band boundary: a percentage, at most 100.
+fn parse_loss_boundary(s: &str) -> Result<f64, String> {
+    let v = parse_non_negative_finite(s)?;
+    if v > 100.0 {
+        return Err(format!("is a percentage and must be at most 100, got {v}"));
+    }
+    Ok(v)
+}
+
+/// Parse a count where 0 would make the run do nothing: `--limitlen 0`
+/// parsed no byte of any packet and `--cores 0` ran as `--cores 1`.
+fn parse_nonzero_usize(s: &str) -> Result<usize, String> {
+    let v: usize = s
+        .trim()
+        .parse()
+        .map_err(|_| format!("not a whole number: '{s}'"))?;
+    if v == 0 {
+        return Err("must be at least 1".to_string());
+    }
+    Ok(v)
+}
+
+/// Parse `--kill-ua`: a pattern the scanner detector can compile, by the
+/// detector's own rule (`crate::security::scanner_detect::compile_ua_pattern`).
+fn parse_kill_ua(s: &str) -> Result<String, String> {
+    crate::security::scanner_detect::compile_ua_pattern(s).map(|_| s.to_string())
 }
 
 /// Parse `--cn-suppression-ratio`, refusing anything that is not a share of 1.

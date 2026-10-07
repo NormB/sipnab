@@ -414,6 +414,29 @@ pub struct ScannerAlert {
 /// pattern cannot blow up compilation.
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
+/// Compile one operator-supplied User-Agent pattern, case-insensitively and
+/// size-limited.
+///
+/// The one rule `--kill-ua` is parsed by and the detector compiles with.
+///
+/// # Errors
+/// The pattern is empty or blank (it would match every User-Agent, so every
+/// caller would be reported as a scanner), is not a regular expression, or
+/// compiles past [`REGEX_SIZE_LIMIT`].
+pub fn compile_ua_pattern(pat: &str) -> Result<regex::Regex, String> {
+    if pat.trim().is_empty() {
+        return Err(
+            "the pattern is empty, and an empty pattern matches every User-Agent, \
+             so every caller would be reported as a scanner"
+                .to_string(),
+        );
+    }
+    RegexBuilder::new(&format!("(?i){pat}"))
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .map_err(|e| format!("not a usable regular expression: {e}"))
+}
+
 /// Maximum entries in the behavioral tracking map. Past it, admitting a new
 /// source evicts the least recently used one, in constant time: see
 /// [`LruMap`].
@@ -492,15 +515,14 @@ impl ScannerDetector {
             }
         }
 
-        // Compile user-supplied patterns (size-limited to cap compile cost)
+        // Compile user-supplied patterns (size-limited to cap compile cost).
+        // `--kill-ua` is checked by the same rule when it is parsed, so a
+        // pattern reaching here from the command line always compiles.
         for pat in custom_patterns {
-            match RegexBuilder::new(&format!("(?i){pat}"))
-                .size_limit(REGEX_SIZE_LIMIT)
-                .build()
-            {
+            match compile_ua_pattern(pat) {
                 Ok(re) => patterns.push(re),
                 Err(e) => {
-                    tracing::warn!("Skipping invalid or oversized --kill-ua pattern '{pat}': {e}");
+                    tracing::warn!("Skipping --kill-ua pattern '{pat}': {e}");
                 }
             }
         }

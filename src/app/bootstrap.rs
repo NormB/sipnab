@@ -404,14 +404,16 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     let mut capture_config = build_capture_config(cli, config)?;
 
     // Portrange: CLI > config file > default "5060-5061".
-    let portrange_str = cli
-        .capture_args
-        .portrange
-        .as_deref()
-        .or(config.capture.portrange.as_deref())
-        .unwrap_or("5060-5061");
+    let (portrange_str, portrange_source) = match (
+        cli.capture_args.portrange.as_deref(),
+        config.capture.portrange.as_deref(),
+    ) {
+        (Some(flag), _) => (flag, "--portrange"),
+        (None, Some(key)) => (key, "[capture] portrange"),
+        (None, None) => ("5060-5061", "the default port range"),
+    };
     let portrange = crate::config::parse_portrange(portrange_str)
-        .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
+        .map_err(|e| PlanError::arg(format!("Invalid {portrange_source}: {e}")))?;
 
     apply_capture_filter(cli, config, source.as_ref(), portrange, &mut capture_config)?;
 
@@ -532,27 +534,54 @@ fn refuse_unusable_requests(cli: &Cli, config: &Config) -> Result<(), PlanError>
     // An `[actions]` entry naming nothing sipnab knows is refused here, before
     // anything runs, rather than read as "nothing enabled".
     cli.action_policy(config).map_err(PlanError::arg)?;
-    let alert_sources = if cli.security_args.alert.is_empty() {
-        config.security.alert.as_deref().unwrap_or(&[])
+    let (alert_sources, from) = if cli.security_args.alert.is_empty() {
+        (
+            config.security.alert.as_deref().unwrap_or(&[]),
+            "[security] alert",
+        )
     } else {
-        &cli.security_args.alert
+        (cli.security_args.alert.as_slice(), "--alert")
     };
     for source in alert_sources {
-        check_alert_rule(source.trim())?;
+        check_alert_rule(source.trim(), from)?;
+    }
+    // A names file that cannot be read used to be warned about when names
+    // were loaded, and the run went on without the names it asked for.
+    for f in &cli.name_args.names {
+        if let Err(e) = crate::config::readable_file(std::path::Path::new(f)) {
+            return Err(PlanError::new(
+                1,
+                format!("--names {f:?} cannot be read: {e}"),
+            ));
+        }
     }
     Ok(())
 }
 
-/// Refuse an `--alert` rule naming a finding kind no detector fires under.
-/// A source without a `:` is not a rule and passes.
+/// Refuse an `--alert` rule naming a finding kind no detector fires under,
+/// and a channel (a source without a `:`) that is not one of
+/// [`crate::security::alerting::ALERT_CHANNELS`].
 ///
 /// # Errors
 ///
 /// A `PlanError` (exit code 2) for a rule that does not parse or names an
-/// unknown kind.
-fn check_alert_rule(source: &str) -> Result<(), PlanError> {
+/// unknown kind, or for an unknown channel; the message starts with `from`,
+/// the setting the value came from.
+fn check_alert_rule(source: &str, from: &str) -> Result<(), PlanError> {
     if !source.contains(':') {
-        return Ok(());
+        // A channel. An unknown one used to be a warning at run time, so a
+        // typo ran with no alert channel at all and exited 0.
+        return if crate::security::alerting::ALERT_CHANNELS
+            .contains(&source.to_ascii_lowercase().as_str())
+        {
+            Ok(())
+        } else {
+            Err(PlanError::arg(format!(
+                "{from}: Unknown alert channel '{source}': expected one of {}, or a \
+                 rule written name:threshold/window",
+                crate::security::alerting::ALERT_CHANNELS.join(", ")
+            )))
+        };
     }
     let rule =
         crate::security::AlertRule::parse(source).map_err(|e| PlanError::arg(e.to_string()))?;
@@ -758,7 +787,7 @@ fn plan_file_source(cli: &Cli) -> Result<CaptureSource, PlanError> {
         Err(e) => {
             return Err(PlanError {
                 exit_code: 1,
-                message: format!("{e:#}"),
+                message: format!("-I/--input: {e:#}"),
             });
         }
     };
@@ -3972,16 +4001,32 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [display] color is refused for a spelling `--color` refuses, a
+    // [theme] color or [keybindings] key for one the TUI cannot parse, and
+    // every path-valued key for an empty path its flag refuses: the file must
+    // not be the lenient way in.
+    if let Err(e) = loaded
+        .config
+        .display
+        .validate()
+        .and_then(|()| loaded.config.theme.validate())
+        .and_then(|()| loaded.config.keybindings.validate())
+        .and_then(|()| loaded.config.validate_paths())
+    {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [quality] is validated as a RESOLVED band set rather than as a section,
     // because an unreachable middle can be assembled from both sources: a warn
     // boundary in the file and its bad boundary on the command line. Checking
     // the file alone would refuse a pair the flags go on to fix, and accept
     // the pair they go on to break.
     if let Err(msg) = cli.quality_bands(&loaded.config).validate() {
-        return Err(PlanError {
-            exit_code: 1,
-            message: format!("[quality] {msg}"),
-        });
+        let (exit_code, message) = cli.quality_band_refusal(&msg);
+        return Err(PlanError { exit_code, message });
     }
 
     // Every listener's TLS files, resolved from the flags and the file
@@ -4089,8 +4134,14 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     match cli.ws_port_range(&loaded.config) {
         Ok(range) => crate::capture::websocket::set_ws_port_range(range),
         Err(e) => {
+            // A malformed flag is an argument error, exit 2, as a malformed
+            // `--portrange` is; a malformed key is a config error, exit 1.
             return Err(PlanError {
-                exit_code: 1,
+                exit_code: if cli.capture_args.ws_portrange.is_some() {
+                    2
+                } else {
+                    1
+                },
                 message: e.to_string(),
             });
         }
@@ -4246,7 +4297,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, P
         return match FilterExpr::parse(expr) {
             Ok(f) => Ok(Some(f)),
             Err(e) => Err(PlanError::arg(format!(
-                "Invalid config filter expression: {e}"
+                "Invalid config filter expression ([filter] expression): {e}"
             ))),
         };
     }
@@ -4329,7 +4380,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
             Ok(content) => Some(content.trim().to_string()),
             Err(e) => {
                 return Err(PlanError::arg(format!(
-                    "Failed to read BPF filter file '{bpf_file}': {e}"
+                    "Failed to read BPF filter file '{bpf_file}' (--bpf-file): {e}"
                 )));
             }
         }
@@ -4342,10 +4393,18 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
     let count = cli.capture_args.count;
 
     let duration = match cli.capture_args.duration.as_ref() {
-        Some(d) => Some(
-            capture::parse_duration(d)
-                .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?,
-        ),
+        Some(d) => {
+            let parsed = capture::parse_duration(d)
+                .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?;
+            // Zero would stop the capture before its first packet and exit 0,
+            // which reads as a quiet network rather than as a typo.
+            if parsed.is_zero() {
+                return Err(PlanError::arg(format!(
+                    "Invalid --duration: '{d}' is zero; give a positive duration"
+                )));
+            }
+            Some(parsed)
+        }
         None => None,
     };
 
