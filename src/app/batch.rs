@@ -2490,6 +2490,18 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
     }
 }
 
+/// The running capture batch mode consumes: what `bootstrap::launch` started
+/// for it.
+pub struct CaptureFeed {
+    /// The capture thread's handle, joined at EOF.
+    pub handle: capture::CaptureHandle,
+    /// Receiving side of the packet channel.
+    pub rx: capture::channel::PacketRx,
+    /// The scanner-kill worker process `bootstrap::launch` started, when this
+    /// run answers scanners.
+    pub kill_worker: Option<ScannerKillHandle>,
+}
+
 /// Run batch mode to completion: the multi-core offline fast path when
 /// `--cores N` applies, otherwise the single-threaded `BatchRunner`.
 ///
@@ -2499,12 +2511,9 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
 ///   is the mode's terminal consumer).
 /// * `capture_config` — capture limits (`--count`, `--duration`) enforced
 ///   by the receive loop.
-/// * `handle` — the running capture thread's handle, joined at EOF.
-/// * `rx` — receiving side of the packet channel.
+/// * `feed` — the running capture this mode consumes.
 /// * `batch` — pre-built matcher/filter/output/event-exec components.
 /// * `policy` — split/autostop policy resolved from the CLI.
-/// * `kill_worker` — the scanner-kill worker process `bootstrap::launch`
-///   started, when this run answers scanners.
 ///
 /// # Side effects
 ///
@@ -2513,17 +2522,19 @@ fn report_icmp_summary(streams: &crate::rtp::stream_store::StreamStore) {
 /// takes over the kill worker process and spawns the companion-server
 /// thread) and drives its receive loop to completion. Either way this
 /// function blocks until the batch run is over.
-#[expect(clippy::too_many_arguments)]
 pub fn run(
     cli: Cli,
     config: &Config,
     capture_config: CaptureConfig,
-    handle: capture::CaptureHandle,
-    rx: capture::channel::PacketRx,
+    feed: CaptureFeed,
     batch: BatchProcessing,
     policy: CapturePolicy,
-    kill_worker: Option<ScannerKillHandle>,
 ) {
+    let CaptureFeed {
+        handle,
+        rx,
+        kill_worker,
+    } = feed;
     let portrange = policy.portrange;
     let no_rtp = cli.no_rtp(config);
     // 17p. Offline multi-core reconstruction (`--cores N`, N>1). Shard parsed

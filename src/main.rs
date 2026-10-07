@@ -288,8 +288,11 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
                 cli,
                 &loaded.config,
                 plan.capture_config,
-                launched.handle,
-                launched.rx,
+                batch::CaptureFeed {
+                    handle: launched.handle,
+                    rx: launched.rx,
+                    kill_worker: launched.kill_worker,
+                },
                 BatchProcessing {
                     matcher: plan.matcher,
                     filter_expr: plan.filter_expr,
@@ -302,7 +305,6 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
                     keylog_source: launched.keylog_source,
                 },
                 plan.policy,
-                launched.kill_worker,
             );
         }
         // gate: unreachable because step 8 in `main` returns for CoresFile

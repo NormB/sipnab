@@ -2063,15 +2063,23 @@ mod tests {
             assert_eq!(std::fs::read(&a).expect("a"), std::fs::read(&b).expect("b"));
         }
 
+        /// The metadata options a pcapng export carries, read back owned.
+        struct ExportMetadata {
+            /// The SHB's UserApplication option.
+            shb_user_app: Option<String>,
+            /// The SHB's OS option.
+            shb_os: Option<String>,
+            /// The first IDB's IfName option.
+            if_name: Option<String>,
+            /// The first IDB's IfDescription option.
+            if_desc: Option<String>,
+            /// The first IDB's IfOs option.
+            if_os: Option<String>,
+        }
+
         /// Read back the SHB UserApplication/OS and the first IDB's
         /// IfName/IfDescription/IfOs options (owned), for metadata assertions.
-        #[expect(clippy::type_complexity)]
-        fn read_export_metadata(
-            path: &Path,
-        ) -> (
-            (Option<String>, Option<String>), // (shb_user_app, shb_os)
-            (Option<String>, Option<String>, Option<String>), // (if_name, if_desc, if_os)
-        ) {
+        fn read_export_metadata(path: &Path) -> ExportMetadata {
             use pcap_file::pcapng::PcapNgReader;
             use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
             use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
@@ -2103,7 +2111,13 @@ mod tests {
                     }
                 }
             }
-            ((app, os), (if_name, if_desc, if_os))
+            ExportMetadata {
+                shb_user_app: app,
+                shb_os: os,
+                if_name,
+                if_desc,
+                if_os,
+            }
         }
 
         /// SNB-0001: the SHB carries app+OS and the IDB carries OS plus a
@@ -2122,7 +2136,13 @@ mod tests {
                 w.write(&pkt(0, 40)).unwrap();
                 w.finish().unwrap();
             }
-            let ((app, os), (_if_name, if_desc, if_os)) = read_export_metadata(&path);
+            let ExportMetadata {
+                shb_user_app: app,
+                shb_os: os,
+                if_desc,
+                if_os,
+                ..
+            } = read_export_metadata(&path);
             let app = app.expect("SHB UserApplication must be set");
             assert!(app.contains("sipnab"), "app = {app:?}");
             assert!(
@@ -2154,7 +2174,7 @@ mod tests {
                 w.write(&pkt(0, 40)).unwrap();
                 w.finish().unwrap();
             }
-            let (_, (if_name, _, _)) = read_export_metadata(&path);
+            let if_name = read_export_metadata(&path).if_name;
             assert_eq!(if_name.as_deref(), Some("eth0"), "IDB IfName");
         }
 
@@ -2181,7 +2201,7 @@ mod tests {
                 w.write(&pkt(0, 40)).unwrap();
                 w.finish().unwrap();
             }
-            let (_, (if_name, _, _)) = read_export_metadata(&path);
+            let if_name = read_export_metadata(&path).if_name;
             assert_eq!(if_name.as_deref(), Some(weird));
         }
 
@@ -2207,7 +2227,9 @@ mod tests {
                 w.write(&pkt(0, 40)).unwrap();
                 w.finish().unwrap();
             }
-            let (_, (if_name, if_desc, _)) = read_export_metadata(&path);
+            let ExportMetadata {
+                if_name, if_desc, ..
+            } = read_export_metadata(&path);
             assert!(
                 if_name.is_none(),
                 "empty interface → no IfName, got {if_name:?}"
