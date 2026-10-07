@@ -48,7 +48,7 @@ fn a_directory_run_says_how_many_subdirectories_it_did_not_enter() {
     let root = tempfile::tempdir().expect("tempdir");
     tree_with_subdirs(root.path(), 2);
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("warn"),
     );
@@ -77,7 +77,7 @@ fn the_shortfall_is_not_reported_when_recursive_read_them() {
     let root = tempfile::tempdir().expect("tempdir");
     tree_with_subdirs(root.path(), 2);
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -99,7 +99,7 @@ fn the_shortfall_is_not_reported_when_recursive_read_them() {
 fn a_single_named_file_reports_no_shortfall() {
     let f = samples().join("sip-rtp-g711.pcap");
     let (_out, err, code) =
-        run_support::run(&["-N", "-I", &f.to_string_lossy(), "--quiet"], Some("info"));
+        run_support::run_or_panic(&["-N", "-I", &f.to_string_lossy(), "--quiet"], Some("info"));
     assert_eq!(code, Some(0), "{err}");
     assert!(
         !err.contains("-I resolved to"),
@@ -128,7 +128,7 @@ fn a_fifo_in_a_capture_directory_is_named() {
         .expect("run mkfifo");
     assert!(status.success(), "mkfifo failed");
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("warn"),
     );
@@ -155,7 +155,7 @@ fn a_directory_whose_captures_are_deeper_says_so() {
     std::fs::create_dir(&sub).expect("mkdir");
     std::fs::copy(samples().join("sip-rtp-g711.pcap"), sub.join("cap.pcap")).expect("copy");
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &root.path().to_string_lossy(), "--quiet"],
         Some("error"),
     );
@@ -200,7 +200,7 @@ fn corpus_directory_reports_what_it_did_not_enter() {
     }
 
     let (_out, err, code) =
-        run_support::run(&["-N", "-I", &dir, "--count", "1", "--quiet"], Some("warn"));
+        run_support::run_or_panic(&["-N", "-I", &dir, "--count", "1", "--quiet"], Some("warn"));
     assert_eq!(code, Some(0), "the run still succeeds");
     assert!(
         err.contains(&format!("{subdirs} subdirectory(ies) not descended")),

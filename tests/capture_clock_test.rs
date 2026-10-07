@@ -294,7 +294,7 @@ fn report(pcap: &Path, extra: &[&str]) -> String {
     let path = pcap.to_str().expect("utf-8 fixture path");
     let mut args = vec!["-N", "-I", path, "--report", "--no-cli-print", "-q"];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run_support::run(&args, Some("off"));
+    let (stdout, stderr, code) = run_support::run_or_panic(&args, Some("off"));
     assert_eq!(code, Some(0), "sipnab {args:?} failed: {stderr}");
     stdout
 }

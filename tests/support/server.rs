@@ -25,6 +25,10 @@ use std::time::{Duration, Instant};
 include!("timeout.rs");
 include!("teardown.rs");
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on I/O, parse and JSON errors alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// A minimal HTTP response: status code, body, and the `Content-Type` header.
 ///
 /// Other headers are discarded; `content_type` is kept because a binary route
@@ -57,10 +61,10 @@ fn content_type_of(head: &str) -> Option<String> {
 }
 
 impl Resp {
-    /// Parse the body as JSON, panicking with context on failure.
-    pub fn json(&self) -> serde_json::Value {
+    /// Parse the body as JSON; the error carries the body.
+    pub fn json(&self) -> Result<serde_json::Value, TestError> {
         serde_json::from_str(&self.body)
-            .unwrap_or_else(|e| panic!("response body is not JSON: {e}\n{}", self.body))
+            .map_err(|e| format!("response body is not JSON: {e}\n{}", self.body).into())
     }
 }
 
@@ -88,8 +92,8 @@ pub fn capture_settled(prev: Option<&serde_json::Value>, cur: &serde_json::Value
 
 impl ApiServer {
     /// Spawn against `tests/fixtures/sip_call.pcap` with extra CLI args (e.g.
-    /// `--api-key`). Panics if the server doesn't come up.
-    pub fn spawn(extra_args: &[&str]) -> ApiServer {
+    /// `--api-key`). Fails if the server doesn't come up.
+    pub fn spawn(extra_args: &[&str]) -> Result<ApiServer, TestError> {
         Self::spawn_with_pcap("tests/fixtures/sip_call.pcap", extra_args)
     }
 
@@ -99,10 +103,10 @@ impl ApiServer {
     /// `pcap_rel` is taken relative to the crate root, or used verbatim when
     /// it is already absolute, so a caller that generated a capture into a
     /// tempdir can point at it without inventing a second spawn.
-    pub fn spawn_with_pcap(pcap_rel: &str, extra_args: &[&str]) -> ApiServer {
-        let srv = Self::launch(pcap_rel, "127.0.0.1:0", extra_args);
-        srv.settle(extra_args);
-        srv
+    pub fn spawn_with_pcap(pcap_rel: &str, extra_args: &[&str]) -> Result<ApiServer, TestError> {
+        let srv = Self::launch(pcap_rel, "127.0.0.1:0", extra_args)?;
+        srv.settle(extra_args)?;
+        Ok(srv)
     }
 
     /// Spawn and wait only for the "REST API listening on" line, without the
@@ -110,19 +114,19 @@ impl ApiServer {
     ///
     /// For a server started with `--api-tls-cert`/`--api-tls-key`: its port
     /// speaks TLS, so the plain-HTTP `/v1/stats` poll would get no status line
-    /// and panic. The caller drives the server with its own HTTPS client.
-    pub fn spawn_unsettled(extra_args: &[&str]) -> ApiServer {
+    /// and fail. The caller drives the server with its own HTTPS client.
+    pub fn spawn_unsettled(extra_args: &[&str]) -> Result<ApiServer, TestError> {
         Self::spawn_unsettled_on("127.0.0.1:0", extra_args)
     }
 
     /// [`Self::spawn_unsettled`] with `--api <bind>` rather than
     /// `127.0.0.1:0`, for the tests about what a non-loopback bind logs.
-    pub fn spawn_unsettled_on(bind: &str, extra_args: &[&str]) -> ApiServer {
+    pub fn spawn_unsettled_on(bind: &str, extra_args: &[&str]) -> Result<ApiServer, TestError> {
         Self::launch("tests/fixtures/sip_call.pcap", bind, extra_args)
     }
 
     /// Start the child and wait for its "REST API listening on" line.
-    fn launch(pcap_rel: &str, bind: &str, extra_args: &[&str]) -> ApiServer {
+    fn launch(pcap_rel: &str, bind: &str, extra_args: &[&str]) -> Result<ApiServer, TestError> {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let pcap = if std::path::Path::new(pcap_rel).is_absolute() {
             pcap_rel.to_string()
@@ -140,8 +144,10 @@ impl ApiServer {
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn().expect("spawn sipnab --api");
-        let stderr = child.stderr.take().expect("piped stderr");
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| format!("spawn sipnab --api: {e}"))?;
+        let stderr = child.stderr.take().ok_or("piped stderr")?;
 
         let (tx, rx) = mpsc::channel::<String>();
         thread::spawn(move || {
@@ -168,11 +174,11 @@ impl ApiServer {
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if let Ok(Some(status)) = child.try_wait() {
-                        panic!("sipnab --api exited early: {status}");
+                        return Err(format!("sipnab --api exited early: {status}").into());
                     }
                 }
                 // stderr closed, which means the child is gone -- the deadline
-                // has NOT elapsed. This arm used to `break`, and the panic below
+                // has NOT elapsed. This arm used to `break`, and the error below
                 // then named a timeout that never happened: a ThreadSanitizer
                 // run whose children were being aborted by `halt_on_error`
                 // reported "did not report a listening address within 180s" for
@@ -201,34 +207,36 @@ impl ApiServer {
                             "still running with stderr closed (killed)".to_string()
                         }
                     };
-                    panic!(
+                    return Err(format!(
                         "sipnab --api closed stderr after {:?} without reporting a \
                          listening address — {status}. This is the process dying, \
                          not a timeout; under a sanitizer, check that build's log \
                          for the abort that killed it.",
                         start.elapsed()
-                    );
+                    )
+                    .into());
                 }
             }
         }
-        let addr = addr.unwrap_or_else(|| {
+        let Some(addr) = addr else {
             let _ = child.kill();
-            panic!(
+            return Err(format!(
                 "API server did not report a listening address within {budget:?} \
                  (waited {:?})",
                 start.elapsed()
-            );
-        });
+            )
+            .into());
+        };
 
-        ApiServer {
+        Ok(ApiServer {
             child,
             addr,
             startup_log,
-        }
+        })
     }
 
     /// Wait until the capture behind a freshly spawned server has settled.
-    fn settle(&self, extra_args: &[&str]) {
+    fn settle(&self, extra_args: &[&str]) -> Result<(), TestError> {
         // The API serves *concurrently* with offline-pcap processing, so a bound
         // socket does NOT mean the dialog/stream store is fully populated (a real
         // race that flakes under load). Poll /v1/stats until it STABILIZES — two
@@ -255,74 +263,76 @@ impl ApiServer {
                 sipnab::auth::SCOPE_FULL,
             ));
         }
-        self.await_stable(bearer.as_deref());
+        self.await_stable(bearer.as_deref())
     }
 
     /// Poll `/v1/stats` until two consecutive reads are identical and
     /// non-empty — a generic "capture settled" signal. Gives up after ~10s and
     /// returns anyway (the test's own assertions then surface the problem).
-    fn await_stable(&self, api_key: Option<&str>) {
+    /// Fails only when a poll itself fails.
+    fn await_stable(&self, api_key: Option<&str>) -> Result<(), TestError> {
         let auth = api_key.map(|k| format!("Bearer {k}"));
         let deadline = Instant::now() + test_timeout(10);
         let mut prev: Option<serde_json::Value> = None;
         while Instant::now() < deadline {
             // Compare PARSED values: equal content is "stable" regardless of any
             // transport framing/whitespace variance in the raw response.
-            let raw = http_get(&self.addr, "/v1/stats", auth.as_deref()).body;
+            let raw = http_get(&self.addr, "/v1/stats", auth.as_deref())?.body;
             let cur = serde_json::from_str::<serde_json::Value>(&raw).ok();
             if let Some(read) = &cur
                 && capture_settled(prev.as_ref(), read)
             {
-                return;
+                return Ok(());
             }
             prev = cur;
             thread::sleep(Duration::from_millis(50));
         }
+        Ok(())
     }
 
     /// `GET path` with no auth header.
-    pub fn get(&self, path: &str) -> Resp {
+    pub fn get(&self, path: &str) -> Result<Resp, TestError> {
         http_get(&self.addr, path, None)
     }
 
     /// `GET path` with a bearer token.
-    pub fn get_bearer(&self, path: &str, token: &str) -> Resp {
+    pub fn get_bearer(&self, path: &str, token: &str) -> Result<Resp, TestError> {
         http_get(&self.addr, path, Some(&format!("Bearer {token}")))
     }
 
     /// `GET path` with a verbatim `Authorization` header value (e.g. a
     /// non-Bearer scheme, to prove the auth check rejects it).
-    pub fn get_with_auth(&self, path: &str, auth_value: &str) -> Resp {
+    pub fn get_with_auth(&self, path: &str, auth_value: &str) -> Result<Resp, TestError> {
         http_get(&self.addr, path, Some(auth_value))
     }
 
     /// `POST path` with a JSON body and no auth header.
-    pub fn post_json(&self, path: &str, body: &str) -> Resp {
+    pub fn post_json(&self, path: &str, body: &str) -> Result<Resp, TestError> {
         http_post(&self.addr, path, body, None)
     }
 
     /// `POST path` with a JSON body and a bearer token.
-    pub fn post_json_bearer(&self, path: &str, body: &str, token: &str) -> Resp {
+    pub fn post_json_bearer(&self, path: &str, body: &str, token: &str) -> Result<Resp, TestError> {
         http_post(&self.addr, path, body, Some(&format!("Bearer {token}")))
     }
 
     /// `GET path` with no auth header and `host` as the `Host` header.
-    pub fn get_as_host(&self, path: &str, host: &str) -> Resp {
+    pub fn get_as_host(&self, path: &str, host: &str) -> Result<Resp, TestError> {
         http_get_as(&self.addr, host, path, None)
     }
 
     /// `POST path` with a JSON body, no auth header, and `host` as the
     /// `Host` header.
-    pub fn post_json_as_host(&self, path: &str, body: &str, host: &str) -> Resp {
+    pub fn post_json_as_host(&self, path: &str, body: &str, host: &str) -> Result<Resp, TestError> {
         http_post_as(&self.addr, host, path, body, None)
     }
 
     /// The port the server is listening on.
-    pub fn port(&self) -> u16 {
+    pub fn port(&self) -> Result<u16, TestError> {
         self.addr
             .rsplit_once(':')
             .and_then(|(_, p)| p.parse().ok())
-            .unwrap_or_else(|| panic!("no port in {}", self.addr))
+            .ok_or_else(|| format!("no port in {}", self.addr).into())
     }
 
     /// The server's process id.
@@ -331,8 +341,8 @@ impl ApiServer {
     }
 
     /// Stop the server the way `Drop` does and return how it exited.
-    pub fn stop(mut self) -> std::process::ExitStatus {
-        terminate(&mut self.child).expect("reap sipnab --api")
+    pub fn stop(mut self) -> std::io::Result<std::process::ExitStatus> {
+        terminate(&mut self.child)
     }
 }
 
@@ -343,15 +353,15 @@ impl Drop for ApiServer {
 }
 
 /// Minimal blocking HTTP/1.1 GET over a fresh `Connection: close` socket.
-fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Resp {
+fn http_get(addr: &str, path: &str, auth: Option<&str>) -> Result<Resp, TestError> {
     http_get_as(addr, addr, path, auth)
 }
 
 /// [`http_get`] sending `host` as the `Host` header instead of the address
 /// the socket connects to -- what a browser sends after a DNS-rebinding
 /// attacker points its own name at the server.
-fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
-    let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
+fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Result<Resp, TestError> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {addr}: {e}"))?;
     stream.set_read_timeout(Some(test_timeout(10))).ok();
 
     let mut req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
@@ -359,10 +369,10 @@ fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
         req.push_str(&format!("Authorization: {a}\r\n"));
     }
     req.push_str("\r\n");
-    stream.write_all(req.as_bytes()).expect("write request");
+    stream.write_all(req.as_bytes())?;
 
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).expect("read response");
+    stream.read_to_end(&mut raw)?;
     let text = String::from_utf8_lossy(&raw);
 
     // Status code from the first line: "HTTP/1.1 <code> <reason>".
@@ -371,7 +381,7 @@ fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
+        .ok_or_else(|| format!("no status line in response:\n{text}"))?;
 
     // Body is everything after the first blank line; the head before it carries
     // the Content-Type.
@@ -383,12 +393,12 @@ fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
     let content_type = content_type_of(&head);
     let retry_after = header_of(&head, "retry-after");
 
-    Resp {
+    Ok(Resp {
         status,
         body,
         content_type,
         retry_after,
-    }
+    })
 }
 
 /// Minimal blocking HTTP/1.1 POST over a fresh `Connection: close` socket.
@@ -397,13 +407,19 @@ fn http_get_as(addr: &str, host: &str, path: &str, auth: Option<&str>) -> Resp {
 /// count: a body carrying a multi-byte character would otherwise be truncated
 /// by the server mid-character, and the request would fail for a reason that
 /// has nothing to do with what the test is asking.
-fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
+fn http_post(addr: &str, path: &str, body: &str, auth: Option<&str>) -> Result<Resp, TestError> {
     http_post_as(addr, addr, path, body, auth)
 }
 
 /// [`http_post`] sending `host` as the `Host` header; see [`http_get_as`].
-fn http_post_as(addr: &str, host: &str, path: &str, body: &str, auth: Option<&str>) -> Resp {
-    let mut stream = TcpStream::connect(addr).unwrap_or_else(|e| panic!("connect {addr}: {e}"));
+fn http_post_as(
+    addr: &str,
+    host: &str,
+    path: &str,
+    body: &str,
+    auth: Option<&str>,
+) -> Result<Resp, TestError> {
+    let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {addr}: {e}"))?;
     stream.set_read_timeout(Some(test_timeout(10))).ok();
 
     let mut req = format!(
@@ -416,10 +432,10 @@ fn http_post_as(addr: &str, host: &str, path: &str, body: &str, auth: Option<&st
     }
     req.push_str("\r\n");
     req.push_str(body);
-    stream.write_all(req.as_bytes()).expect("write request");
+    stream.write_all(req.as_bytes())?;
 
     let mut raw = Vec::new();
-    stream.read_to_end(&mut raw).expect("read response");
+    stream.read_to_end(&mut raw)?;
     let text = String::from_utf8_lossy(&raw);
 
     let status = text
@@ -427,7 +443,7 @@ fn http_post_as(addr: &str, host: &str, path: &str, body: &str, auth: Option<&st
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("no status line in response:\n{text}"));
+        .ok_or_else(|| format!("no status line in response:\n{text}"))?;
 
     let (head, body) = text
         .split_once("\r\n\r\n")
@@ -437,19 +453,19 @@ fn http_post_as(addr: &str, host: &str, path: &str, body: &str, auth: Option<&st
     let content_type = content_type_of(&head);
     let retry_after = header_of(&head, "retry-after");
 
-    Resp {
+    Ok(Resp {
         status,
         body,
         content_type,
         retry_after,
-    }
+    })
 }
 
 /// Spawn `sipnab --api` with the given args, collect stderr for `wait`, then
 /// stop the process and return what it logged. For *failure-path* tests (e.g.
 /// unimplemented TLS) where the server never reaches a listening state — the
 /// capture process keeps running, so it must be reaped.
-pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> String {
+pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> Result<String, TestError> {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let pcap = format!("{manifest}/tests/fixtures/sip_call.pcap");
 
@@ -461,8 +477,10 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> String {
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("spawn sipnab --api");
-    let stderr = child.stderr.take().expect("piped stderr");
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn sipnab --api: {e}"))?;
+    let stderr = child.stderr.take().ok_or("piped stderr")?;
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -479,5 +497,92 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> String {
         }
     }
     let _ = terminate(&mut child);
-    out
+    Ok(out)
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`run_and_capture_stderr`], panicking on error.
+pub fn run_and_capture_stderr_or_panic(extra_args: &[&str], wait: Duration) -> String {
+    run_and_capture_stderr(extra_args, wait).expect("run_and_capture_stderr")
+}
+
+impl Resp {
+    /// [`Resp::json`], panicking on error.
+    pub fn json_or_panic(&self) -> serde_json::Value {
+        self.json().expect("Resp::json")
+    }
+}
+
+impl ApiServer {
+    /// [`ApiServer::spawn`], panicking on error.
+    pub fn spawn_or_panic(extra_args: &[&str]) -> ApiServer {
+        Self::spawn(extra_args).expect("ApiServer::spawn")
+    }
+
+    /// [`ApiServer::spawn_with_pcap`], panicking on error.
+    pub fn spawn_with_pcap_or_panic(pcap_rel: &str, extra_args: &[&str]) -> ApiServer {
+        Self::spawn_with_pcap(pcap_rel, extra_args).expect("ApiServer::spawn_with_pcap")
+    }
+
+    /// [`ApiServer::spawn_unsettled`], panicking on error.
+    pub fn spawn_unsettled_or_panic(extra_args: &[&str]) -> ApiServer {
+        Self::spawn_unsettled(extra_args).expect("ApiServer::spawn_unsettled")
+    }
+
+    /// [`ApiServer::spawn_unsettled_on`], panicking on error.
+    pub fn spawn_unsettled_on_or_panic(bind: &str, extra_args: &[&str]) -> ApiServer {
+        Self::spawn_unsettled_on(bind, extra_args).expect("ApiServer::spawn_unsettled_on")
+    }
+
+    /// [`ApiServer::get`], panicking on error.
+    pub fn get_or_panic(&self, path: &str) -> Resp {
+        self.get(path).expect("ApiServer::get")
+    }
+
+    /// [`ApiServer::get_bearer`], panicking on error.
+    pub fn get_bearer_or_panic(&self, path: &str, token: &str) -> Resp {
+        self.get_bearer(path, token).expect("ApiServer::get_bearer")
+    }
+
+    /// [`ApiServer::get_with_auth`], panicking on error.
+    pub fn get_with_auth_or_panic(&self, path: &str, auth_value: &str) -> Resp {
+        self.get_with_auth(path, auth_value)
+            .expect("ApiServer::get_with_auth")
+    }
+
+    /// [`ApiServer::post_json`], panicking on error.
+    pub fn post_json_or_panic(&self, path: &str, body: &str) -> Resp {
+        self.post_json(path, body).expect("ApiServer::post_json")
+    }
+
+    /// [`ApiServer::post_json_bearer`], panicking on error.
+    pub fn post_json_bearer_or_panic(&self, path: &str, body: &str, token: &str) -> Resp {
+        self.post_json_bearer(path, body, token)
+            .expect("ApiServer::post_json_bearer")
+    }
+
+    /// [`ApiServer::get_as_host`], panicking on error.
+    pub fn get_as_host_or_panic(&self, path: &str, host: &str) -> Resp {
+        self.get_as_host(path, host)
+            .expect("ApiServer::get_as_host")
+    }
+
+    /// [`ApiServer::post_json_as_host`], panicking on error.
+    pub fn post_json_as_host_or_panic(&self, path: &str, body: &str, host: &str) -> Resp {
+        self.post_json_as_host(path, body, host)
+            .expect("ApiServer::post_json_as_host")
+    }
+
+    /// [`ApiServer::port`], panicking on error.
+    pub fn port_or_panic(&self) -> u16 {
+        self.port().expect("ApiServer::port")
+    }
+
+    /// [`ApiServer::stop`], panicking on error.
+    pub fn stop_or_panic(self) -> std::process::ExitStatus {
+        self.stop().expect("ApiServer::stop")
+    }
 }

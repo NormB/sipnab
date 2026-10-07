@@ -24,7 +24,7 @@ mod mcp;
 mod pcap_build;
 
 use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap_at};
+use pcap_build::{udp_frame, write_pcap_at_or_panic};
 
 /// The one address pair both legs share, which is all the timing heuristic has
 /// to go on besides the clock.
@@ -56,7 +56,7 @@ fn bare_invite(call_id: &str, branch: &str, to_user: &str) -> Vec<u8> {
 
 /// Ask `find_correlated` about `call_id` and report the strategies it named.
 fn strategies(session: &mut McpSession, call_id: &str) -> Vec<String> {
-    let msg = session.call("find_correlated", serde_json::json!({ "call_id": call_id }));
+    let msg = session.call_or_panic("find_correlated", serde_json::json!({ "call_id": call_id }));
     assert!(
         msg.get("error").is_none(),
         "find_correlated must answer, got: {msg}"
@@ -85,7 +85,7 @@ fn strategies(session: &mut McpSession, call_id: &str) -> Vec<String> {
 fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("dipped.pcap");
-    write_pcap_at(
+    write_pcap_at_or_panic(
         &path,
         &[
             (bare_invite("inbound-leg@10.1.0.1", "-in", "18005550100"), 0),
@@ -98,7 +98,7 @@ fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
     );
     let pcap = path.to_str().expect("utf-8 path").to_string();
 
-    let mut shipped = McpSession::start(&pcap, &["--no-config"]);
+    let mut shipped = McpSession::start_or_panic(&pcap, &["--no-config"]);
     assert!(
         strategies(&mut shipped, "inbound-leg@10.1.0.1").is_empty(),
         "three seconds is outside the shipped two-second window, so the two \
@@ -107,7 +107,7 @@ fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
     drop(shipped);
 
     let mut widened =
-        McpSession::start(&pcap, &["--no-config", "--leg-correlation-window", "5000"]);
+        McpSession::start_or_panic(&pcap, &["--no-config", "--leg-correlation-window", "5000"]);
     assert_eq!(
         strategies(&mut widened, "inbound-leg@10.1.0.1"),
         vec!["timing_heuristic".to_string()],
@@ -121,7 +121,7 @@ fn the_leg_correlation_window_decides_whether_a_dipped_call_correlates() {
 fn the_leg_correlation_window_resolves_flag_over_key() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("dipped-cfg.pcap");
-    write_pcap_at(
+    write_pcap_at_or_panic(
         &path,
         &[
             (
@@ -141,7 +141,7 @@ fn the_leg_correlation_window_resolves_flag_over_key() {
     std::fs::write(&cfg_path, "[sip]\nleg_correlation_window_ms = 5000\n").expect("write config");
     let cfg = cfg_path.to_str().expect("utf-8 path").to_string();
 
-    let mut declared = McpSession::start(&pcap, &["--config", &cfg]);
+    let mut declared = McpSession::start_or_panic(&pcap, &["--config", &cfg]);
     assert_eq!(
         strategies(&mut declared, "cfg-inbound@10.1.0.1"),
         vec!["timing_heuristic".to_string()],
@@ -149,7 +149,7 @@ fn the_leg_correlation_window_resolves_flag_over_key() {
     );
     drop(declared);
 
-    let mut overridden = McpSession::start(
+    let mut overridden = McpSession::start_or_panic(
         &pcap,
         &["--config", &cfg, "--leg-correlation-window", "2000"],
     );

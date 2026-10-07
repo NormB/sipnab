@@ -100,7 +100,7 @@ mod tui_thread {
     #[serial_test::serial(undecodable_tally)]
     fn the_tui_thread_drops_hep_whose_transport_no_rule_names() {
         sipnab::capture::reset_undecodable_frames();
-        let frame = super::pcap_build::hep_frame_with_ip_proto(99);
+        let frame = super::pcap_build::hep_frame_with_ip_proto_or_panic(99);
         let (dialogs, _, observed) = run_frames(
             &["sipnab", "-d", "lo", "-E"],
             &Config::default(),
@@ -161,7 +161,7 @@ mod cores {
     fn run(extra: &[&str]) -> String {
         let dir = tempfile::tempdir().expect("tempdir");
         let pcap = dir.path().join("hep.pcap");
-        super::pcap_build::write_pcap(
+        super::pcap_build::write_pcap_or_panic(
             &pcap,
             &super::pcap_build::hep_call_frames("cores-hep@example.com"),
         );
@@ -194,9 +194,9 @@ mod cores {
     fn cores_reports_undecodable_hep() {
         let dir = tempfile::tempdir().expect("tempdir");
         let pcap = dir.path().join("hep.pcap");
-        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto(99)];
+        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto_or_panic(99)];
         frames.extend(super::pcap_build::hep_call_frames("cores-hep@example.com"));
-        super::pcap_build::write_pcap(&pcap, &frames);
+        super::pcap_build::write_pcap_or_panic(&pcap, &frames);
         for cores in ["1", "2"] {
             let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
                 .args([
@@ -258,7 +258,7 @@ mod tui_file_open {
     /// the background load finishes.
     fn open(hep_parse: bool) -> usize {
         let dir = tempfile::tempdir().expect("tempdir");
-        super::pcap_build::write_pcap(
+        super::pcap_build::write_pcap_or_panic(
             &dir.path().join("hep.pcap"),
             &super::pcap_build::hep_call_frames("open-hep@example.com"),
         );
@@ -316,9 +316,9 @@ mod tui_file_open {
     fn a_capture_opened_in_the_tui_counts_undecodable_hep() {
         sipnab::capture::reset_undecodable_frames();
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto(99)];
+        let mut frames = vec![super::pcap_build::hep_frame_with_ip_proto_or_panic(99)];
         frames.extend(super::pcap_build::hep_call_frames("open-hep@example.com"));
-        super::pcap_build::write_pcap(&dir.path().join("hep.pcap"), &frames);
+        super::pcap_build::write_pcap_or_panic(&dir.path().join("hep.pcap"), &frames);
         let dialogs = open_dir(dir.path(), true);
         assert_eq!(dialogs, 1, "the readable call still loads");
         assert_eq!(

@@ -25,7 +25,7 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-use pcap_build::{invite_without_max_forwards, udp_frame, write_pcap_at};
+use pcap_build::{invite_without_max_forwards, udp_frame, write_pcap_at_or_panic};
 
 /// Caller side of every synthetic capture here.
 const A: [u8; 4] = [10, 1, 0, 1];
@@ -48,7 +48,7 @@ const C: [u8; 4] = [10, 3, 0, 1];
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String) {
-    let (stdout, stderr, code) = run_support::run(args, Some("warn"));
+    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("warn"));
     assert_eq!(code, Some(0), "sipnab must exit cleanly; stderr:\n{stderr}");
     (stdout, stderr)
 }
@@ -70,7 +70,7 @@ fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
 /// Creates `<name>.pcap` under the caller's tempdir.
 fn write_capture(dir: &tempfile::TempDir, name: &str, frames: &[(Vec<u8>, u64)]) -> PathBuf {
     let path = dir.path().join(format!("{name}.pcap"));
-    write_pcap_at(&path, frames, 1);
+    write_pcap_at_or_panic(&path, frames, 1);
     path
 }
 
@@ -508,7 +508,7 @@ fn an_absurd_reg_flood_policy_is_refused_by_name() {
             "600001",
         ),
     ] {
-        let (_, stderr, code) = run_support::run(
+        let (_, stderr, code) = run_support::run_or_panic(
             &["-N", "-I", &pcap, "--reg-flood", "--no-config", flag, bad],
             Some("error"),
         );
@@ -518,7 +518,7 @@ fn an_absurd_reg_flood_policy_is_refused_by_name() {
             "the refusal must name {flag} and {bad}; got {stderr}"
         );
         let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = {bad}\n")));
-        let (_, stderr, code) = run_support::run(
+        let (_, stderr, code) = run_support::run_or_panic(
             &["-N", "-I", &pcap, "--reg-flood", "--config", &cfg],
             Some("error"),
         );
@@ -1078,7 +1078,7 @@ fn a_malformed_business_hours_spec_is_refused_by_name() {
             &format!("[security]\nbusiness_hours = \"{bad}\"\n"),
         ));
         let (_, stderr, code) =
-            run_support::run(&["-N", "-I", &pcap, "--config", &cfg], Some("error"));
+            run_support::run_or_panic(&["-N", "-I", &pcap, "--config", &cfg], Some("error"));
         assert_ne!(code, Some(0), "{bad:?} must fail the run");
         assert!(
             stderr.contains("business_hours"),
@@ -1443,7 +1443,7 @@ fn a_zero_scanner_threshold_is_refused_by_name() {
         "scanner_answer_grace_ms",
     ] {
         let cfg = arg(&write_config(&dir, &format!("[security]\n{key} = 0\n")));
-        let (_, stderr, code) = run_support::run(
+        let (_, stderr, code) = run_support::run_or_panic(
             &["-N", "-I", &pcap, "--kill-scanner", "--config", &cfg],
             Some("error"),
         );
@@ -1982,7 +1982,7 @@ fn a_zero_lint_cap_is_refused_by_name() {
         &[(invite_without_max_forwards("lint-1", "l1", 1), 0)],
     ));
     let cfg = arg(&write_config(&dir, "[limits]\nlint_max_per_rule = 0\n"));
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &["-N", "-I", &pcap, "--lint", "--config", &cfg],
         Some("error"),
     );

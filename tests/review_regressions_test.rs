@@ -55,7 +55,7 @@ fn exported_secrets_require_an_explicit_mode() {
 fn plaintext_export_without_tls_is_refused_and_names_the_feature() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("plaintext.pcapng");
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &[
             "--no-config",
             "-N",
@@ -83,7 +83,7 @@ fn plaintext_export_without_tls_is_refused_and_names_the_feature() {
 fn plaintext_export_runs_and_embeds_no_keys() {
     let dir = tempfile::tempdir().unwrap();
     let output = dir.path().join("plaintext.pcapng");
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &[
             "--no-config",
             "-N",
@@ -130,7 +130,7 @@ fn hyphenated_registration_rule_gates_real_detector_events() {
 /// A rule naming no detector must fail startup instead of silently doing nothing.
 #[test]
 fn unknown_alert_rule_is_refused() {
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &[
             "--no-config",
             "-N",
@@ -149,7 +149,7 @@ fn unknown_alert_rule_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("sipnab.toml");
     std::fs::write(&config, "[security]\nalert = [\"5xx-rate:10/1m\"]\n").unwrap();
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &["--config", config.to_str().unwrap(), "-N", "-I", FIXTURE],
         Some("warn"),
     );
@@ -157,7 +157,7 @@ fn unknown_alert_rule_is_refused() {
     assert!(stderr.contains("Unknown alert"), "{stderr}");
     for name in ["scanner", "fraud", "digest", "reg-flood", "reg_flood"] {
         let rule = format!("{name}:2/1m");
-        let (_, stderr, code) = run_support::run(
+        let (_, stderr, code) = run_support::run_or_panic(
             &["--no-config", "-N", "-I", FIXTURE, "--alert", &rule],
             Some("warn"),
         );
@@ -171,7 +171,7 @@ fn explicit_filter_preserves_diagnostic_selection() {
     let run = |extra: &[&str]| {
         let mut args = vec!["--no-config", "-N", "-I", FIXTURE, "--json-dialogs"];
         args.extend_from_slice(extra);
-        let (out, err, code) = run_support::run(&args, Some("warn"));
+        let (out, err, code) = run_support::run_or_panic(&args, Some("warn"));
         assert_eq!(code, Some(0), "{err}");
         out.lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -190,7 +190,7 @@ fn explicit_filter_preserves_diagnostic_selection() {
 /// The published flag description agrees with the existing cross-line behavior.
 #[test]
 fn single_line_help_describes_restricting_dot_matching() {
-    let (help, _, code) = run_support::run(&["--help"], Some("warn"));
+    let (help, _, code) = run_support::run_or_panic(&["--help"], Some("warn"));
     assert_eq!(code, Some(0));
     assert!(help.contains("Prevent '.' from matching newlines"));
 }
@@ -241,7 +241,7 @@ fn operator_docs_do_not_promise_missing_behavior() {
 #[test]
 fn explicit_filter_narrows_a_matching_diagnostic_alias() {
     let run = |filter: &str| {
-        run_support::run(
+        run_support::run_or_panic(
             &[
                 "--no-config",
                 "-N",

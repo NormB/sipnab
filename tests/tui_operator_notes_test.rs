@@ -41,14 +41,14 @@ fn framed(mut msg: SipMessage, pointer: &str) -> SipMessage {
 
 /// One answered call whose two messages carry frame pointers.
 fn app_with_a_framed_call() -> App {
-    let t0 = fixtures::base_ts();
+    let t0 = fixtures::base_ts_or_panic();
     App::with_processed_messages(vec![
         framed(
-            fixtures::make_invite("notes-1@test", "1001", "1002", t0),
+            fixtures::make_invite_or_panic("notes-1@test", "1001", "1002", t0),
             INVITE_FRAME,
         ),
         framed(
-            fixtures::make_response(
+            fixtures::make_response_or_panic(
                 "notes-1@test",
                 200,
                 "OK",
@@ -233,8 +233,8 @@ fn an_emptied_note_is_removed() {
 /// save it and nothing to point the comment back at.
 #[test]
 fn a_message_with_no_frame_takes_no_note() {
-    let t0 = fixtures::base_ts();
-    let mut app = App::with_processed_messages(vec![fixtures::make_invite(
+    let t0 = fixtures::base_ts_or_panic();
+    let mut app = App::with_processed_messages(vec![fixtures::make_invite_or_panic(
         "unframed@test",
         "1001",
         "1002",

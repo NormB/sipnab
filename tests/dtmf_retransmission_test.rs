@@ -17,7 +17,7 @@
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 use std::process::Command;
 
 /// An RTP packet carrying an RFC 4733 telephone-event payload.
@@ -40,7 +40,7 @@ fn telephone_event(seq: u16, rtp_ts: u32, event: u8, end: bool, duration: u16) -
 fn dtmf_lines(frames: &[Vec<u8>]) -> usize {
     let dir = tempfile::tempdir().expect("temp dir");
     let pcap = dir.path().join("dtmf.pcap");
-    write_pcap(&pcap, frames);
+    write_pcap_or_panic(&pcap, frames);
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-t", "-I"])
         .arg(&pcap)

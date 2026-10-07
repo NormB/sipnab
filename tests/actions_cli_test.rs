@@ -38,7 +38,7 @@ fn token() -> String {
 
 /// A server that may ban over REST, journaling into `journal`.
 fn server(fake: &Fake, journal: &Path) -> ApiServer {
-    ApiServer::spawn(&[
+    ApiServer::spawn_or_panic(&[
         "--api-signing-key",
         SIGNING_KEY,
         "--tfps-ctl",
@@ -56,10 +56,13 @@ fn ban_through_a_server(fake: &Fake, journal: &Path, ips: &[&str]) -> Vec<String
     let ids = ips
         .iter()
         .map(|ip| {
-            let resp =
-                srv.post_json_bearer("/v1/tfps/ban", &format!(r#"{{"ip":"{ip}"}}"#), &token());
+            let resp = srv.post_json_bearer_or_panic(
+                "/v1/tfps/ban",
+                &format!(r#"{{"ip":"{ip}"}}"#),
+                &token(),
+            );
             assert_eq!(resp.status, 200, "{}", resp.body);
-            resp.json()["id"].as_str().expect("id").to_string()
+            resp.json_or_panic()["id"].as_str().expect("id").to_string()
         })
         .collect();
     drop(srv);
@@ -85,7 +88,7 @@ fn text(out: &Output) -> String {
 
 #[test]
 fn journal_show_lists_the_bans_sipnab_holds_newest_first() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let ids = ban_through_a_server(&fake, journal.path(), &["198.51.100.20", "198.51.100.21"]);
     let out = sipnab(&[
@@ -108,10 +111,10 @@ fn journal_show_lists_the_bans_sipnab_holds_newest_first() {
 
 #[test]
 fn journal_show_works_while_a_sipnab_holds_the_journal() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path());
-    let resp = srv.post_json_bearer("/v1/tfps/ban", r#"{"ip":"198.51.100.20"}"#, &token());
+    let resp = srv.post_json_bearer_or_panic("/v1/tfps/ban", r#"{"ip":"198.51.100.20"}"#, &token());
     assert_eq!(resp.status, 200, "{}", resp.body);
     let out = sipnab(&[
         "--journal-show",
@@ -138,7 +141,7 @@ fn journal_show_where_nothing_was_recorded_says_so() {
 
 #[test]
 fn revert_all_backs_out_every_ban_with_actions_switched_off() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let ids = ban_through_a_server(&fake, journal.path(), &["198.51.100.20", "198.51.100.21"]);
     // No --allow-action: actions are off, and recovery still works.
@@ -179,7 +182,7 @@ fn revert_all_backs_out_every_ban_with_actions_switched_off() {
 
 #[test]
 fn revert_one_backs_out_only_that_ban() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let ids = ban_through_a_server(&fake, journal.path(), &["198.51.100.20", "198.51.100.21"]);
     let out = sipnab(&[
@@ -201,7 +204,7 @@ fn revert_one_backs_out_only_that_ban() {
 
 #[test]
 fn reverting_an_id_sipnab_does_not_hold_fails_and_says_why() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let _ = ban_through_a_server(&fake, journal.path(), &["198.51.100.20"]);
     let out = sipnab(&[
@@ -219,7 +222,7 @@ fn reverting_an_id_sipnab_does_not_hold_fails_and_says_why() {
 
 #[test]
 fn reverting_while_a_sipnab_holds_the_journal_is_refused_and_says_what_to_do() {
-    let fake = Fake::new();
+    let fake = Fake::new_or_panic();
     let journal = tempfile::tempdir().expect("tempdir");
     let srv = server(&fake, journal.path());
     let out = sipnab(&[

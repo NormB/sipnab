@@ -16,7 +16,7 @@ use std::io::Write;
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload};
+use support::{McpSession, ok_payload_or_panic};
 
 const FIRST: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
@@ -60,7 +60,8 @@ fn root_with_locked_zip(tag: &str, password: &str) -> std::path::PathBuf {
 
 fn wait_for_load(session: &mut McpSession) -> serde_json::Value {
     for _ in 0..400 {
-        let v = ok_payload(&session.call("capture_status", serde_json::json!({})));
+        let v =
+            ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
         if v["load"]["done"] == true {
             return v;
         }
@@ -74,7 +75,7 @@ fn a_password_in_a_tool_call_is_refused_and_never_recorded() {
     let password = mint("arg");
     let root = root_with_locked_zip("arg", &password);
     let audit = root.join("audit.jsonl");
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -84,7 +85,7 @@ fn a_password_in_a_tool_call_is_refused_and_never_recorded() {
             audit.to_str().unwrap_or_default(),
         ],
     );
-    let msg = session.call(
+    let msg = session.call_or_panic(
         "open_capture",
         serde_json::json!({"filename": "evidence.zip", "archive_password": password}),
     );
@@ -111,7 +112,7 @@ fn the_operator_s_password_file_opens_the_archive() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&pw, std::fs::Permissions::from_mode(0o600)).expect("chmod");
     }
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         FIRST,
         &[
             "--mcp-file-root",
@@ -121,7 +122,7 @@ fn the_operator_s_password_file_opens_the_archive() {
             pw.to_str().unwrap_or_default(),
         ],
     );
-    let msg = session.call(
+    let msg = session.call_or_panic(
         "open_capture",
         serde_json::json!({"filename": "evidence.zip"}),
     );

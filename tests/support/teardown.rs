@@ -53,7 +53,7 @@ fn terminate_within(
     if let Some(status) = child.try_wait()? {
         return Ok(status);
     }
-    let pid = libc::pid_t::try_from(child.id()).expect("a child pid fits pid_t");
+    let pid = libc::pid_t::try_from(child.id()).map_err(std::io::Error::other)?;
     // SAFETY: kill(2) on a child this process spawned and has not reaped, so
     // the pid cannot have been reused; touches no memory.
     unsafe { libc::kill(pid, libc::SIGTERM) };

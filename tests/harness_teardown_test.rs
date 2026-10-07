@@ -123,14 +123,14 @@ fn teardown_reaps_the_child_it_stops() {
 #[cfg(feature = "api")]
 #[test]
 fn the_api_harness_stops_sipnab_with_a_clean_exit() {
-    let srv = server::ApiServer::spawn(&[]);
+    let srv = server::ApiServer::spawn_or_panic(&[]);
     assert_eq!(
-        srv.get("/health").status,
+        srv.get_or_panic("/health").status,
         200,
         "control: the server must be answering before it is stopped"
     );
 
-    let status = srv.stop();
+    let status = srv.stop_or_panic();
 
     assert_eq!(
         status.code(),
@@ -145,7 +145,7 @@ fn the_api_harness_stops_sipnab_with_a_clean_exit() {
 fn a_panicking_test_still_reaps_its_api_server() {
     let pid = std::sync::Mutex::new(None);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let srv = server::ApiServer::spawn(&[]);
+        let srv = server::ApiServer::spawn_or_panic(&[]);
         *pid.lock().expect("pid lock") = Some(srv.pid());
         panic!("a failing assertion while the server is up");
     }));
@@ -172,9 +172,9 @@ fn a_panicking_test_still_reaps_its_api_server() {
 #[test]
 fn the_mcp_session_harness_stops_sipnab_with_a_clean_exit() {
     let pcap = mcp::fixture("sip_call.pcap");
-    let session = mcp::McpSession::start(pcap.to_str().expect("utf-8 path"), &[]);
+    let session = mcp::McpSession::start_or_panic(pcap.to_str().expect("utf-8 path"), &[]);
 
-    let status = session.stop();
+    let status = session.stop_or_panic();
 
     assert_eq!(
         status.code(),

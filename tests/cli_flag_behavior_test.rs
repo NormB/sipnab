@@ -215,7 +215,7 @@ fn wait_for_own_udp_listener(
 }
 
 fn run(args: &[&str]) -> String {
-    let (stdout, stderr, code) = run_support::run(args, Some("off"));
+    let (stdout, stderr, code) = run_support::run_or_panic(args, Some("off"));
     assert!(code == Some(0), "sipnab {args:?} failed: {stderr}");
     stdout
 }
@@ -727,7 +727,7 @@ fn rotate_explicitly_keeps_the_newest_dialog() {
 /// worse outcome than a startup error.
 #[test]
 fn duration_rejects_an_unparseable_value() {
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -766,15 +766,15 @@ fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
         5060,
         b"OPTIONS sip:a@b SIP/2.0\r\nCall-ID: strip-test\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
     );
-    pcap_build::write_pcapng_with_dsb(&input, "CLIENT_RANDOM 0011 22334455\n", &frame);
+    pcap_build::write_pcapng_with_dsb_or_panic(&input, "CLIENT_RANDOM 0011 22334455\n", &frame);
     let before = std::fs::read(&input).expect("read input");
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&input, DSB),
+        pcap_build::count_pcapng_blocks_or_panic(&input, DSB),
         1,
         "fixture must start with exactly one DSB"
     );
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -787,7 +787,7 @@ fn strip_secrets_removes_the_dsb_and_preserves_the_input() {
     );
     assert_eq!(code, Some(0), "--strip-secrets must succeed:\n{err}");
     assert_eq!(
-        pcap_build::count_pcapng_blocks(&output, DSB),
+        pcap_build::count_pcapng_blocks_or_panic(&output, DSB),
         0,
         "the stripped copy must contain no Decryption Secrets Block"
     );
@@ -839,7 +839,7 @@ fn hep_parse_decodes_encapsulated_sip_from_a_capture() {
     let path = dir.path().join("hep.pcap");
     // HEP rides UDP/9060 by convention.
     let frame = pcap_build::udp_frame([10, 1, 0, 1], [10, 2, 0, 1], 9060, 9060, &hep);
-    pcap_build::write_pcap(&path, &[frame]);
+    pcap_build::write_pcap_or_panic(&path, &[frame]);
 
     let with_flag = run(&[
         "-N",
@@ -1077,8 +1077,8 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() {
             )
         })
         .collect();
-    pcap_build::write_pcap_at(&wire_pcap, &frames, 1);
-    let (stdout, stderr, code) = run_support::run(
+    pcap_build::write_pcap_at_or_panic(&wire_pcap, &frames, 1);
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1723,9 +1723,9 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
     }
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = dir.path().join("reg-flood-cooldown.pcap");
-    pcap_build::write_pcap_at(&pcap, &frames, 1);
+    pcap_build::write_pcap_at_or_panic(&pcap, &frames, 1);
 
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &[
             "--no-config",
             "-N",
@@ -1766,7 +1766,7 @@ fn reg_flood_rule_cooldown_suppresses_repeat_alert() {
 fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
     const SILENCE_WARNING: &str = "An empty jail log means";
 
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &["-N", "-I", FIXTURE, "--reg-flood", "--fail2ban"],
         Some("warn"),
     );
@@ -1779,7 +1779,8 @@ fn the_empty_jail_log_warning_is_silent_when_reg_flood_is_armed() {
 
     // Control: with no producer armed, the warning is the one thing the run
     // can say about the empty log it is about to leave behind.
-    let (_, stderr, code) = run_support::run(&["-N", "-I", FIXTURE, "--fail2ban"], Some("warn"));
+    let (_, stderr, code) =
+        run_support::run_or_panic(&["-N", "-I", FIXTURE, "--fail2ban"], Some("warn"));
     assert_eq!(code, Some(0), "the unarmed run failed:\n{stderr}");
     assert!(
         stderr.contains(SILENCE_WARNING),
@@ -1812,9 +1813,9 @@ fn output_write_failure_exits_nonzero() {
             pcap_build::sip_call_frames(&format!("wf-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap(&big, &frames);
+    pcap_build::write_pcap_or_panic(&big, &frames);
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1840,7 +1841,7 @@ fn output_write_failure_exits_nonzero() {
     // And the same run against a writable path must still succeed, so the
     // gate cannot be satisfied by failing everything.
     let good = dir.path().join("good.pcapng");
-    let (_o2, e2, code2) = run_support::run(
+    let (_o2, e2, code2) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -1885,7 +1886,7 @@ fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() {
             pcap_build::sip_call_frames(&format!("js-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap(&cap, &frames);
+    pcap_build::write_pcap_or_panic(&cap, &frames);
     let input = cap.to_str().expect("utf-8 path");
 
     // 1. A writable destination succeeds and actually emits.
@@ -1953,7 +1954,7 @@ fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
             pcap_build::sip_call_frames(&format!("rp-{i}@t"), &format!("{i:06x}"), "a", "b")
         })
         .collect();
-    pcap_build::write_pcap(&cap, &frames);
+    pcap_build::write_pcap_or_panic(&cap, &frames);
     let input = cap.to_str().expect("utf-8 path");
 
     // Full disk: a clean non-zero, and specifically NOT a panic (101).
@@ -2006,7 +2007,7 @@ fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() {
 /// `--call-report` id exited 0 there and 1 everywhere else.
 #[test]
 fn unknown_call_report_fails_on_the_multicore_path() {
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -2120,7 +2121,7 @@ fn dialog_track_branch_splits_a_single_call_into_transactions() {
 /// typo silently selected the default.
 #[test]
 fn dialog_track_rejects_an_unknown_method() {
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -2182,7 +2183,7 @@ fn dialog_track_applies_on_the_multicore_path() {
 /// up by Call-ID; branch mode must not break that.
 #[test]
 fn call_report_resolves_by_call_id_in_branch_mode() {
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -2230,7 +2231,8 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
     // path, so the thread-leak contract described above now rests ENTIRELY on
     // the chroot case below. Do not delete that one as redundant — it is the
     // only remaining probe that gets past the hand-shake.
-    let (_out, err, code) = run_support::run(&["-N", "-I", "/nonexistent.pcap"], Some("error"));
+    let (_out, err, code) =
+        run_support::run_or_panic(&["-N", "-I", "/nonexistent.pcap"], Some("error"));
     assert_eq!(
         code,
         Some(1),
@@ -2243,7 +2245,7 @@ fn startup_failures_after_the_capture_thread_starts_exit_cleanly() {
 
     // Post-hand-shake failure: the file opens, the capture thread is running,
     // and a later startup step fails.
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", FIXTURE, "--chroot", "/nonexistent-dir"],
         Some("error"),
     );
@@ -2394,7 +2396,7 @@ fn token_scope_metrics_is_refused_for_the_mcp_surface() {
         .write_all(b"mcp-scope-signing-key-0123456789")
         .unwrap();
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "--mint-token",
             "--token-scope",
@@ -2427,7 +2429,7 @@ fn token_scope_read_is_refused_for_the_api_surface() {
         .write_all(b"api-read-scope-signing-key-01234")
         .unwrap();
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "--mint-token",
             "--token-scope",
@@ -2711,7 +2713,7 @@ fn cores_still_produces_the_whole_capture_views() {
 /// measurement, not merely accept the argument.
 #[test]
 fn retain_audio_without_mcp_produces_the_amplitude_measurement() {
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -2786,7 +2788,7 @@ fn split_family(dir: &std::path::Path) -> Vec<String> {
 fn split_without_a_bound_keeps_every_file() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join("out.pcap");
-    let (_stdout, stderr, code) = run_support::run(
+    let (_stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "--no-cli-print",
@@ -2831,7 +2833,7 @@ fn split_without_a_bound_keeps_every_file() {
 fn split_keep_leaves_the_newest_files_and_reports_the_deletions() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = dir.path().join("out.pcap");
-    let (_stdout, stderr, code) = run_support::run(
+    let (_stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "--no-cli-print",
@@ -2911,7 +2913,7 @@ fn evidence_out_writes_a_line_per_finding_and_nothing_without_the_flag() {
 /// the first finding an hour later.
 #[test]
 fn evidence_out_refuses_an_unwritable_path_at_startup() {
-    let (_, stderr, code) = run_support::run(
+    let (_, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",

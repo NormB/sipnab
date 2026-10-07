@@ -21,7 +21,7 @@ mod source_scan;
 /// # Returns
 /// `(stdout, stderr, exit_code)` of the finished process.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    run_support::run(args, None)
+    run_support::run_or_panic(args, None)
 }
 
 /// --help must render section headings, not one flat Options: wall.

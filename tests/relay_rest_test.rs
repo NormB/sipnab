@@ -30,14 +30,14 @@ const RELAY_ROUTES: &[&str] = &[
 /// a 404, because the route is real and the relay is what is missing.
 #[test]
 fn relay_routes_answer_not_configured_without_a_relay() {
-    let srv = ApiServer::spawn(&["--api-key", "k"]);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
     for route in RELAY_ROUTES {
-        let resp = srv.get_bearer(route, "k");
+        let resp = srv.get_bearer_or_panic(route, "k");
         assert_eq!(
             resp.status, 200,
             "{route} must be 200 (a refusal is content, not a 4xx)"
         );
-        let v = resp.json();
+        let v = resp.json_or_panic();
         assert_eq!(
             v["outcome"], "not_configured",
             "{route} with no --rtpengine-control classifies not_configured: {}",
@@ -59,9 +59,9 @@ fn relay_routes_answer_not_configured_without_a_relay() {
 /// unauthenticated request is 401, never a relay query.
 #[test]
 fn relay_routes_require_auth() {
-    let srv = ApiServer::spawn(&["--api-key", "k"]);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
     for route in RELAY_ROUTES {
-        let resp = srv.get(route);
+        let resp = srv.get_or_panic(route);
         assert_eq!(resp.status, 401, "{route} must require a bearer credential");
     }
 }
@@ -70,8 +70,8 @@ fn relay_routes_require_auth() {
 /// presence.
 #[test]
 fn relay_routes_reject_a_wrong_key() {
-    let srv = ApiServer::spawn(&["--api-key", "right"]);
-    let resp = srv.get_bearer("/v1/relay/stats", "wrong");
+    let srv = ApiServer::spawn_or_panic(&["--api-key", "right"]);
+    let resp = srv.get_bearer_or_panic("/v1/relay/stats", "wrong");
     assert_eq!(resp.status, 401, "a wrong key is no key");
 }
 
@@ -79,9 +79,9 @@ fn relay_routes_reject_a_wrong_key() {
 /// so a client branches on one field regardless of which route it called.
 #[test]
 fn every_relay_route_carries_an_outcome() {
-    let srv = ApiServer::spawn(&["--api-key", "k"]);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
     for route in RELAY_ROUTES {
-        let v = srv.get_bearer(route, "k").json();
+        let v = srv.get_bearer_or_panic(route, "k").json_or_panic();
         assert!(
             v["outcome"].as_str().is_some(),
             "{route} must carry a string outcome: {v}"
@@ -146,11 +146,11 @@ fn rest_path(cell: &str) -> String {
 /// arm of the ST-S3 matrix the way the matrix test grounds the TUI arm.
 #[test]
 fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() {
-    let srv = ApiServer::spawn(&["--api-key", "k"]);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", "k"]);
     for cap in ["C1", "C2", "C3", "C4"] {
         let cell = rest_cell(cap);
         let path = rest_path(&cell).replace("{call_id}", "1-7@203.0.113.9");
-        let resp = srv.get_bearer(&path, "k");
+        let resp = srv.get_bearer_or_panic(&path, "k");
         assert_eq!(
             resp.status, 200,
             "{cap}: the spec's REST route {path} must be a REAL route answering \
@@ -158,7 +158,7 @@ fn st_s3_the_rest_capability_cells_are_backed_by_real_routes() {
             resp.body
         );
         assert!(
-            resp.json()["outcome"].as_str().is_some(),
+            resp.json_or_panic()["outcome"].as_str().is_some(),
             "{cap}: {path} answers with an outcome like every relay route: {}",
             resp.body
         );

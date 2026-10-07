@@ -473,11 +473,11 @@ fn a_bpf_filter_that_fails_on_a_later_file_refuses_the_cores_path_and_names_it()
     // Compiles against Ethernet; libpcap rejects ethernet addresses on DLT_LOOP.
     let bpf = "ether host 00:00:00:00:00:01";
 
-    let (_out, single_err, single_code) = run_support::run(
+    let (_out, single_err, single_code) = run_support::run_or_panic(
         &["-N", "-I", &spec, "--no-cli-print", "--cores", "1", bpf],
         Some("info"),
     );
-    let (_out, cores_err, cores_code) = run_support::run(
+    let (_out, cores_err, cores_code) = run_support::run_or_panic(
         &["-N", "-I", &spec, "--no-cli-print", "--cores", "4", bpf],
         Some("info"),
     );
@@ -608,7 +608,7 @@ fn a_directory_with_nothing_readable_is_an_error() {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("notes.txt"), "no packets here").expect("write");
     let (_out, err, code) =
-        run_support::run(&["-N", "-I", &dir.path().to_string_lossy()], Some("error"));
+        run_support::run_or_panic(&["-N", "-I", &dir.path().to_string_lossy()], Some("error"));
     assert_eq!(code, Some(1), "must exit 1:\n{err}");
     assert!(
         err.contains("no readable capture") || err.contains("no files"),
@@ -683,7 +683,7 @@ fn an_unreadable_subdirectory_is_named_not_silently_skipped() {
     .expect("copy");
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &root.path().to_string_lossy(), "--recursive"],
         Some("warn"),
     );
@@ -716,7 +716,7 @@ fn a_symlink_with_no_target_is_named() {
     )
     .expect("symlink");
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );
@@ -743,7 +743,7 @@ fn a_glob_match_that_cannot_be_read_is_named() {
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("chmod");
 
     let pattern = format!("{}/*/*.pcap", root.path().display());
-    let (_out, err, code) = run_support::run(&["-N", "-I", &pattern], Some("warn"));
+    let (_out, err, code) = run_support::run_or_panic(&["-N", "-I", &pattern], Some("warn"));
     std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
     assert_eq!(code, Some(0), "the readable match still analyzes:\n{err}");
@@ -791,7 +791,7 @@ fn input_name_filters_a_glob_too() {
 #[test]
 fn input_name_against_a_named_file_is_refused() {
     let f = samples().join("sip-rtp-g711.pcap");
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &f.to_string_lossy(), "--input-name", "tg.pcap*"],
         Some("error"),
     );
@@ -840,7 +840,7 @@ fn the_run_summary_counts_files_read_not_files_offered() {
     let dir = tempfile::tempdir().expect("tempdir");
     let _after = set_with_a_truncated_middle(dir.path());
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );
@@ -872,7 +872,7 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
         std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
     }
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -903,7 +903,7 @@ fn the_run_summary_reports_files_a_limit_never_reached() {
 /// `--cores` path did for its entire existence, and is a different failure from
 /// printing the wrong one.
 fn read_summary(args: &[&str]) -> Option<(bool, String)> {
-    let (_out, err, code) = run_support::run(args, Some("info"));
+    let (_out, err, code) = run_support::run_or_panic(args, Some("info"));
     // 0 or 1: this helper is called with sets that deliberately include a
     // truncated member, and since 0.5.131 a partial read exits 1 (backlog
     // VAL2). What must never happen is a crash or a usage error, because
@@ -1015,7 +1015,7 @@ fn overlapping_captures_in_one_directory_are_reported() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_early, _late) = overlapping_slices(&samples().join("sip-rtp-g711.pcap"), dir.path());
 
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );
@@ -1036,7 +1036,7 @@ fn a_clean_multi_file_set_reports_no_overlap() {
     for name in ["sip-rtp-g711.pcap", "sip-register.pcap", "sip-proxy.pcap"] {
         std::fs::copy(samples().join(name), dir.path().join(name)).expect("copy");
     }
-    let (_out, err, code) = run_support::run(
+    let (_out, err, code) = run_support::run_or_panic(
         &["-N", "-I", &dir.path().to_string_lossy(), "--no-cli-print"],
         Some("warn"),
     );

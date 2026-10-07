@@ -13,6 +13,10 @@ use std::sync::{Arc, Mutex};
 
 use sipnab::security::actions::{ActionPolicy, TfpsActions, TfpsReply};
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on every error type alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 pub const T0: u64 = 1_790_600_000;
 
 pub fn addr(n: u8) -> IpAddr {
@@ -59,8 +63,8 @@ impl FakeTfps {
         out
     }
 
-    pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+    pub fn calls(&self) -> Result<Vec<String>, TestError> {
+        Ok(self.calls.lock().map_err(|e| e.to_string())?.clone())
     }
 }
 
@@ -69,7 +73,7 @@ impl TfpsActions for FakeTfps {
         let journal = self.journal_text();
         self.intent_on_disk_when_called
             .lock()
-            .unwrap()
+            .map_err(|e| e.to_string())?
             .push(journal.contains("\"action_intent\"") && journal.contains(&ip.to_string()));
         self.ban_started
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -78,21 +82,24 @@ impl TfpsActions for FakeTfps {
         }
         self.calls
             .lock()
-            .unwrap()
+            .map_err(|e| e.to_string())?
             .push(format!("ban {ip} {ttl_secs}"));
         self.banned
             .lock()
-            .unwrap()
+            .map_err(|e| e.to_string())?
             .push((ip, Some(now_unix + ttl_secs)));
         Ok(TfpsReply::Applied)
     }
 
     fn unban(&self, ip: Ipv4Addr) -> Result<TfpsReply, String> {
-        self.calls.lock().unwrap().push(format!("unban {ip}"));
+        self.calls
+            .lock()
+            .map_err(|e| e.to_string())?
+            .push(format!("unban {ip}"));
         if self.unban_not_blocked {
             return Ok(TfpsReply::Refused("not-blocked".into()));
         }
-        let mut b = self.banned.lock().unwrap();
+        let mut b = self.banned.lock().map_err(|e| e.to_string())?;
         let before = b.len();
         b.retain(|(a, _)| *a != ip);
         Ok(if b.len() < before {
@@ -106,10 +113,26 @@ impl TfpsActions for FakeTfps {
         if self.unreachable {
             return Err("tfps_ctl not reachable".into());
         }
-        Ok(self.banned.lock().unwrap().clone())
+        Ok(self.banned.lock().map_err(|e| e.to_string())?.clone())
     }
 }
 
-pub fn enabled(flag: &str) -> ActionPolicy {
-    ActionPolicy::from_settings(&[flag.to_string()], &[]).expect("valid")
+pub fn enabled(flag: &str) -> Result<ActionPolicy, TestError> {
+    Ok(ActionPolicy::from_settings(&[flag.to_string()], &[])?)
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`enabled`], panicking on error.
+pub fn enabled_or_panic(flag: &str) -> ActionPolicy {
+    enabled(flag).expect("enabled")
+}
+
+impl FakeTfps {
+    /// [`FakeTfps::calls`], panicking on error.
+    pub fn calls_or_panic(&self) -> Vec<String> {
+        self.calls().expect("FakeTfps::calls")
+    }
 }

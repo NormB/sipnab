@@ -73,7 +73,10 @@ mod tui_snapshots {
     // `tui_state_test.rs` via the file-scoped `fixtures` module above so the
     // two suites can't drift. Snapshot-specific builders (BYE, SDP variants,
     // dialog assemblers) stay below.
-    use super::fixtures::{base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response};
+    use super::fixtures::{
+        base_ts_or_panic, build_sip, endpoint_a, endpoint_b, make_invite_or_panic,
+        make_response_or_panic,
+    };
 
     /// Parse a BYE (A-side to B-side, CSeq 2) that completes a dialog.
     ///
@@ -114,18 +117,18 @@ mod tui_snapshots {
     /// The `App` with all eight messages (including 180 and BYE for dialog 1)
     /// already processed into its dialog store.
     fn test_app_with_dialogs() -> App {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
             // Dialog 1: Completed
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_response(
+            make_invite_or_panic("call-1@test", "1001", "1002", t0),
+            make_response_or_panic(
                 "call-1@test",
                 180,
                 "Ringing",
                 "INVITE",
                 t0 + TimeDelta::seconds(1),
             ),
-            make_response(
+            make_response_or_panic(
                 "call-1@test",
                 200,
                 "OK",
@@ -134,8 +137,8 @@ mod tui_snapshots {
             ),
             make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
             // Dialog 2: Failed
-            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_response(
+            make_invite_or_panic("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
+            make_response_or_panic(
                 "call-2@test",
                 503,
                 "Service Unavailable",
@@ -143,8 +146,8 @@ mod tui_snapshots {
                 t0 + TimeDelta::seconds(6),
             ),
             // Dialog 3: Active (InCall)
-            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
-            make_response(
+            make_invite_or_panic("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
+            make_response_or_panic(
                 "call-3@test",
                 200,
                 "OK",
@@ -755,13 +758,13 @@ mod tui_snapshots {
     /// the flow, titled as not being sipnab's analysis.
     #[test]
     fn call_flow_operator_note_pane() {
-        let t0 = base_ts();
-        let mut invite = make_invite("note-snap@test", "1001", "1002", t0);
+        let t0 = base_ts_or_panic();
+        let mut invite = make_invite_or_panic("note-snap@test", "1001", "1002", t0);
         invite.frame = Some(
             sipnab::capture::resolve::parse_pointer("call.pcap#0@00000000000000a1")
                 .expect("a test pointer"),
         );
-        let ok = make_response(
+        let ok = make_response_or_panic(
             "note-snap@test",
             200,
             "OK",
@@ -826,10 +829,10 @@ mod tui_snapshots {
     /// The truncated label must be visible on the arrow row.
     #[test]
     fn call_flow_long_reason_phrase_stays_visible() {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
-            make_invite("long-reason@test", "1001", "1002", t0),
-            make_response(
+            make_invite_or_panic("long-reason@test", "1001", "1002", t0),
+            make_response_or_panic(
                 "long-reason@test",
                 100,
                 "trying -- your call is important to us",
@@ -1141,10 +1144,10 @@ mod tui_snapshots {
     #[test]
     fn call_list_failed_dialog_styling() {
         // Render with only failed dialogs to verify the styling appears
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
-            make_invite("fail-only@test", "1003", "1004", t0),
-            make_response(
+            make_invite_or_panic("fail-only@test", "1003", "1004", t0),
+            make_response_or_panic(
                 "fail-only@test",
                 503,
                 "Service Unavailable",
@@ -1425,10 +1428,10 @@ mod tui_snapshots {
     /// # Returns
     /// An `App` with one dialog: an SDP-bearing INVITE plus its 200 OK.
     fn test_app_with_sdp_dialogs() -> App {
-        let t0 = base_ts();
+        let t0 = base_ts_or_panic();
         let messages = vec![
             make_invite_with_sdp("sdp-call@test", "2001", "2002", t0),
-            make_response(
+            make_response_or_panic(
                 "sdp-call@test",
                 200,
                 "OK",

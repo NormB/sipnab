@@ -32,7 +32,7 @@ use sipnab::security::actions::{
 #[path = "support/fake_tfps.rs"]
 mod fake_tfps;
 
-use fake_tfps::{FakeTfps, T0, addr, enabled};
+use fake_tfps::{FakeTfps, T0, addr, enabled_or_panic};
 
 struct Rig {
     _tmp: tempfile::TempDir,
@@ -94,7 +94,7 @@ fn kinds(r: &Rig) -> Vec<String> {
 #[test]
 fn revert_one_lifts_that_ban_and_journals_the_revert() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let first = ban(&svc, &r, 20, T0);
     let _second = ban(&svc, &r, 21, T0);
     let report = svc
@@ -109,7 +109,7 @@ fn revert_one_lifts_that_ban_and_journals_the_revert() {
     assert!(svc.owned(addr(20)).is_none(), "ownership ended");
     assert!(svc.owned(addr(21)).is_some(), "the other ban stands");
     assert_eq!(
-        r.tfps.calls().last().map(String::as_str),
+        r.tfps.calls_or_panic().last().map(String::as_str),
         Some("unban 198.51.100.20")
     );
     let k = kinds(&r);
@@ -126,7 +126,7 @@ fn revert_one_lifts_that_ban_and_journals_the_revert() {
 #[test]
 fn revert_all_lifts_every_owned_ban_newest_first() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let a = ban(&svc, &r, 20, T0);
     let b = ban(&svc, &r, 21, T0 + 1);
     let c = ban(&svc, &r, 22, T0 + 2);
@@ -136,7 +136,7 @@ fn revert_all_lifts_every_owned_ban_newest_first() {
     assert_eq!(report.reverted, [c, b, a], "newest first");
     let unbans: Vec<String> = r
         .tfps
-        .calls()
+        .calls_or_panic()
         .into_iter()
         .filter(|c| c.starts_with("unban"))
         .collect();
@@ -156,7 +156,7 @@ fn revert_all_lifts_every_owned_ban_newest_first() {
 #[test]
 fn the_local_operator_can_revert_with_actions_switched_off() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let id = ban(&svc, &r, 20, T0);
     drop(svc);
     // After abuse the first thing an operator does is switch actions off;
@@ -167,7 +167,7 @@ fn the_local_operator_can_revert_with_actions_switched_off() {
         .expect("revert with actions off");
     assert_eq!(report.reverted, [id]);
     assert_eq!(
-        r.tfps.calls().last().map(String::as_str),
+        r.tfps.calls_or_panic().last().map(String::as_str),
         Some("unban 198.51.100.20")
     );
 }
@@ -175,7 +175,12 @@ fn the_local_operator_can_revert_with_actions_switched_off() {
 #[test]
 fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:mcp"), ActionLimits::default(), T0);
+    let svc = start_with(
+        &r,
+        enabled_or_panic("tfps:mcp"),
+        ActionLimits::default(),
+        T0,
+    );
     let err = svc
         .revert(
             Reverter::Surface {
@@ -212,7 +217,7 @@ fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() {
 #[test]
 fn revert_of_an_id_sipnab_does_not_own_is_refused() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let err = svc
         .revert(
             Reverter::Local,
@@ -222,7 +227,12 @@ fn revert_of_an_id_sipnab_does_not_own_is_refused() {
         )
         .expect_err("no such owned action");
     assert_eq!(err, ActionError::NotOwned);
-    assert!(r.tfps.calls().iter().all(|c| !c.starts_with("unban")));
+    assert!(
+        r.tfps
+            .calls_or_panic()
+            .iter()
+            .all(|c| !c.starts_with("unban"))
+    );
 }
 
 #[test]
@@ -232,7 +242,7 @@ fn revert_all_skips_a_ban_it_cannot_prove_it_placed() {
     // and revert-all leaves it alone and says so.
     let r = rig();
     {
-        let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+        let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
         let _ = ban(&svc, &r, 21, T0);
     }
     // Forge the crash: an intent with no outcome, for an address TFPS shows
@@ -254,15 +264,17 @@ fn revert_all_skips_a_ban_it_cannot_prove_it_placed() {
         )
         .expect("intent");
     }
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0 + 2);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 2);
     let report = svc
         .revert(Reverter::Local, RevertTarget::All, T0 + 3, r.t0)
         .expect("revert all");
     assert_eq!(report.skipped_unknown, ["198.51.100.30"]);
     assert!(
-        !r.tfps.calls().contains(&"unban 198.51.100.30".to_string()),
+        !r.tfps
+            .calls_or_panic()
+            .contains(&"unban 198.51.100.30".to_string()),
         "{:?}",
-        r.tfps.calls()
+        r.tfps.calls_or_panic()
     );
 }
 
@@ -271,7 +283,7 @@ fn revert_all_skips_a_ban_it_cannot_prove_it_placed() {
 #[test]
 fn a_ban_tfps_dropped_early_is_journaled_as_lapsed_and_ownership_ends() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let _ = ban(&svc, &r, 20, T0);
     // TFPS restarted and forgot its manual bans.
     r.tfps.banned.lock().unwrap().clear();
@@ -286,7 +298,7 @@ fn a_ban_tfps_dropped_early_is_journaled_as_lapsed_and_ownership_ends() {
 #[test]
 fn a_ban_past_its_expiry_is_not_lapsed_by_the_peer() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let _ = svc
         .ban(
             ActionSurface::Rest,
@@ -316,7 +328,7 @@ fn reconcile_with_tfps_unreachable_changes_nothing() {
         ..FakeTfps::default()
     });
     let (svc, _) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &dir,
         tfps.clone(),
@@ -343,7 +355,7 @@ fn reconcile_with_tfps_unreachable_changes_nothing() {
 #[test]
 fn a_revert_of_a_ban_tfps_already_dropped_ends_ownership_as_lapsed() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let id = ban(&svc, &r, 20, T0);
     r.tfps.banned.lock().unwrap().clear();
     let report = svc
@@ -353,7 +365,10 @@ fn a_revert_of_a_ban_tfps_already_dropped_ends_ownership_as_lapsed() {
     assert_eq!(report.lapsed, ["198.51.100.20"]);
     assert!(svc.owned(addr(20)).is_none());
     assert!(
-        r.tfps.calls().iter().all(|c| !c.starts_with("unban")),
+        r.tfps
+            .calls_or_panic()
+            .iter()
+            .all(|c| !c.starts_with("unban")),
         "the check before the revert found it gone, so TFPS is not asked"
     );
 }
@@ -368,7 +383,7 @@ fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_forc
         retention: Duration::ZERO,
     };
     let (svc, _) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &r.dir,
         r.tfps.clone(),
@@ -394,7 +409,7 @@ fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_forc
         "the oldest segment left opens with a checkpoint: {:?}",
         kinds(&r).first()
     );
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0 + 40);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 40);
     for n in 1..=30 {
         assert!(svc.owned(addr(n)).is_some(), "ban {n} survived the prune");
     }
@@ -403,7 +418,7 @@ fn a_full_segment_rolls_over_with_a_checkpoint_and_pruning_loses_nothing_in_forc
 #[test]
 fn a_flood_of_refusals_costs_a_few_records_a_minute() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     for _ in 0..500 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -443,7 +458,7 @@ fn a_flood_of_refusals_costs_a_few_records_a_minute() {
 #[test]
 fn folding_is_per_caller_and_reason_so_a_flood_hides_no_one_else() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     for _ in 0..50 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -473,7 +488,7 @@ fn folding_is_per_caller_and_reason_so_a_flood_hides_no_one_else() {
 fn revert_all_is_newest_first_even_for_bans_in_the_same_second() {
     // Ids end in a counter; compared as text, `-10` sorts before `-9`.
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let ids: Vec<String> = (1..=12).map(|n| ban(&svc, &r, n, T0)).collect();
     let report = svc
         .revert(Reverter::Local, RevertTarget::All, T0 + 5, r.t0)
@@ -493,7 +508,7 @@ fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() {
     });
     let t0 = Instant::now();
     let (svc, _) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &dir,
         tfps.clone(),
@@ -519,11 +534,11 @@ fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() {
 fn a_ban_tfps_dropped_while_sipnab_was_down_is_found_at_start() {
     let r = rig();
     {
-        let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+        let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
         let _ = ban(&svc, &r, 20, T0);
     }
     r.tfps.banned.lock().unwrap().clear();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0 + 30);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 30);
     assert!(svc.owned(addr(20)).is_none());
     assert!(kinds(&r).contains(&"lapsed_by_peer".to_string()));
 }
@@ -531,7 +546,7 @@ fn a_ban_tfps_dropped_while_sipnab_was_down_is_found_at_start() {
 #[test]
 fn refusals_from_many_callers_stay_bounded() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     for n in 0..6_000 {
         let _ = svc.ban(
             ActionSurface::Rest,
@@ -562,7 +577,7 @@ fn now_unix() -> u64 {
 fn the_watch_finds_a_dropped_ban_without_anyone_asking() {
     let r = rig();
     let now = now_unix();
-    let svc = Arc::new(start_with(&r, enabled("tfps:rest"), roomy(), now));
+    let svc = Arc::new(start_with(&r, enabled_or_panic("tfps:rest"), roomy(), now));
     let _ = svc
         .ban(ActionSurface::Rest, "token:ops", addr(20), None, now, r.t0)
         .expect("ban");
@@ -579,7 +594,12 @@ fn the_watch_finds_a_dropped_ban_without_anyone_asking() {
 #[test]
 fn the_watch_ends_when_the_service_does() {
     let r = rig();
-    let svc = Arc::new(start_with(&r, enabled("tfps:rest"), roomy(), now_unix()));
+    let svc = Arc::new(start_with(
+        &r,
+        enabled_or_panic("tfps:rest"),
+        roomy(),
+        now_unix(),
+    ));
     let watch = ActionService::watch(&svc, Duration::from_millis(10)).expect("spawn");
     drop(svc);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -594,7 +614,7 @@ fn the_watch_ends_when_the_service_does() {
 #[test]
 fn a_clean_stop_is_journaled_and_the_next_start_knows() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let _ = ban(&svc, &r, 20, T0);
     assert!(
         svc.stop(T0 + 1),
@@ -603,7 +623,7 @@ fn a_clean_stop_is_journaled_and_the_next_start_knows() {
     drop(svc);
     assert!(kinds(&r).contains(&"run_stop".to_string()));
     let (_, report) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &r.dir,
         r.tfps.clone(),
@@ -618,11 +638,11 @@ fn a_clean_stop_is_journaled_and_the_next_start_knows() {
 #[test]
 fn without_a_stop_record_the_next_start_reads_a_crash() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let _ = ban(&svc, &r, 20, T0);
     drop(svc);
     let (_, report) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &r.dir,
         r.tfps.clone(),
@@ -638,7 +658,7 @@ fn without_a_stop_record_the_next_start_reads_a_crash() {
 fn the_first_start_has_no_previous_run() {
     let r = rig();
     let (_, report) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &r.dir,
         r.tfps.clone(),
@@ -663,7 +683,7 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() {
     });
     let t0 = Instant::now();
     let (svc, _) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &dir,
         tfps.clone(),
@@ -700,14 +720,14 @@ fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() {
 #[test]
 fn an_earlier_clean_stop_does_not_hide_a_later_crash() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     assert!(svc.stop(T0));
     drop(svc);
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0 + 1);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0 + 1);
     let _ = ban(&svc, &r, 20, T0 + 1);
     drop(svc); // no stop: this run crashed
     let (_, report) = ActionService::start_with(
-        enabled("tfps:rest"),
+        enabled_or_panic("tfps:rest"),
         roomy(),
         &r.dir,
         r.tfps.clone(),
@@ -722,7 +742,7 @@ fn an_earlier_clean_stop_does_not_hide_a_later_crash() {
 #[test]
 fn an_unban_tfps_answers_not_blocked_ends_ownership_as_lapsed() {
     let r = rig();
-    let svc = start_with(&r, enabled("tfps:rest"), roomy(), T0);
+    let svc = start_with(&r, enabled_or_panic("tfps:rest"), roomy(), T0);
     let _ = ban(&svc, &r, 20, T0);
     // TFPS dropped it, and nothing has checked since.
     r.tfps.banned.lock().unwrap().clear();

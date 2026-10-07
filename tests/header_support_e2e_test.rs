@@ -32,7 +32,7 @@ mod run;
 
 use std::path::{Path, PathBuf};
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 /// Call-ID of the call that carries the interesting headers.
 const CALL_A: &str = "hdr-a@test";
@@ -129,7 +129,7 @@ fn headers_capture(dir: &Path) -> PathBuf {
         ),
     ];
     let path = dir.join("headers.pcap");
-    write_pcap(&path, &frames);
+    write_pcap_or_panic(&path, &frames);
     path
 }
 
@@ -186,7 +186,7 @@ fn json_lines(stdout: &str) -> Vec<serde_json::Value> {
 fn per_message_json_carries_every_header_in_wire_order() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = headers_capture(dir.path());
-    let (stdout, stderr, code) = run::run(
+    let (stdout, stderr, code) = run::run_or_panic(
         &[
             "-N",
             "-I",
@@ -248,7 +248,7 @@ fn cli_filter_selects_by_any_named_header() {
     let pcap = headers_capture(dir.path());
     let pcap = pcap.to_str().expect("utf-8");
     for (expr, want) in FILTER_CASES {
-        let (stdout, stderr, code) = run::run(
+        let (stdout, stderr, code) = run::run_or_panic(
             &[
                 "-N",
                 "-I",
@@ -292,15 +292,18 @@ fn rest_filter_selects_by_any_named_header() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = headers_capture(dir.path());
-    let srv = server::ApiServer::spawn_with_pcap(pcap.to_str().expect("utf-8"), &["--no-config"]);
+    let srv = server::ApiServer::spawn_with_pcap_or_panic(
+        pcap.to_str().expect("utf-8"),
+        &["--no-config"],
+    );
     for (expr, want) in FILTER_CASES {
-        let resp = srv.get(&format!("/v1/dialogs?filter={}", pct(expr)));
+        let resp = srv.get_or_panic(&format!("/v1/dialogs?filter={}", pct(expr)));
         assert_eq!(resp.status, 200, "{expr}: {}", resp.body);
-        let body = resp.json();
+        let body = resp.json_or_panic();
         let rows = body["dialogs"].as_array().expect("dialogs").clone();
         assert_eq!(call_ids(&rows), sorted(want), "REST filter {expr:?}");
     }
-    let bad = srv.get(&format!(
+    let bad = srv.get_or_panic(&format!(
         "/v1/dialogs?filter={}",
         pct("header.\"a b\" == 'x'")
     ));
@@ -321,9 +324,10 @@ fn mcp_projects_and_filters_every_header() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = headers_capture(dir.path());
-    let mut session = mcp::McpSession::start(pcap.to_str().expect("utf-8"), &["--no-config"]);
+    let mut session =
+        mcp::McpSession::start_or_panic(pcap.to_str().expect("utf-8"), &["--no-config"]);
 
-    let dialog = session.ok("get_dialog", serde_json::json!({"call_id": CALL_A}));
+    let dialog = session.ok_or_panic("get_dialog", serde_json::json!({"call_id": CALL_A}));
     let invite_headers: Vec<String> = dialog["messages"][0]["extension_headers"]
         .as_array()
         .unwrap_or_else(|| panic!("extension_headers on the INVITE: {dialog}"))
@@ -355,7 +359,7 @@ fn mcp_projects_and_filters_every_header() {
         positions.windows(2).all(|p| p[0] < p[1]),
         "wire order kept: {positions:?} in {invite_headers:?}"
     );
-    let answer = session.ok(
+    let answer = session.ok_or_panic(
         "get_message",
         serde_json::json!({"call_id": CALL_A, "index": 1}),
     );
@@ -371,10 +375,10 @@ fn mcp_projects_and_filters_every_header() {
     );
 
     for (expr, want) in FILTER_CASES {
-        let listed = session.ok("list_dialogs", serde_json::json!({"filter": expr}));
+        let listed = session.ok_or_panic("list_dialogs", serde_json::json!({"filter": expr}));
         let rows = listed["dialogs"].as_array().expect("dialogs").clone();
         assert_eq!(call_ids(&rows), sorted(want), "MCP list_dialogs {expr:?}");
-        let checked = session.ok("validate_filter", serde_json::json!({"expr": expr}));
+        let checked = session.ok_or_panic("validate_filter", serde_json::json!({"expr": expr}));
         assert_eq!(checked["valid"], true, "{expr}: {checked}");
         assert_eq!(
             checked["total_matched"].as_u64(),
@@ -513,7 +517,7 @@ fn an_x_prefix_changes_no_analysis() {
             ),
         ];
         let path = dir.join("same-name.pcap");
-        write_pcap(&path, &frames);
+        write_pcap_or_panic(&path, &frames);
         path
     }
     let digest = regex::Regex::new(r"@[0-9a-f]{16}").expect("regex");
@@ -549,7 +553,7 @@ fn an_x_prefix_changes_no_analysis() {
                         "--no-config",
                     ];
                     args.extend_from_slice(mode);
-                    let (stdout, stderr, code) = run::run(&args, None);
+                    let (stdout, stderr, code) = run::run_or_panic(&args, None);
                     assert_eq!(code, Some(0), "{mode:?}: {stderr}");
                     let dir = cap.parent().and_then(Path::to_str).expect("a utf-8 dir");
                     digest.replace_all(&stdout, "@DIGEST").replace(dir, "<dir>")

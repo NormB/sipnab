@@ -23,6 +23,10 @@ use std::time::{Duration, Instant};
 include!("timeout.rs");
 include!("teardown.rs");
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on I/O, parse and JSON errors alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// A minimal HTTP response: status code, response headers, and body.
 ///
 /// Headers are kept rather than discarded because the whole point of an
@@ -81,7 +85,7 @@ pub fn fixture(path: &str) -> std::path::PathBuf {
 /// # Side effects
 /// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
 /// reader thread; on failure paths the child is stopped with `terminate`.
-pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
+pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -103,8 +107,8 @@ pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn().expect("spawn sipnab");
-    let stderr = child.stderr.take().expect("stderr");
+    let mut child = cmd.spawn()?;
+    let stderr = child.stderr.take().ok_or("the child has no stderr pipe")?;
 
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -118,23 +122,23 @@ pub fn spawn_http(extra_args: &[&str]) -> Option<(Child, String)> {
     while Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
             if let Some(addr) = line.split("listening on ").nth(1) {
-                return Some((child, addr.trim().to_string()));
+                return Ok(Some((child, addr.trim().to_string())));
             }
             if line.contains("refuses to start") {
                 let _ = terminate(&mut child);
-                return None;
+                return Ok(None);
             }
         } else if let Ok(Some(_)) = child.try_wait() {
-            return None;
+            return Ok(None);
         }
     }
     let _ = terminate(&mut child);
-    None
+    Ok(None)
 }
 
 /// `spawn_http` bound to loopback: prepends `--mcp-bind 127.0.0.1:0` to
 /// `extra_args`. The common case for tests that don't vary the bind address.
-pub fn spawn_http_loopback(extra_args: &[&str]) -> Option<(Child, String)> {
+pub fn spawn_http_loopback(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestError> {
     let mut args: Vec<&str> = vec!["--mcp-bind", "127.0.0.1:0"];
     args.extend_from_slice(extra_args);
     spawn_http(&args)
@@ -160,14 +164,18 @@ pub fn initialize_payload() -> serde_json::Value {
 
 /// POST a JSON-RPC `initialize` to `http://addr/mcp` with an optional bearer
 /// token and return the HTTP status code.
-pub fn initialize_status(addr: &str, bearer: Option<&str>) -> u16 {
+pub fn initialize_status(addr: &str, bearer: Option<&str>) -> Result<u16, TestError> {
     post_status(&format!("http://{addr}/mcp"), bearer, &initialize_payload())
 }
 
 /// Issue a raw-TCP HTTP POST of `body` as JSON and return the status code only
 /// (0 if the status line is unparsable).
-pub fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16 {
-    post_json(url, bearer, body).status
+pub fn post_status(
+    url: &str,
+    bearer: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<u16, TestError> {
+    Ok(post_json(url, bearer, body)?.status)
 }
 
 /// Issue a raw-TCP HTTP POST of `body` as JSON and return the parsed status
@@ -180,8 +188,12 @@ pub fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) ->
 ///
 /// # Side effects
 /// Opens a TCP connection with a 5s read timeout.
-pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> HttpResponse {
-    let body_str = serde_json::to_string(body).expect("serialize");
+pub fn post_json(
+    url: &str,
+    bearer: Option<&str>,
+    body: &serde_json::Value,
+) -> Result<HttpResponse, TestError> {
+    let body_str = serde_json::to_string(body)?;
     send(url, "POST", bearer, Some(&body_str))
 }
 
@@ -197,7 +209,7 @@ pub fn post_json(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> H
 /// * `url` — plain `http://host:port/path` URL.
 /// * `bearer` — optional bearer token; `None` sends no `Authorization` header,
 ///   which is what proves an endpoint is reachable unauthenticated.
-pub fn get(url: &str, bearer: Option<&str>) -> HttpResponse {
+pub fn get(url: &str, bearer: Option<&str>) -> Result<HttpResponse, TestError> {
     send(url, "GET", bearer, None)
 }
 
@@ -208,16 +220,23 @@ pub fn get(url: &str, bearer: Option<&str>) -> HttpResponse {
 ///
 /// # Side effects
 /// Opens a TCP connection with a 5s read timeout and closes it.
-fn send(url: &str, method: &str, bearer: Option<&str>, body: Option<&str>) -> HttpResponse {
-    let parsed = url.strip_prefix("http://").expect("http url");
+fn send(
+    url: &str,
+    method: &str,
+    bearer: Option<&str>,
+    body: Option<&str>,
+) -> Result<HttpResponse, TestError> {
+    let parsed = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("not an http:// URL: {url}"))?;
     let (authority, path) = parsed.split_once('/').unwrap_or((parsed, ""));
-    let (host, port_str) = authority.rsplit_once(':').expect("host:port");
-    let port: u16 = port_str.parse().expect("port");
+    let (host, port_str) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| format!("no host:port in {url}"))?;
+    let port: u16 = port_str.parse()?;
 
-    let mut stream = TcpStream::connect((host, port)).expect("connect");
-    stream
-        .set_read_timeout(Some(test_timeout(5)))
-        .expect("read timeout");
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(test_timeout(5)))?;
 
     let mut req = format!(
         "{method} /{path} HTTP/1.1\r\n\
@@ -238,10 +257,10 @@ fn send(url: &str, method: &str, bearer: Option<&str>, body: Option<&str>) -> Ht
     if let Some(b) = body {
         req.push_str(b);
     }
-    stream.write_all(req.as_bytes()).expect("write");
+    stream.write_all(req.as_bytes())?;
 
     let mut resp = Vec::new();
-    stream.read_to_end(&mut resp).expect("read");
+    stream.read_to_end(&mut resp)?;
     let s = String::from_utf8_lossy(&resp);
     let (head, body) = s.split_once("\r\n\r\n").unwrap_or((&s, ""));
     let mut lines = head.lines();
@@ -254,11 +273,11 @@ fn send(url: &str, method: &str, bearer: Option<&str>, body: Option<&str>) -> Ht
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
         .collect();
-    HttpResponse {
+    Ok(HttpResponse {
         status,
         headers,
         body: body.to_string(),
-    }
+    })
 }
 
 // ── stdio session ───────────────────────────────────────────────────
@@ -287,7 +306,7 @@ impl McpSession {
     /// race on one platform is an unobserved failure, not a pass. Polling
     /// `capture_status` until the file source drains is exactly what that tool is
     /// for.
-    pub fn start(pcap: &str, extra: &[&str]) -> Self {
+    pub fn start(pcap: &str, extra: &[&str]) -> Result<Self, TestError> {
         let manifest = env!("CARGO_MANIFEST_DIR");
         let mut argv: Vec<&str> = vec!["--mcp", "-N", "-I", pcap, "--quiet"];
         argv.extend_from_slice(extra);
@@ -297,11 +316,10 @@ impl McpSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn sipnab --mcp");
+            .spawn()?;
 
         {
-            let stdin = child.stdin.as_mut().expect("stdin");
+            let stdin = child.stdin.as_mut().ok_or("the child has no stdin pipe")?;
             writeln!(
                 stdin,
                 "{}",
@@ -310,20 +328,18 @@ impl McpSession {
                     "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                                "clientInfo": {"name": "t", "version": "1"}}
                 })
-            )
-            .expect("write initialize");
+            )?;
             writeln!(
                 stdin,
                 "{}",
                 serde_json::json!({
                     "jsonrpc": "2.0", "method": "notifications/initialized"
                 })
-            )
-            .expect("write initialized");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
 
-        let stdout = child.stdout.take().expect("stdout");
+        let stdout = child.stdout.take().ok_or("the child has no stdout pipe")?;
         let mut session = Self {
             child,
             reader: BufReader::new(stdout),
@@ -334,7 +350,7 @@ impl McpSession {
         const MAX_POLLS: usize = 200;
         let mut loaded = false;
         for _ in 0..MAX_POLLS {
-            let msg = session.call("capture_status", serde_json::json!({}));
+            let msg = session.call("capture_status", serde_json::json!({}))?;
             let text = msg["result"]["content"][0]["text"].as_str().unwrap_or("{}");
             let v: serde_json::Value = serde_json::from_str(text).unwrap_or_default();
             if v["source_exhausted"] == true {
@@ -344,7 +360,7 @@ impl McpSession {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert!(loaded, "capture never finished loading for {pcap}");
-        session
+        Ok(session)
     }
 
     /// Issue one `tools/call` and return the raw JSON-RPC reply.
@@ -352,11 +368,19 @@ impl McpSession {
     /// Raw rather than unwrapped, so callers can assert on refusals as well as
     /// results — a tool that must reject an argument combination is tested here
     /// the same way as one that must answer it.
-    pub fn call(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+    pub fn call(
+        &mut self,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self
+                .child
+                .stdin
+                .as_mut()
+                .ok_or("the child has no stdin pipe")?;
             writeln!(
                 stdin,
                 "{}",
@@ -364,34 +388,37 @@ impl McpSession {
                     "jsonrpc": "2.0", "id": id, "method": "tools/call",
                     "params": {"name": tool, "arguments": args}
                 })
-            )
-            .expect("write tool call");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
         let mut line = String::new();
         loop {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for {tool}");
+                return Err(format!("sipnab closed stdout while waiting for {tool}").into());
             }
             let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
                 continue;
             };
             if msg["id"] == serde_json::json!(id) {
-                return msg;
+                return Ok(msg);
             }
         }
     }
 
     /// Issue one `tools/call` and return the parsed payload, failing on a refusal.
-    pub fn ok(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
-        let msg = self.call(tool, args);
+    pub fn ok(
+        &mut self,
+        tool: &str,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, TestError> {
+        let msg = self.call(tool, args)?;
         ok_payload(&msg)
     }
 
     /// Stop the server the way `Drop` does and return how it exited.
-    pub fn stop(mut self) -> std::process::ExitStatus {
-        terminate(&mut self.child).expect("reap sipnab --mcp")
+    pub fn stop(mut self) -> std::io::Result<std::process::ExitStatus> {
+        terminate(&mut self.child)
     }
 
     /// The tool names this server advertises, sorted.
@@ -400,24 +427,27 @@ impl McpSession {
     /// operator did not enable is still listed and refuses when called, so an
     /// agent can tell "not permitted on this server" from "this build cannot
     /// do it at all".
-    pub fn list_tools(&mut self) -> Vec<String> {
+    pub fn list_tools(&mut self) -> Result<Vec<String>, TestError> {
         let id = self.next_id;
         self.next_id += 1;
         {
-            let stdin = self.child.stdin.as_mut().expect("stdin");
+            let stdin = self
+                .child
+                .stdin
+                .as_mut()
+                .ok_or("the child has no stdin pipe")?;
             writeln!(
                 stdin,
                 "{}",
                 serde_json::json!({"jsonrpc": "2.0", "id": id, "method": "tools/list"})
-            )
-            .expect("write tools/list");
-            stdin.flush().expect("flush");
+            )?;
+            stdin.flush()?;
         }
         let mut line = String::new();
         loop {
             line.clear();
             if self.reader.read_line(&mut line).unwrap_or(0) == 0 {
-                panic!("sipnab closed stdout while waiting for tools/list");
+                return Err("sipnab closed stdout while waiting for tools/list".into());
             }
             let Ok(msg) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
                 continue;
@@ -430,7 +460,7 @@ impl McpSession {
                     .filter_map(|t| t["name"].as_str().map(str::to_string))
                     .collect();
                 names.sort();
-                return names;
+                return Ok(names);
             }
         }
     }
@@ -451,14 +481,94 @@ pub fn call_tool_with_args(
     extra: &[&str],
     tool: &str,
     args: serde_json::Value,
-) -> serde_json::Value {
-    McpSession::start(pcap, extra).call(tool, args)
+) -> Result<serde_json::Value, TestError> {
+    McpSession::start(pcap, extra)?.call(tool, args)
 }
 
 /// Unwrap a successful tool result to its parsed JSON payload.
-pub fn ok_payload(msg: &serde_json::Value) -> serde_json::Value {
+pub fn ok_payload(msg: &serde_json::Value) -> Result<serde_json::Value, TestError> {
     let text = msg["result"]["content"][0]["text"]
         .as_str()
-        .unwrap_or_else(|| panic!("expected success, got {msg}"));
-    serde_json::from_str(text).expect("payload is JSON")
+        .ok_or_else(|| format!("expected success, got {msg}"))?;
+    Ok(serde_json::from_str(text)?)
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`spawn_http`], panicking on error.
+pub fn spawn_http_or_panic(extra_args: &[&str]) -> Option<(Child, String)> {
+    spawn_http(extra_args).expect("spawn_http")
+}
+
+/// [`spawn_http_loopback`], panicking on error.
+pub fn spawn_http_loopback_or_panic(extra_args: &[&str]) -> Option<(Child, String)> {
+    spawn_http_loopback(extra_args).expect("spawn_http_loopback")
+}
+
+/// [`initialize_status`], panicking on error.
+pub fn initialize_status_or_panic(addr: &str, bearer: Option<&str>) -> u16 {
+    initialize_status(addr, bearer).expect("initialize_status")
+}
+
+/// [`post_status`], panicking on error.
+pub fn post_status_or_panic(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16 {
+    post_status(url, bearer, body).expect("post_status")
+}
+
+/// [`post_json`], panicking on error.
+pub fn post_json_or_panic(
+    url: &str,
+    bearer: Option<&str>,
+    body: &serde_json::Value,
+) -> HttpResponse {
+    post_json(url, bearer, body).expect("post_json")
+}
+
+/// [`get`], panicking on error.
+pub fn get_or_panic(url: &str, bearer: Option<&str>) -> HttpResponse {
+    get(url, bearer).expect("get")
+}
+
+/// [`call_tool_with_args`], panicking on error.
+pub fn call_tool_with_args_or_panic(
+    pcap: &str,
+    extra: &[&str],
+    tool: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    call_tool_with_args(pcap, extra, tool, args).expect("call_tool_with_args")
+}
+
+/// [`ok_payload`], panicking on error.
+pub fn ok_payload_or_panic(msg: &serde_json::Value) -> serde_json::Value {
+    ok_payload(msg).expect("ok_payload")
+}
+
+impl McpSession {
+    /// [`McpSession::start`], panicking on error.
+    pub fn start_or_panic(pcap: &str, extra: &[&str]) -> Self {
+        Self::start(pcap, extra).expect("McpSession::start")
+    }
+
+    /// [`McpSession::call`], panicking on error.
+    pub fn call_or_panic(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        self.call(tool, args).expect("McpSession::call")
+    }
+
+    /// [`McpSession::ok`], panicking on error.
+    pub fn ok_or_panic(&mut self, tool: &str, args: serde_json::Value) -> serde_json::Value {
+        self.ok(tool, args).expect("McpSession::ok")
+    }
+
+    /// [`McpSession::stop`], panicking on error.
+    pub fn stop_or_panic(self) -> std::process::ExitStatus {
+        self.stop().expect("McpSession::stop")
+    }
+
+    /// [`McpSession::list_tools`], panicking on error.
+    pub fn list_tools_or_panic(&mut self) -> Vec<String> {
+        self.list_tools().expect("McpSession::list_tools")
+    }
 }

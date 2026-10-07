@@ -22,7 +22,7 @@ mod mcp;
 mod pcap_build;
 
 use mcp::McpSession;
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 use std::process::Command;
 
 const PROXY: [u8; 4] = [192, 0, 2, 10];
@@ -55,13 +55,13 @@ fn capture(dir: &std::path::Path) -> String {
         reply("c3", 31004),
     ];
     let path = dir.join("retries.pcap");
-    write_pcap(&path, &frames);
+    write_pcap_or_panic(&path, &frames);
     path.to_str().expect("utf-8 path").to_string()
 }
 
 /// The `relay_control` rows `reconcile_orphans` returns.
 fn relay_control(session: &mut McpSession) -> Vec<serde_json::Value> {
-    let msg = session.call("reconcile_orphans", serde_json::json!({}));
+    let msg = session.call_or_panic("reconcile_orphans", serde_json::json!({}));
     assert!(
         msg.get("error").is_none(),
         "reconcile_orphans must answer: {msg}"
@@ -82,7 +82,7 @@ fn relay_control(session: &mut McpSession) -> Vec<serde_json::Value> {
 fn reconcile_orphans_counts_retried_relay_commands() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = capture(dir.path());
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         &pcap,
         &["--no-config", "--rtpproxy-control", "192.0.2.40:7722"],
     );
@@ -101,7 +101,7 @@ fn reconcile_orphans_counts_retried_relay_commands() {
 fn without_a_control_socket_there_is_no_relay_control_row() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pcap = capture(dir.path());
-    let mut session = McpSession::start(&pcap, &["--no-config"]);
+    let mut session = McpSession::start_or_panic(&pcap, &["--no-config"]);
     assert!(relay_control(&mut session).is_empty());
 }
 
@@ -139,7 +139,7 @@ fn a_headless_run_reports_retried_relay_commands() {
 fn a_clean_control_channel_prints_no_retry_line() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("clean.pcap");
-    write_pcap(&path, &[command("c9", "call-9"), reply("c9", 31010)]);
+    write_pcap_or_panic(&path, &[command("c9", "call-9"), reply("c9", 31010)]);
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "-N",

@@ -39,8 +39,8 @@ mod pcap_build;
 #[path = "support/mod.rs"]
 mod support;
 
-use pcap_build::write_pcap;
-use support::schema::{assert_valid, load_validator};
+use pcap_build::write_pcap_or_panic;
+use support::schema::{assert_valid, load_validator_or_panic};
 
 /// The endpoint sending audio into a black hole.
 const SENDER: [u8; 4] = [192, 0, 2, 10];
@@ -245,7 +245,7 @@ fn call_with_media_icmp(path: &Path, quoted_bytes: usize) {
         &sip("SIP/2.0 200 OK", &as_refs(&bye_ok_h), ""),
     ));
 
-    write_pcap(path, &frames);
+    write_pcap_or_panic(path, &frames);
 }
 
 /// Run the built binary and return stdout, failing loudly on a non-zero exit.
@@ -377,7 +377,7 @@ fn the_emitted_document_still_matches_the_call_report_schema() {
     let pcap = dir.path().join("media-icmp.pcap");
     call_with_media_icmp(&pcap, usize::MAX);
 
-    let validator = load_validator("call_report.schema.json");
+    let validator = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",
@@ -415,7 +415,7 @@ fn the_schema_rejects_a_finding_without_a_valid_tier() {
     let pcap = dir.path().join("media-icmp.pcap");
     call_with_media_icmp(&pcap, usize::MAX);
 
-    let validator = load_validator("call_report.schema.json");
+    let validator = load_validator_or_panic("call_report.schema.json");
     let out = run_sipnab(&[
         "-N",
         "-I",

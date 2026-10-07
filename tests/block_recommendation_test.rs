@@ -21,7 +21,7 @@ mod pcap_build;
 #[path = "support/run.rs"]
 mod run_support;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 
 /// The address every fixture in this file accuses.
 const SCANNER: [u8; 4] = [198, 51, 100, 7];
@@ -52,7 +52,7 @@ fn probe(n: usize) -> Vec<u8> {
 fn sweep_run(dir: &Path, extra: &[&str]) -> (String, i32) {
     let pcap = dir.join("sweep.pcap");
     let frames: Vec<Vec<u8>> = (0..12).map(probe).collect();
-    write_pcap(&pcap, &frames);
+    write_pcap_or_panic(&pcap, &frames);
 
     let mut args = vec![
         "-N",
@@ -63,7 +63,7 @@ fn sweep_run(dir: &Path, extra: &[&str]) -> (String, i32) {
         "--kill-scanner",
     ];
     args.extend_from_slice(extra);
-    let (stdout, stderr, code) = run_support::run(&args, None);
+    let (stdout, stderr, code) = run_support::run_or_panic(&args, None);
     (
         format!("{stdout}{stderr}"),
         code.expect("sipnab was killed by a signal"),
@@ -165,9 +165,9 @@ fn an_established_source_carries_its_counter_evidence() {
           CSeq: 1 OPTIONS\r\nMax-Forwards: 70\r\n\
           User-Agent: friendly-scanner\r\nContent-Length: 0\r\n\r\n",
     );
-    write_pcap(&pcap, &[register, ok, scan]);
+    write_pcap_or_panic(&pcap, &[register, ok, scan]);
 
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -234,9 +234,9 @@ fn an_unaccused_capture_recommends_nothing() {
           Call-ID: ordinary-1@198.51.100.20\r\n\
           CSeq: 1 INVITE\r\nMax-Forwards: 70\r\nContent-Length: 0\r\n\r\n",
     );
-    write_pcap(&pcap, &[invite]);
+    write_pcap_or_panic(&pcap, &[invite]);
 
-    let (stdout, stderr, code) = run_support::run(
+    let (stdout, stderr, code) = run_support::run_or_panic(
         &[
             "-N",
             "-I",
@@ -267,7 +267,8 @@ fn an_unaccused_capture_recommends_nothing() {
 /// other output flags.
 #[test]
 fn recommend_block_requires_headless_mode() {
-    let (stdout, stderr, code) = run_support::run(&["--recommend-block", "nftables"], None);
+    let (stdout, stderr, code) =
+        run_support::run_or_panic(&["--recommend-block", "nftables"], None);
     let out = format!("{stdout}{stderr}");
     assert_ne!(code, Some(0), "the run should have been refused:\n{out}");
     assert!(

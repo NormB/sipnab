@@ -41,7 +41,7 @@ const UNDECODABLE_FRAMES: usize = 5;
 
 /// Run the binary under the shared test baseline with quiet logs.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    run_support::run(args, Some("error"))
+    run_support::run_or_panic(args, Some("error"))
 }
 
 /// Write a capture whose link type sipnab has no decoder for, carrying bytes
@@ -58,7 +58,7 @@ fn write_undecodable(path: &Path) {
             f
         })
         .collect();
-    pcap_build::write_pcap_with_linktype(path, &frames, DLT_USER0);
+    pcap_build::write_pcap_with_linktype_or_panic(path, &frames, DLT_USER0);
 }
 
 /// The summary must state, with numbers, that nothing was decoded — and must
@@ -128,7 +128,7 @@ fn a_capture_that_decodes_cleanly_prints_no_notice() {
         .iter()
         .map(|msg| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, msg.as_bytes()))
         .collect();
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
 
     let (_, stderr, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
     assert_eq!(code, Some(0), "{stderr}");
@@ -149,7 +149,7 @@ fn a_clean_capture_with_no_sip_still_states_it_plainly() {
     let frames: Vec<Vec<u8>> = (0..4)
         .map(|_| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, b"not-sip-at-all"))
         .collect();
-    pcap_build::write_pcap(&path, &frames);
+    pcap_build::write_pcap_or_panic(&path, &frames);
 
     let (_, stderr, code) = run(&["-N", "-I", path.to_str().expect("utf-8 path")]);
     assert_eq!(code, Some(0), "{stderr}");
@@ -196,7 +196,7 @@ fn the_report_carries_a_not_decoded_section() {
         .iter()
         .map(|msg| pcap_build::udp_frame([10, 1, 0, 1], [10, 1, 0, 2], 5060, 5060, msg.as_bytes()))
         .collect();
-    pcap_build::write_pcap(&clean, &frames);
+    pcap_build::write_pcap_or_panic(&clean, &frames);
     let (stdout, _, _) = run(&["-N", "-I", clean.to_str().expect("utf-8 path"), "--report"]);
     assert!(
         !stdout.contains("NOT DECODED"),

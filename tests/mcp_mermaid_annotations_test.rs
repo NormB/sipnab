@@ -27,15 +27,16 @@ fn text(msg: &serde_json::Value) -> String {
 
 #[test]
 fn the_mermaid_ladder_notes_offsets_and_post_dial_delay() {
-    let mut session = McpSession::start(&fixture("sip_call.pcap"), &["--no-config"]);
-    let list: serde_json::Value =
-        serde_json::from_str(&text(&session.call("list_dialogs", serde_json::json!({}))))
-            .expect("list_dialogs JSON");
+    let mut session = McpSession::start_or_panic(&fixture("sip_call.pcap"), &["--no-config"]);
+    let list: serde_json::Value = serde_json::from_str(&text(
+        &session.call_or_panic("list_dialogs", serde_json::json!({})),
+    ))
+    .expect("list_dialogs JSON");
     let call_id = list["dialogs"][0]["call_id"]
         .as_str()
         .expect("one dialog")
         .to_string();
-    let diagram = text(&session.call(
+    let diagram = text(&session.call_or_panic(
         "render_ladder",
         serde_json::json!({ "call_id": call_id, "format": "mermaid" }),
     ));

@@ -810,7 +810,7 @@ fn write_population_capture(path: &Path) {
         );
     }
 
-    pcap_build::write_pcap_at(path, &timed, 1);
+    pcap_build::write_pcap_at_or_panic(path, &timed, 1);
 }
 
 /// A smaller capture, so `compare_captures` has a baseline to diff against.
@@ -824,7 +824,7 @@ fn write_baseline_capture(path: &Path) {
             &format!("bcallee{n}"),
         ));
     }
-    pcap_build::write_pcap(path, &frames);
+    pcap_build::write_pcap_or_panic(path, &frames);
 }
 
 // ── the enumeration, derived from the source ────────────────────────────
@@ -981,7 +981,7 @@ fn args_at(probe: &PageProbe, param: &str, page: u32) -> Value {
 
 /// Call `probe.tool` at `page` rows and return the parsed payload.
 fn answer_at(session: &mut McpSession, probe: &PageProbe, param: &str, page: u32) -> Value {
-    let reply = session.call(probe.tool, args_at(probe, param, page));
+    let reply = session.call_or_panic(probe.tool, args_at(probe, param, page));
     assert_ne!(
         reply["result"]["isError"],
         json!(true),
@@ -1104,7 +1104,7 @@ fn loaded_session() -> (tempfile::TempDir, McpSession) {
     write_baseline_capture(&dir.path().join(BASELINE_CAPTURE));
 
     let root = dir.path().to_string_lossy().into_owned();
-    let session = McpSession::start(
+    let session = McpSession::start_or_panic(
         capture.to_str().expect("utf-8 capture path"),
         // `--kill-scanner` arms the one detector this fixture trips, so
         // `security_findings` has a population rather than an empty list that
@@ -1177,7 +1177,7 @@ fn the_page_size_surface_is_derived_and_fully_probed() {
 #[test]
 fn every_probed_tool_is_registered() {
     let (_dir, mut session) = loaded_session();
-    let registered = session.list_tools();
+    let registered = session.list_tools_or_panic();
     assert!(
         registered.len() >= 40,
         "only {} tools registered; tools/list stopped answering",
@@ -1376,7 +1376,9 @@ fn a_page_that_withheld_rows_says_so() {
 fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
     let (_dir, mut session) = loaded_session();
 
-    let whole = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": LARGE_PAGE})));
+    let whole = mcp::ok_payload_or_panic(
+        &session.call_or_panic("reconcile_orphans", json!({"limit": LARGE_PAGE})),
+    );
     let orphans = whole["orphans"]
         .as_array()
         .unwrap_or_else(|| panic!("no orphans array: {whole}"));
@@ -1409,7 +1411,9 @@ fn reconcile_orphans_reports_a_relay_it_could_not_fit_on_the_page() {
          and this test would prove nothing."
     );
 
-    let page = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": SMALL_PAGE})));
+    let page = mcp::ok_payload_or_panic(
+        &session.call_or_panic("reconcile_orphans", json!({"limit": SMALL_PAGE})),
+    );
     let rows = page["orphans"]
         .as_array()
         .unwrap_or_else(|| panic!("no orphans array: {page}"));
@@ -1475,11 +1479,13 @@ fn reconcile_orphans_does_not_invent_a_consultation() {
             at += 1_000;
         }
     }
-    pcap_build::write_pcap_at(&capture, &timed, 1);
+    pcap_build::write_pcap_at_or_panic(&capture, &timed, 1);
 
-    let mut session = McpSession::start(capture.to_str().expect("utf-8 path"), &[]);
+    let mut session = McpSession::start_or_panic(capture.to_str().expect("utf-8 path"), &[]);
     for page in [SMALL_PAGE, LARGE_PAGE] {
-        let answer = mcp::ok_payload(&session.call("reconcile_orphans", json!({"limit": page})));
+        let answer = mcp::ok_payload_or_panic(
+            &session.call_or_panic("reconcile_orphans", json!({"limit": page})),
+        );
         assert!(
             answer["total_orphans"].as_u64().unwrap_or_default() >= MIN_ORPHANS as u64,
             "this capture is nothing but orphans and the tool found none: {answer}"

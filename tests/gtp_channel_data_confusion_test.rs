@@ -30,7 +30,7 @@
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
-use pcap_build::{udp_frame, write_pcap};
+use pcap_build::{udp_frame, write_pcap_or_panic};
 use std::process::Command;
 
 /// A GTPv2-C message: flags with the TEID bit set, message type, length
@@ -62,7 +62,7 @@ fn gtpv2_c(msg_type: u8, body_len: usize) -> Vec<u8> {
 fn run_over(frames: &[Vec<u8>]) -> String {
     let dir = tempfile::tempdir().expect("temp dir");
     let pcap = dir.path().join("c.pcap");
-    write_pcap(&pcap, frames);
+    write_pcap_or_panic(&pcap, frames);
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-I"])
         .arg(&pcap)

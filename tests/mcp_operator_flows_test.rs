@@ -93,10 +93,10 @@ fn harvest(v: &serde_json::Value, key: &str, out: &mut Vec<String>) {
 /// Call-ID. Nothing here knows a Call-ID up front — that is the point.
 #[test]
 fn flow_find_a_broken_call_then_ask_every_question_about_it() {
-    let mut s = McpSession::start(BRANCH, &[]);
+    let mut s = McpSession::start_or_panic(BRANCH, &[]);
 
     let problems = expect_ok(
-        &s.call("find_problems", serde_json::json!({})),
+        &s.call_or_panic("find_problems", serde_json::json!({})),
         "find_problems",
         "{}",
     );
@@ -120,7 +120,7 @@ fn flow_find_a_broken_call_then_ask_every_question_about_it() {
         "find_correlated",
         "rtp_stats",
     ] {
-        let msg = s.call(tool, serde_json::json!({ "call_id": call_id }));
+        let msg = s.call_or_panic(tool, serde_json::json!({ "call_id": call_id }));
         expect_ok(&msg, tool, &call_id);
     }
 }
@@ -134,10 +134,10 @@ fn flow_find_a_broken_call_then_ask_every_question_about_it() {
 #[test]
 fn flow_a_finding_leads_to_the_captured_bytes() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
-    let mut s = McpSession::start(LINT, &["--mcp-file-root", root]);
+    let mut s = McpSession::start_or_panic(LINT, &["--mcp-file-root", root]);
 
     let dialogs = expect_ok(
-        &s.call("list_dialogs", serde_json::json!({})),
+        &s.call_or_panic("list_dialogs", serde_json::json!({})),
         "list_dialogs",
         "{}",
     );
@@ -147,7 +147,7 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
     let mut refs = Vec::new();
     for id in &ids {
         let lint = expect_ok(
-            &s.call("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
             "lint_dialog",
             id,
         );
@@ -160,7 +160,7 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
     );
 
     let evidence = expect_ok(
-        &s.call("show_evidence", serde_json::json!({ "refs": [refs[0]] })),
+        &s.call_or_panic("show_evidence", serde_json::json!({ "refs": [refs[0]] })),
         "show_evidence",
         &refs[0],
     );
@@ -187,10 +187,10 @@ fn flow_a_finding_leads_to_the_captured_bytes() {
 /// looks like a short capture rather than a broken loop.
 #[test]
 fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
-    let mut s = McpSession::start(BRANCH, &[]);
+    let mut s = McpSession::start_or_panic(BRANCH, &[]);
 
     let p1 = expect_ok(
-        &s.call("list_dialogs", serde_json::json!({ "limit": 5 })),
+        &s.call_or_panic("list_dialogs", serde_json::json!({ "limit": 5 })),
         "list_dialogs",
         "limit=5",
     );
@@ -201,7 +201,7 @@ fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
     );
 
     let p2 = expect_ok(
-        &s.call(
+        &s.call_or_panic(
             "list_dialogs",
             serde_json::json!({ "limit": 5, "cursor": cursor }),
         ),
@@ -230,9 +230,9 @@ fn flow_a_cursor_advances_rather_than_repeating_the_first_page() {
 /// together.
 #[test]
 fn flow_a_rule_a_finding_names_can_be_explained() {
-    let mut s = McpSession::start(LINT, &[]);
+    let mut s = McpSession::start_or_panic(LINT, &[]);
     let dialogs = expect_ok(
-        &s.call("list_dialogs", serde_json::json!({})),
+        &s.call_or_panic("list_dialogs", serde_json::json!({})),
         "list_dialogs",
         "{}",
     );
@@ -242,7 +242,7 @@ fn flow_a_rule_a_finding_names_can_be_explained() {
     let mut rules = Vec::new();
     for id in &ids {
         let lint = expect_ok(
-            &s.call("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
             "lint_dialog",
             id,
         );
@@ -251,7 +251,7 @@ fn flow_a_rule_a_finding_names_can_be_explained() {
     assert!(!rules.is_empty(), "the lint fixture must produce a rule_id");
 
     for rule in rules.iter().take(4) {
-        let msg = s.call("explain_rule", serde_json::json!({ "rule_id": rule }));
+        let msg = s.call_or_panic("explain_rule", serde_json::json!({ "rule_id": rule }));
         expect_ok(&msg, "explain_rule", rule);
     }
 }
@@ -259,9 +259,9 @@ fn flow_a_rule_a_finding_names_can_be_explained() {
 /// **A stream identifier from the media list is accepted by the media tools.**
 #[test]
 fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
-    let mut s = McpSession::start(G711, &[]);
+    let mut s = McpSession::start_or_panic(G711, &[]);
     let stats = expect_ok(
-        &s.call("rtp_stats", serde_json::json!({})),
+        &s.call_or_panic("rtp_stats", serde_json::json!({})),
         "rtp_stats",
         "{}",
     );
@@ -280,12 +280,12 @@ fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
     );
     for id in ids.iter().take(2) {
         expect_ok(
-            &s.call("rtp_stats", serde_json::json!({ "call_id": id })),
+            &s.call_or_panic("rtp_stats", serde_json::json!({ "call_id": id })),
             "rtp_stats",
             id,
         );
         expect_ok(
-            &s.call("get_dialog_report", serde_json::json!({ "call_id": id })),
+            &s.call_or_panic("get_dialog_report", serde_json::json!({ "call_id": id })),
             "get_dialog_report",
             id,
         );
@@ -306,7 +306,7 @@ fn flow_a_stream_identifier_survives_the_hop_to_the_media_tools() {
 #[test]
 fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
-    let mut s = McpSession::start(LINT, &["--mcp-file-root", root]);
+    let mut s = McpSession::start_or_panic(LINT, &["--mcp-file-root", root]);
 
     // Producers: read-only, no arguments, safe to call blind.
     let producers = [
@@ -319,7 +319,7 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     ];
     let (mut call_ids, mut frame_refs) = (Vec::new(), Vec::new());
     for tool in producers {
-        let payload = expect_ok(&s.call(tool, serde_json::json!({})), tool, "{}");
+        let payload = expect_ok(&s.call_or_panic(tool, serde_json::json!({})), tool, "{}");
         harvest(&payload, "call_id", &mut call_ids);
         // Same identifier, different name on the media surface.
         harvest(&payload, "associated_dialog", &mut call_ids);
@@ -329,7 +329,7 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     // lint_dialog is where frame_refs actually come from.
     for id in call_ids.clone().iter().take(3) {
         let lint = expect_ok(
-            &s.call("lint_dialog", serde_json::json!({ "call_id": id })),
+            &s.call_or_panic("lint_dialog", serde_json::json!({ "call_id": id })),
             "lint_dialog",
             id,
         );
@@ -363,14 +363,14 @@ fn sweep_every_identifier_the_surface_emits_is_accepted_where_it_is_consumed() {
     for id in call_ids.iter().take(3) {
         for tool in call_id_consumers {
             expect_ok(
-                &s.call(tool, serde_json::json!({ "call_id": id })),
+                &s.call_or_panic(tool, serde_json::json!({ "call_id": id })),
                 tool,
                 id,
             );
         }
     }
     for r in frame_refs.iter().take(3) {
-        let msg = s.call("show_evidence", serde_json::json!({ "refs": [r] }));
+        let msg = s.call_or_panic("show_evidence", serde_json::json!({ "refs": [r] }));
         let payload = expect_ok(&msg, "show_evidence", r);
         assert_eq!(
             payload["resolved"], 1,

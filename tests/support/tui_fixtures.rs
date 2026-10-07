@@ -25,6 +25,10 @@ use sipnab::capture::parse::TransportProto;
 use sipnab::sip::SipMessage;
 use sipnab::sip::parser::parse_sip;
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on every error type alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 /// A-side test endpoint address used as the source of requests.
 ///
 /// # Returns
@@ -45,8 +49,12 @@ pub fn endpoint_b() -> IpAddr {
 ///
 /// # Returns
 /// 2024-06-15 12:00:00 UTC, so tests are independent of wall-clock time.
-pub fn base_ts() -> DateTime<Utc> {
-    chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+pub fn base_ts() -> Result<DateTime<Utc>, TestError> {
+    Ok(
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("2024-06-15 12:00:00 UTC is not a single instant")?,
+    )
 }
 
 /// Assemble raw SIP wire bytes from a first line and header lines.
@@ -77,8 +85,13 @@ pub fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
 /// * `ts` - Capture timestamp.
 ///
 /// # Returns
-/// The parsed `SipMessage`; panics if parsing fails.
-pub fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+/// The parsed `SipMessage`, or the parse error.
+pub fn make_invite(
+    call_id: &str,
+    from: &str,
+    to: &str,
+    ts: DateTime<Utc>,
+) -> Result<SipMessage, TestError> {
     let raw = build_sip(
         &format!("INVITE sip:{to}@example.com SIP/2.0"),
         &[
@@ -98,7 +111,7 @@ pub fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> Si
         5060,
         TransportProto::Udp,
     )
-    .expect("parse INVITE")
+    .map_err(|e| format!("parse INVITE: {e}").into())
 }
 
 /// Parse a SIP response (B-side to A-side) for Alice/Bob's dialog.
@@ -110,14 +123,14 @@ pub fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> Si
 /// * `ts` - Capture timestamp.
 ///
 /// # Returns
-/// The parsed `SipMessage`; panics if parsing fails.
+/// The parsed `SipMessage`, or the parse error.
 pub fn make_response(
     call_id: &str,
     status: u16,
     reason: &str,
     cseq_method: &str,
     ts: DateTime<Utc>,
-) -> SipMessage {
+) -> Result<SipMessage, TestError> {
     let raw = build_sip(
         &format!("SIP/2.0 {status} {reason}"),
         &[
@@ -137,5 +150,30 @@ pub fn make_response(
         5060,
         TransportProto::Udp,
     )
-    .expect("parse response")
+    .map_err(|e| format!("parse response: {e}").into())
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`base_ts`], panicking on error.
+pub fn base_ts_or_panic() -> DateTime<Utc> {
+    base_ts().expect("base_ts")
+}
+
+/// [`make_invite`], panicking on error.
+pub fn make_invite_or_panic(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+    make_invite(call_id, from, to, ts).expect("make_invite")
+}
+
+/// [`make_response`], panicking on error.
+pub fn make_response_or_panic(
+    call_id: &str,
+    status: u16,
+    reason: &str,
+    cseq_method: &str,
+    ts: DateTime<Utc>,
+) -> SipMessage {
+    make_response(call_id, status, reason, cseq_method, ts).expect("make_response")
 }

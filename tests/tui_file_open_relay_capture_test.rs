@@ -110,7 +110,7 @@ const RTPPROXY_CELL: &str = "rp-tui@192.";
 /// rtpproxy's `U` command and reply, then media on the port the reply names,
 /// written to `dir`. The shapes are the lab relay's (rtpproxy 3.2.0).
 fn write_rtpproxy_capture(dir: &std::path::Path) -> &'static str {
-    use pcap_build::{udp_frame, write_pcap};
+    use pcap_build::{udp_frame, write_pcap_or_panic};
     let (proxy, relay, party) = ([192, 0, 2, 10], [192, 0, 2, 40], [192, 0, 2, 60]);
     let command = format!("c1 U {RTPPROXY_CALL} 192.0.2.60 40000 ftag1\n");
     let mut frames = vec![
@@ -126,7 +126,7 @@ fn write_rtpproxy_capture(dir: &std::path::Path) -> &'static str {
         frames.push(udp_frame(party, relay, 40000, 49514, &rtp));
     }
     let name = "rtpproxy-relay.pcap";
-    write_pcap(&dir.join(name), &frames);
+    write_pcap_or_panic(&dir.join(name), &frames);
     name
 }
 

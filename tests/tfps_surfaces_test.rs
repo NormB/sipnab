@@ -23,7 +23,7 @@ mod mcp;
 #[path = "support/server.rs"]
 mod server;
 
-use mcp::{McpSession, ok_payload};
+use mcp::{McpSession, ok_payload_or_panic};
 use server::ApiServer;
 
 const STATUS: &str = include_str!("fixtures/tfps-status-golden.json");
@@ -105,7 +105,7 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
     let config = fake.dir.path().join("sipnab.toml");
     std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
     let config = config.display().to_string();
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         PCAP,
         &[
             "--tfps-ctl",
@@ -119,7 +119,7 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
         ],
     );
 
-    let status = ok_payload(&session.call("tfps_status", serde_json::json!({})));
+    let status = ok_payload_or_panic(&session.call_or_panic("tfps_status", serde_json::json!({})));
     assert_eq!(status["installed"], true, "{status}");
     assert_eq!(
         status["tfps_ctl"], path,
@@ -127,24 +127,28 @@ fn every_tfps_tool_answers_over_the_mcp_wire_with_the_flag_wired_through() {
     );
     assert_eq!(status["status"]["blocked_now"], 3);
 
-    let banned = ok_payload(&session.call("tfps_banned", serde_json::json!({})));
+    let banned = ok_payload_or_panic(&session.call_or_panic("tfps_banned", serde_json::json!({})));
     assert_eq!(banned["total"], 3, "{banned}");
     assert_eq!(banned["rows"][0]["ip"], "198.51.100.10");
 
-    let dropped = ok_payload(&session.call("tfps_dropped", serde_json::json!({})));
+    let dropped =
+        ok_payload_or_panic(&session.call_or_panic("tfps_dropped", serde_json::json!({})));
     assert_eq!(dropped["rows"][0]["dropped"], 30, "{dropped}");
 
-    let labels = ok_payload(&session.call("tfps_labels", serde_json::json!({"limit": 3})));
+    let labels =
+        ok_payload_or_panic(&session.call_or_panic("tfps_labels", serde_json::json!({"limit": 3})));
     assert_eq!(labels["total"], 3, "{labels}");
 
-    let ban = ok_payload(&session.call(
+    let ban = ok_payload_or_panic(&session.call_or_panic(
         "tfps_ban",
         serde_json::json!({"ip": "198.51.100.20", "ttl_secs": 3600}),
     ));
     assert_eq!(ban["applied"], true, "{ban}");
 
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let unban = ok_payload(&session.call("tfps_unban", serde_json::json!({"ip": "198.51.100.20"})));
+    let unban = ok_payload_or_panic(
+        &session.call_or_panic("tfps_unban", serde_json::json!({"ip": "198.51.100.20"})),
+    );
     assert_eq!(unban["applied"], true, "{unban}");
 
     let log = fake.argv_log();
@@ -163,7 +167,7 @@ fn a_bad_address_is_refused_over_the_wire_before_the_peer_is_asked() {
     let config = fake.dir.path().join("sipnab.toml");
     std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
     let config = config.display().to_string();
-    let mut session = McpSession::start(
+    let mut session = McpSession::start_or_panic(
         PCAP,
         &[
             "--tfps-ctl",
@@ -176,12 +180,12 @@ fn a_bad_address_is_refused_over_the_wire_before_the_peer_is_asked() {
             &config,
         ],
     );
-    let reply = session.call("tfps_ban", serde_json::json!({"ip": "not an address"}));
+    let reply = session.call_or_panic("tfps_ban", serde_json::json!({"ip": "not an address"}));
     assert_eq!(reply["error"]["code"], -32602, "{reply}");
     // An IPv6 address is an address TFPS cannot hold: its block map is IPv4,
     // and tfps_ctl fails on one outright rather than refusing it.
     for tool in ["tfps_ban", "tfps_unban"] {
-        let reply = session.call(tool, serde_json::json!({"ip": "2001:db8::1"}));
+        let reply = session.call_or_panic(tool, serde_json::json!({"ip": "2001:db8::1"}));
         assert_eq!(reply["error"]["code"], -32602, "{tool}: {reply}");
     }
     assert!(
@@ -203,7 +207,7 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
     let config = fake.dir.path().join("sipnab.toml");
     std::fs::write(&config, "[action_limits]\naddress_cooldown_secs = 1\n").expect("config");
     let config = config.display().to_string();
-    let srv = ApiServer::spawn(&[
+    let srv = ApiServer::spawn_or_panic(&[
         "--api-key",
         KEY,
         "--api-signing-key",
@@ -218,14 +222,16 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
         &config,
     ]);
 
-    let status = srv.get_bearer("/v1/tfps/status", KEY);
+    let status = srv.get_bearer_or_panic("/v1/tfps/status", KEY);
     assert_eq!(status.status, 200, "{}", status.body);
-    let status = status.json();
+    let status = status.json_or_panic();
     assert_eq!(status["installed"], true, "{status}");
     assert_eq!(status["tfps_ctl"], path);
     assert_eq!(status["status"]["enforcement"], "active");
 
-    let banned = srv.get_bearer("/v1/tfps/banned", KEY).json();
+    let banned = srv
+        .get_bearer_or_panic("/v1/tfps/banned", KEY)
+        .json_or_panic();
     assert_eq!(
         banned["rows"][0]["detail"], "pplsip",
         "REST returns the text verbatim: {banned}"
@@ -236,28 +242,32 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
         "null survives: {banned}"
     );
 
-    let dropped = srv.get_bearer("/v1/tfps/dropped", KEY).json();
+    let dropped = srv
+        .get_bearer_or_panic("/v1/tfps/dropped", KEY)
+        .json_or_panic();
     assert_eq!(dropped["rows"][0]["events"], 4, "{dropped}");
 
-    let labels = srv.get_bearer("/v1/tfps/labels?limit=2", KEY).json();
+    let labels = srv
+        .get_bearer_or_panic("/v1/tfps/labels?limit=2", KEY)
+        .json_or_panic();
     assert_eq!(labels["total"], 3, "{labels}");
 
-    let ban = srv.post_json_bearer(
+    let ban = srv.post_json_bearer_or_panic(
         "/v1/tfps/ban",
         r#"{"ip":"198.51.100.20","ttl_secs":600}"#,
         &actions_token(),
     );
     assert_eq!(ban.status, 200, "{}", ban.body);
-    assert_eq!(ban.json()["applied"], true);
+    assert_eq!(ban.json_or_panic()["applied"], true);
 
     std::thread::sleep(std::time::Duration::from_millis(1100));
-    let unban = srv.post_json_bearer(
+    let unban = srv.post_json_bearer_or_panic(
         "/v1/tfps/unban",
         r#"{"ip":"198.51.100.20"}"#,
         &actions_token(),
     );
     assert_eq!(unban.status, 200, "{}", unban.body);
-    assert_eq!(unban.json()["applied"], true, "{}", unban.body);
+    assert_eq!(unban.json_or_panic()["applied"], true, "{}", unban.body);
 
     let log = fake.argv_log();
     assert!(log.contains("--limit\n2\n"), "{log}");
@@ -270,14 +280,14 @@ fn every_tfps_route_answers_over_http_with_the_flag_wired_through() {
 fn the_tfps_routes_sit_behind_the_bearer_guard() {
     let fake = Fake::new();
     let path = fake.path_str();
-    let srv = ApiServer::spawn(&["--api-key", KEY, "--tfps-ctl", &path]);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", KEY, "--tfps-ctl", &path]);
     for route in [
         "/v1/tfps/status",
         "/v1/tfps/banned",
         "/v1/tfps/dropped",
         "/v1/tfps/labels",
     ] {
-        let resp = srv.get(route);
+        let resp = srv.get_or_panic(route);
         assert_eq!(
             resp.status, 401,
             "GET {route} without a token: {}",
@@ -285,7 +295,7 @@ fn the_tfps_routes_sit_behind_the_bearer_guard() {
         );
     }
     for route in ["/v1/tfps/ban", "/v1/tfps/unban"] {
-        let resp = srv.post_json(route, r#"{"ip":"198.51.100.20"}"#);
+        let resp = srv.post_json_or_panic(route, r#"{"ip":"198.51.100.20"}"#);
         assert_eq!(
             resp.status, 401,
             "POST {route} without a token: {}",
@@ -312,10 +322,10 @@ fn a_failing_peer_is_a_502_carrying_its_stderr() {
     .expect("write");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
     let path = path.display().to_string();
-    let srv = ApiServer::spawn(&["--api-key", KEY, "--tfps-ctl", &path]);
-    let resp = srv.get_bearer("/v1/tfps/status", KEY);
+    let srv = ApiServer::spawn_or_panic(&["--api-key", KEY, "--tfps-ctl", &path]);
+    let resp = srv.get_bearer_or_panic("/v1/tfps/status", KEY);
     assert_eq!(resp.status, 502, "{}", resp.body);
-    let body = resp.json();
+    let body = resp.json_or_panic();
     assert_eq!(body["type"], "https://sipnab.com/problems/bad-gateway");
     assert!(
         body["detail"]

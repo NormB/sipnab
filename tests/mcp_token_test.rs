@@ -18,7 +18,9 @@ use std::net::TcpStream;
 use std::process::Command;
 use std::time::Duration;
 
-use mcp::{initialize_status, shutdown, spawn_http_loopback as spawn_http};
+use mcp::{
+    initialize_status_or_panic, shutdown, spawn_http_loopback_or_panic as spawn_http_or_panic,
+};
 
 /// A long, deterministic signing key shared between the spawned server and
 /// in-test minting.
@@ -36,7 +38,7 @@ fn now() -> i64 {
 #[test]
 fn valid_signed_token_initialize_succeeds() {
     let (child, addr) =
-        spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id",
@@ -45,12 +47,16 @@ fn valid_signed_token_initialize_succeeds() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status(&addr, Some(&token)),
+        initialize_status_or_panic(&addr, Some(&token)),
         200,
         "valid token should be 200"
     );
     // Missing token → 401.
-    assert_eq!(initialize_status(&addr, None), 401, "missing token → 401");
+    assert_eq!(
+        initialize_status_or_panic(&addr, None),
+        401,
+        "missing token → 401"
+    );
     shutdown(child);
 }
 
@@ -58,7 +64,7 @@ fn valid_signed_token_initialize_succeeds() {
 #[test]
 fn expired_signed_token_is_rejected() {
     let (child, addr) =
-        spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
     let token = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id",
@@ -67,7 +73,7 @@ fn expired_signed_token_is_rejected() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status(&addr, Some(&token)),
+        initialize_status_or_panic(&addr, Some(&token)),
         401,
         "expired token should be 401"
     );
@@ -78,7 +84,7 @@ fn expired_signed_token_is_rejected() {
 #[test]
 fn forged_wrong_key_token_is_rejected() {
     let (child, addr) =
-        spawn_http(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
+        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY]).expect("server should start");
     let token = sipnab::auth::mint(
         b"a-different-key",
         "id",
@@ -87,7 +93,7 @@ fn forged_wrong_key_token_is_rejected() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status(&addr, Some(&token)),
+        initialize_status_or_panic(&addr, Some(&token)),
         401,
         "forged token should be 401"
     );
@@ -101,7 +107,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
     let revoked_path = dir.path().join("revoked.txt");
     std::fs::write(&revoked_path, "revoked-mcp-jti\n").expect("write denylist");
 
-    let (child, addr) = spawn_http(&[
+    let (child, addr) = spawn_http_or_panic(&[
         "--mcp-signing-key",
         SIGNING_KEY,
         "--mcp-revoked-file",
@@ -117,7 +123,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status(&addr, Some(&revoked)),
+        initialize_status_or_panic(&addr, Some(&revoked)),
         401,
         "revoked id should be 401"
     );
@@ -130,7 +136,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
         sipnab::auth::SCOPE_FULL,
     );
     assert_eq!(
-        initialize_status(&addr, Some(&fresh)),
+        initialize_status_or_panic(&addr, Some(&fresh)),
         200,
         "non-revoked id should be 200"
     );
@@ -141,8 +147,9 @@ fn revoked_id_is_rejected_via_denylist_file() {
 #[test]
 fn rotation_accepts_tokens_from_either_key() {
     let key2 = "second-mcp-rotation-key-abcdef0123";
-    let (child, addr) = spawn_http(&["--mcp-signing-key", SIGNING_KEY, "--mcp-signing-key", key2])
-        .expect("server should start");
+    let (child, addr) =
+        spawn_http_or_panic(&["--mcp-signing-key", SIGNING_KEY, "--mcp-signing-key", key2])
+            .expect("server should start");
     let t1 = sipnab::auth::mint(
         SIGNING_KEY.as_bytes(),
         "id1",
@@ -157,8 +164,16 @@ fn rotation_accepts_tokens_from_either_key() {
         sipnab::auth::AUDIENCE_MCP,
         sipnab::auth::SCOPE_FULL,
     );
-    assert_eq!(initialize_status(&addr, Some(&t1)), 200, "key1 token");
-    assert_eq!(initialize_status(&addr, Some(&t2)), 200, "key2 token");
+    assert_eq!(
+        initialize_status_or_panic(&addr, Some(&t1)),
+        200,
+        "key1 token"
+    );
+    assert_eq!(
+        initialize_status_or_panic(&addr, Some(&t2)),
+        200,
+        "key2 token"
+    );
     shutdown(child);
 }
 
@@ -166,14 +181,14 @@ fn rotation_accepts_tokens_from_either_key() {
 #[test]
 fn static_mcp_token_backward_compat() {
     let (child, addr) =
-        spawn_http(&["--mcp-token", "legacy-mcp-secret"]).expect("server should start");
+        spawn_http_or_panic(&["--mcp-token", "legacy-mcp-secret"]).expect("server should start");
     assert_eq!(
-        initialize_status(&addr, Some("legacy-mcp-secret")),
+        initialize_status_or_panic(&addr, Some("legacy-mcp-secret")),
         200,
         "correct static token → 200"
     );
     assert_eq!(
-        initialize_status(&addr, Some("wrong-secret")),
+        initialize_status_or_panic(&addr, Some("wrong-secret")),
         401,
         "wrong static token → 401"
     );
@@ -225,20 +240,24 @@ fn static_mcp_token_file_backward_compat() {
     let path = dir.path().join("mcp.token");
     std::fs::write(&path, "file-static-mcp-secret\n").expect("write token file");
 
-    let (child, addr) =
-        spawn_http(&["--mcp-token-file", path.to_str().unwrap()]).expect("server should start");
+    let (child, addr) = spawn_http_or_panic(&["--mcp-token-file", path.to_str().unwrap()])
+        .expect("server should start");
     // The file's token (trimmed) authenticates; wrong/missing → 401.
     assert_eq!(
-        initialize_status(&addr, Some("file-static-mcp-secret")),
+        initialize_status_or_panic(&addr, Some("file-static-mcp-secret")),
         200,
         "token from --mcp-token-file → 200"
     );
     assert_eq!(
-        initialize_status(&addr, Some("wrong")),
+        initialize_status_or_panic(&addr, Some("wrong")),
         401,
         "wrong token → 401"
     );
-    assert_eq!(initialize_status(&addr, None), 401, "missing token → 401");
+    assert_eq!(
+        initialize_status_or_panic(&addr, None),
+        401,
+        "missing token → 401"
+    );
     shutdown(child);
 }
 
@@ -297,7 +316,7 @@ fn initialize_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> 
 /// `--mcp-allowed-host custom.example` makes that Host header pass DNS-rebind protection (200) while an unlisted Host is rejected.
 #[test]
 fn mcp_allowed_host_controls_host_header() {
-    let (child, addr) = spawn_http(&[
+    let (child, addr) = spawn_http_or_panic(&[
         "--mcp-signing-key",
         SIGNING_KEY,
         "--mcp-allowed-host",

@@ -21,7 +21,7 @@
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload};
+use support::{McpSession, ok_payload_or_panic};
 
 /// Any capture will do: findings are about what the agent concluded, not about
 /// what the store holds.
@@ -31,8 +31,8 @@ const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 /// it, so an operator reading the error knows what to change.
 #[test]
 fn a_stock_server_refuses_to_record_and_names_the_flag() {
-    let mut session = McpSession::start(CAPTURE, &[]);
-    let reply = session.call(
+    let mut session = McpSession::start_or_panic(CAPTURE, &[]);
+    let reply = session.call_or_panic(
         "save_findings",
         serde_json::json!({ "summary": "should not be recorded" }),
     );
@@ -48,8 +48,8 @@ fn a_stock_server_refuses_to_record_and_names_the_flag() {
 /// where a human will find it.
 #[test]
 fn the_flag_arms_the_write_and_the_reply_says_where_it_went() {
-    let mut session = McpSession::start(CAPTURE, &["--mcp-allow-save-findings"]);
-    let v = ok_payload(&session.call(
+    let mut session = McpSession::start_or_panic(CAPTURE, &["--mcp-allow-save-findings"]);
+    let v = ok_payload_or_panic(&session.call_or_panic(
         "save_findings",
         serde_json::json!({
             "summary": "the 488 was a codec mismatch",
@@ -80,10 +80,13 @@ fn the_flag_arms_the_write_and_the_reply_says_where_it_went() {
 /// The bound is visible before it bites, not only when it refuses.
 #[test]
 fn remaining_counts_down_across_calls_on_a_live_server() {
-    let mut session = McpSession::start(CAPTURE, &["--mcp-allow-save-findings"]);
-    let first = ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "one" })));
-    let second =
-        ok_payload(&session.call("save_findings", serde_json::json!({ "summary": "two" })));
+    let mut session = McpSession::start_or_panic(CAPTURE, &["--mcp-allow-save-findings"]);
+    let first = ok_payload_or_panic(
+        &session.call_or_panic("save_findings", serde_json::json!({ "summary": "one" })),
+    );
+    let second = ok_payload_or_panic(
+        &session.call_or_panic("save_findings", serde_json::json!({ "summary": "two" })),
+    );
 
     let (a, b) = (
         first["remaining"].as_u64().unwrap_or(0),
@@ -106,9 +109,12 @@ fn remaining_counts_down_across_calls_on_a_live_server() {
 /// so the operator would be debugging a silence.
 #[test]
 fn the_tool_is_listed_even_on_a_server_that_will_refuse_it() {
-    let mut session = McpSession::start(CAPTURE, &[]);
+    let mut session = McpSession::start_or_panic(CAPTURE, &[]);
     assert!(
-        session.list_tools().iter().any(|t| t == "save_findings"),
+        session
+            .list_tools_or_panic()
+            .iter()
+            .any(|t| t == "save_findings"),
         "save_findings must be discoverable so its refusal can teach the flag"
     );
 }

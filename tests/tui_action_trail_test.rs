@@ -47,10 +47,10 @@ fn app_with_trail(path: &Path) -> (App, Arc<ActionTrail>) {
 /// An `App` whose dialog store holds one answered call, so the exporters
 /// have something to write.
 fn app_with_a_call() -> App {
-    let t0 = fixtures::base_ts();
+    let t0 = fixtures::base_ts_or_panic();
     App::with_processed_messages(vec![
-        fixtures::make_invite("trail-1@test", "1001", "1002", t0),
-        fixtures::make_response(
+        fixtures::make_invite_or_panic("trail-1@test", "1001", "1002", t0),
+        fixtures::make_response_or_panic(
             "trail-1@test",
             200,
             "OK",
@@ -400,8 +400,8 @@ fn an_operator_note_never_reaches_the_trail() {
     let dir = tempfile::tempdir().expect("tempdir");
     let trail_path = dir.path().join("trail.jsonl");
     // A call whose INVITE carries a frame pointer, which a note needs.
-    let t0 = fixtures::base_ts();
-    let mut invite = fixtures::make_invite("trail-1@test", "1001", "1002", t0);
+    let t0 = fixtures::base_ts_or_panic();
+    let mut invite = fixtures::make_invite_or_panic("trail-1@test", "1001", "1002", t0);
     invite.frame = Some(
         sipnab::capture::resolve::parse_pointer("trail.pcap#0@00000000000000a1")
             .expect("a test pointer"),

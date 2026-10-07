@@ -747,16 +747,16 @@ fn every_documented_response_matches_what_the_server_sends() {
         .and_then(Value::as_object)
         .expect("components.schemas");
 
-    let srv = server::ApiServer::spawn_with_pcap(G711, &[]);
+    let srv = server::ApiServer::spawn_with_pcap_or_panic(G711, &[]);
 
     // Identifiers that exist in THIS capture, taken from the collections the
     // same way a client would.
-    let dialogs = srv.get("/v1/dialogs").json();
+    let dialogs = srv.get_or_panic("/v1/dialogs").json_or_panic();
     let call_id = dialogs["dialogs"][0]["call_id"]
         .as_str()
         .expect("the fixture must produce a dialog, or this test proves nothing")
         .to_string();
-    let streams = srv.get("/v1/streams").json();
+    let streams = srv.get_or_panic("/v1/streams").json_or_panic();
     let ssrc = streams["streams"][0]["ssrc"]
         .as_str()
         .expect("the fixture must produce a stream, or this test proves nothing")
@@ -838,7 +838,7 @@ fn every_documented_response_matches_what_the_server_sends() {
     );
 
     for (url, component) in &checked {
-        let resp = srv.get(url);
+        let resp = srv.get_or_panic(url);
         assert_eq!(resp.status, 200, "GET {url} answered {}", resp.status);
         let body: Value = serde_json::from_str(&resp.body)
             .unwrap_or_else(|e| panic!("GET {url} did not answer JSON: {e}"));
@@ -863,7 +863,7 @@ fn every_documented_response_matches_what_the_server_sends() {
 
     for (path, status) in [("/health", 200u16), ("/metrics", 200)] {
         assert_eq!(
-            srv.get(path).status,
+            srv.get_or_panic(path).status,
             status,
             "{path} is documented as {status}"
         );

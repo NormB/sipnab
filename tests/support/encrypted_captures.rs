@@ -10,6 +10,10 @@
 
 #![allow(dead_code)]
 
+/// The error a fallible helper here returns: any error, boxed, so `?` works
+/// on I/O and crypto errors alike.
+pub type TestError = Box<dyn std::error::Error>;
+
 pub const CLIENT_RANDOM: [u8; 32] = [0x5a; 32];
 pub const SERVER_RANDOM: [u8; 32] = [0xa5; 32];
 pub const CLIENT_SECRET: [u8; 32] = [0x31; 32];
@@ -31,7 +35,7 @@ pub fn tls_keylog() -> String {
 }
 
 /// HKDF-Expand-Label (RFC 8446 section 7.1) with an empty context.
-pub fn expand_label(secret: &[u8], label: &str, len: usize) -> Vec<u8> {
+pub fn expand_label(secret: &[u8], label: &str, len: usize) -> Result<Vec<u8>, TestError> {
     struct Len(usize);
     impl ring::hkdf::KeyType for Len {
         fn len(&self) -> usize {
@@ -45,18 +49,20 @@ pub fn expand_label(secret: &[u8], label: &str, len: usize) -> Vec<u8> {
     info.extend_from_slice(full.as_bytes());
     info.push(0);
     let info_parts = [info.as_slice()];
-    let okm = prk.expand(&info_parts, Len(len)).expect("expand");
+    let okm = prk
+        .expand(&info_parts, Len(len))
+        .map_err(|_| "HKDF expand")?;
     let mut out = vec![0u8; len];
-    okm.fill(&mut out).expect("fill");
-    out
+    okm.fill(&mut out).map_err(|_| "HKDF fill")?;
+    Ok(out)
 }
 
 /// One TLS 1.3 application-data record: `plaintext` sealed with AES-128-GCM
 /// under the key and IV `secret` derives to, at record sequence `seq`.
-pub fn tls13_record(secret: &[u8], seq: u64, plaintext: &[u8]) -> Vec<u8> {
+pub fn tls13_record(secret: &[u8], seq: u64, plaintext: &[u8]) -> Result<Vec<u8>, TestError> {
     use ring::aead;
-    let key = expand_label(secret, "key", 16);
-    let iv = expand_label(secret, "iv", 12);
+    let key = expand_label(secret, "key", 16)?;
+    let iv = expand_label(secret, "iv", 12)?;
     let mut inner = plaintext.to_vec();
     inner.push(23); // the real content type: application_data
     let mut nonce = [0u8; 12];
@@ -67,18 +73,19 @@ pub fn tls13_record(secret: &[u8], seq: u64, plaintext: &[u8]) -> Vec<u8> {
     let ct_len = (inner.len() + aead::AES_128_GCM.tag_len()) as u16;
     let mut aad = vec![23u8, 0x03, 0x03];
     aad.extend_from_slice(&ct_len.to_be_bytes());
-    let sealing =
-        aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_128_GCM, &key).expect("key"));
+    let sealing = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_128_GCM, &key).map_err(|_| "AES-128-GCM key")?,
+    );
     sealing
         .seal_in_place_append_tag(
             aead::Nonce::assume_unique_for_key(nonce),
             aead::Aad::from(&aad),
             &mut inner,
         )
-        .expect("seal");
+        .map_err(|_| "AES-128-GCM seal")?;
     let mut rec = aad;
     rec.extend_from_slice(&inner);
-    rec
+    Ok(rec)
 }
 
 /// A TLS handshake record holding one handshake message.
@@ -117,7 +124,7 @@ pub fn tls13_hellos() -> (Vec<u8>, Vec<u8>) {
 
 /// SIP over TLS on 5061: the hellos in the clear, then an INVITE and its
 /// answer as TLS 1.3 application data.
-pub fn tls_session_frames() -> Vec<Vec<u8>> {
+pub fn tls_session_frames() -> Result<Vec<Vec<u8>>, TestError> {
     let a = [10, 9, 0, 1];
     let b = [10, 9, 0, 2];
     let (client, server) = (40_111u16, 5061u16);
@@ -132,8 +139,8 @@ pub fn tls_session_frames() -> Vec<Vec<u8>> {
     );
     let ringing = format!("SIP/2.0 180 Ringing\r\n{common}Content-Length: 0\r\n\r\n");
     let (ch, sh) = tls13_hellos();
-    let c1 = tls13_record(&CLIENT_SECRET, 0, invite.as_bytes());
-    let s1 = tls13_record(&SERVER_SECRET, 0, ringing.as_bytes());
+    let c1 = tls13_record(&CLIENT_SECRET, 0, invite.as_bytes())?;
+    let s1 = tls13_record(&SERVER_SECRET, 0, ringing.as_bytes())?;
     let mut cseq = 1000u32;
     let mut sseq = 5000u32;
     let mut frames = vec![
@@ -155,20 +162,20 @@ pub fn tls_session_frames() -> Vec<Vec<u8>> {
             sseq += payload.len() as u32;
         }
     }
-    frames
+    Ok(frames)
 }
 
-pub fn classic_pcap(frames: &[Vec<u8>]) -> Vec<u8> {
-    let dir = tempfile::tempdir().expect("dir");
+pub fn classic_pcap(frames: &[Vec<u8>]) -> std::io::Result<Vec<u8>> {
+    let dir = tempfile::tempdir()?;
     let p = dir.path().join("c.pcap");
-    super::pcap_build::write_pcap(&p, frames);
-    std::fs::read(&p).expect("read")
+    super::pcap_build::write_pcap(&p, frames)?;
+    std::fs::read(&p)
 }
 
 /// AES-128 in counter mode from `iv`, as RFC 3711 section 4.1.1 runs it.
-pub fn aes_cm(key: &[u8], iv: [u8; 16], len: usize) -> Vec<u8> {
+pub fn aes_cm(key: &[u8], iv: [u8; 16], len: usize) -> Result<Vec<u8>, TestError> {
     use aes::cipher::{BlockCipherEncrypt, KeyInit};
-    let cipher = aes::Aes128::new_from_slice(key).expect("aes key");
+    let cipher = aes::Aes128::new_from_slice(key).map_err(|_| "AES-128 key length")?;
     let mut out = Vec::with_capacity(len);
     let mut counter = u128::from_be_bytes(iv);
     while out.len() < len {
@@ -178,11 +185,16 @@ pub fn aes_cm(key: &[u8], iv: [u8; 16], len: usize) -> Vec<u8> {
         counter = counter.wrapping_add(1);
     }
     out.truncate(len);
-    out
+    Ok(out)
 }
 
 /// RFC 3711 section 4.3.1 key derivation with a key derivation rate of 0.
-pub fn srtp_kdf(master_key: &[u8], master_salt: &[u8], label: u8, len: usize) -> Vec<u8> {
+pub fn srtp_kdf(
+    master_key: &[u8],
+    master_salt: &[u8],
+    label: u8,
+    len: usize,
+) -> Result<Vec<u8>, TestError> {
     let mut x = [0u8; 16];
     x[..14].copy_from_slice(master_salt);
     x[7] ^= label;
@@ -206,7 +218,7 @@ pub fn srtp_packet(
     master_salt: &[u8],
     head: &RtpHead,
     payload: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, TestError> {
     let RtpHead {
         ssrc,
         seq,
@@ -214,9 +226,9 @@ pub fn srtp_packet(
         pt,
         marker,
     } = *head;
-    let session_key = srtp_kdf(master_key, master_salt, 0x00, 16);
-    let auth_key = srtp_kdf(master_key, master_salt, 0x01, 20);
-    let session_salt = srtp_kdf(master_key, master_salt, 0x02, 14);
+    let session_key = srtp_kdf(master_key, master_salt, 0x00, 16)?;
+    let auth_key = srtp_kdf(master_key, master_salt, 0x01, 20)?;
+    let session_salt = srtp_kdf(master_key, master_salt, 0x02, 14)?;
     let mut header = vec![0x80, pt | if marker { 0x80 } else { 0 }];
     header.extend_from_slice(&seq.to_be_bytes());
     header.extend_from_slice(&ts.to_be_bytes());
@@ -231,7 +243,7 @@ pub fn srtp_packet(
     for (i, b) in index.to_be_bytes()[2..].iter().enumerate() {
         iv[8 + i] ^= b;
     }
-    let ks = aes_cm(&session_key, iv, payload.len());
+    let ks = aes_cm(&session_key, iv, payload.len())?;
     let mut packet = header;
     packet.extend(payload.iter().zip(&ks).map(|(p, k)| p ^ k));
     let mut authed = packet.clone();
@@ -241,12 +253,17 @@ pub fn srtp_packet(
         &authed,
     );
     packet.extend_from_slice(&tag.as_ref()[..10]);
-    packet
+    Ok(packet)
 }
 
 /// RFC 4733 telephone-event packets for `digits`: three packets per digit,
 /// the last of them with the end bit, each digit its own event timestamp.
-pub fn dtmf_srtp(master_key: &[u8], master_salt: &[u8], ssrc: u32, digits: &[u8]) -> Vec<Vec<u8>> {
+pub fn dtmf_srtp(
+    master_key: &[u8],
+    master_salt: &[u8],
+    ssrc: u32,
+    digits: &[u8],
+) -> Result<Vec<Vec<u8>>, TestError> {
     let mut out = Vec::new();
     let mut seq = 100u16;
     for (n, digit) in digits.iter().enumerate() {
@@ -270,11 +287,11 @@ pub fn dtmf_srtp(master_key: &[u8], master_salt: &[u8], ssrc: u32, digits: &[u8]
                     marker: i == 0,
                 },
                 &payload,
-            ));
+            )?);
             seq += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 pub const SRTP_KEY: [u8; 16] = [0x7c; 16];
@@ -286,7 +303,7 @@ pub fn base64(bytes: &[u8]) -> String {
 }
 
 /// A call whose SDP carries SDES keys, then DTMF "42" as SRTP from the caller.
-pub fn sdes_call_frames() -> Vec<Vec<u8>> {
+pub fn sdes_call_frames() -> Result<Vec<Vec<u8>>, TestError> {
     let a = [10, 8, 0, 1];
     let b = [10, 8, 0, 2];
     let mut inline = SRTP_KEY.to_vec();
@@ -322,10 +339,10 @@ pub fn sdes_call_frames() -> Vec<Vec<u8>> {
         super::pcap_build::udp_frame(a, b, 5060, 5060, invite.as_bytes()),
         super::pcap_build::udp_frame(b, a, 5060, 5060, ok.as_bytes()),
     ];
-    for p in dtmf_srtp(&SRTP_KEY, &SRTP_SALT, 0x1234_5678, &[4, 2]) {
+    for p in dtmf_srtp(&SRTP_KEY, &SRTP_SALT, 0x1234_5678, &[4, 2])? {
         frames.push(super::pcap_build::udp_frame(a, b, 40_000, 50_000, &p));
     }
-    frames
+    Ok(frames)
 }
 
 pub const WSS_CALL_ID: &str = "wss-decrypt-1@test";
@@ -374,7 +391,10 @@ pub const WS_MASK: [u8; 4] = [0x37, 0xfa, 0x21, 0x3d];
 /// in sipnab's default WebSocket port set: the hellos in the clear, the HTTP
 /// upgrade and its 101 as application data, then each direction's further
 /// decrypted records in order, one TLS record each.
-pub fn wss_session(client_records: &[Vec<u8>], server_records: &[Vec<u8>]) -> Vec<Vec<u8>> {
+pub fn wss_session(
+    client_records: &[Vec<u8>],
+    server_records: &[Vec<u8>],
+) -> Result<Vec<Vec<u8>>, TestError> {
     wss_session_with(
         &[UPGRADE.as_bytes().to_vec()],
         &[SWITCHING.as_bytes().to_vec()],
@@ -400,7 +420,7 @@ pub fn wss_session_with(
     server_head: &[Vec<u8>],
     client_records: &[Vec<u8>],
     server_records: &[Vec<u8>],
-) -> Vec<Vec<u8>> {
+) -> Result<Vec<Vec<u8>>, TestError> {
     let a = [10, 9, 1, 1];
     let b = [10, 9, 1, 2];
     let (client, server) = (40_211u16, 7443u16);
@@ -409,20 +429,20 @@ pub fn wss_session_with(
     let mut cseq_n = 0u64;
     let mut sseq_n = 0u64;
     for r in client_head {
-        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)));
+        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)?));
         cseq_n += 1;
     }
     for r in server_head {
-        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)));
+        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)?));
         sseq_n += 1;
     }
     // Client records first, then server records: a request, then its answer.
     for r in client_records {
-        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)));
+        sends.push((true, tls13_record(&CLIENT_SECRET, cseq_n, r)?));
         cseq_n += 1;
     }
     for r in server_records {
-        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)));
+        sends.push((false, tls13_record(&SERVER_SECRET, sseq_n, r)?));
         sseq_n += 1;
     }
     let mut cseq = 1000u32;
@@ -446,7 +466,7 @@ pub fn wss_session_with(
             sseq += payload.len() as u32;
         }
     }
-    frames
+    Ok(frames)
 }
 
 /// A WebSocket frame with an explicit FIN bit and opcode.
@@ -454,4 +474,82 @@ pub fn ws_frame_raw(fin: bool, opcode: u8, payload: &[u8], key: Option<[u8; 4]>)
     let mut f = ws_text_frame(payload, key);
     f[0] = if fin { 0x80 } else { 0 } | opcode;
     f
+}
+
+// Panicking forms of the functions above, for callers not yet converted to
+// return a `Result`. Each is removed when its last caller is converted;
+// `unwrap_ratchet_test` counts the `expect` in each.
+
+/// [`expand_label`], panicking on error.
+pub fn expand_label_or_panic(secret: &[u8], label: &str, len: usize) -> Vec<u8> {
+    expand_label(secret, label, len).expect("expand_label")
+}
+
+/// [`tls13_record`], panicking on error.
+pub fn tls13_record_or_panic(secret: &[u8], seq: u64, plaintext: &[u8]) -> Vec<u8> {
+    tls13_record(secret, seq, plaintext).expect("tls13_record")
+}
+
+/// [`tls_session_frames`], panicking on error.
+pub fn tls_session_frames_or_panic() -> Vec<Vec<u8>> {
+    tls_session_frames().expect("tls_session_frames")
+}
+
+/// [`classic_pcap`], panicking on error.
+pub fn classic_pcap_or_panic(frames: &[Vec<u8>]) -> Vec<u8> {
+    classic_pcap(frames).expect("classic_pcap")
+}
+
+/// [`aes_cm`], panicking on error.
+pub fn aes_cm_or_panic(key: &[u8], iv: [u8; 16], len: usize) -> Vec<u8> {
+    aes_cm(key, iv, len).expect("aes_cm")
+}
+
+/// [`srtp_kdf`], panicking on error.
+pub fn srtp_kdf_or_panic(master_key: &[u8], master_salt: &[u8], label: u8, len: usize) -> Vec<u8> {
+    srtp_kdf(master_key, master_salt, label, len).expect("srtp_kdf")
+}
+
+/// [`srtp_packet`], panicking on error.
+pub fn srtp_packet_or_panic(
+    master_key: &[u8],
+    master_salt: &[u8],
+    head: &RtpHead,
+    payload: &[u8],
+) -> Vec<u8> {
+    srtp_packet(master_key, master_salt, head, payload).expect("srtp_packet")
+}
+
+/// [`dtmf_srtp`], panicking on error.
+pub fn dtmf_srtp_or_panic(
+    master_key: &[u8],
+    master_salt: &[u8],
+    ssrc: u32,
+    digits: &[u8],
+) -> Vec<Vec<u8>> {
+    dtmf_srtp(master_key, master_salt, ssrc, digits).expect("dtmf_srtp")
+}
+
+/// [`sdes_call_frames`], panicking on error.
+pub fn sdes_call_frames_or_panic() -> Vec<Vec<u8>> {
+    sdes_call_frames().expect("sdes_call_frames")
+}
+
+/// [`wss_session`], panicking on error.
+pub fn wss_session_or_panic(
+    client_records: &[Vec<u8>],
+    server_records: &[Vec<u8>],
+) -> Vec<Vec<u8>> {
+    wss_session(client_records, server_records).expect("wss_session")
+}
+
+/// [`wss_session_with`], panicking on error.
+pub fn wss_session_with_or_panic(
+    client_head: &[Vec<u8>],
+    server_head: &[Vec<u8>],
+    client_records: &[Vec<u8>],
+    server_records: &[Vec<u8>],
+) -> Vec<Vec<u8>> {
+    wss_session_with(client_head, server_head, client_records, server_records)
+        .expect("wss_session_with")
 }

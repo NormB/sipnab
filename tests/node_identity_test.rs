@@ -21,19 +21,19 @@
 #[path = "support/mcp.rs"]
 mod support;
 
-use support::{McpSession, ok_payload};
+use support::{McpSession, ok_payload_or_panic};
 
 const CAPTURE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
 /// The flag reaches the wire, on every response rather than a special one.
 #[test]
 fn the_node_name_flag_lands_in_capture_identity() {
-    let mut session = McpSession::start(CAPTURE, &["--node-name", "sbc-edge-1"]);
+    let mut session = McpSession::start_or_panic(CAPTURE, &["--node-name", "sbc-edge-1"]);
 
     // One tool now, where this looped over two: `stats` was folded into
     // `capture_status`, which carries the identity it used to duplicate.
     let tool = "capture_status";
-    let v = ok_payload(&session.call(tool, serde_json::json!({})));
+    let v = ok_payload_or_panic(&session.call_or_panic(tool, serde_json::json!({})));
     assert_eq!(
         v["capture_identity"]["node"], "sbc-edge-1",
         "{tool} must say which box answered it"
@@ -46,8 +46,8 @@ fn the_node_name_flag_lands_in_capture_identity() {
 /// would group every unnamed node together as one box.
 #[test]
 fn a_node_is_always_reported_even_with_no_flag() {
-    let mut session = McpSession::start(CAPTURE, &[]);
-    let v = ok_payload(&session.call("capture_status", serde_json::json!({})));
+    let mut session = McpSession::start_or_panic(CAPTURE, &[]);
+    let v = ok_payload_or_panic(&session.call_or_panic("capture_status", serde_json::json!({})));
     let node = v["capture_identity"]["node"].as_str().unwrap_or_default();
     assert!(
         !node.is_empty(),
@@ -58,11 +58,11 @@ fn a_node_is_always_reported_even_with_no_flag() {
 /// Two servers given different names stay distinguishable — the whole point.
 #[test]
 fn two_servers_with_different_names_are_told_apart() {
-    let mut a = McpSession::start(CAPTURE, &["--node-name", "pbx-1"]);
-    let mut b = McpSession::start(CAPTURE, &["--node-name", "pbx-2"]);
+    let mut a = McpSession::start_or_panic(CAPTURE, &["--node-name", "pbx-1"]);
+    let mut b = McpSession::start_or_panic(CAPTURE, &["--node-name", "pbx-2"]);
 
-    let va = ok_payload(&a.call("capture_status", serde_json::json!({})));
-    let vb = ok_payload(&b.call("capture_status", serde_json::json!({})));
+    let va = ok_payload_or_panic(&a.call_or_panic("capture_status", serde_json::json!({})));
+    let vb = ok_payload_or_panic(&b.call_or_panic("capture_status", serde_json::json!({})));
 
     assert_eq!(va["capture_identity"]["node"], "pbx-1");
     assert_eq!(vb["capture_identity"]["node"], "pbx-2");
