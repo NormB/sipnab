@@ -3265,7 +3265,7 @@ mod tests {
             folded[0]
                 .fold_label
                 .as_deref()
-                .ok_or(" is None")?
+                .ok_or("the folded row carries a fold label")?
                 .contains("auth retry"),
             "missing auth fold label"
         );

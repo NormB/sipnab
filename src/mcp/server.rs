@@ -12374,7 +12374,7 @@ mod tests {
         assert!(
             hits[0]["snippet"]
                 .as_str()
-                .ok_or(" is None")?
+                .ok_or("the hit carries a snippet string")?
                 .to_lowercase()
                 .contains("alice")
         );

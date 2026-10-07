@@ -2811,7 +2811,7 @@ mod turn_tests {
             [0xCC; 12],
             &[(0x0009, vec![0, 0, 0x04, 0x01])],
         ))
-        .ok_or(" is None")?;
+        .ok_or("the error response parses")?;
         assert_eq!(refused.error_code, Some(401));
         note_message(&refused, dst, src, ts(10));
 
