@@ -1146,6 +1146,9 @@ mod tests {
     use crossterm::event::KeyCode;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed caller-side test address 10.0.0.1.
     fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
@@ -1155,8 +1158,11 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
     /// Fixed deterministic base timestamp shared by all fixtures.
-    fn base_ts() -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("valid fixture timestamp")?)
     }
 
     /// Assemble a raw SIP message from a first line and header lines,
@@ -1174,7 +1180,12 @@ mod tests {
     }
 
     /// Build a parsed INVITE from `from` to `to` at `ts`, sent A→B.
-    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite(
+        call_id: &str,
+        from: &str,
+        to: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
             &[
@@ -1185,7 +1196,7 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_a(),
@@ -1194,11 +1205,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse INVITE")
+        .map_err(|e| format!("parse INVITE: {e:?}"))?)
     }
 
     /// Build a parsed 200 OK to the INVITE at `ts`, sent B→A.
-    fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_ok(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = raw_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1209,7 +1220,7 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             addr_b(),
@@ -1218,26 +1229,26 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("parse 200")
+        .map_err(|e| format!("parse 200: {e:?}"))?)
     }
 
     /// App fixture holding two answered dialogs (call-1, call-2).
-    fn app_with_dialogs() -> App {
-        let t0 = base_ts();
-        App::with_processed_messages(vec![
-            make_invite("call-1@test", "1001", "1002", t0),
-            make_ok("call-1@test", t0 + TimeDelta::seconds(1)),
-            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
-            make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
-        ])
+    fn app_with_dialogs() -> Result<App, TestError> {
+        let t0 = base_ts()?;
+        Ok(App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0)?,
+            make_ok("call-1@test", t0 + TimeDelta::seconds(1))?,
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5))?,
+            make_ok("call-2@test", t0 + TimeDelta::seconds(6))?,
+        ]))
     }
 
     /// Scan a pcapng file's Name Resolution Blocks for the names mapped to `ip`.
-    fn nrb_names_for(path: &std::path::Path, ip: [u8; 4]) -> Vec<String> {
+    fn nrb_names_for(path: &std::path::Path, ip: [u8; 4]) -> Result<Vec<String>, TestError> {
         use pcap_file::pcapng::PcapNgReader;
         use pcap_file::pcapng::blocks::name_resolution::Record;
-        let bytes = std::fs::read(path).unwrap();
-        let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+        let bytes = std::fs::read(path)?;
+        let mut reader = PcapNgReader::new(&bytes[..])?;
         let mut names = Vec::new();
         while let Some(Ok(block)) = reader.next_block() {
             if let Some(nrb) = block.into_name_resolution() {
@@ -1250,52 +1261,54 @@ mod tests {
                 }
             }
         }
-        names
+        Ok(names)
     }
 
     /// Name resolution on + a manual mapping: the saved pcapng carries an
     /// NRB mapping the source IP to the operator name.
     #[test]
-    fn pcapng_save_includes_name_resolution_block() {
+    fn pcapng_save_includes_name_resolution_block() -> Result<(), TestError> {
         // SUCCESS case: name resolution on + a mapping → the saved pcapng
         // carries an NRB that maps the source IP to the operator's name.
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.resolver().set_manual(addr_a(), "sbc-edge".into());
         app.set_name_mode(crate::names::NameMode::Names);
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("named.pcapng");
-        let msg = save_to_pcap_path(&app, path.to_str().unwrap(), true);
+        let msg = save_to_pcap_path(&app, path.to_str().ok_or("to_str() returned None")?, true);
         assert!(msg.starts_with("Saved"), "save failed: {msg}");
 
         assert_eq!(
-            nrb_names_for(&path, [10, 0, 0, 1]),
+            nrb_names_for(&path, [10, 0, 0, 1])?,
             vec!["sbc-edge".to_string()]
         );
+        Ok(())
     }
 
     /// Name resolution Off: no NRB is written even when a mapping exists.
     #[test]
-    fn pcapng_save_without_resolution_writes_no_nrb() {
+    fn pcapng_save_without_resolution_writes_no_nrb() -> Result<(), TestError> {
         // FAILURE/negative case: name resolution Off (default) → no NRB at all,
         // even if a mapping happens to exist.
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.resolver().set_manual(addr_a(), "sbc-edge".into());
         app.set_name_mode(crate::names::NameMode::Off);
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("plain.pcapng");
-        save_to_pcap_path(&app, path.to_str().unwrap(), true);
+        save_to_pcap_path(&app, path.to_str().ok_or("to_str() returned None")?, true);
 
         assert!(
-            nrb_names_for(&path, [10, 0, 0, 1]).is_empty(),
+            nrb_names_for(&path, [10, 0, 0, 1])?.is_empty(),
             "no NRB expected when name resolution is Off"
         );
+        Ok(())
     }
 
     /// Build a minimal RTP packet (12-byte header + payload) and feed it to
     /// the app's stream store so RTP exports have something to serialize.
-    fn add_rtp_stream(app: &App) {
+    fn add_rtp_stream(app: &App) -> Result<(), TestError> {
         let mut data = vec![
             0x80, 0x00, // V=2, PT=0 (PCMU)
             0x00, 0x01, // seq
@@ -1303,11 +1316,12 @@ mod tests {
             0x12, 0x34, 0x56, 0x78, // ssrc
         ];
         data.extend_from_slice(&[0xAA; 160]); // payload
-        let rtp = crate::rtp::parser::parse_rtp_header(&data).expect("rtp header");
+        let rtp = crate::rtp::parser::parse_rtp_header(&data)
+            .map_err(|e| format!("rtp header: {e:?}"))?;
         let parsed = ParsedPacket {
             frame_bytes: None,
             frame: None,
-            timestamp: base_ts(),
+            timestamp: base_ts()?,
             src_addr: addr_a(),
             dst_addr: addr_b(),
             src_port: 20000,
@@ -1326,7 +1340,8 @@ mod tests {
         };
         app.stream_store
             .write()
-            .process_rtp(&parsed, &rtp, base_ts());
+            .process_rtp(&parsed, &rtp, base_ts()?);
+        Ok(())
     }
 
     /// A temp-dir-backed path. Owns the `TempDir`, so the destination stays
@@ -1355,44 +1370,47 @@ mod tests {
     /// Path to `name` inside a fresh temp directory. The returned guard owns
     /// the directory and removes it on drop, so bind it for the test's
     /// lifetime (`let p = tmp_path(...)`).
-    fn tmp_path(name: &str) -> TmpPath {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn tmp_path(name: &str) -> Result<TmpPath, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join(name);
-        TmpPath { _dir: dir, path }
+        Ok(TmpPath { _dir: dir, path })
     }
 
     // ── Happy-path: each format writes a file ────────────────────────
 
     /// pcap export reports success and creates the file.
     #[test]
-    fn pcap_saves_packets() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.pcap");
-        let msg = save_to_pcap_path(&app, p.to_str().unwrap(), false);
+    fn pcap_saves_packets() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.pcap")?;
+        let msg = save_to_pcap_path(&app, p.to_str().ok_or("to_str() returned None")?, false);
         assert!(msg.contains("Saved"), "got: {msg}");
         assert!(p.exists());
+        Ok(())
     }
 
     /// pcapng export reports the pcapng format label and creates the file.
     #[test]
-    fn pcapng_saves_packets() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.pcapng");
-        let msg = save_to_pcap_path(&app, p.to_str().unwrap(), true);
+    fn pcapng_saves_packets() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.pcapng")?;
+        let msg = save_to_pcap_path(&app, p.to_str().ok_or("to_str() returned None")?, true);
         assert!(msg.contains("pcapng"), "got: {msg}");
         assert!(p.exists());
+        Ok(())
     }
 
     /// Every `opt_comment` in a pcapng's Section Header Block.
     ///
     /// Read the way the writer's own metadata tests read it: the reader parses
     /// the SHB in `new()` and exposes it through `section()`.
-    fn section_comments(path: &std::path::Path) -> Vec<String> {
+    fn section_comments(path: &std::path::Path) -> Result<Vec<String>, TestError> {
         use pcap_file::pcapng::PcapNgReader;
         use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
-        let bytes = std::fs::read(path).expect("read the saved pcapng");
-        let reader = PcapNgReader::new(&bytes[..]).expect("a pcapng the reader accepts");
-        reader
+        let bytes = std::fs::read(path).map_err(|e| format!("read the saved pcapng: {e:?}"))?;
+        let reader = PcapNgReader::new(&bytes[..])
+            .map_err(|e| format!("a pcapng the reader accepts: {e:?}"))?;
+        Ok(reader
             .section()
             .options
             .iter()
@@ -1400,7 +1418,7 @@ mod tests {
                 SectionHeaderOption::Comment(c) => Some(c.to_string()),
                 _ => None,
             })
-            .collect()
+            .collect())
     }
 
     /// A pcapng saved from the TUI says, in the file, that its frames were
@@ -1416,13 +1434,13 @@ mod tests {
     /// Driven through the real key path (F2, Tab to PCAP-NG, Enter), because
     /// the defect is about what the operator's save produces.
     #[test]
-    fn a_tui_pcapng_save_says_its_frames_were_rebuilt() {
-        let mut app = app_with_dialogs();
-        let p = tmp_path("rebuilt.pcapng");
+    fn a_tui_pcapng_save_says_its_frames_were_rebuilt() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        let p = tmp_path("rebuilt.pcapng")?;
         app.handle_key(KeyCode::F(2));
         app.handle_key(KeyCode::Tab);
         assert_eq!(app.save_format(), SaveFormat::PcapNg, "Tab reaches PCAP-NG");
-        app.set_save_path(p.to_str().expect("utf-8 temp path"));
+        app.set_save_path(p.to_str().ok_or("utf-8 temp path")?);
         app.handle_key(KeyCode::Enter);
         app.settle_background_work();
         assert!(
@@ -1431,7 +1449,7 @@ mod tests {
             app.status_error()
         );
 
-        let comments = section_comments(&p);
+        let comments = section_comments(&p)?;
         let all = comments.join("\n");
         assert!(
             all.contains("REBUILT, NOT COPIED"),
@@ -1446,6 +1464,7 @@ mod tests {
             all.contains("4 message(s) written"),
             "and how many messages it holds: {comments:?}"
         );
+        Ok(())
     }
 
     /// The MCP export's wording is the same rule, not a second copy of it.
@@ -1454,7 +1473,8 @@ mod tests {
     /// is which surface asked for the file. Two hand-written paragraphs would
     /// agree today and drift the next time one of them is corrected.
     #[test]
-    fn the_rebuilt_frames_note_names_its_surface_and_nothing_else_differs() {
+    fn the_rebuilt_frames_note_names_its_surface_and_nothing_else_differs() -> Result<(), TestError>
+    {
         let tui = crate::output::synthetic::rebuilt_frames_note("the TUI save dialog", 3);
         let mcp = crate::output::synthetic::rebuilt_frames_note("the MCP export_capture tool", 3);
         assert!(tui.contains("via the TUI save dialog"), "{tui}");
@@ -1464,6 +1484,7 @@ mod tests {
             mcp.replace("the MCP export_capture tool", "X"),
             "the two notes may differ only in the surface they name"
         );
+        Ok(())
     }
 
     /// A save whose bytes never reached the disk does not report "Saved".
@@ -1476,12 +1497,12 @@ mod tests {
     /// filled after the file was created.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() {
+    fn a_save_that_could_not_be_flushed_is_not_reported_as_saved() -> Result<(), TestError> {
         if !std::path::Path::new("/dev/full").exists() {
             stderr_line!("skipped: no /dev/full on this host");
-            return;
+            return Ok(());
         }
-        let app = app_with_dialogs();
+        let app = app_with_dialogs()?;
         for pcapng in [false, true] {
             let msg = save_to_pcap_path(&app, "/dev/full", pcapng);
             assert!(
@@ -1490,48 +1511,51 @@ mod tests {
                  (pcapng={pcapng}): {msg}"
             );
         }
+        Ok(())
     }
 
     /// txt export writes per-message headers and the raw INVITE text.
     #[test]
-    fn txt_saves_and_content_has_message_header() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.txt");
-        let msg = save_to_txt_path(&app, p.to_str().unwrap());
+    fn txt_saves_and_content_has_message_header() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.txt")?;
+        let msg = save_to_txt_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         assert!(content.contains("# Message 1"));
         assert!(content.contains("INVITE"));
+        Ok(())
     }
 
     /// JSON export round-trips: the file parses back as a 2-dialog array.
     #[test]
-    fn json_saves_and_parses_back() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.json");
-        let msg = save_to_json_path(&app, p.to_str().unwrap());
+    fn json_saves_and_parses_back() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.json")?;
+        let msg = save_to_json_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let content = std::fs::read_to_string(&p)?;
+        let v: serde_json::Value = serde_json::from_str(&content)?;
         assert!(v.is_array());
-        assert_eq!(v.as_array().unwrap().len(), 2);
+        assert_eq!(v.as_array().ok_or("as_array() returned None")?.len(), 2);
+        Ok(())
     }
 
     /// Checking one row limits the JSON export to that dialog only.
     #[test]
-    fn json_save_honors_selection() {
+    fn json_save_honors_selection() -> Result<(), TestError> {
         // Checking rows limits the export to the selected
         // dialogs (the [*] checkbox group). Here only call-1 is checked.
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.call_list.move_to_top(); // cursor on row 0 (call-1)
         app.call_list.toggle_selection("call-1@test"); // check it
-        let p = tmp_path("sel.json");
-        let msg = save_to_json_path(&app, p.to_str().unwrap());
+        let p = tmp_path("sel.json")?;
+        let msg = save_to_json_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let content = std::fs::read_to_string(&p)?;
+        let v: serde_json::Value = serde_json::from_str(&content)?;
         assert_eq!(
-            v.as_array().unwrap().len(),
+            v.as_array().ok_or("as_array() returned None")?.len(),
             1,
             "only the selected dialog should be exported"
         );
@@ -1540,77 +1564,87 @@ mod tests {
             !content.contains("call-2@test"),
             "unselected dialog must be excluded"
         );
+        Ok(())
     }
 
     /// With no checkboxes set, the export includes every dialog.
     #[test]
-    fn save_with_no_selection_exports_all() {
+    fn save_with_no_selection_exports_all() -> Result<(), TestError> {
         // No checkboxes set -> export everything (current default behavior).
-        let app = app_with_dialogs();
-        let p = tmp_path("all.json");
-        save_to_json_path(&app, p.to_str().unwrap());
-        let content = std::fs::read_to_string(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v.as_array().unwrap().len(), 2, "all dialogs exported");
+        let app = app_with_dialogs()?;
+        let p = tmp_path("all.json")?;
+        save_to_json_path(&app, p.to_str().ok_or("to_str() returned None")?);
+        let content = std::fs::read_to_string(&p)?;
+        let v: serde_json::Value = serde_json::from_str(&content)?;
+        assert_eq!(
+            v.as_array().ok_or("as_array() returned None")?.len(),
+            2,
+            "all dialogs exported"
+        );
+        Ok(())
     }
 
     /// NDJSON export writes exactly one valid JSON object per line.
     #[test]
-    fn ndjson_saves_one_object_per_line() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.ndjson");
-        let msg = save_to_ndjson_path(&app, p.to_str().unwrap());
+    fn ndjson_saves_one_object_per_line() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.ndjson")?;
+        let msg = save_to_ndjson_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
         for line in lines {
-            let _: serde_json::Value = serde_json::from_str(line).expect("valid json line");
+            let _: serde_json::Value =
+                serde_json::from_str(line).map_err(|e| format!("valid json line: {e:?}"))?;
         }
+        Ok(())
     }
 
     /// CSV export pins the exact header column set plus one row per dialog.
     #[test]
-    fn csv_saves_with_header() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.csv");
-        let msg = save_to_csv_path(&app, p.to_str().unwrap());
+    fn csv_saves_with_header() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.csv")?;
+        let msg = save_to_csv_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         // M2/T2.5: pin the exact column set, not just a prefix.
-        let header = content.lines().next().unwrap();
+        let header = content.lines().next().ok_or("next() returned None")?;
         assert_eq!(
             header,
             "call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,setup_ms,created_at"
         );
         // header + 2 dialog rows
         assert_eq!(content.lines().count(), 3);
+        Ok(())
     }
 
     /// Markdown export writes the summary title and per-dialog sections.
     #[test]
-    fn markdown_saves_with_summary() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.md");
-        let msg = save_to_markdown_path(&app, p.to_str().unwrap());
+    fn markdown_saves_with_summary() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.md")?;
+        let msg = save_to_markdown_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         assert!(content.contains("# Call Summary"));
         assert!(content.contains("## Dialog:"));
+        Ok(())
     }
 
     /// Mermaid export produces a real sequenceDiagram with participants
     /// and the embedded renderer, not just any file.
     #[test]
-    fn mermaid_saves_diagram() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.html");
-        let msg = save_to_mermaid_path(&app, p.to_str().unwrap());
+    fn mermaid_saves_diagram() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.html")?;
+        let msg = save_to_mermaid_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved Mermaid"), "got: {msg}");
         assert!(p.exists());
         // M2/T2.10: validate the CONTENT, not just that a file was written —
         // a valid Mermaid `sequenceDiagram` with participants and the renderer.
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         assert!(
             content.contains("sequenceDiagram"),
             "missing mermaid sequenceDiagram keyword"
@@ -1628,25 +1662,27 @@ mod tests {
             content.contains("<pre id=\"src\">"),
             "missing embedded Mermaid source block"
         );
+        Ok(())
     }
 
     /// SIPp export writes a well-formed scenario element pair.
     #[test]
-    fn sipp_saves_scenario_xml() {
-        let app = app_with_dialogs();
-        let p = tmp_path("out.xml");
-        let msg = save_to_sipp_path(&app, p.to_str().unwrap());
+    fn sipp_saves_scenario_xml() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        let p = tmp_path("out.xml")?;
+        let msg = save_to_sipp_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved SIPp"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         assert!(content.contains("<scenario"));
         assert!(content.contains("</scenario>"));
+        Ok(())
     }
 
     /// SIPp export substitutes only the structural host:port of the
     /// request-URI: a user part that happens to contain the destination
     /// port digits (user "15080", port 5080) must survive unchanged.
     #[test]
-    fn sipp_port_substitution_leaves_user_part_intact() {
+    fn sipp_port_substitution_leaves_user_part_intact() -> Result<(), TestError> {
         let raw = raw_sip(
             "INVITE sip:15080@10.0.0.2:5080 SIP/2.0",
             &[
@@ -1659,38 +1695,40 @@ mod tests {
         );
         let invite = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             addr_a(),
             addr_b(),
             5060,
             5080,
             TransportProto::Udp,
         )
-        .expect("parse INVITE");
+        .map_err(|e| format!("parse INVITE: {e:?}"))?;
         let app = App::with_processed_messages(vec![invite]);
 
-        let p = tmp_path("port.xml");
-        let msg = save_to_sipp_path(&app, p.to_str().unwrap());
+        let p = tmp_path("port.xml")?;
+        let msg = save_to_sipp_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved SIPp"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
+        let content = std::fs::read_to_string(&p)?;
         assert!(
             content.contains("INVITE sip:15080@[remote_ip]:[remote_port] SIP/2.0"),
             "request-URI corrupted by port substitution:\n{content}"
         );
+        Ok(())
     }
 
     /// RTP JSON export serializes the injected stream with its codec.
     #[test]
-    fn rtp_json_saves_streams() {
-        let app = app_with_dialogs();
-        add_rtp_stream(&app);
-        let p = tmp_path("rtp.json");
-        let msg = save_to_rtp_json_path(&app, p.to_str().unwrap());
+    fn rtp_json_saves_streams() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        add_rtp_stream(&app)?;
+        let p = tmp_path("rtp.json")?;
+        let msg = save_to_rtp_json_path(&app, p.to_str().ok_or("to_str() returned None")?);
         assert!(msg.contains("Saved 1 RTP"), "got: {msg}");
-        let content = std::fs::read_to_string(&p).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(v.as_array().unwrap().len(), 1);
+        let content = std::fs::read_to_string(&p)?;
+        let v: serde_json::Value = serde_json::from_str(&content)?;
+        assert_eq!(v.as_array().ok_or("as_array() returned None")?.len(), 1);
         assert_eq!(v[0]["codec"], "PCMU");
+        Ok(())
     }
 
     // ── Field-name consistency across JSON/NDJSON ────────────────────
@@ -1701,26 +1739,27 @@ mod tests {
     /// the divergent `message_count`. Pins the two exporters together so
     /// they cannot drift apart again.
     #[test]
-    fn json_and_ndjson_agree_on_msg_count_field() {
-        let app = app_with_dialogs();
+    fn json_and_ndjson_agree_on_msg_count_field() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
 
-        let jp = tmp_path("fields.json");
-        save_to_json_path(&app, jp.to_str().unwrap());
-        let jc = std::fs::read_to_string(&jp).unwrap();
+        let jp = tmp_path("fields.json")?;
+        save_to_json_path(&app, jp.to_str().ok_or("to_str() returned None")?);
+        let jc = std::fs::read_to_string(&jp)?;
         assert!(jc.contains("\"msg_count\""), "JSON must use msg_count");
         assert!(
             !jc.contains("\"message_count\""),
             "JSON must not use message_count"
         );
 
-        let np = tmp_path("fields.ndjson");
-        save_to_ndjson_path(&app, np.to_str().unwrap());
-        let nc = std::fs::read_to_string(&np).unwrap();
+        let np = tmp_path("fields.ndjson")?;
+        save_to_ndjson_path(&app, np.to_str().ok_or("to_str() returned None")?);
+        let nc = std::fs::read_to_string(&np)?;
         assert!(nc.contains("\"msg_count\""), "NDJSON must use msg_count");
         assert!(
             !nc.contains("\"message_count\""),
             "NDJSON must not use message_count"
         );
+        Ok(())
     }
 
     // ── Atomic export: failure must not clobber a prior good file ─────
@@ -1732,44 +1771,45 @@ mod tests {
     /// directory read-only, so the atomic writer cannot create its temp
     /// file and the export fails without touching the original.
     #[test]
-    fn failed_export_leaves_prior_file_intact() {
+    fn failed_export_leaves_prior_file_intact() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.json");
-        std::fs::write(&path, b"ORIGINAL GOOD CONTENT").unwrap();
+        std::fs::write(&path, b"ORIGINAL GOOD CONTENT")?;
 
         // Read-only directory: the atomic writer's temp-file creation
         // (needs directory write permission) fails, but the pre-existing
         // file stays openable/untouched.
-        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        let mut perms = std::fs::metadata(dir.path())?.permissions();
         perms.set_mode(0o500);
-        std::fs::set_permissions(dir.path(), perms.clone()).unwrap();
+        std::fs::set_permissions(dir.path(), perms.clone())?;
 
-        let app = app_with_dialogs();
-        let msg = save_to_json_path(&app, path.to_str().unwrap());
+        let app = app_with_dialogs()?;
+        let msg = save_to_json_path(&app, path.to_str().ok_or("to_str() returned None")?);
 
         // Restore write permission before asserting so the tempdir can be
         // cleaned up even if an assertion below panics.
         perms.set_mode(0o700);
-        std::fs::set_permissions(dir.path(), perms).unwrap();
+        std::fs::set_permissions(dir.path(), perms)?;
 
         assert!(
             msg.starts_with("Save failed"),
             "a failing export must report failure, got: {msg}"
         );
         assert_eq!(
-            std::fs::read(&path).unwrap(),
+            std::fs::read(&path)?,
             b"ORIGINAL GOOD CONTENT",
             "a failed export must leave the prior good file untouched"
         );
+        Ok(())
     }
 
     // ── Empty-store paths ────────────────────────────────────────────
 
     /// Message-based exports on an empty store report "No messages".
     #[test]
-    fn empty_store_messages() {
+    fn empty_store_messages() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(
             save_to_pcap_path(&app, "/tmp/x.pcap", false),
@@ -1780,11 +1820,12 @@ mod tests {
             save_to_mermaid_path(&app, "/tmp/x.html"),
             "No messages to export"
         );
+        Ok(())
     }
 
     /// Dialog-based exports on an empty store report "No dialogs".
     #[test]
-    fn empty_store_dialogs() {
+    fn empty_store_dialogs() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(save_to_json_path(&app, "/tmp/x.json"), "No dialogs to save");
         assert_eq!(
@@ -1797,11 +1838,12 @@ mod tests {
             "No dialogs to save"
         );
         assert_eq!(save_to_sipp_path(&app, "/tmp/x.xml"), "No dialog to export");
+        Ok(())
     }
 
     /// RTP/WAV exports with no captured streams report "No RTP streams".
     #[test]
-    fn empty_store_rtp_and_wav() {
+    fn empty_store_rtp_and_wav() -> Result<(), TestError> {
         let app = App::new_test();
         assert_eq!(
             save_to_rtp_json_path(&app, "/tmp/x.json"),
@@ -1810,16 +1852,17 @@ mod tests {
         // No call flow + no selected dialog -> "No RTP streams captured"
         let msg = save_to_wav_path(&app, "/tmp/x.wav");
         assert!(msg.contains("No RTP streams"), "got: {msg}");
+        Ok(())
     }
 
     /// Under a sort that reorders the call list, the WAV export must target
     /// the DISPLAYED selected dialog, not the dialog at the same index in raw
     /// store order.
     #[test]
-    fn wav_export_follows_displayed_selection_not_store_order() {
+    fn wav_export_follows_displayed_selection_not_store_order() -> Result<(), TestError> {
         // Store order: call-1, call-2. Default selection is row 0.
-        let mut app = app_with_dialogs();
-        add_rtp_stream(&app);
+        let mut app = app_with_dialogs()?;
+        add_rtp_stream(&app)?;
         // Associate the one stream with call-2 (its media endpoint is
         // 10.0.0.2:30000, matching add_rtp_stream's destination).
         app.stream_store
@@ -1835,7 +1878,12 @@ mod tests {
             "sort should now be descending"
         );
 
-        let msg = save_to_wav_path(&app, tmp_path("out.wav").to_str().unwrap());
+        let msg = save_to_wav_path(
+            &app,
+            tmp_path("out.wav")?
+                .to_str()
+                .ok_or("to_str() returned None")?,
+        );
         // Fixed: selects displayed row 0 = call-2 (has a stream) → export runs.
         // Buggy: selects raw row 0 = call-1 (no stream) → "No RTP streams...".
         assert!(
@@ -1843,6 +1891,7 @@ mod tests {
             "WAV export must target the displayed selection (call-2, which has \
              a stream), not raw store order; got: {msg}"
         );
+        Ok(())
     }
 
     // ── Error paths: unwritable destinations ─────────────────────────
@@ -1856,22 +1905,23 @@ mod tests {
     /// the privilege drop, so this is the report an operator saving into a
     /// root-only directory reads.
     #[test]
-    fn pcap_save_failure_names_the_os_error() {
-        let app = app_with_dialogs();
+    fn pcap_save_failure_names_the_os_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         for pcapng in [false, true] {
             let msg = save_to_pcap_path(&app, BAD_PATH, pcapng);
             assert!(msg.starts_with("Save failed"), "got: {msg}");
             assert!(msg.contains(BAD_PATH), "got: {msg}");
             assert!(msg.contains("No such file or directory"), "got: {msg}");
         }
+        Ok(())
     }
 
     /// The WAV export wraps its write the same way, and dropped the cause the
     /// same way.
     #[test]
-    fn wav_save_failure_names_the_os_error() {
-        let mut app = app_with_dialogs();
-        add_rtp_stream(&app);
+    fn wav_save_failure_names_the_os_error() -> Result<(), TestError> {
+        let mut app = app_with_dialogs()?;
+        add_rtp_stream(&app)?;
         app.stream_store
             .write()
             .link_to_dialog(addr_b(), 30000, "call-2@test");
@@ -1880,82 +1930,92 @@ mod tests {
         let msg = save_to_wav_path(&app, BAD_PATH);
         assert!(msg.starts_with("WAV export failed"), "got: {msg}");
         assert!(msg.contains("No such file or directory"), "got: {msg}");
+        Ok(())
     }
 
     /// txt save into a missing directory surfaces "Save failed".
     #[test]
-    fn txt_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn txt_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_txt_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// JSON save into a missing directory surfaces "Save failed".
     #[test]
-    fn json_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn json_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_json_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// NDJSON save into a missing directory surfaces "Save failed".
     #[test]
-    fn ndjson_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn ndjson_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_ndjson_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// CSV save into a missing directory surfaces "Save failed".
     #[test]
-    fn csv_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn csv_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_csv_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// Markdown save into a missing directory surfaces "Save failed".
     #[test]
-    fn markdown_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn markdown_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_markdown_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// Mermaid save into a missing directory surfaces "Save failed".
     #[test]
-    fn mermaid_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn mermaid_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_mermaid_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// SIPp save into a missing directory surfaces "Save failed".
     #[test]
-    fn sipp_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn sipp_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_sipp_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     /// pcap save into a missing directory surfaces a save or write error.
     #[test]
-    fn pcap_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
+    fn pcap_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
         let msg = save_to_pcap_path(&app, BAD_PATH, false);
         assert!(
             msg.starts_with("Save failed") || msg.starts_with("Write error"),
             "got: {msg}"
         );
+        Ok(())
     }
 
     /// RTP JSON save into a missing directory surfaces "Save failed".
     #[test]
-    fn rtp_json_write_failure_surfaces_error() {
-        let app = app_with_dialogs();
-        add_rtp_stream(&app);
+    fn rtp_json_write_failure_surfaces_error() -> Result<(), TestError> {
+        let app = app_with_dialogs()?;
+        add_rtp_stream(&app)?;
         let msg = save_to_rtp_json_path(&app, BAD_PATH);
         assert!(msg.starts_with("Save failed"), "got: {msg}");
+        Ok(())
     }
 
     // ── Pure helpers ─────────────────────────────────────────────────
@@ -1963,21 +2023,23 @@ mod tests {
     /// csv_escape leaves plain text alone and quote-wraps commas,
     /// embedded quotes (doubled), and newlines.
     #[test]
-    fn csv_escape_quotes_special_chars() {
+    fn csv_escape_quotes_special_chars() -> Result<(), TestError> {
         assert_eq!(csv_escape("plain"), "plain");
         assert_eq!(csv_escape("a,b"), "\"a,b\"");
         assert_eq!(csv_escape("he said \"hi\""), "\"he said \"\"hi\"\"\"");
         assert_eq!(csv_escape("line\nbreak"), "\"line\nbreak\"");
+        Ok(())
     }
 
     /// Dialog states map to their expected export display strings.
     #[test]
-    fn format_dialog_state_maps_variants() {
+    fn format_dialog_state_maps_variants() -> Result<(), TestError> {
         use crate::sip::dialog::DialogState;
         assert_eq!(format_dialog_state(&DialogState::InCall), "InCall");
         assert_eq!(format_dialog_state(&DialogState::Completed), "Completed");
         assert_eq!(format_dialog_state(&DialogState::Failed), "Failed");
         assert_eq!(format_dialog_state(&DialogState::Terminated), "Terminated");
+        Ok(())
     }
 
     // ── The save dialog must not write over the capture on screen ────
@@ -1989,15 +2051,15 @@ mod tests {
     /// obvious name to type; every writer here creates-or-truncates, so the
     /// only safe place to decide is before dispatch.
     #[test]
-    fn save_over_the_capture_being_read_is_refused() {
+    fn save_over_the_capture_being_read_is_refused() -> Result<(), TestError> {
         use crate::tui::state::{PendingSave, SaveFormat};
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let input = dir.path().join("incident.pcap");
         let original = b"pretend this is the only copy of an incident capture";
-        std::fs::write(&input, original).expect("stage input");
+        std::fs::write(&input, original).map_err(|e| format!("stage input: {e:?}"))?;
 
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.protect_input_file(&input);
         app.pending_save = Some(PendingSave {
             format: SaveFormat::Pcap,
@@ -2011,23 +2073,24 @@ mod tests {
             "the save must be refused with a reason; got: {status}"
         );
         assert_eq!(
-            std::fs::read(&input).expect("input still exists"),
+            std::fs::read(&input).map_err(|e| format!("input still exists: {e:?}"))?,
             original,
             "the capture being read was written over"
         );
+        Ok(())
     }
 
     /// A save to any other path still runs — the guard must not break saving.
     #[test]
-    fn save_to_a_different_path_still_works() {
+    fn save_to_a_different_path_still_works() -> Result<(), TestError> {
         use crate::tui::state::{PendingSave, SaveFormat};
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let input = dir.path().join("incident.pcap");
-        std::fs::write(&input, b"input").expect("stage input");
+        std::fs::write(&input, b"input").map_err(|e| format!("stage input: {e:?}"))?;
         let out = dir.path().join("export.pcap");
 
-        let mut app = app_with_dialogs();
+        let mut app = app_with_dialogs()?;
         app.protect_input_file(&input);
         app.pending_save = Some(PendingSave {
             format: SaveFormat::Pcap,
@@ -2038,6 +2101,7 @@ mod tests {
         let status = app.status_error.clone().unwrap_or_default();
         assert!(status.contains("Saved"), "got: {status}");
         assert!(out.is_file(), "the legitimate export was not written");
+        Ok(())
     }
 
     /// Every message shape the eleven exporters above document is classified
@@ -2051,7 +2115,7 @@ mod tests {
     /// ("Saved…", "Exported…"), which is why the rule keys on failure markers
     /// instead of a success whitelist.
     #[test]
-    fn every_documented_exporter_message_is_classified_correctly() {
+    fn every_documented_exporter_message_is_classified_correctly() -> Result<(), TestError> {
         for ok in [
             "Saved 12 packets (pcap) to /tmp/a.pcap",
             "Saved 7 messages (txt) to /tmp/a.txt",
@@ -2084,5 +2148,6 @@ mod tests {
                 "an export that did not happen read as one that did: {bad:?}"
             );
         }
+        Ok(())
     }
 }

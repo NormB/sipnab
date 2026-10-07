@@ -595,6 +595,9 @@ fn parse_crypto(value: &str) -> Option<SdpCrypto> {
 /// Tests for SDP session/media/attribute parsing and error handling.
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     // ── RFC 8866 §5.14: the `m=` port-count form ─────────────────────────
 
     /// `m=video 49170/2 RTP/AVP 31` is conformant and must parse.
@@ -603,12 +606,14 @@ mod tests {
     /// proto 1*(SP fmt) CRLF`. §5.14 works the example through: ports 49170
     /// and 49171 form one RTP/RTCP pair, 49172 and 49173 the second.
     #[test]
-    fn the_media_port_count_form_parses() {
-        let sdp = parse_sdp(b"v=0\r\nm=video 49170/2 RTP/AVP 31\r\n").expect("parses");
+    fn the_media_port_count_form_parses() -> Result<(), TestError> {
+        let sdp = parse_sdp(b"v=0\r\nm=video 49170/2 RTP/AVP 31\r\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media.len(), 1, "the section must not be dropped");
         assert_eq!(sdp.media[0].port, 49170);
         assert_eq!(sdp.media[0].port_count, Some(2));
         assert_eq!(sdp.media[0].media_type, "video");
+        Ok(())
     }
 
     /// The plain form reports no count rather than a fabricated 1.
@@ -616,9 +621,11 @@ mod tests {
     /// The negative half: `None` says "the offer did not use the form", which
     /// is a different fact from "the offer asked for one port pair".
     #[test]
-    fn the_plain_media_form_reports_no_port_count() {
-        let sdp = parse_sdp(b"v=0\r\nm=audio 20000 RTP/AVP 0\r\n").expect("parses");
+    fn the_plain_media_form_reports_no_port_count() -> Result<(), TestError> {
+        let sdp = parse_sdp(b"v=0\r\nm=audio 20000 RTP/AVP 0\r\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media[0].port_count, None);
+        Ok(())
     }
 
     /// Attributes after a port-count `m=` land on the NEW section.
@@ -629,7 +636,7 @@ mod tests {
     /// to the video's address, and carrying the video's codec — three facts
     /// about a stream that had none of them.
     #[test]
-    fn a_port_count_section_does_not_bleed_into_the_previous_one() {
+    fn a_port_count_section_does_not_bleed_into_the_previous_one() -> Result<(), TestError> {
         let sdp = parse_sdp(
             concat!(
                 "v=0\r\n",
@@ -643,7 +650,7 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
 
         assert_eq!(sdp.media.len(), 2, "two media descriptions, not one");
         let audio = &sdp.media[0];
@@ -665,6 +672,7 @@ mod tests {
             Some("198.51.100.9")
         );
         assert_eq!(video.rtpmap[0].encoding, "H264");
+        Ok(())
     }
 
     /// An `m=` line sipnab cannot parse discards its attributes rather than
@@ -674,7 +682,7 @@ mod tests {
     /// rather than conformant, so the section is legitimately not built — but
     /// what follows still belongs to it, and must not be attributed elsewhere.
     #[test]
-    fn an_unparseable_media_line_does_not_bleed_either() {
+    fn an_unparseable_media_line_does_not_bleed_either() -> Result<(), TestError> {
         let sdp = parse_sdp(
             concat!(
                 "v=0\r\n",
@@ -685,7 +693,7 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media.len(), 1, "the malformed section is not built");
         assert_eq!(
             sdp.media[0].direction,
@@ -693,6 +701,7 @@ mod tests {
             "and its attributes are not credited to the audio stream"
         );
         assert!(sdp.media[0].rtpmap.is_empty());
+        Ok(())
     }
 
     // ── RFC 8866 §6.7: session-level direction ───────────────────────────
@@ -702,17 +711,18 @@ mod tests {
     /// [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7): "If none appears in a media description, then the one
     /// from session level, if any, applies to that media description."
     #[test]
-    fn a_session_level_direction_applies_to_media_that_declares_none() {
+    fn a_session_level_direction_applies_to_media_that_declares_none() -> Result<(), TestError> {
         let sdp = parse_sdp(
             concat!("v=0\r\n", "a=inactive\r\n", "m=audio 49180 RTP/AVP 0\r\n",).as_bytes(),
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media[0].direction, SdpDirection::Inactive);
+        Ok(())
     }
 
     /// A media-level direction wins over the session-level one.
     #[test]
-    fn a_media_level_direction_overrides_the_session_level_one() {
+    fn a_media_level_direction_overrides_the_session_level_one() -> Result<(), TestError> {
         let sdp = parse_sdp(
             concat!(
                 "v=0\r\n",
@@ -722,8 +732,9 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
+        Ok(())
     }
 
     /// [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7)'s own worked example, verbatim.
@@ -733,7 +744,7 @@ mod tests {
     /// the specification's own example is the strongest available check that
     /// the reading is the RFC's rather than sipnab's.
     #[test]
-    fn the_rfc_8866_worked_example_resolves_as_the_rfc_says() {
+    fn the_rfc_8866_worked_example_resolves_as_the_rfc_says() -> Result<(), TestError> {
         let sdp = parse_sdp(
             concat!(
                 "v=0\r\n",
@@ -750,11 +761,12 @@ mod tests {
             )
             .as_bytes(),
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media.len(), 3);
         assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
         assert_eq!(sdp.media[1].direction, SdpDirection::Inactive);
         assert_eq!(sdp.media[2].direction, SdpDirection::Inactive);
+        Ok(())
     }
 
     /// With no session-level attribute the default stays `sendrecv`.
@@ -763,9 +775,11 @@ mod tests {
     /// ordinary offer means. [RFC 8866 section 6.7](https://www.rfc-editor.org/rfc/rfc8866#section-6.7) makes `sendrecv` the default when
     /// nothing is said at either level.
     #[test]
-    fn absent_direction_at_both_levels_is_still_sendrecv() {
-        let sdp = parse_sdp(b"v=0\r\nm=audio 49170 RTP/AVP 0\r\n").expect("parses");
+    fn absent_direction_at_both_levels_is_still_sendrecv() -> Result<(), TestError> {
+        let sdp = parse_sdp(b"v=0\r\nm=audio 49170 RTP/AVP 0\r\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
         assert_eq!(sdp.media[0].direction, SdpDirection::SendRecv);
+        Ok(())
     }
 
     use super::SdpOriginKey;
@@ -773,36 +787,39 @@ mod tests {
     const ORIGIN_A: &str = "alice 2890844526 2890842807 IN IP4 198.51.100.7";
 
     #[test]
-    fn the_origin_key_is_the_rfc8866_uniqueness_tuple() {
-        let k = SdpOriginKey::parse(ORIGIN_A).expect("parses");
+    fn the_origin_key_is_the_rfc8866_uniqueness_tuple() -> Result<(), TestError> {
+        let k = SdpOriginKey::parse(ORIGIN_A).ok_or("parses")?;
         assert_eq!(k.username, "alice");
         assert_eq!(k.sess_id, "2890844526");
         assert_eq!(k.nettype, "IN");
         assert_eq!(k.addrtype, "IP4");
         assert_eq!(k.unicast_address, "198.51.100.7");
+        Ok(())
     }
 
     /// `sess-version` is NOT part of the tuple, and that is what makes the key
     /// useful: a re-INVITE (hold, resume, codec change) bumps it, and a key
     /// that included it would stop matching exactly when someone is looking.
     #[test]
-    fn a_bumped_sess_version_is_still_the_same_session() {
-        let before = SdpOriginKey::parse(ORIGIN_A).expect("parses");
-        let after =
-            SdpOriginKey::parse("alice 2890844526 2890842999 IN IP4 198.51.100.7").expect("parses");
+    fn a_bumped_sess_version_is_still_the_same_session() -> Result<(), TestError> {
+        let before = SdpOriginKey::parse(ORIGIN_A).ok_or("parses")?;
+        let after = SdpOriginKey::parse("alice 2890844526 2890842999 IN IP4 198.51.100.7")
+            .ok_or("parses")?;
         assert_eq!(before, after, "a re-INVITE must not break correlation");
+        Ok(())
     }
 
     /// THE fabrication guard. RFC 8866 recommends deriving `sess-id` from a
     /// timestamp, so two unrelated calls from one user agent in the same second
     /// can share it. Matching on `sess-id` alone would invent a link.
     #[test]
-    fn a_shared_sess_id_alone_is_not_the_same_session() {
-        let one = SdpOriginKey::parse(ORIGIN_A).expect("parses");
+    fn a_shared_sess_id_alone_is_not_the_same_session() -> Result<(), TestError> {
+        let one = SdpOriginKey::parse(ORIGIN_A).ok_or("parses")?;
         let other =
-            SdpOriginKey::parse("bob 2890844526 2890842807 IN IP4 203.0.113.9").expect("parses");
+            SdpOriginKey::parse("bob 2890844526 2890842807 IN IP4 203.0.113.9").ok_or("parses")?;
         assert_eq!(one.sess_id, other.sess_id, "same sess-id, by construction");
         assert_ne!(one, other, "but a different session — the tuple decides");
+        Ok(())
     }
 
     /// Anything that is not exactly six fields is refused, in BOTH directions.
@@ -813,7 +830,7 @@ mod tests {
     /// means the line is malformed and which field is the address is a guess.
     /// Refusing keeps a guess out of a key whose entire value is exactness.
     #[test]
-    fn only_a_six_field_origin_line_is_accepted() {
+    fn only_a_six_field_origin_line_is_accepted() -> Result<(), TestError> {
         // Five: guessing which one is missing would invent it.
         assert!(SdpOriginKey::parse("alice 2890844526 IN IP4 198.51.100.7").is_none());
         // Seven: measured in the wild, 10 of 10,207.
@@ -823,6 +840,7 @@ mod tests {
         assert!(SdpOriginKey::parse("").is_none());
         // And the conforming case still passes, or the test above proves nothing.
         assert!(SdpOriginKey::parse(ORIGIN_A).is_some());
+        Ok(())
     }
     use super::*;
 
@@ -833,7 +851,7 @@ mod tests {
     /// that cannot see the attribute cannot tell a conformant capture from one
     /// where RTCP went somewhere nobody agreed to.
     #[test]
-    fn rtcp_attributes_are_parsed() {
+    fn rtcp_attributes_are_parsed() -> Result<(), TestError> {
         let muxed = parse_sdp(
             b"v=0\r\n\
               c=IN IP4 192.0.2.1\r\n\
@@ -841,7 +859,7 @@ mod tests {
               a=rtpmap:97 iLBC/8000\r\n\
               a=rtcp-mux\r\n",
         )
-        .expect("muxed SDP must parse");
+        .map_err(|e| format!("muxed SDP must parse: {e:?}"))?;
         assert!(muxed.media[0].rtcp_mux);
         assert_eq!(muxed.media[0].rtcp_port, None);
 
@@ -851,7 +869,7 @@ mod tests {
               m=audio 49170 RTP/AVP 0\r\n\
               a=rtcp:53020 IN IP4 192.0.2.9\r\n",
         )
-        .expect("explicit RTCP port must parse");
+        .map_err(|e| format!("explicit RTCP port must parse: {e:?}"))?;
         assert!(!explicit.media[0].rtcp_mux);
         assert_eq!(explicit.media[0].rtcp_port, Some(53020));
 
@@ -860,14 +878,15 @@ mod tests {
               c=IN IP4 192.0.2.1\r\n\
               m=audio 49170 RTP/AVP 0\r\n",
         )
-        .expect("plain SDP must parse");
+        .map_err(|e| format!("plain SDP must parse: {e:?}"))?;
         assert!(!plain.media[0].rtcp_mux);
         assert_eq!(plain.media[0].rtcp_port, None);
+        Ok(())
     }
 
     /// Minimal SDP with one audio media line.
     #[test]
-    fn parse_minimal_sdp() {
+    fn parse_minimal_sdp() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=sipnab\r\n\
@@ -875,7 +894,7 @@ mod tests {
             t=0 0\r\n\
             m=audio 20000 RTP/AVP 0\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse minimal SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse minimal SDP: {e:?}"))?;
         assert_eq!(session.origin.as_deref(), Some("- 0 0 IN IP4 10.0.0.1"));
         assert_eq!(session.session_name.as_deref(), Some("sipnab"));
         assert_eq!(
@@ -890,11 +909,12 @@ mod tests {
         assert_eq!(audio.proto, "RTP/AVP");
         assert_eq!(audio.formats, vec!["0"]);
         assert_eq!(audio.direction, SdpDirection::SendRecv);
+        Ok(())
     }
 
     /// Multiple media lines (audio + video).
     #[test]
-    fn parse_multiple_media() {
+    fn parse_multiple_media() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -903,17 +923,18 @@ mod tests {
             m=audio 20000 RTP/AVP 0 8\r\n\
             m=video 30000 RTP/AVP 96\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse multi-media SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse multi-media SDP: {e:?}"))?;
         assert_eq!(session.media.len(), 2);
         assert_eq!(session.media[0].media_type, "audio");
         assert_eq!(session.media[0].port, 20000);
         assert_eq!(session.media[1].media_type, "video");
         assert_eq!(session.media[1].port, 30000);
+        Ok(())
     }
 
     /// rtpmap entries are correctly parsed.
     #[test]
-    fn parse_rtpmap_entries() {
+    fn parse_rtpmap_entries() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -924,7 +945,7 @@ mod tests {
             a=rtpmap:8 PCMA/8000\r\n\
             a=rtpmap:111 opus/48000/2\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse rtpmap SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse rtpmap SDP: {e:?}"))?;
         let audio = &session.media[0];
         assert_eq!(audio.rtpmap.len(), 3);
 
@@ -937,12 +958,13 @@ mod tests {
         assert_eq!(audio.rtpmap[2].encoding, "opus");
         assert_eq!(audio.rtpmap[2].clock_rate, 48000);
         assert_eq!(audio.rtpmap[2].channels, Some(2));
+        Ok(())
     }
 
     /// An rtpmap with a payload type above the 7-bit RFC 3551 range
     /// (0–127) is rejected and not recorded.
     #[test]
-    fn parse_rtpmap_rejects_payload_type_above_127() {
+    fn parse_rtpmap_rejects_payload_type_above_127() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -952,17 +974,18 @@ mod tests {
             a=rtpmap:0 PCMU/8000\r\n\
             a=rtpmap:128 opus/48000/2\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse SDP: {e:?}"))?;
         let audio = &session.media[0];
         // The pt=128 rtpmap is out of the 7-bit range and must be skipped;
         // only the valid pt=0 entry survives.
         assert_eq!(audio.rtpmap.len(), 1);
         assert_eq!(audio.rtpmap[0].payload_type, 0);
+        Ok(())
     }
 
     /// The maximum valid 7-bit payload type (127) is still accepted.
     #[test]
-    fn parse_rtpmap_accepts_payload_type_127() {
+    fn parse_rtpmap_accepts_payload_type_127() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -971,9 +994,10 @@ mod tests {
             m=audio 20000 RTP/AVP 127\r\n\
             a=rtpmap:127 opus/48000/2\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse SDP: {e:?}"))?;
         assert_eq!(session.media[0].rtpmap.len(), 1);
         assert_eq!(session.media[0].rtpmap[0].payload_type, 127);
+        Ok(())
     }
 
     /// An rtpmap with a clock rate of 0 is rejected, not recorded: a 0 clock
@@ -981,7 +1005,7 @@ mod tests {
     /// zero and poisons it with NaN/Inf across every surface (JSON, Prometheus,
     /// call report, event-exec env). The stream keeps its static-table rate.
     #[test]
-    fn parse_rtpmap_rejects_a_zero_clock_rate() {
+    fn parse_rtpmap_rejects_a_zero_clock_rate() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -990,18 +1014,19 @@ mod tests {
             m=audio 20000 RTP/AVP 0 96\r\n\
             a=rtpmap:0 PCMU/8000\r\n\
             a=rtpmap:96 opus/0\r\n";
-        let session = parse_sdp(sdp).expect("should parse SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse SDP: {e:?}"))?;
         let audio = &session.media[0];
         // Only the valid pt=0 (8000 Hz) entry survives; the clock-0 opus is
         // skipped like an out-of-range payload type.
         assert_eq!(audio.rtpmap.len(), 1);
         assert_eq!(audio.rtpmap[0].payload_type, 0);
         assert_eq!(audio.rtpmap[0].clock_rate, 8000);
+        Ok(())
     }
 
     /// `a=crypto` lines are extracted correctly.
     #[test]
-    fn parse_crypto_line() {
+    fn parse_crypto_line() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1010,17 +1035,18 @@ mod tests {
             m=audio 20000 RTP/SAVP 0\r\n\
             a=crypto:1 AES_CM_128_HMAC_SHA1_80 inline:d0RmdmcmVCspeEc3QGZiNWpVLFJhQX1cfHAwJSoj\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse crypto SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse crypto SDP: {e:?}"))?;
         let audio = &session.media[0];
         assert_eq!(audio.crypto.len(), 1);
         assert_eq!(audio.crypto[0].tag, 1);
         assert_eq!(audio.crypto[0].suite, "AES_CM_128_HMAC_SHA1_80");
         assert!(audio.crypto[0].key_params.starts_with("inline:"));
+        Ok(())
     }
 
     /// `a=sendonly` sets direction correctly.
     #[test]
-    fn parse_sendonly_direction() {
+    fn parse_sendonly_direction() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1029,13 +1055,14 @@ mod tests {
             m=audio 20000 RTP/AVP 0\r\n\
             a=sendonly\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse sendonly SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse sendonly SDP: {e:?}"))?;
         assert_eq!(session.media[0].direction, SdpDirection::SendOnly);
+        Ok(())
     }
 
     /// Media-level `c=` overrides session-level `c=`.
     #[test]
-    fn media_connection_overrides_session() {
+    fn media_connection_overrides_session() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1044,7 +1071,7 @@ mod tests {
             m=audio 20000 RTP/AVP 0\r\n\
             c=IN IP4 192.168.1.100\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse media-level c=");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse media-level c=: {e:?}"))?;
         assert_eq!(
             session.connection.as_ref().map(|c| c.addr.as_str()),
             Some("10.0.0.1")
@@ -1053,11 +1080,12 @@ mod tests {
             effective_address(&session.media[0], &session).as_deref(),
             Some("192.168.1.100")
         );
+        Ok(())
     }
 
     /// ICE candidates are collected.
     #[test]
-    fn parse_ice_candidates() {
+    fn parse_ice_candidates() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1067,15 +1095,16 @@ mod tests {
             a=candidate:1 1 UDP 2130706431 10.0.0.1 20000 typ host\r\n\
             a=candidate:2 1 UDP 1694498815 203.0.113.1 20000 typ srflx\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse ICE SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse ICE SDP: {e:?}"))?;
         assert_eq!(session.media[0].ice_candidates.len(), 2);
         assert!(session.media[0].ice_candidates[0].contains("typ host"));
         assert!(session.media[0].ice_candidates[1].contains("typ srflx"));
+        Ok(())
     }
 
     /// T.38 `m=image` line is parsed correctly.
     #[test]
-    fn parse_t38_image() {
+    fn parse_t38_image() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1083,33 +1112,36 @@ mod tests {
             t=0 0\r\n\
             m=image 49170 udptl t38\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse T.38 SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse T.38 SDP: {e:?}"))?;
         assert_eq!(session.media.len(), 1);
         assert_eq!(session.media[0].media_type, "image");
         assert_eq!(session.media[0].proto, "udptl");
         assert_eq!(session.media[0].formats, vec!["t38"]);
+        Ok(())
     }
 
     /// Missing `v=` line produces an error.
     #[test]
-    fn malformed_missing_version() {
+    fn malformed_missing_version() -> Result<(), TestError> {
         let sdp = b"o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n";
 
         let result = parse_sdp(sdp);
         assert!(result.is_err(), "SDP without v= should error");
+        Ok(())
     }
 
     /// Empty body produces an error.
     #[test]
-    fn empty_body_error() {
+    fn empty_body_error() -> Result<(), TestError> {
         let result = parse_sdp(b"");
         assert!(result.is_err(), "Empty SDP should error");
+        Ok(())
     }
 
     /// SDP with bare `\n` line endings parses correctly.
     #[test]
-    fn parse_bare_lf_endings() {
+    fn parse_bare_lf_endings() -> Result<(), TestError> {
         let sdp = b"v=0\n\
             o=- 0 0 IN IP4 10.0.0.1\n\
             s=-\n\
@@ -1117,14 +1149,15 @@ mod tests {
             t=0 0\n\
             m=audio 20000 RTP/AVP 0\n";
 
-        let session = parse_sdp(sdp).expect("should parse LF-only SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse LF-only SDP: {e:?}"))?;
         assert_eq!(session.media.len(), 1);
         assert_eq!(session.media[0].media_type, "audio");
+        Ok(())
     }
 
     /// `a=ptime` is parsed.
     #[test]
-    fn parse_ptime() {
+    fn parse_ptime() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1133,13 +1166,14 @@ mod tests {
             m=audio 20000 RTP/AVP 0\r\n\
             a=ptime:20\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse ptime SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse ptime SDP: {e:?}"))?;
         assert_eq!(session.media[0].ptime, Some(20));
+        Ok(())
     }
 
     /// `a=fmtp` lines are collected.
     #[test]
-    fn parse_fmtp() {
+    fn parse_fmtp() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1148,13 +1182,14 @@ mod tests {
             m=audio 20000 RTP/AVP 101\r\n\
             a=fmtp:101 0-16\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse fmtp SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse fmtp SDP: {e:?}"))?;
         assert_eq!(session.media[0].fmtp, vec!["101 0-16"]);
+        Ok(())
     }
 
     /// Session without media-level `c=` falls back to session `c=`.
     #[test]
-    fn effective_address_session_fallback() {
+    fn effective_address_session_fallback() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP4 10.0.0.1\r\n\
             s=-\r\n\
@@ -1162,16 +1197,17 @@ mod tests {
             t=0 0\r\n\
             m=audio 20000 RTP/AVP 0\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse: {e:?}"))?;
         assert_eq!(
             effective_address(&session.media[0], &session).as_deref(),
             Some("10.0.0.1")
         );
+        Ok(())
     }
 
     /// IPv6 connection line.
     #[test]
-    fn parse_ipv6_connection() {
+    fn parse_ipv6_connection() -> Result<(), TestError> {
         let sdp = b"v=0\r\n\
             o=- 0 0 IN IP6 ::1\r\n\
             s=-\r\n\
@@ -1179,10 +1215,11 @@ mod tests {
             t=0 0\r\n\
             m=audio 20000 RTP/AVP 0\r\n";
 
-        let session = parse_sdp(sdp).expect("should parse IPv6 SDP");
+        let session = parse_sdp(sdp).map_err(|e| format!("should parse IPv6 SDP: {e:?}"))?;
         assert_eq!(
             session.connection.as_ref().map(|c| c.addr.as_str()),
             Some("2001:db8::1")
         );
+        Ok(())
     }
 }

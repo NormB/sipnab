@@ -1871,6 +1871,9 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A one-packet classic pcap: global header plus one record.
     fn pcap_bytes(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -1889,10 +1892,10 @@ mod tests {
         out
     }
 
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(data).expect("gzip");
-        enc.finish().expect("gzip")
+        enc.write_all(data).map_err(|e| format!("gzip: {e:?}"))?;
+        Ok(enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
     }
 
     fn limits() -> Limits {
@@ -1903,10 +1906,10 @@ mod tests {
         }
     }
 
-    fn write(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+    fn write(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, TestError> {
         let p = dir.join(name);
-        std::fs::write(&p, bytes).expect("write");
-        p
+        std::fs::write(&p, bytes).map_err(|e| format!("write: {e:?}"))?;
+        Ok(p)
     }
 
     fn labels(exp: &Expansion) -> Vec<String> {
@@ -1914,7 +1917,7 @@ mod tests {
     }
 
     #[test]
-    fn sniff_names_every_format_by_its_magic() {
+    fn sniff_names_every_format_by_its_magic() -> Result<(), TestError> {
         let cases: &[(&[u8], Format)] = &[
             (&[0xd4, 0xc3, 0xb2, 0xa1, 2, 0], Format::Pcap),
             (&[0xa1, 0xb2, 0xc3, 0xd4, 0, 2], Format::Pcap),
@@ -1943,13 +1946,14 @@ mod tests {
             Format::Unknown,
             "a partial block is not a tar"
         );
+        Ok(())
     }
 
     /// The whole reason this module exists: the members of a `.tgz` come out
     /// as captures, with labels naming the archive and the member.
     #[test]
-    fn a_tgz_of_captures_expands_to_its_members() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_tgz_of_captures_expands_to_its_members() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"alpha");
         let b = pcap_bytes(b"bravo");
         let tar = build(&[
@@ -1957,8 +1961,8 @@ mod tests {
             Spec::file("set/a.pcap", &a),
             Spec::file("set/b.pcap", &b),
         ]);
-        let tgz = write(tmp.path(), "set.tgz", &gzip(&tar));
-        let exp = expand(&tgz, &limits()).expect("expand");
+        let tgz = write(tmp.path(), "set.tgz", &gzip(&tar)?)?;
+        let exp = expand(&tgz, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         let root = tgz.display().to_string();
         assert_eq!(
             labels(&exp),
@@ -1968,37 +1972,48 @@ mod tests {
         assert!(exp.skipped.is_empty(), "{:?}", exp.skipped);
         assert!(exp.stops.is_empty(), "{:?}", exp.stops);
         assert_eq!(exp.members[0].layers, vec![Layer::Gzip, Layer::Tar]);
-        assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), a);
-        assert_eq!(std::fs::read(&exp.members[1].path).expect("read"), b);
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            a
+        );
+        assert_eq!(
+            std::fs::read(&exp.members[1].path).map_err(|e| format!("read: {e:?}"))?,
+            b
+        );
+        Ok(())
     }
 
     /// Plain `.tar`, and a `.pcap.gz` that is merely compressed, go through
     /// the same walk.
     #[test]
-    fn a_plain_tar_and_a_single_gzip_use_the_same_walk() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_plain_tar_and_a_single_gzip_use_the_same_walk() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"x");
-        let tar = write(tmp.path(), "set.tar", &build(&[Spec::file("x.pcap", &cap)]));
-        let exp = expand(&tar, &limits()).expect("tar");
+        let tar = write(tmp.path(), "set.tar", &build(&[Spec::file("x.pcap", &cap)]))?;
+        let exp = expand(&tar, &limits()).map_err(|e| format!("tar: {e:?}"))?;
         assert_eq!(labels(&exp), vec![format!("{}/x.pcap", tar.display())]);
         assert_eq!(exp.members[0].layers, vec![Layer::Tar]);
 
-        let gz = write(tmp.path(), "one.pcap.gz", &gzip(&cap));
-        let exp = expand(&gz, &limits()).expect("gz");
+        let gz = write(tmp.path(), "one.pcap.gz", &gzip(&cap)?)?;
+        let exp = expand(&gz, &limits()).map_err(|e| format!("gz: {e:?}"))?;
         assert_eq!(
             labels(&exp),
             vec![gz.display().to_string()],
             "a compressed capture keeps its own name: there is no member to name"
         );
         assert_eq!(exp.members[0].layers, vec![Layer::Gzip]);
-        assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), cap);
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            cap
+        );
+        Ok(())
     }
 
     /// Every member that is not a capture is accounted for with its reason,
     /// and none of them stops the rest being read.
     #[test]
-    fn every_non_capture_member_is_skipped_with_its_reason() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn every_non_capture_member_is_skipped_with_its_reason() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"ok");
         let tar = build(&[
             Spec::file("empty.pcap", b""),
@@ -2019,8 +2034,8 @@ mod tests {
             Spec::file("inner.zip", b"PK\x03\x04zipzip"),
             Spec::file("good.pcap", &cap),
         ]);
-        let path = write(tmp.path(), "mixed.tar", &tar);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "mixed.tar", &tar)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         let root = path.display();
         assert_eq!(labels(&exp), vec![format!("{root}/good.pcap")]);
         let reasons: Vec<(String, SkipReason)> = exp
@@ -2062,13 +2077,14 @@ mod tests {
         );
         #[cfg(not(feature = "archive"))]
         assert!(exp.stops.is_empty());
+        Ok(())
     }
 
     /// A trial that fails takes back everything it recorded: the members it
     /// wrote, their files, its skips and stops, and the labels it claimed.
     #[test]
-    fn a_rolled_back_trial_leaves_nothing_behind() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_rolled_back_trial_leaves_nothing_behind() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let root = tmp.path().join("r");
         let lim = limits();
         let mut w = Walker::new(&lim, None, &root, "r");
@@ -2095,13 +2111,14 @@ mod tests {
         assert!(!written.exists(), "the trial's file is deleted");
         assert!(w.claim("r/gone"), "the trial's label is free again");
         assert!(!w.claim("r/kept"));
+        Ok(())
     }
 
     /// On trial, a member whose stream fails in any way is the password's
     /// fault: the trial is rejected and nothing is recorded, rather than the
     /// whole walk ending on a write failure.
     #[test]
-    fn a_stream_failure_on_trial_rejects_rather_than_stops() {
+    fn a_stream_failure_on_trial_rejects_rather_than_stops() -> Result<(), TestError> {
         struct Failing(Vec<u8>);
         impl Read for Failing {
             fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -2114,7 +2131,7 @@ mod tests {
                 Ok(n)
             }
         }
-        let tmp = tempfile::tempdir().expect("tmp");
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let root = tmp.path().join("r");
         let lim = limits();
         let mut w = Walker::new(&lim, None, &root, "r");
@@ -2129,18 +2146,19 @@ mod tests {
         assert_eq!(flow, Flow::Continue);
         assert!(w.rejected);
         assert!(w.out.members.is_empty() && w.out.stops.is_empty());
+        Ok(())
     }
 
     /// Two layers of compression and archiving inside each other: a
     /// `.pcap.gz` member of a tar inside a `.tgz`.
     #[test]
-    fn nested_layers_are_unwrapped_and_labeled_by_their_path() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn nested_layers_are_unwrapped_and_labeled_by_their_path() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"deep");
-        let inner = build(&[Spec::file("ring/x.pcap.gz", &gzip(&cap))]);
+        let inner = build(&[Spec::file("ring/x.pcap.gz", &gzip(&cap)?)]);
         let outer = build(&[Spec::file("inner.tar", &inner)]);
-        let path = write(tmp.path(), "outer.tgz", &gzip(&outer));
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "outer.tgz", &gzip(&outer)?)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(
             labels(&exp),
             vec![format!("{}/inner.tar/ring/x.pcap.gz", path.display())]
@@ -2149,50 +2167,57 @@ mod tests {
             exp.members[0].layers,
             vec![Layer::Gzip, Layer::Tar, Layer::Tar, Layer::Gzip]
         );
-        assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), cap);
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            cap
+        );
+        Ok(())
     }
 
     /// A member named to climb out of the extraction directory lands inside
     /// it, under a name this module chose, and nothing is written anywhere
     /// else.
     #[test]
-    fn a_member_name_never_becomes_a_path() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_member_name_never_becomes_a_path() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let victim_dir = tmp.path().join("victim");
-        std::fs::create_dir(&victim_dir).expect("mkdir");
+        std::fs::create_dir(&victim_dir).map_err(|e| format!("mkdir: {e:?}"))?;
         let cap = pcap_bytes(b"x");
         let evil = format!("../../../../{}/owned.pcap", victim_dir.display());
         let tar = build(&[Spec::file(&evil, &cap), Spec::file("/etc/abs.pcap", &cap)]);
-        let path = write(tmp.path(), "evil.tar", &tar);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "evil.tar", &tar)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 2);
-        let dir = exp.dir.as_ref().expect("dir").path().to_path_buf();
+        let dir = exp.dir.as_ref().ok_or("dir")?.path().to_path_buf();
         for m in &exp.members {
             assert_eq!(m.path.parent(), Some(dir.as_path()), "{m:?}");
-            let file = m.path.file_name().and_then(|n| n.to_str()).expect("name");
+            let file = m.path.file_name().and_then(|n| n.to_str()).ok_or("name")?;
             assert!(file.starts_with('m') && !file.contains("owned"), "{file}");
         }
         assert_eq!(
-            std::fs::read_dir(&victim_dir).expect("ls").count(),
+            std::fs::read_dir(&victim_dir)
+                .map_err(|e| format!("ls: {e:?}"))?
+                .count(),
             0,
             "nothing written outside the extraction directory"
         );
+        Ok(())
     }
 
     /// A gzip bomb is refused having written no more than the ceiling, and the
     /// refusal says where and why.
     #[test]
-    fn a_decompression_bomb_stops_at_the_ceiling() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_decompression_bomb_stops_at_the_ceiling() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         // A pcap header followed by 8 MiB of zeros compresses to ~8 KiB.
         let mut big = pcap_bytes(b"");
         big.resize(8 * 1024 * 1024, 0);
-        let path = write(tmp.path(), "bomb.pcap.gz", &gzip(&gzip(&big)));
+        let path = write(tmp.path(), "bomb.pcap.gz", &gzip(&gzip(&big)?)?)?;
         let tight = Limits {
             max_inflated_bytes: 1024 * 1024,
             ..limits()
         };
-        let exp = expand(&path, &tight).expect("expand");
+        let exp = expand(&path, &tight).map_err(|e| format!("expand: {e:?}"))?;
         assert!(
             exp.members.is_empty(),
             "the member being written is discarded"
@@ -2205,141 +2230,159 @@ mod tests {
         let written: u64 = exp
             .dir
             .as_ref()
-            .map(|d| {
-                std::fs::read_dir(d.path())
-                    .expect("ls")
+            .map(|d| -> Result<u64, String> {
+                Ok(std::fs::read_dir(d.path())
+                    .map_err(|e| format!("ls: {e:?}"))?
                     .filter_map(Result::ok)
                     .filter_map(|e| e.metadata().ok())
                     .map(|m| m.len())
-                    .sum()
+                    .sum())
             })
+            .transpose()?
             .unwrap_or(0);
         assert!(
             written <= 1024 * 1024,
             "wrote {written} bytes past the ceiling"
         );
+        Ok(())
     }
 
     #[test]
-    fn nesting_past_the_depth_limit_is_refused() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn nesting_past_the_depth_limit_is_refused() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let mut data = pcap_bytes(b"x");
         for _ in 0..(MAX_DEPTH + 1) {
-            data = gzip(&data);
+            data = gzip(&data)?;
         }
-        let path = write(tmp.path(), "deep.gz", &data);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "deep.gz", &data)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert!(exp.members.is_empty());
         assert_eq!(exp.skipped.len(), 1);
         assert_eq!(exp.skipped[0].reason, SkipReason::TooDeep);
+        Ok(())
     }
 
     #[test]
-    fn the_entry_cap_stops_the_walk_and_says_so() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn the_entry_cap_stops_the_walk_and_says_so() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"x");
         let names: Vec<String> = (0..5).map(|i| format!("{i}.pcap")).collect();
         let specs: Vec<Spec<'_>> = names.iter().map(|n| Spec::file(n, &cap)).collect();
-        let path = write(tmp.path(), "many.tar", &build(&specs));
+        let path = write(tmp.path(), "many.tar", &build(&specs))?;
         let few = Limits {
             max_entries: 3,
             ..limits()
         };
-        let exp = expand(&path, &few).expect("expand");
+        let exp = expand(&path, &few).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 3);
         assert_eq!(exp.stops, vec![Stop::EntryCap { limit: 3 }]);
+        Ok(())
     }
 
     /// A truncated archive keeps what arrived, marks the member it broke off
     /// inside, and records that the walk ended there.
     #[test]
-    fn a_truncated_archive_keeps_what_arrived() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_truncated_archive_keeps_what_arrived() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"whole");
         let mut b = pcap_bytes(b"");
         b.resize(3000, 0xab);
         let tar = build(&[Spec::file("a.pcap", &a), Spec::file("b.pcap", &b)]);
         // Cut inside b's data: header(512) + a(512) + b header(512) + 1000.
-        let path = write(tmp.path(), "cut.tar", &tar[..512 * 3 + 1000]);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "cut.tar", &tar[..512 * 3 + 1000])?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 2);
         assert!(exp.members[0].cut_short.is_none());
         assert!(exp.members[1].cut_short.is_some(), "{:?}", exp.members[1]);
         assert_eq!(
-            std::fs::metadata(&exp.members[1].path).expect("meta").len(),
+            std::fs::metadata(&exp.members[1].path)
+                .map_err(|e| format!("meta: {e:?}"))?
+                .len(),
             1000
         );
         assert!(exp.lossy());
+        Ok(())
     }
 
     /// A member cut off inside its FIRST block still keeps what arrived. The
     /// walk reads a block to identify a stream, and that read hitting the cut
     /// used to discard the member as though it were never there.
     #[test]
-    fn a_member_cut_inside_its_first_block_is_still_kept() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_member_cut_inside_its_first_block_is_still_kept() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"whole");
         let mut b = pcap_bytes(b"");
         b.resize(3000, 0xab);
         let tar = build(&[Spec::file("a.pcap", &a), Spec::file("b.pcap", &b)]);
-        let path = write(tmp.path(), "cut.tgz", &gzip(&tar[..512 * 3 + 100]));
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "cut.tgz", &gzip(&tar[..512 * 3 + 100])?)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 2, "{exp:?}");
         assert!(exp.members[1].cut_short.is_some(), "{:?}", exp.members[1]);
         assert_eq!(
-            std::fs::metadata(&exp.members[1].path).expect("meta").len(),
+            std::fs::metadata(&exp.members[1].path)
+                .map_err(|e| format!("meta: {e:?}"))?
+                .len(),
             100
         );
+        Ok(())
     }
 
     #[test]
-    fn a_corrupt_header_ends_the_walk_but_keeps_earlier_members() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_corrupt_header_ends_the_walk_but_keeps_earlier_members() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"x");
         let mut tar = build(&[Spec::file("a.pcap", &cap), Spec::file("b.pcap", &cap)]);
         tar[1024 + 3] ^= 0x55;
-        let path = write(tmp.path(), "bent.tar", &tar);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "bent.tar", &tar)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 1);
         assert!(
             matches!(&exp.stops[..], [Stop::Broken { .. }]),
             "{:?}",
             exp.stops
         );
+        Ok(())
     }
 
     #[test]
-    fn a_repeated_member_name_is_read_once() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_repeated_member_name_is_read_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let first = pcap_bytes(b"first");
         let second = pcap_bytes(b"second");
         let tar = build(&[Spec::file("x.pcap", &first), Spec::file("x.pcap", &second)]);
-        let path = write(tmp.path(), "dup.tar", &tar);
-        let exp = expand(&path, &limits()).expect("expand");
+        let path = write(tmp.path(), "dup.tar", &tar)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
         assert_eq!(exp.members.len(), 1);
-        assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), first);
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            first
+        );
         assert_eq!(exp.skipped[0].reason, SkipReason::DuplicateName);
+        Ok(())
     }
 
     /// Following a pointer extracts exactly the member it names, through
     /// every layer, and nothing else.
     #[test]
-    fn extract_member_finds_the_member_a_label_names() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn extract_member_finds_the_member_a_label_names() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"alpha");
         let b = pcap_bytes(b"bravo");
-        let inner = build(&[Spec::file("b.pcap.gz", &gzip(&b))]);
+        let inner = build(&[Spec::file("b.pcap.gz", &gzip(&b)?)]);
         let outer = build(&[Spec::file("a.pcap", &a), Spec::file("in.tar", &inner)]);
-        let path = write(tmp.path(), "o.tgz", &gzip(&outer));
+        let path = write(tmp.path(), "o.tgz", &gzip(&outer)?)?;
         let root = path.display().to_string();
 
         let (m, dir) = extract_member(&path, &format!("{root}/in.tar/b.pcap.gz"), &limits())
-            .expect("walk")
-            .expect("found");
-        assert_eq!(std::fs::read(&m.path).expect("read"), b);
+            .map_err(|e| format!("walk: {e:?}"))?
+            .ok_or("found")?;
+        assert_eq!(
+            std::fs::read(&m.path).map_err(|e| format!("read: {e:?}"))?,
+            b
+        );
         assert_eq!(
             std::fs::read_dir(dir.path())
-                .expect("ls")
+                .map_err(|e| format!("ls: {e:?}"))?
                 .filter_map(Result::ok)
                 .filter(|e| e.file_name() != LOCK_NAME)
                 .count(),
@@ -2348,15 +2391,16 @@ mod tests {
         );
         assert!(
             extract_member(&path, &format!("{root}/nope.pcap"), &limits())
-                .expect("walk")
+                .map_err(|e| format!("walk: {e:?}"))?
                 .is_none()
         );
+        Ok(())
     }
 
     /// The names a file browser and MCP `list_captures` offer: captures,
     /// compressed captures, and archives this module unwraps — nothing else.
     #[test]
-    fn capture_file_names() {
+    fn capture_file_names() -> Result<(), TestError> {
         for yes in [
             "a.pcap",
             "a.pcapng",
@@ -2386,55 +2430,72 @@ mod tests {
         ] {
             assert!(!is_capture_file_name(no), "{no}");
         }
+        Ok(())
     }
 
     #[test]
-    fn container_format_recognizes_wrappers_and_passes_captures_through() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn container_format_recognizes_wrappers_and_passes_captures_through() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cap = pcap_bytes(b"x");
-        let plain = write(tmp.path(), "a.pcap", &cap);
-        let gz = write(tmp.path(), "a.pcap.gz", &gzip(&cap));
-        let tar = write(tmp.path(), "a.tar", &build(&[Spec::file("a.pcap", &cap)]));
-        let empty = write(tmp.path(), "e.pcap", b"");
-        assert_eq!(container_format(&plain).expect("plain"), None);
-        assert_eq!(container_format(&empty).expect("empty"), None);
-        assert_eq!(container_format(&gz).expect("gz"), Some(Format::Gzip));
-        assert_eq!(container_format(&tar).expect("tar"), Some(Format::Tar));
+        let plain = write(tmp.path(), "a.pcap", &cap)?;
+        let gz = write(tmp.path(), "a.pcap.gz", &gzip(&cap)?)?;
+        let tar = write(tmp.path(), "a.tar", &build(&[Spec::file("a.pcap", &cap)]))?;
+        let empty = write(tmp.path(), "e.pcap", b"")?;
+        assert_eq!(
+            container_format(&plain).map_err(|e| format!("plain: {e:?}"))?,
+            None
+        );
+        assert_eq!(
+            container_format(&empty).map_err(|e| format!("empty: {e:?}"))?,
+            None
+        );
+        assert_eq!(
+            container_format(&gz).map_err(|e| format!("gz: {e:?}"))?,
+            Some(Format::Gzip)
+        );
+        assert_eq!(
+            container_format(&tar).map_err(|e| format!("tar: {e:?}"))?,
+            Some(Format::Tar)
+        );
+        Ok(())
     }
 
     /// The directory goes away with the expansion that owns it.
     #[test]
-    fn dropping_the_expansion_deletes_the_extracted_files() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn dropping_the_expansion_deletes_the_extracted_files() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let tar = build(&[Spec::file("a.pcap", &pcap_bytes(b"x"))]);
-        let path = write(tmp.path(), "a.tar", &tar);
-        let exp = expand(&path, &limits()).expect("expand");
-        let dir = exp.dir.as_ref().expect("dir").path().to_path_buf();
+        let path = write(tmp.path(), "a.tar", &tar)?;
+        let exp = expand(&path, &limits()).map_err(|e| format!("expand: {e:?}"))?;
+        let dir = exp.dir.as_ref().ok_or("dir")?.path().to_path_buf();
         assert!(dir.is_dir());
         drop(exp);
         assert!(!dir.exists(), "the extraction directory outlived its owner");
+        Ok(())
     }
 
     /// The sweep removes a directory whose owner is gone and leaves one whose
     /// owner still holds the lock.
     #[test]
-    fn the_sweep_removes_only_abandoned_directories() {
-        let root = tempfile::tempdir().expect("root");
-        let alive = ExtractDir::create_in(root.path()).expect("alive");
+    fn the_sweep_removes_only_abandoned_directories() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("root: {e:?}"))?;
+        let alive = ExtractDir::create_in(root.path()).map_err(|e| format!("alive: {e:?}"))?;
         // An abandoned one: same shape, lock file present and unlocked.
         let dead = root.path().join(format!("{DIR_PREFIX}dead"));
-        std::fs::create_dir(&dead).expect("mkdir");
-        std::fs::write(dead.join(LOCK_NAME), b"").expect("lock");
-        std::fs::write(dead.join("m00000.pcap"), b"left behind").expect("member");
+        std::fs::create_dir(&dead).map_err(|e| format!("mkdir: {e:?}"))?;
+        std::fs::write(dead.join(LOCK_NAME), b"").map_err(|e| format!("lock: {e:?}"))?;
+        std::fs::write(dead.join("m00000.pcap"), b"left behind")
+            .map_err(|e| format!("member: {e:?}"))?;
         // Somebody else's name that merely looks similar is left alone.
         let other = root.path().join("sipnab-other");
-        std::fs::create_dir(&other).expect("mkdir");
+        std::fs::create_dir(&other).map_err(|e| format!("mkdir: {e:?}"))?;
 
-        let ours = ExtractDir::create_in(root.path()).expect("ours");
+        let ours = ExtractDir::create_in(root.path()).map_err(|e| format!("ours: {e:?}"))?;
         assert!(!dead.exists(), "an abandoned extraction directory survived");
         assert!(alive.path().is_dir(), "a live one was removed");
         assert!(ours.path().is_dir());
         assert!(other.is_dir());
+        Ok(())
     }
 
     /// A sweep that lands while a directory is still being created leaves it
@@ -2447,11 +2508,11 @@ mod tests {
     /// `a_truncated_archive_keeps_what_arrived` finding 0 members on macOS CI,
     /// where parallel tests share the system temp directory and sweep it.
     #[test]
-    fn a_sweep_inside_creation_never_removes_the_directory_being_made() {
-        let root = tempfile::tempdir().expect("root");
+    fn a_sweep_inside_creation_never_removes_the_directory_being_made() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("root: {e:?}"))?;
         // The sweeper needs a real directory of its own to compare owners with.
         let sweeper = root.path().join("sweeper");
-        std::fs::create_dir(&sweeper).expect("mkdir");
+        std::fs::create_dir(&sweeper).map_err(|e| format!("mkdir: {e:?}"))?;
         let mut steps = 0;
         let made = ExtractDir::create_in_observed(root.path(), &mut |dir| {
             steps += 1;
@@ -2461,28 +2522,32 @@ mod tests {
                 "a sweep at creation step {steps} removed the directory being made"
             );
         })
-        .expect("create");
+        .map_err(|e| format!("create: {e:?}"))?;
         assert!(steps >= 3, "only {steps} step(s) observed");
         assert!(made.path().join(LOCK_NAME).exists());
-        std::fs::write(made.path().join("m00000.pcap"), b"x").expect("still writable");
+        std::fs::write(made.path().join("m00000.pcap"), b"x")
+            .map_err(|e| format!("still writable: {e:?}"))?;
+        Ok(())
     }
 
     /// A symlink carrying our prefix is never followed into, whatever it
     /// points at.
     #[cfg(unix)]
     #[test]
-    fn the_sweep_never_follows_a_planted_symlink() {
-        let root = tempfile::tempdir().expect("root");
-        let target = tempfile::tempdir().expect("target");
-        std::fs::write(target.path().join(LOCK_NAME), b"").expect("lock");
-        std::fs::write(target.path().join("precious"), b"keep").expect("file");
+    fn the_sweep_never_follows_a_planted_symlink() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("root: {e:?}"))?;
+        let target = tempfile::tempdir().map_err(|e| format!("target: {e:?}"))?;
+        std::fs::write(target.path().join(LOCK_NAME), b"").map_err(|e| format!("lock: {e:?}"))?;
+        std::fs::write(target.path().join("precious"), b"keep")
+            .map_err(|e| format!("file: {e:?}"))?;
         let trap = root.path().join(format!("{DIR_PREFIX}trap"));
-        std::os::unix::fs::symlink(target.path(), &trap).expect("symlink");
-        let _ours = ExtractDir::create_in(root.path()).expect("ours");
+        std::os::unix::fs::symlink(target.path(), &trap).map_err(|e| format!("symlink: {e:?}"))?;
+        let _ours = ExtractDir::create_in(root.path()).map_err(|e| format!("ours: {e:?}"))?;
         assert!(target.path().join("precious").exists());
         assert!(
             std::fs::symlink_metadata(&trap).is_ok(),
             "the planted link is not ours to delete either"
         );
+        Ok(())
     }
 }

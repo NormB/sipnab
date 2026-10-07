@@ -499,8 +499,11 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// An INVITE for `call_id`, parsed between localhost endpoints.
-    fn invite(call_id: &str) -> crate::sip::SipMessage {
+    fn invite(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
         let headers = [
             format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}"),
             "From: Alice <sip:alice@example.com>;tag=t1".to_string(),
@@ -511,35 +514,37 @@ mod tests {
         ];
         let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
         let local = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        parse_sip(
+        Ok(parse_sip(
             &build_sip("INVITE sip:bob@example.com SIP/2.0", &refs, b""),
-            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap(),
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("valid fixture timestamp")?,
             local,
             local,
             5060,
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("the fixture parses")
+        .map_err(|e| format!("the fixture parses: {e:?}"))?)
     }
 
     /// A server over a store holding `call_ids`, and the store itself so a
     /// test can add to it mid-wait.
-    fn server_with(call_ids: &[&str]) -> (SipnabMcp, Arc<RwLock<DialogStore>>) {
+    fn server_with(call_ids: &[&str]) -> Result<(SipnabMcp, Arc<RwLock<DialogStore>>), TestError> {
         let mut store = DialogStore::new(100, false);
         for id in call_ids {
-            store.process_message(invite(id));
+            store.process_message(invite(id)?);
         }
         let ds = Arc::new(RwLock::new(store));
         let server = SipnabMcp::new(
             Arc::clone(&ds),
             Arc::new(RwLock::new(StreamStore::new(100))),
         );
-        (server, ds)
+        Ok((server, ds))
     }
 
     /// The JSON payload of a tool result.
-    fn json_of(result: &CallToolResult) -> serde_json::Value {
+    fn json_of(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = untrusted_note();
         let text = result
             .content
@@ -547,8 +552,8 @@ mod tests {
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the provenance note");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block that is not the provenance note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// Params naming `filter`, with everything else defaulted.
@@ -561,8 +566,8 @@ mod tests {
 
     /// A condition that is already true costs no waiting at all.
     #[tokio::test]
-    async fn a_condition_already_true_returns_at_once() {
-        let (server, _ds) = server_with(&["a@test", "b@test"]);
+    async fn a_condition_already_true_returns_at_once() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test", "b@test"])?;
         let started = Instant::now();
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
@@ -571,9 +576,9 @@ mod tests {
                 ..params("call_id == \"b@test\"")
             }))
             .await
-            .expect("an already-true condition is not an error");
+            .map_err(|e| format!("an already-true condition is not an error: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], true);
         assert_eq!(v["stopped_because"], "condition_met");
         assert_eq!(v["total_matched"], 1);
@@ -584,6 +589,7 @@ mod tests {
             "a condition already true must not wait out its deadline; took {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// THE load-bearing case: the deadline is an ordinary answer.
@@ -591,8 +597,8 @@ mod tests {
     /// An agent has to tell "the fault has not reproduced" from "the tool
     /// broke", and it can only do that if the two arrive in different shapes.
     #[tokio::test]
-    async fn the_deadline_answers_matched_false_rather_than_erroring() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn the_deadline_answers_matched_false_rather_than_erroring() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
                 timeout_seconds: Some(1),
@@ -600,33 +606,34 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("a deadline that passes is an ANSWER, not an error");
+            .map_err(|e| format!("a deadline that passes is an ANSWER, not an error: {e:?}"))?;
 
         assert_ne!(
             result.is_error,
             Some(true),
             "the deadline path must not be flagged as an error result either"
         );
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], false);
         assert_eq!(v["stopped_because"], "deadline");
         assert_eq!(v["total_matched"], 0);
         assert_eq!(
-            v["dialogs"].as_array().expect("an array").len(),
+            v["dialogs"].as_array().ok_or("an array")?.len(),
             0,
             "no match means no rows"
         );
         assert!(
-            v["elapsed_ms"].as_u64().expect("a number") >= 900,
+            v["elapsed_ms"].as_u64().ok_or("a number")? >= 900,
             "the deadline must actually have been waited out, not short-circuited: {v:#}"
         );
+        Ok(())
     }
 
     /// The operator's ceiling BINDS: an over-large request is answered in the
     /// operator's time, not the caller's.
     #[tokio::test]
-    async fn the_operator_ceiling_bounds_an_over_large_request() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn the_operator_ceiling_bounds_an_over_large_request() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let server = server.with_max_wait_seconds(1);
         let started = Instant::now();
         let result = server
@@ -636,7 +643,7 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("clamping is not an error");
+            .map_err(|e| format!("clamping is not an error: {e:?}"))?;
 
         let elapsed = started.elapsed();
         assert!(
@@ -644,7 +651,7 @@ mod tests {
             "an hour was asked for against a one-second ceiling and the call \
              took {elapsed:?}; the ceiling did not bind"
         );
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(
             v["timeout_seconds"], 1,
             "the EFFECTIVE deadline is reported"
@@ -654,12 +661,13 @@ mod tests {
             "a clamp the caller cannot see is a silent one"
         );
         assert_eq!(v["stopped_because"], "deadline");
+        Ok(())
     }
 
     /// Under the ceiling, the caller's own number is honored unchanged.
     #[tokio::test]
-    async fn a_request_under_the_ceiling_is_not_clamped() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn a_request_under_the_ceiling_is_not_clamped() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let server = server.with_max_wait_seconds(600);
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
@@ -668,21 +676,23 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["timeout_seconds"], 1);
         assert_eq!(v["timeout_clamped"], false);
+        Ok(())
     }
 
     /// The whole point: a dialog that arrives DURING the wait ends it.
     #[tokio::test]
-    async fn a_dialog_arriving_during_the_wait_ends_it() {
-        let (server, ds) = server_with(&["a@test"]);
+    async fn a_dialog_arriving_during_the_wait_ends_it() -> Result<(), TestError> {
+        let (server, ds) = server_with(&["a@test"])?;
         let writer = Arc::clone(&ds);
+        let late = invite("late@test")?;
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(250)).await;
-            writer.write().process_message(invite("late@test"));
+            writer.write().process_message(late);
         });
 
         let result = server
@@ -692,26 +702,27 @@ mod tests {
                 ..params("call_id == \"late@test\"")
             }))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], true, "the late dialog must be seen: {v:#}");
         assert_eq!(v["stopped_because"], "condition_met");
         assert_eq!(v["dialogs"][0]["call_id"], "late@test");
         assert!(
-            v["polls"].as_u64().expect("a number") >= 2,
+            v["polls"].as_u64().ok_or("a number")? >= 2,
             "it cannot have been true on the first look: {v:#}"
         );
         assert!(
-            v["elapsed_ms"].as_u64().expect("a number") < 9_000,
+            v["elapsed_ms"].as_u64().ok_or("a number")? < 9_000,
             "it must have returned on the change, not on the deadline: {v:#}"
         );
+        Ok(())
     }
 
     /// A caller cannot ask this to spin.
     #[tokio::test]
-    async fn the_poll_interval_has_a_floor() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn the_poll_interval_has_a_floor() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
                 timeout_seconds: Some(1),
@@ -719,28 +730,30 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(
             v["poll_interval_ms"], MIN_POLL_INTERVAL_MS,
             "a sub-floor request is RAISED to the floor and reported"
         );
         // One second at the floor is ten looks; anything far above that is a
         // spin the floor was supposed to have prevented.
-        let polls = v["polls"].as_u64().expect("a number");
+        let polls = v["polls"].as_u64().ok_or("a number")?;
         assert!(
             polls <= 20,
             "poll_interval_ms=0 produced {polls} looks in one second, so the \
              floor is not being applied"
         );
+        Ok(())
     }
 
     /// A filter that does not compile is refused in milliseconds, not at the
     /// end of a deadline the caller named.
     #[tokio::test]
-    async fn a_filter_that_does_not_compile_is_refused_before_any_waiting() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn a_filter_that_does_not_compile_is_refused_before_any_waiting() -> Result<(), TestError>
+    {
+        let (server, _ds) = server_with(&["a@test"])?;
         let started = Instant::now();
         let err = server
             .await_condition(Parameters(AwaitConditionParams {
@@ -748,7 +761,8 @@ mod tests {
                 ..params("state = ")
             }))
             .await
-            .expect_err("an uncompilable filter is a caller error");
+            .err()
+            .ok_or("an uncompilable filter is a caller error")?;
 
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
@@ -756,13 +770,14 @@ mod tests {
             "the refusal waited: {:?}",
             started.elapsed()
         );
+        Ok(())
     }
 
     /// A drained source ends the wait early, and says which of the two
     /// no-match endings this was.
     #[tokio::test]
-    async fn an_exhausted_source_ends_the_wait_early_and_says_so() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn an_exhausted_source_ends_the_wait_early_and_says_so() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let server = server.with_source_exhausted(Arc::new(AtomicBool::new(true)));
         let started = Instant::now();
         let result = server
@@ -772,7 +787,7 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("exhaustion is an answer, not an error");
+            .map_err(|e| format!("exhaustion is an answer, not an error: {e:?}"))?;
 
         let elapsed = started.elapsed();
         assert!(
@@ -780,35 +795,37 @@ mod tests {
             "a drained capture cannot change its answer, so the wait must not \
              have run to its deadline; took {elapsed:?}"
         );
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], false);
         assert_eq!(
             v["stopped_because"], "source_exhausted",
             "an agent must tell 'not yet' from 'not ever': {v:#}"
         );
         assert_eq!(v["source_exhausted"], true);
+        Ok(())
     }
 
     /// A match already in a drained capture is still a match: exhaustion is
     /// checked around the look, not instead of it.
     #[tokio::test]
-    async fn an_exhausted_source_still_reports_a_condition_already_true() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn an_exhausted_source_still_reports_a_condition_already_true() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let server = server.with_source_exhausted(Arc::new(AtomicBool::new(true)));
         let result = server
             .await_condition(Parameters(params("call_id == \"a@test\"")))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], true, "{v:#}");
         assert_eq!(v["stopped_because"], "condition_met");
+        Ok(())
     }
 
     /// The cheap revision gate has an observable effect.
     #[tokio::test]
-    async fn an_idle_capture_is_looked_at_more_often_than_it_is_scanned() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn an_idle_capture_is_looked_at_more_often_than_it_is_scanned() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
                 timeout_seconds: Some(1),
@@ -816,11 +833,11 @@ mod tests {
                 ..params("call_id == \"never@test\"")
             }))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
-        let polls = v["polls"].as_u64().expect("a number");
-        let scans = v["scans"].as_u64().expect("a number");
+        let v = json_of(&result)?;
+        let polls = v["polls"].as_u64().ok_or("a number")?;
+        let scans = v["scans"].as_u64().ok_or("a number")?;
         assert_eq!(
             scans, 1,
             "nothing moved, so only the first look may have run the filter: {v:#}"
@@ -830,49 +847,52 @@ mod tests {
             "the wait must have looked more than once for the gate to have \
              skipped anything: {v:#}"
         );
+        Ok(())
     }
 
     /// A zero deadline is still one look, not zero.
     #[tokio::test]
-    async fn a_zero_second_deadline_still_looks_once() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn a_zero_second_deadline_still_looks_once() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test"])?;
         let result = server
             .await_condition(Parameters(AwaitConditionParams {
                 timeout_seconds: Some(0),
                 ..params("call_id == \"a@test\"")
             }))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(
             v["matched"], true,
             "'is it true right now' must be answered by reading, not by \
              assuming: {v:#}"
         );
         assert_eq!(v["polls"], 1);
+        Ok(())
     }
 
     /// The page is bounded by the server's row cap, and says so.
     #[tokio::test]
-    async fn the_row_cap_bounds_the_dialogs_returned() {
-        let (server, _ds) = server_with(&["a@test", "b@test", "c@test", "d@test"]);
+    async fn the_row_cap_bounds_the_dialogs_returned() -> Result<(), TestError> {
+        let (server, _ds) = server_with(&["a@test", "b@test", "c@test", "d@test"])?;
         let server = server.with_row_cap(2);
         let result = server
             .await_condition(Parameters(params("method == 'INVITE'")))
             .await
-            .expect("ok");
+            .map_err(|e| format!("ok: {e:?}"))?;
 
-        let v = json_of(&result);
+        let v = json_of(&result)?;
         assert_eq!(v["matched"], true, "{v:#}");
         assert_eq!(v["total_matched"], 4, "the count is not truncated");
         assert_eq!(
-            v["dialogs"].as_array().expect("an array").len(),
+            v["dialogs"].as_array().ok_or("an array")?.len(),
             2,
             "the page is: {v:#}"
         );
         assert_eq!(v["returned"], 2);
         assert_eq!(v["truncated"], true);
+        Ok(())
     }
 
     /// Nothing outlives the call: two identical waits are indistinguishable.
@@ -889,8 +909,9 @@ mod tests {
     /// look still catches the defect this is for: a cursor carried into the
     /// second call makes its look find nothing new, and `scans` reads 0.
     #[tokio::test]
-    async fn a_second_identical_wait_is_indistinguishable_from_the_first() {
-        let (server, _ds) = server_with(&["a@test"]);
+    async fn a_second_identical_wait_is_indistinguishable_from_the_first() -> Result<(), TestError>
+    {
+        let (server, _ds) = server_with(&["a@test"])?;
         let call = || {
             server.await_condition(Parameters(AwaitConditionParams {
                 timeout_seconds: Some(0),
@@ -899,8 +920,8 @@ mod tests {
             }))
         };
 
-        let first = json_of(&call().await.expect("ok"));
-        let second = json_of(&call().await.expect("ok"));
+        let first = json_of(&call().await.map_err(|e| format!("ok: {e:?}"))?)?;
+        let second = json_of(&call().await.map_err(|e| format!("ok: {e:?}"))?)?;
         for key in [
             "matched",
             "stopped_because",
@@ -914,5 +935,6 @@ mod tests {
                  survived the first: {first:#} vs {second:#}"
             );
         }
+        Ok(())
     }
 }

@@ -328,10 +328,13 @@ fn decode_dict(input: &[u8], depth: usize) -> Result<(Value<'_>, &[u8])> {
 
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Round-tripping is the encoder's whole contract: whatever `decode`
     /// understands, `encode` must reproduce byte-for-byte.
     #[test]
-    fn encode_round_trips_every_value_kind() {
+    fn encode_round_trips_every_value_kind() -> Result<(), TestError> {
         for original in [
             b"i0e".as_slice(),
             b"i-42e",
@@ -347,7 +350,7 @@ mod tests {
             // stray 's' that the decoder rightly refuses.
             b"d5:callsl4:abcd4:efghee",
         ] {
-            let decoded = decode(original).expect("fixture must decode");
+            let decoded = decode(original).map_err(|e| format!("fixture must decode: {e:?}"))?;
             let mut out = Vec::new();
             encode(&decoded, &mut out);
             assert_eq!(
@@ -357,77 +360,98 @@ mod tests {
                 String::from_utf8_lossy(original)
             );
         }
+        Ok(())
     }
 
     /// Keys go out sorted. bencode requires it, and a canonical encoding is
     /// what makes two encodings of one request comparable.
     #[test]
-    fn encode_dict_sorts_its_keys() {
+    fn encode_dict_sorts_its_keys() -> Result<(), TestError> {
         let out = encode_dict(vec![
             (b"zebra".as_slice(), Value::Int(1)),
             (b"alpha".as_slice(), Value::Int(2)),
             (b"middle".as_slice(), Value::Int(3)),
         ]);
         let text = String::from_utf8_lossy(&out);
-        let a = text.find("alpha").expect("alpha");
-        let m = text.find("middle").expect("middle");
-        let z = text.find("zebra").expect("zebra");
+        let a = text.find("alpha").ok_or("alpha")?;
+        let m = text.find("middle").ok_or("middle")?;
+        let z = text.find("zebra").ok_or("zebra")?;
         assert!(a < m && m < z, "keys are not sorted: {text}");
 
         // And the result must still decode to what went in.
-        let back = decode(&out).expect("re-decode");
+        let back = decode(&out).map_err(|e| format!("re-decode: {e:?}"))?;
         assert_eq!(back.get(b"alpha"), Some(&Value::Int(2)));
         assert_eq!(back.get(b"zebra"), Some(&Value::Int(1)));
+        Ok(())
     }
 
     /// A byte string is bytes, not text: the length prefix counts bytes and
     /// the payload is copied verbatim.
     #[test]
-    fn encode_treats_strings_as_bytes() {
+    fn encode_treats_strings_as_bytes() -> Result<(), TestError> {
         let mut out = Vec::new();
         // Two-byte UTF-8 and a NUL: four bytes, not four characters.
         encode(&Value::Bytes(&[0xC3, 0xA9, 0x00, b'x']), &mut out);
         assert_eq!(out, b"4:\xc3\xa9\x00x".to_vec());
+        Ok(())
     }
 
     use super::*;
 
     #[test]
-    fn decodes_the_four_bencode_types() {
-        assert_eq!(decode(b"i42e").expect("int"), Value::Int(42));
-        assert_eq!(decode(b"i-7e").expect("negative"), Value::Int(-7));
-        assert_eq!(decode(b"5:offer").expect("bytes"), Value::Bytes(b"offer"));
-        assert_eq!(decode(b"0:").expect("empty bytes"), Value::Bytes(b""));
+    fn decodes_the_four_bencode_types() -> Result<(), TestError> {
         assert_eq!(
-            decode(b"li1ei2ee").expect("list"),
+            decode(b"i42e").map_err(|e| format!("int: {e:?}"))?,
+            Value::Int(42)
+        );
+        assert_eq!(
+            decode(b"i-7e").map_err(|e| format!("negative: {e:?}"))?,
+            Value::Int(-7)
+        );
+        assert_eq!(
+            decode(b"5:offer").map_err(|e| format!("bytes: {e:?}"))?,
+            Value::Bytes(b"offer")
+        );
+        assert_eq!(
+            decode(b"0:").map_err(|e| format!("empty bytes: {e:?}"))?,
+            Value::Bytes(b"")
+        );
+        assert_eq!(
+            decode(b"li1ei2ee").map_err(|e| format!("list: {e:?}"))?,
             Value::List(vec![Value::Int(1), Value::Int(2)])
         );
         assert_eq!(
-            decode(b"d3:keyi1ee").expect("dict"),
+            decode(b"d3:keyi1ee").map_err(|e| format!("dict: {e:?}"))?,
             Value::Dict(vec![(&b"key"[..], Value::Int(1))])
         );
+        Ok(())
     }
 
     /// The format requires sorted keys; rtpengine does not produce them. A
     /// decoder that enforced the rule would reject every real `offer`.
     #[test]
-    fn accepts_dictionary_keys_out_of_lexicographic_order() {
-        let v = decode(b"d7:command5:offer7:call-id2:abe").expect("unsorted keys decode");
+    fn accepts_dictionary_keys_out_of_lexicographic_order() -> Result<(), TestError> {
+        let v = decode(b"d7:command5:offer7:call-id2:abe")
+            .map_err(|e| format!("unsorted keys decode: {e:?}"))?;
         assert_eq!(v.get_bytes(b"command"), Some(&b"offer"[..]));
         assert_eq!(v.get_bytes(b"call-id"), Some(&b"ab"[..]));
+        Ok(())
     }
 
     #[test]
-    fn rejects_duplicate_dictionary_keys() {
-        let err = decode(b"d7:call-id1:a7:call-id1:be").expect_err("duplicate must fail");
+    fn rejects_duplicate_dictionary_keys() -> Result<(), TestError> {
+        let err = decode(b"d7:call-id1:a7:call-id1:be")
+            .err()
+            .ok_or("duplicate must fail")?;
         assert!(
             err.to_string().contains("duplicate"),
             "unexpected error: {err}"
         );
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_truncated_value_rather_than_returning_a_short_one() {
+    fn rejects_a_truncated_value_rather_than_returning_a_short_one() -> Result<(), TestError> {
         assert!(
             decode(b"d7:command5:offe").is_err(),
             "truncated byte string"
@@ -435,40 +459,50 @@ mod tests {
         assert!(decode(b"d7:command5:offer").is_err(), "unterminated dict");
         assert!(decode(b"i42").is_err(), "unterminated int");
         assert!(decode(b"li1e").is_err(), "unterminated list");
+        Ok(())
     }
 
     /// A declared length far past the buffer must be a parse error, never an
     /// allocation and never a slice past the end.
     #[test]
-    fn rejects_a_length_larger_than_the_input() {
-        let err = decode(b"99999999:x").expect_err("oversized length must fail");
+    fn rejects_a_length_larger_than_the_input() -> Result<(), TestError> {
+        let err = decode(b"99999999:x")
+            .err()
+            .ok_or("oversized length must fail")?;
         assert!(err.to_string().contains("declares"), "unexpected: {err}");
         assert!(decode(b"18446744073709551615:x").is_err(), "usize overflow");
+        Ok(())
     }
 
     #[test]
-    fn rejects_trailing_bytes_after_the_top_level_value() {
-        let err = decode(b"i1eXX").expect_err("trailing bytes must fail");
+    fn rejects_trailing_bytes_after_the_top_level_value() -> Result<(), TestError> {
+        let err = decode(b"i1eXX").err().ok_or("trailing bytes must fail")?;
         assert!(err.to_string().contains("trailing"), "unexpected: {err}");
+        Ok(())
     }
 
     /// Unbounded recursion on hostile input is a crash, not a parse failure.
     #[test]
-    fn rejects_nesting_past_the_depth_limit() {
+    fn rejects_nesting_past_the_depth_limit() -> Result<(), TestError> {
         let deep: Vec<u8> = std::iter::repeat_n(b'l', MAX_DEPTH + 4).collect();
-        let err = decode(&deep).expect_err("deep nesting must fail");
+        let err = decode(&deep).err().ok_or("deep nesting must fail")?;
         assert!(
             err.to_string().contains("nested deeper"),
             "unexpected: {err}"
         );
+        Ok(())
     }
 
     #[test]
-    fn rejects_non_canonical_numbers() {
+    fn rejects_non_canonical_numbers() -> Result<(), TestError> {
         assert!(decode(b"i03e").is_err(), "leading zero");
         assert!(decode(b"i-0e").is_err(), "negative zero");
         assert!(decode(b"01:a").is_err(), "leading zero in a length");
-        assert_eq!(decode(b"i0e").expect("plain zero is fine"), Value::Int(0));
+        assert_eq!(
+            decode(b"i0e").map_err(|e| format!("plain zero is fine: {e:?}"))?,
+            Value::Int(0)
+        );
+        Ok(())
     }
 
     /// Shaped like the `offer` a live rtpengine 12.5.1 sent, which
@@ -480,30 +514,32 @@ mod tests {
     /// rtpengine would ever emit, so the test was asserting against the
     /// author's arithmetic instead of against the format.
     #[test]
-    fn decodes_a_real_rtpengine_offer() {
+    fn decodes_a_real_rtpengine_offer() -> Result<(), TestError> {
         let sdp = "v=0\r\nm=audio 40001 RTP/AVP 0";
         let msg = format!(
             "d7:command5:offer7:call-id18:km-670bd208@sipnab8:from-tag5:ftag13:sdp{}:{sdp}e",
             sdp.len()
         );
         let msg = msg.as_bytes();
-        let v = decode(msg).expect("real offer decodes");
+        let v = decode(msg).map_err(|e| format!("real offer decodes: {e:?}"))?;
         assert_eq!(v.get_str(b"command").as_deref(), Some("offer"));
         assert_eq!(v.get_str(b"call-id").as_deref(), Some("km-670bd208@sipnab"));
         assert_eq!(v.get_str(b"from-tag").as_deref(), Some("ftag1"));
         assert!(
-            v.get_bytes(b"sdp").expect("sdp").starts_with(b"v=0\r\n"),
+            v.get_bytes(b"sdp").ok_or("sdp")?.starts_with(b"v=0\r\n"),
             "SDP must survive byte-exact, CRLF included"
         );
+        Ok(())
     }
 
     #[test]
-    fn get_helpers_return_none_for_the_wrong_shape() {
-        let v = decode(b"d3:oneli1eee").expect("dict of list");
+    fn get_helpers_return_none_for_the_wrong_shape() -> Result<(), TestError> {
+        let v = decode(b"d3:oneli1eee").map_err(|e| format!("dict of list: {e:?}"))?;
         assert_eq!(v.get_bytes(b"one"), None, "a list is not a byte string");
         assert_eq!(v.get_int(b"one"), None, "a list is not an int");
         assert_eq!(v.get(b"absent"), None);
         assert_eq!(Value::Int(1).get(b"any"), None, "a non-dict has no keys");
+        Ok(())
     }
 
     /// A dictionary of `n` distinct keys, each `i0e`, as one bencode buffer.
@@ -527,7 +563,7 @@ mod tests {
     /// wall-clock ratio read ~14.3x for a linear decoder in 19 runs of 20. CPU
     /// time stops while the thread is off the CPU, so the ratio measures the
     /// work again.
-    fn thread_cpu_time() -> std::time::Duration {
+    fn thread_cpu_time() -> Result<std::time::Duration, TestError> {
         let mut ts = libc::timespec {
             tv_sec: 0,
             tv_nsec: 0,
@@ -537,24 +573,25 @@ mod tests {
         // defines; clock_gettime writes only into `ts`.
         let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
         assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
-        std::time::Duration::new(
-            u64::try_from(ts.tv_sec).expect("a non-negative CPU time"),
-            u32::try_from(ts.tv_nsec).expect("nanoseconds under a second"),
-        )
+        Ok(std::time::Duration::new(
+            u64::try_from(ts.tv_sec).map_err(|e| format!("a non-negative CPU time: {e:?}"))?,
+            u32::try_from(ts.tv_nsec).map_err(|e| format!("nanoseconds under a second: {e:?}"))?,
+        ))
     }
 
     /// The clock the ratio test below reads must not count time the thread
     /// spends not running. A thread that sleeps uses almost no CPU, so 50 ms
     /// asleep has to read as next to nothing.
     #[test]
-    fn the_cpu_clock_does_not_count_time_spent_not_running() {
-        let before = thread_cpu_time();
+    fn the_cpu_clock_does_not_count_time_spent_not_running() -> Result<(), TestError> {
+        let before = thread_cpu_time()?;
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let spent = thread_cpu_time() - before;
+        let spent = thread_cpu_time()? - before;
         assert!(
             spent < std::time::Duration::from_millis(10),
             "50 ms asleep read as {spent:?} of CPU: this is a wall clock"
         );
+        Ok(())
     }
 
     /// Rejecting duplicate keys must not cost the square of the key count.
@@ -575,29 +612,29 @@ mod tests {
     /// count is ~16x, linear is ~4x, and the bound sits between them with a
     /// factor of two either side.
     #[test]
-    fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() {
+    fn rejecting_duplicate_keys_does_not_cost_the_square_of_the_key_count() -> Result<(), TestError>
+    {
         /// Best of several runs, in CPU time. Preemption no longer reaches the
         /// samples (see `thread_cpu_time`); the minimum still trims what does,
         /// such as a cold cache or a frequency step between runs.
-        fn best(buf: &[u8]) -> std::time::Duration {
-            (0..5)
-                .map(|_| {
-                    let start = thread_cpu_time();
-                    let v = decode(buf).expect("a well-formed dictionary");
-                    debug_assert!(matches!(v, Value::Dict(_)));
-                    thread_cpu_time() - start
-                })
-                .min()
-                .expect("five samples")
+        fn best(buf: &[u8]) -> Result<std::time::Duration, TestError> {
+            let mut samples = Vec::with_capacity(5);
+            for _ in 0..5 {
+                let start = thread_cpu_time()?;
+                let v = decode(buf).map_err(|e| format!("a well-formed dictionary: {e:?}"))?;
+                debug_assert!(matches!(v, Value::Dict(_)));
+                samples.push(thread_cpu_time()? - start);
+            }
+            Ok(samples.into_iter().min().ok_or("five samples")?)
         }
 
         let small = dict_of(1024);
         let large = dict_of(4096);
         // Warm the allocator and the branch predictors before timing either.
-        let _ = best(&small);
+        let _ = best(&small)?;
 
-        let t_small = best(&small).as_secs_f64();
-        let t_large = best(&large).as_secs_f64();
+        let t_small = best(&small)?.as_secs_f64();
+        let t_large = best(&large)?.as_secs_f64();
         let ratio = t_large / t_small;
 
         assert!(
@@ -606,6 +643,7 @@ mod tests {
              {t_large:.6}s). Linear is ~4x and quadratic is ~16x, so this is \
              the duplicate-key check having become a scan again"
         );
+        Ok(())
     }
 
     /// ...and it still rejects duplicates at that scale.
@@ -613,17 +651,20 @@ mod tests {
     /// The bound on the test above. A check made cheap by being deleted also
     /// scales linearly, and this is what refuses that reading.
     #[test]
-    fn a_duplicate_is_still_caught_among_thousands_of_keys() {
+    fn a_duplicate_is_still_caught_among_thousands_of_keys() -> Result<(), TestError> {
         let mut buf = dict_of(4096);
         // Replace the closing `e` with one more copy of an early key.
         buf.pop();
         buf.extend_from_slice(b"8:00000007i0e");
         buf.push(b'e');
-        let err = decode(&buf).expect_err("a repeated key is a malformed message");
+        let err = decode(&buf)
+            .err()
+            .ok_or("a repeated key is a malformed message")?;
         assert!(
             format!("{err:#}").contains("duplicate"),
             "the duplicate was not what was rejected: {err:#}"
         );
+        Ok(())
     }
 
     /// Keys are compared as BYTES, not as lossy text.
@@ -635,15 +676,18 @@ mod tests {
     /// message is refused as malformed. bencode keys are byte strings and the
     /// format does not require them to be text at all.
     #[test]
-    fn two_keys_differing_only_in_an_invalid_utf8_byte_are_not_duplicates() {
+    fn two_keys_differing_only_in_an_invalid_utf8_byte_are_not_duplicates() -> Result<(), TestError>
+    {
         // `1:\xff` and `1:\xfe` are distinct keys; both lossy-decode to U+FFFD.
         let mut buf = Vec::from(*b"d");
         buf.extend_from_slice(b"1:\xffi1e");
         buf.extend_from_slice(b"1:\xfei2e");
         buf.push(b'e');
-        let v = decode(&buf).expect("two distinct byte keys are a valid dictionary");
+        let v = decode(&buf)
+            .map_err(|e| format!("two distinct byte keys are a valid dictionary: {e:?}"))?;
         assert_eq!(v.get_int(b"\xff"), Some(1));
         assert_eq!(v.get_int(b"\xfe"), Some(2), "the second key was not kept");
+        Ok(())
     }
 
     /// Arrival order survives the duplicate check, at scale.
@@ -653,7 +697,7 @@ mod tests {
     /// tempts someone to sort `entries` and binary-search it instead. A small
     /// dictionary can be in order by luck; a thousand keys cannot.
     #[test]
-    fn a_large_dictionary_keeps_its_keys_in_arrival_order() {
+    fn a_large_dictionary_keeps_its_keys_in_arrival_order() -> Result<(), TestError> {
         // Descending keys: sorted order is the exact REVERSE of arrival order,
         // so a decoder that sorted would fail every position but the middle.
         let mut buf = vec![b'd'];
@@ -664,11 +708,14 @@ mod tests {
             expected.push(key.into_bytes());
         }
         buf.push(b'e');
-        let Value::Dict(entries) = decode(&buf).expect("a valid dictionary") else {
-            panic!("not a dictionary");
+        let Value::Dict(entries) =
+            decode(&buf).map_err(|e| format!("a valid dictionary: {e:?}"))?
+        else {
+            return Err("not a dictionary".into());
         };
         let got: Vec<Vec<u8>> = entries.iter().map(|(k, _)| k.to_vec()).collect();
         assert_eq!(got, expected, "keys must stay in the order they arrived");
+        Ok(())
     }
 
     /// A leading `+` is a second spelling of a number, and the canonical rule
@@ -679,13 +726,14 @@ mod tests {
     /// leading `+`, so `i+5e` walked through the rule whose stated reason is
     /// that "these values are compared, not just displayed".
     #[test]
-    fn rejects_a_leading_plus_in_an_integer() {
+    fn rejects_a_leading_plus_in_an_integer() -> Result<(), TestError> {
         assert!(decode(b"i+5e").is_err(), "i+5e is a second spelling of 5");
         assert!(decode(b"i+0e").is_err(), "i+0e is a second spelling of 0");
         assert!(
             decode(b"li+5ee").is_err(),
             "nested in a list is the same number, spelled the same wrong way"
         );
+        Ok(())
     }
 
     /// ...and in a dictionary KEY's length, which is the reachable one.
@@ -696,12 +744,15 @@ mod tests {
     /// prefix is a worse thing to be lax about than an integer: it decides how
     /// many bytes of the buffer the key claims.
     #[test]
-    fn rejects_a_leading_plus_in_a_dictionary_key_length() {
-        let err = decode(b"d+5:helloi0ee").expect_err("a `+` length is not canonical");
+    fn rejects_a_leading_plus_in_a_dictionary_key_length() -> Result<(), TestError> {
+        let err = decode(b"d+5:helloi0ee")
+            .err()
+            .ok_or("a `+` length is not canonical")?;
         assert!(
             format!("{err:#}").contains("byte-string length"),
             "rejected for the wrong reason: {err:#}"
         );
+        Ok(())
     }
 
     /// The dispatch already refuses `+` where a VALUE may begin.
@@ -710,9 +761,10 @@ mod tests {
     /// was never broken, which is why the fix had to go in `decode_bytes` and
     /// not in `decode_value`.
     #[test]
-    fn a_plus_never_begins_a_top_level_value() {
+    fn a_plus_never_begins_a_top_level_value() -> Result<(), TestError> {
         assert!(decode(b"+5:hello").is_err(), "not a value start");
         assert!(decode(b"+5e").is_err(), "not a value start");
+        Ok(())
     }
 
     /// The canonical spellings still decode.
@@ -721,16 +773,29 @@ mod tests {
     /// traffic is worse than the laxness it replaced, and rtpengine sends
     /// plain lengths and plain integers all day.
     #[test]
-    fn canonical_numbers_and_lengths_still_decode() {
-        assert_eq!(decode(b"i5e").expect("plain integer"), Value::Int(5));
-        assert_eq!(decode(b"i-5e").expect("negative"), Value::Int(-5));
-        assert_eq!(decode(b"i0e").expect("zero"), Value::Int(0));
+    fn canonical_numbers_and_lengths_still_decode() -> Result<(), TestError> {
         assert_eq!(
-            decode(b"5:hello").expect("plain length"),
+            decode(b"i5e").map_err(|e| format!("plain integer: {e:?}"))?,
+            Value::Int(5)
+        );
+        assert_eq!(
+            decode(b"i-5e").map_err(|e| format!("negative: {e:?}"))?,
+            Value::Int(-5)
+        );
+        assert_eq!(
+            decode(b"i0e").map_err(|e| format!("zero: {e:?}"))?,
+            Value::Int(0)
+        );
+        assert_eq!(
+            decode(b"5:hello").map_err(|e| format!("plain length: {e:?}"))?,
             Value::Bytes(b"hello")
         );
-        assert_eq!(decode(b"0:").expect("empty string"), Value::Bytes(b""));
-        let v = decode(b"d5:helloi1ee").expect("a plain dictionary");
+        assert_eq!(
+            decode(b"0:").map_err(|e| format!("empty string: {e:?}"))?,
+            Value::Bytes(b"")
+        );
+        let v = decode(b"d5:helloi1ee").map_err(|e| format!("a plain dictionary: {e:?}"))?;
         assert_eq!(v.get_int(b"hello"), Some(1));
+        Ok(())
     }
 }

@@ -490,11 +490,14 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Build a test packet with a `size`-byte zeroed payload (epoch
     /// timestamp, Ethernet link type). Returns the `Packet`.
-    fn pkt(size: usize) -> Packet {
-        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
-        Packet::new(ts, vec![0u8; size], size, size, None, 1)
+    fn pkt(size: usize) -> Result<Packet, TestError> {
+        let ts = chrono::DateTime::from_timestamp(0, 0).ok_or("from_timestamp() returned None")?;
+        Ok(Packet::new(ts, vec![0u8; size], size, size, None, 1))
     }
 
     /// A send beyond `capacity` blocks and only completes after a receive
@@ -502,10 +505,10 @@ mod tests {
     /// block (a stall is counted once its duration is known — while the
     /// sender is still parked, `capacity_hits` is the live signal).
     #[test]
-    fn capacity_blocks_until_a_credit_is_returned() {
+    fn capacity_blocks_until_a_credit_is_returned() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(2);
-        tx.send(pkt(64)).unwrap();
-        tx.send(pkt(64)).unwrap();
+        tx.send(pkt(64)?).map_err(|e| format!("{e:?}"))?;
+        tx.send(pkt(64)?).map_err(|e| format!("{e:?}"))?;
         assert_eq!(tx.meter().in_flight(), 2);
 
         // Third send must block (cap reached). The sender starts late on
@@ -517,9 +520,10 @@ mod tests {
         // wait is now observed (the capacity hit is counted just before it
         // starts) and then held for a margin, whenever the thread gets there.
         let tx2 = tx.clone();
+        let queued = pkt(64)?;
         let h = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
-            tx2.send(pkt(64))
+            tx2.send(queued)
         });
         let by = std::time::Instant::now() + Duration::from_secs(10);
         while tx.meter().capacity_hits() == 0 {
@@ -534,131 +538,142 @@ mod tests {
         assert!(!h.is_finished(), "send should block at capacity");
 
         // Receiving one packet returns a credit and unblocks the sender.
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
         assert!(
-            h.join().unwrap().is_ok(),
+            h.join().map_err(|_| "thread panicked")?.is_ok(),
             "send should unblock after a recv"
         );
         assert_eq!(tx.meter().in_flight(), 2);
         // The stall (at least the 50 ms held above) is recorded once the send
         // completed.
         assert!(tx.meter().backpressure_blocks() >= 1);
+        Ok(())
     }
 
     /// Receiving every queued packet restores the full permit pool so a
     /// fresh full batch of sends succeeds without blocking.
     #[test]
-    fn drain_restores_the_full_pool() {
+    fn drain_restores_the_full_pool() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(3);
         for _ in 0..3 {
-            tx.send(pkt(16)).unwrap();
+            tx.send(pkt(16)?).map_err(|e| format!("{e:?}"))?;
         }
         for _ in 0..3 {
-            rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            rx.recv_timeout(Duration::from_secs(1))?;
         }
         assert_eq!(tx.meter().in_flight(), 0);
         // Pool fully restored: 3 more sends succeed without blocking.
         for _ in 0..3 {
-            tx.send(pkt(16)).unwrap();
+            tx.send(pkt(16)?).map_err(|e| format!("{e:?}"))?;
         }
         assert_eq!(tx.meter().in_flight(), 3);
+        Ok(())
     }
 
     /// Dropping the receiver wakes a sender parked at the cap with `Err`,
     /// and subsequent sends also fail.
     #[test]
-    fn dropping_receiver_makes_a_parked_send_return_err() {
+    fn dropping_receiver_makes_a_parked_send_return_err() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(1);
-        tx.send(pkt(16)).unwrap(); // pool now empty
+        tx.send(pkt(16)?).map_err(|e| format!("{e:?}"))?; // pool now empty
         let tx2 = tx.clone();
-        let h = std::thread::spawn(move || tx2.send(pkt(16)));
+        let queued = pkt(16)?;
+        let h = std::thread::spawn(move || tx2.send(queued));
         std::thread::sleep(Duration::from_millis(100));
         assert!(!h.is_finished(), "second send blocks at cap=1");
         drop(rx); // receiver gone → parked sender must wake with Err
         assert!(
-            h.join().unwrap().is_err(),
+            h.join().map_err(|_| "thread panicked")?.is_err(),
             "parked send must return Err when the receiver drops"
         );
         // A fresh send also errors now.
-        assert!(tx.send(pkt(16)).is_err());
+        assert!(tx.send(pkt(16)?).is_err());
+        Ok(())
     }
 
     /// With every sender dropped, `recv_timeout` reports `Disconnected`
     /// rather than timing out.
     #[test]
-    fn dropping_all_senders_disconnects_receiver() {
+    fn dropping_all_senders_disconnects_receiver() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(4);
         drop(tx);
         assert!(matches!(
             rx.recv_timeout(Duration::from_millis(50)),
             Err(RecvTimeoutError::Disconnected)
         ));
+        Ok(())
     }
 
     /// Cloned senders draw from one shared permit pool: total in-flight is
     /// capped across all clones, not per handle.
     #[test]
-    fn cloned_senders_share_one_cap() {
+    fn cloned_senders_share_one_cap() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(3);
         let tx2 = tx.clone();
-        tx.send(pkt(8)).unwrap();
-        tx2.send(pkt(8)).unwrap();
-        tx.send(pkt(8)).unwrap(); // 3 in flight across both handles
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
+        tx2.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?; // 3 in flight across both handles
         let tx3 = tx2.clone();
-        let h = std::thread::spawn(move || tx3.send(pkt(8)));
+        let queued = pkt(8)?;
+        let h = std::thread::spawn(move || tx3.send(queued));
         std::thread::sleep(Duration::from_millis(100));
         assert!(!h.is_finished(), "total in-flight is capped across clones");
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(h.join().unwrap().is_ok());
+        rx.recv_timeout(Duration::from_secs(1))?;
+        assert!(h.join().map_err(|_| "thread panicked")?.is_ok());
+        Ok(())
     }
 
     /// `try_iter` yields every queued packet and returns each one's permit,
     /// leaving the pool full again.
     #[test]
-    fn try_iter_drains_and_returns_credits() {
+    fn try_iter_drains_and_returns_credits() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(5);
         for _ in 0..5 {
-            tx.send(pkt(8)).unwrap();
+            tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
         }
         let drained: Vec<_> = rx.try_iter().collect();
         assert_eq!(drained.len(), 5);
         assert_eq!(tx.meter().in_flight(), 0);
         // Credits returned → can send a full batch again.
         for _ in 0..5 {
-            tx.send(pkt(8)).unwrap();
+            tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
         }
+        Ok(())
     }
 
     /// The cap counts packets, not bytes: a 64 KiB payload still costs
     /// exactly one permit.
     #[test]
-    fn oversized_payload_costs_one_credit() {
+    fn oversized_payload_costs_one_credit() -> Result<(), TestError> {
         // A large packet still takes exactly one permit (count cap, not bytes).
         let (tx, rx) = packet_channel(1);
-        tx.send(pkt(65535)).unwrap();
+        tx.send(pkt(65535)?).map_err(|e| format!("{e:?}"))?;
         let tx2 = tx.clone();
-        let h = std::thread::spawn(move || tx2.send(pkt(65535)));
+        let queued = pkt(65535)?;
+        let h = std::thread::spawn(move || tx2.send(queued));
         std::thread::sleep(Duration::from_millis(100));
         assert!(
             !h.is_finished(),
             "cap=1 blocks the second packet regardless of size"
         );
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(h.join().unwrap().is_ok());
+        rx.recv_timeout(Duration::from_secs(1))?;
+        assert!(h.join().map_err(|_| "thread panicked")?.is_ok());
+        Ok(())
     }
 
     /// `is_empty` reflects pending packets: true when fresh, false after a
     /// send, true again after draining or disconnect.
     #[test]
-    fn is_empty_tracks_pending_packets() {
+    fn is_empty_tracks_pending_packets() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(2);
         assert!(rx.is_empty(), "fresh channel starts empty");
-        tx.send(pkt(8)).unwrap();
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
         assert!(!rx.is_empty(), "a sent packet must be visible");
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
         assert!(rx.is_empty(), "drained channel is empty again");
         drop(tx);
         assert!(rx.is_empty(), "disconnected channel reads as empty");
+        Ok(())
     }
 
     /// An instant recovery is not a block, at every boundary of the rule.
@@ -670,7 +685,7 @@ mod tests {
     /// a zero one, and that is checked here in microseconds with nothing
     /// racing.
     #[test]
-    fn an_instant_recovery_is_not_a_genuine_block() {
+    fn an_instant_recovery_is_not_a_genuine_block() -> Result<(), TestError> {
         for instant in [
             Duration::ZERO,
             Duration::from_nanos(1),
@@ -683,6 +698,7 @@ mod tests {
                  count as a block"
             );
         }
+        Ok(())
     }
 
     /// A wait at or past the threshold is a block.
@@ -690,7 +706,7 @@ mod tests {
     /// The other half: a rule that answered `false` for everything would pass
     /// the test above while reporting a saturated pipeline as healthy.
     #[test]
-    fn a_wait_at_or_past_the_threshold_is_a_block() {
+    fn a_wait_at_or_past_the_threshold_is_a_block() -> Result<(), TestError> {
         for waited in [
             GENUINE_BLOCK_THRESHOLD,
             GENUINE_BLOCK_THRESHOLD + Duration::from_nanos(1),
@@ -702,6 +718,7 @@ mod tests {
                  pipeline"
             );
         }
+        Ok(())
     }
 
     /// The threshold is far enough above an uncontended handoff to mean
@@ -712,7 +729,7 @@ mod tests {
     /// hide real backpressure. The bound is asserted so the constant cannot
     /// drift to either.
     #[test]
-    fn the_threshold_sits_between_a_handoff_and_the_poll_granularity() {
+    fn the_threshold_sits_between_a_handoff_and_the_poll_granularity() -> Result<(), TestError> {
         assert!(
             GENUINE_BLOCK_THRESHOLD >= Duration::from_micros(100),
             "an uncontended crossbeam handoff is sub-microsecond; a threshold \
@@ -723,6 +740,7 @@ mod tests {
             "the capture loop's idle poll is 100ms; a threshold at or above it \
              would never fire and backpressure would read as zero forever"
         );
+        Ok(())
     }
 
     /// The end-to-end shape still runs, asserting what a scheduler cannot
@@ -737,18 +755,21 @@ mod tests {
     /// was measuring how often the consumer thread happened to be on a core.
     /// The rule it was reaching for is asserted directly above.
     #[test]
-    fn the_cap_hit_path_is_reached_and_never_counts_a_block_without_a_hit() {
+    fn the_cap_hit_path_is_reached_and_never_counts_a_block_without_a_hit() -> Result<(), TestError>
+    {
         const N: u64 = 10_000;
         let (tx, rx) = packet_channel(1);
-        let consumer = std::thread::spawn(move || {
+        let consumer = std::thread::spawn(move || -> Result<(), String> {
             for _ in 0..N {
-                rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                rx.recv_timeout(Duration::from_secs(10))
+                    .map_err(|e| format!("{e:?}"))?;
             }
+            Ok(())
         });
         for _ in 0..N {
-            tx.send(pkt(8)).unwrap();
+            tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?;
         }
-        consumer.join().unwrap();
+        consumer.join().map_err(|_| "thread panicked")??;
         let blocks = tx.meter().backpressure_blocks();
         let hits = tx.meter().capacity_hits();
         assert!(hits > 0, "a cap-1 ping-pong must hit the cap");
@@ -763,22 +784,24 @@ mod tests {
             "every block is a cap hit that waited, so blocks ({blocks}) can \
              never exceed hits ({hits})"
         );
+        Ok(())
     }
 
     /// A send that stalls for tens of milliseconds behind a slow receiver is
     /// a genuine backpressure block and must be counted (as must the raw
     /// capacity hit).
     #[test]
-    fn sustained_stall_is_counted_as_genuine_block() {
+    fn sustained_stall_is_counted_as_genuine_block() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(1);
-        tx.send(pkt(8)).unwrap(); // cap reached, no cap hit yet
-        let h = std::thread::spawn(move || {
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?; // cap reached, no cap hit yet
+        let h = std::thread::spawn(move || -> Result<_, String> {
             std::thread::sleep(Duration::from_millis(50));
-            rx.recv_timeout(Duration::from_secs(5)).unwrap();
-            rx // keep the receiver alive until the parked send completes
+            rx.recv_timeout(Duration::from_secs(5))
+                .map_err(|e| format!("{e:?}"))?;
+            Ok(rx) // keep the receiver alive until the parked send completes
         });
-        tx.send(pkt(8)).unwrap(); // waits ~50ms for the freed slot
-        let _rx = h.join().unwrap();
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?; // waits ~50ms for the freed slot
+        let _rx = h.join().map_err(|_| "thread panicked")??;
         assert_eq!(
             tx.meter().backpressure_blocks(),
             1,
@@ -789,78 +812,88 @@ mod tests {
             1,
             "the stall also counts as a capacity hit"
         );
+        Ok(())
     }
 
     /// `packet_channel(0)` clamps the cap to 1 so one send still succeeds.
     #[test]
-    fn zero_capacity_is_clamped_to_one() {
+    fn zero_capacity_is_clamped_to_one() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(0);
-        tx.send(pkt(8)).unwrap(); // cap clamped to >=1, so one send succeeds
+        tx.send(pkt(8)?).map_err(|e| format!("{e:?}"))?; // cap clamped to >=1, so one send succeeds
         assert_eq!(tx.meter().in_flight(), 1);
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
+        Ok(())
     }
 
     /// A batch yields its packets one at a time, in order, FIFO with a single
     /// send that follows it — the receiver cannot tell how packets traveled.
     #[test]
-    fn a_batched_send_preserves_order_and_count() {
+    fn a_batched_send_preserves_order_and_count() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
-        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
-        tx.send(pkt(4)).unwrap();
+        tx.send_many(vec![pkt(1)?, pkt(2)?, pkt(3)?])
+            .map_err(|e| format!("{e:?}"))?;
+        tx.send(pkt(4)?).map_err(|e| format!("{e:?}"))?;
         let sizes: Vec<usize> = (0..4)
-            .map(|_| rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen)
-            .collect();
+            .map(|_| rx.recv_timeout(Duration::from_secs(1)).map(|p| p.caplen))
+            .collect::<Result<_, _>>()?;
         assert_eq!(sizes, vec![1, 2, 3, 4]);
         assert!(matches!(
             rx.recv_timeout(Duration::from_millis(10)),
             Err(RecvTimeoutError::Timeout)
         ));
+        Ok(())
     }
 
     /// Packets already pulled into the receiver's local buffer must survive
     /// every sender disconnecting: disconnect is reported only after the last
     /// buffered packet is drained, exactly as the raw channel drains itself.
     #[test]
-    fn buffered_packets_survive_sender_disconnect() {
+    fn buffered_packets_survive_sender_disconnect() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
-        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
+        tx.send_many(vec![pkt(1)?, pkt(2)?, pkt(3)?])
+            .map_err(|e| format!("{e:?}"))?;
         // Pull one: the other two now sit in the local buffer.
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
         drop(tx);
-        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen, 2);
-        assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().caplen, 3);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1))?.caplen, 2);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1))?.caplen, 3);
         assert!(matches!(
             rx.recv_timeout(Duration::from_millis(10)),
             Err(RecvTimeoutError::Disconnected)
         ));
+        Ok(())
     }
 
     /// The idle check must see locally-buffered packets. The batch loop keys
     /// its flush-on-idle on `is_empty`, and a buffer invisible to it would
     /// flush the sink in the middle of a burst that is still being drained.
     #[test]
-    fn is_empty_sees_locally_buffered_packets() {
+    fn is_empty_sees_locally_buffered_packets() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
-        tx.send_many(vec![pkt(1), pkt(2)]).unwrap();
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        tx.send_many(vec![pkt(1)?, pkt(2)?])
+            .map_err(|e| format!("{e:?}"))?;
+        rx.recv_timeout(Duration::from_secs(1))?;
         assert!(
             !rx.is_empty(),
             "one packet is still buffered locally; idle would flush mid-burst"
         );
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
         assert!(rx.is_empty());
         drop(tx);
+        Ok(())
     }
 
     /// The in-flight meter counts PACKETS, not channel items — the TUI load
     /// figure and the capacity math both read it in packets.
     #[test]
-    fn in_flight_counts_packets_not_batches() {
+    fn in_flight_counts_packets_not_batches() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
-        tx.send_many(vec![pkt(1), pkt(2), pkt(3)]).unwrap();
+        tx.send_many(vec![pkt(1)?, pkt(2)?, pkt(3)?])
+            .map_err(|e| format!("{e:?}"))?;
         assert_eq!(tx.meter().in_flight(), 3);
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        rx.recv_timeout(Duration::from_secs(1))?;
         assert_eq!(tx.meter().in_flight(), 2);
+        Ok(())
     }
 
     /// A batched channel still enforces its packet cap: the slot pool is
@@ -868,14 +901,17 @@ mod tests {
     /// capacity the caller asked for, and a sender past it parks until the
     /// receiver dequeues.
     #[test]
-    fn a_batched_channel_still_applies_backpressure() {
+    fn a_batched_channel_still_applies_backpressure() -> Result<(), TestError> {
         // capacity 2*FILE_BATCH => exactly 2 slots.
         let (tx, rx) = packet_channel_batched(2 * FILE_BATCH);
-        tx.send_many(vec![pkt(1); FILE_BATCH]).unwrap();
-        tx.send_many(vec![pkt(2); FILE_BATCH]).unwrap();
+        tx.send_many(vec![pkt(1)?; FILE_BATCH])
+            .map_err(|e| format!("{e:?}"))?;
+        tx.send_many(vec![pkt(2)?; FILE_BATCH])
+            .map_err(|e| format!("{e:?}"))?;
 
         let tx2 = tx.clone();
-        let h = std::thread::spawn(move || tx2.send_many(vec![pkt(3); FILE_BATCH]));
+        let queued = vec![pkt(3)?; FILE_BATCH];
+        let h = std::thread::spawn(move || tx2.send_many(queued));
         std::thread::sleep(Duration::from_millis(100));
         assert!(
             !h.is_finished(),
@@ -883,35 +919,39 @@ mod tests {
         );
 
         // Dequeuing the first batch frees its slot and unblocks the sender.
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert!(h.join().unwrap().is_ok());
+        rx.recv_timeout(Duration::from_secs(1))?;
+        assert!(h.join().map_err(|_| "thread panicked")?.is_ok());
         drop(rx);
+        Ok(())
     }
 
     /// `try_iter` drains the local buffer first, then the channel, and its
     /// per-packet meter effects still happen lazily as items are yielded.
     #[test]
-    fn try_iter_drains_buffer_then_channel() {
+    fn try_iter_drains_buffer_then_channel() -> Result<(), TestError> {
         let (tx, rx) = packet_channel(16);
-        tx.send_many(vec![pkt(1), pkt(2)]).unwrap();
-        rx.recv_timeout(Duration::from_secs(1)).unwrap(); // pkt(2) now buffered
-        tx.send(pkt(3)).unwrap();
+        tx.send_many(vec![pkt(1)?, pkt(2)?])
+            .map_err(|e| format!("{e:?}"))?;
+        rx.recv_timeout(Duration::from_secs(1))?; // pkt(2) now buffered
+        tx.send(pkt(3)?).map_err(|e| format!("{e:?}"))?;
         let sizes: Vec<usize> = rx.try_iter().map(|p| p.caplen).collect();
         assert_eq!(sizes, vec![2, 3]);
         assert_eq!(tx.meter().in_flight(), 0);
         assert!(rx.is_empty());
+        Ok(())
     }
 
     /// An empty batch is a no-op, not a slot leak: it claims nothing, sends
     /// nothing, and the receiver never sees an item for it.
     #[test]
-    fn an_empty_batch_claims_no_slot() {
+    fn an_empty_batch_claims_no_slot() -> Result<(), TestError> {
         let (tx, rx) = packet_channel_batched(FILE_BATCH);
-        tx.send_many(Vec::new()).unwrap();
+        tx.send_many(Vec::new()).map_err(|e| format!("{e:?}"))?;
         assert_eq!(tx.meter().in_flight(), 0);
         assert!(matches!(
             rx.recv_timeout(Duration::from_millis(10)),
             Err(RecvTimeoutError::Timeout)
         ));
+        Ok(())
     }
 }

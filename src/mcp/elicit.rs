@@ -281,6 +281,9 @@ mod tests {
         UrlElicitationCapability,
     };
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Client capabilities declaring `elicitation` as given.
     ///
     /// Built field by field because every capability type is
@@ -295,17 +298,19 @@ mod tests {
 
     /// A client that said nothing about elicitation is never sent one.
     #[test]
-    fn a_client_that_declared_nothing_cannot_be_asked() {
+    fn a_client_that_declared_nothing_cannot_be_asked() -> Result<(), TestError> {
         assert!(!can_answer_a_form(&ClientCapabilities::default()));
+        Ok(())
     }
 
     /// A client that declared `form` can be asked.
     #[test]
-    fn a_client_that_declared_form_can_be_asked() {
+    fn a_client_that_declared_form_can_be_asked() -> Result<(), TestError> {
         let caps = declaring(Some(
             ElicitationCapability::new().with_form(FormElicitationCapability::new()),
         ));
         assert!(can_answer_a_form(&caps));
+        Ok(())
     }
 
     /// A bare `elicitation: {}` predates the form/url split and means form.
@@ -314,15 +319,16 @@ mod tests {
     /// every client written against the earlier revision back onto the
     /// convention, and nothing would report that it had happened.
     #[test]
-    fn a_bare_elicitation_capability_means_form() {
+    fn a_bare_elicitation_capability_means_form() -> Result<(), TestError> {
         assert!(can_answer_a_form(&declaring(Some(
             ElicitationCapability::new()
         ))));
+        Ok(())
     }
 
     /// A client that can only open a URL cannot render this question.
     #[test]
-    fn a_url_only_client_cannot_be_asked_a_form() {
+    fn a_url_only_client_cannot_be_asked_a_form() -> Result<(), TestError> {
         let caps = declaring(Some(
             ElicitationCapability::new().with_url(UrlElicitationCapability::new()),
         ));
@@ -330,6 +336,7 @@ mod tests {
             !can_answer_a_form(&caps),
             "a url-only client would be sent a form it cannot render"
         );
+        Ok(())
     }
 
     /// Nobody to ask is not a refusal.
@@ -338,19 +345,21 @@ mod tests {
     /// permit, `shutdown_server` would stop working on every client that never
     /// declared the capability.
     #[tokio::test]
-    async fn nobody_to_ask_permits_and_says_so() {
+    async fn nobody_to_ask_permits_and_says_so() -> Result<(), TestError> {
         let confirm = Confirm::unavailable();
         assert!(!confirm.available());
         let answer = confirm.ask("stop?", "Stop", "ends the run").await;
         assert_eq!(answer, Answer::Unavailable);
         assert!(answer.permits());
+        Ok(())
     }
 
     /// A refusal does not permit, whatever produced it.
     #[test]
-    fn a_refusal_never_permits() {
+    fn a_refusal_never_permits() -> Result<(), TestError> {
         assert!(!Answer::Refused("declined".to_string()).permits());
         assert!(Answer::Confirmed.permits());
+        Ok(())
     }
 
     /// The form asks for exactly the field the answer is read from.
@@ -359,11 +368,11 @@ mod tests {
     /// confirmation read as a refusal, and it would look like a working tool
     /// that nobody could ever confirm.
     #[test]
-    fn the_form_asks_for_the_field_the_answer_is_read_from() {
+    fn the_form_asks_for_the_field_the_answer_is_read_from() -> Result<(), TestError> {
         let schema = ElicitationSchema::builder()
             .required_bool_with(CONFIRM_FIELD, |b| b.title("Confirm"))
             .build()
-            .expect("the confirmation schema must build");
+            .map_err(|e| format!("the confirmation schema must build: {e:?}"))?;
         assert!(
             schema.properties.contains_key(CONFIRM_FIELD),
             "the schema does not carry '{CONFIRM_FIELD}': {schema:?}"
@@ -373,6 +382,7 @@ mod tests {
             Some([CONFIRM_FIELD.to_string()].as_slice()),
             "the confirmation must be required, or a client may omit it"
         );
+        Ok(())
     }
 
     /// The form serializes as MCP's `form` mode, with the message and schema.
@@ -381,16 +391,17 @@ mod tests {
     /// client has to recognize, and a `mode` the spec does not name is a
     /// request nothing answers.
     #[test]
-    fn the_request_serializes_as_a_form_elicitation() {
+    fn the_request_serializes_as_a_form_elicitation() -> Result<(), TestError> {
         let params = ElicitRequestParams::FormElicitationParams {
             meta: None,
             message: "Stop the sipnab server?".to_string(),
             requested_schema: ElicitationSchema::builder()
                 .required_bool_with(CONFIRM_FIELD, |b| b.title("Confirm"))
                 .build()
-                .expect("schema"),
+                .map_err(|e| format!("schema: {e:?}"))?,
         };
-        let wire = serde_json::to_value(&params).expect("the params must serialize");
+        let wire = serde_json::to_value(&params)
+            .map_err(|e| format!("the params must serialize: {e:?}"))?;
         assert_eq!(wire["mode"], "form");
         assert_eq!(wire["message"], "Stop the sipnab server?");
         assert_eq!(wire["requestedSchema"]["type"], "object");
@@ -402,6 +413,7 @@ mod tests {
             wire["requestedSchema"]["required"][0], CONFIRM_FIELD,
             "the confirmation field must be required on the wire: {wire}"
         );
+        Ok(())
     }
 }
 
@@ -425,6 +437,9 @@ mod round_trip_tests {
     use super::*;
     use serde_json::{Value, json};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A server with nothing to offer: these tests are about the channel back
     /// to the client, not about any tool.
     struct Bare;
@@ -434,7 +449,9 @@ mod round_trip_tests {
     /// Ask once over a session whose client can answer a form, reply with what
     /// `reply` builds from the request's id, and return the request that went
     /// out and the answer `ask` settled on.
-    async fn ask_answered_with(reply: impl FnOnce(Value) -> Value) -> (Value, Answer) {
+    async fn ask_answered_with(
+        reply: impl FnOnce(Value) -> Value,
+    ) -> Result<(Value, Answer), TestError> {
         let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
@@ -448,9 +465,11 @@ mod round_trip_tests {
         });
         let request = client.next().await;
         client.send(reply(request["id"].clone())).await;
-        let answer = asking.await.expect("the ask completes");
+        let answer = asking
+            .await
+            .map_err(|e| format!("the ask completes: {e:?}"))?;
         drop(running);
-        (request, answer)
+        Ok((request, answer))
     }
 
     /// A JSON-RPC result for request `id`.
@@ -462,14 +481,15 @@ mod round_trip_tests {
     /// confirmation field, titled and described in the caller's words -- and a
     /// ticked box is the one answer that confirms.
     #[tokio::test]
-    async fn a_ticked_confirmation_confirms_and_the_request_asks_in_the_callers_words() {
+    async fn a_ticked_confirmation_confirms_and_the_request_asks_in_the_callers_words()
+    -> Result<(), TestError> {
         let (request, answer) = ask_answered_with(|id| {
             result(
                 id,
                 json!({"action": "accept", "content": {"confirm": true}}),
             )
         })
-        .await;
+        .await?;
         assert_eq!(request["method"], "elicitation/create", "{request}");
         assert!(
             request["id"].is_number() || request["id"].is_string(),
@@ -484,6 +504,7 @@ mod round_trip_tests {
         assert_eq!(field["description"], "ends the run");
         assert_eq!(answer, Answer::Confirmed);
         assert!(answer.permits());
+        Ok(())
     }
 
     /// Every answer that is not a ticked box is a refusal, and says which.
@@ -493,7 +514,7 @@ mod round_trip_tests {
     /// an elicitation result at all. Each refusal names what happened, because
     /// "declined" and "the pipe closed" send an operator different places.
     #[tokio::test]
-    async fn every_answer_short_of_a_ticked_box_refuses_and_says_why() {
+    async fn every_answer_short_of_a_ticked_box_refuses_and_says_why() -> Result<(), TestError> {
         let cases: [(&str, Value, &str); 6] = [
             (
                 "accept, unticked",
@@ -519,7 +540,7 @@ mod round_trip_tests {
             ),
         ];
         for (label, body, says) in cases {
-            let (_, answer) = ask_answered_with(|id| result(id, body)).await;
+            let (_, answer) = ask_answered_with(|id| result(id, body)).await?;
             match &answer {
                 Answer::Refused(why) => {
                     assert!(why.contains(says), "{label}: expected '{says}' in: {why}");
@@ -528,29 +549,31 @@ mod round_trip_tests {
                         "{label}: a refusal says the act did not happen: {why}"
                     );
                 }
-                other => panic!("{label}: must refuse, got {other:?}"),
+                other => return Err(format!("{label}: must refuse, got {other:?}").into()),
             }
             assert!(!answer.permits(), "{label}: a refusal never permits");
         }
+        Ok(())
     }
 
     /// An error reply is not an answer: the question was not answered, and
     /// nothing was done.
     #[tokio::test]
-    async fn an_error_reply_to_the_question_is_a_refusal() {
+    async fn an_error_reply_to_the_question_is_a_refusal() -> Result<(), TestError> {
         let (_, answer) = ask_answered_with(|id| {
             json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32603, "message": "client broke"}})
         })
-        .await;
+        .await?;
         match answer {
             Answer::Refused(why) => assert!(why.contains("was not answered"), "{why}"),
-            other => panic!("an error reply must refuse, got {other:?}"),
+            other => return Err(format!("an error reply must refuse, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A client that goes away mid-question has not said yes.
     #[tokio::test]
-    async fn a_pipe_that_closes_mid_question_is_a_refusal() {
+    async fn a_pipe_that_closes_mid_question_is_a_refusal() -> Result<(), TestError> {
         let (running, mut client) = connect(Bare, json!({"elicitation": {}})).await;
         let confirm = Confirm::to(running.peer().clone());
         let asking =
@@ -560,13 +583,14 @@ mod round_trip_tests {
         drop(client);
         let answer = tokio::time::timeout(std::time::Duration::from_secs(10), asking)
             .await
-            .expect("a closed pipe must end the ask, not hang it")
-            .expect("the ask completes");
+            .map_err(|e| format!("a closed pipe must end the ask, not hang it: {e:?}"))?
+            .map_err(|e| format!("the ask completes: {e:?}"))?;
         match answer {
             Answer::Refused(why) => assert!(why.contains("was not answered"), "{why}"),
-            other => panic!("a closed pipe must refuse, got {other:?}"),
+            other => return Err(format!("a closed pipe must refuse, got {other:?}").into()),
         }
         drop(running);
+        Ok(())
     }
 
     /// A client that declared no elicitation is never sent one, and `ask`
@@ -577,7 +601,7 @@ mod round_trip_tests {
     /// be answered by the NEXT line the server writes. An elicitation sent
     /// anyway would arrive first.
     #[tokio::test]
-    async fn a_client_that_declared_nothing_is_never_sent_the_question() {
+    async fn a_client_that_declared_nothing_is_never_sent_the_question() -> Result<(), TestError> {
         let (running, mut client) = connect(Bare, json!({})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(!confirm.available());
@@ -595,11 +619,12 @@ mod round_trip_tests {
         );
         assert!(next.get("method").is_none(), "{next}");
         drop(running);
+        Ok(())
     }
 
     /// A client that can only open a URL is not reachable for a form.
     #[tokio::test]
-    async fn a_url_only_client_is_not_reachable_through_the_peer() {
+    async fn a_url_only_client_is_not_reachable_through_the_peer() -> Result<(), TestError> {
         let (running, _client) = connect(Bare, json!({"elicitation": {"url": {}}})).await;
         let confirm = Confirm::to(running.peer().clone());
         assert!(
@@ -607,12 +632,13 @@ mod round_trip_tests {
             "a url-only client would be sent a form it cannot render"
         );
         drop(running);
+        Ok(())
     }
 
     /// `Debug` reports whether anyone can be asked, which is the one fact
     /// someone debugging a missing confirmation needs.
     #[tokio::test]
-    async fn debug_reports_whether_anyone_can_be_asked() {
+    async fn debug_reports_whether_anyone_can_be_asked() -> Result<(), TestError> {
         assert_eq!(
             format!("{:?}", Confirm::unavailable()),
             "Confirm { available: false }"
@@ -623,6 +649,7 @@ mod round_trip_tests {
             "Confirm { available: true }"
         );
         drop(running);
+        Ok(())
     }
 }
 
