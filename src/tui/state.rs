@@ -4,7 +4,10 @@
 //! the per-dialog/popup state structs and the View/Popup enums.
 //! [`crate::tui::App`] composes these; the controllers mutate them.
 
-use crate::tui::*;
+use crate::tui::{
+    App, Arc, CHURN_REBUILD_MIN, DialogStore, HashSet, Keymap, NameMode, NameResolver, PathBuf,
+    Result, RwLock, StreamStore, Theme, call_flow,
+};
 
 // ── Display mode enums ──────────────────────────────────────────────
 

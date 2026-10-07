@@ -3,7 +3,12 @@
 //! Key handling for the call list view, its column selector and the
 //! clear-calls actions.
 
-use crate::tui::*;
+use crate::tui::{
+    App, AtomicOrdering, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode, View,
+    checked_displayed_call_ids, filtered_dialog_count, get_selected_call_id,
+    get_selected_dialog_endpoints, open_file_dialog, open_name_dialog_for, open_save_popup,
+    tfps_observe,
+};
 
 /// Everything the call-list view can do in response to a single key press.
 ///

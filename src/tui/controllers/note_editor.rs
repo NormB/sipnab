@@ -8,7 +8,7 @@
 //! editor and `App::notes`; the text itself stays inside
 //! [`crate::annotate`], which is the one place that can read it.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, NoteEditorState, Popup, begin_pcap_load_confirmed};
 
 /// `C` on a message: open the editor for that message's note.
 ///

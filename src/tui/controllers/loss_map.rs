@@ -9,7 +9,7 @@
 //! design — the view is intentionally non-navigable, not a placeholder
 //! awaiting navigation. Closing returns to the stream's detail view.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, Keymap, View};
 
 /// Everything the packet-loss-map view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

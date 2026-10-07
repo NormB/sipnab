@@ -61,7 +61,6 @@ mod state;
 mod test_api;
 mod theme;
 
-use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
     CallFlowAction, CallListAction, CallVolumeAction, CaptureHealthAction, CarrierMetricsAction,
@@ -76,8 +75,17 @@ pub use controllers::{
     statistics_action, stream_detail_action, stream_list_action, talkers_action,
     tfps_observe_action, timeline_action,
 };
-use render::*;
-use save::*;
+use controllers::{
+    apply_filter_dialog, begin_pcap_load_confirmed, checked_displayed_call_ids,
+    filtered_dialog_count, get_selected_call_id, get_selected_dialog_endpoints, handle_key_event,
+    open_file_dialog, open_name_dialog_for, open_note_editor, open_save_popup,
+};
+use render::{RenderFeedback, render_app};
+use save::{
+    save_to_csv_path, save_to_json_path, save_to_markdown_path, save_to_mermaid_path,
+    save_to_ndjson_path, save_to_notes_path, save_to_pcap_path, save_to_rtp_json_path,
+    save_to_sipp_path, save_to_txt_path, save_to_wav_path,
+};
 pub use state::*;
 pub use theme::*;
 
@@ -2108,6 +2116,8 @@ pub(crate) fn count_noun(n: usize, singular: &str, plural: &str) -> String {
 /// visibility, and the display-mode enum cycles.
 #[cfg(test)]
 mod tests {
+    use super::render::fkey_bar_items;
+    use super::save::csv_escape;
     use super::*;
 
     fn stores() -> (Arc<RwLock<DialogStore>>, Arc<RwLock<StreamStore>>) {

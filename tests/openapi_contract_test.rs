@@ -583,17 +583,17 @@ fn collect_refs(node: &Value, out: &mut BTreeSet<String>) {
 ///
 /// Depth-first and shallowest-first, so the answer is the outermost thing that
 /// changed rather than a leaf inside it.
-fn first_difference(a: &Value, b: &Value, at: &str) -> Option<String> {
-    if a == b {
+fn first_difference(disk: &Value, generated: &Value, at: &str) -> Option<String> {
+    if disk == generated {
         return None;
     }
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
-            for k in x.keys().chain(y.keys()) {
-                let here = format!("{at}/{k}");
-                match (x.get(k), y.get(k)) {
-                    (Some(l), Some(r)) => {
-                        if let Some(found) = first_difference(l, r, &here) {
+    match (disk, generated) {
+        (Value::Object(on_disk), Value::Object(made)) => {
+            for key in on_disk.keys().chain(made.keys()) {
+                let here = format!("{at}/{key}");
+                match (on_disk.get(key), made.get(key)) {
+                    (Some(left), Some(right)) => {
+                        if let Some(found) = first_difference(left, right, &here) {
                             return Some(found);
                         }
                     }
@@ -604,20 +604,21 @@ fn first_difference(a: &Value, b: &Value, at: &str) -> Option<String> {
             }
             None
         }
-        (Value::Array(x), Value::Array(y)) => {
-            if x.len() != y.len() {
+        (Value::Array(on_disk), Value::Array(made)) => {
+            if on_disk.len() != made.len() {
                 return Some(format!(
                     "{at} (disk has {}, generated has {})",
-                    x.len(),
-                    y.len()
+                    on_disk.len(),
+                    made.len()
                 ));
             }
-            x.iter()
-                .zip(y)
+            on_disk
+                .iter()
+                .zip(made)
                 .enumerate()
-                .find_map(|(i, (l, r))| first_difference(l, r, &format!("{at}/{i}")))
+                .find_map(|(i, (left, right))| first_difference(left, right, &format!("{at}/{i}")))
         }
-        _ => Some(format!("{at}: disk {a} vs generated {b}")),
+        _ => Some(format!("{at}: disk {disk} vs generated {generated}")),
     }
 }
 

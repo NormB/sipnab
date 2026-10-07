@@ -2,7 +2,7 @@
 
 //! The save dialog popup: opening and key handling.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, PendingSave, Popup, SaveFormat, View};
 
 /// Open the save popup, pre-populating path and counts.
 ///

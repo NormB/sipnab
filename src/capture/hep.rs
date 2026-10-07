@@ -5939,24 +5939,33 @@ mod tests {
     /// parsed it (chunk 0x000c) and threw it away.
     #[test]
     fn two_hep_senders_get_distinct_provenance() {
-        let a = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
-        let b = hep_source_label(Some(9), "192.0.2.11".parse().unwrap());
-        assert_ne!(a, b, "two senders collapsed to one source label");
+        let first_node = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+        let second_node = hep_source_label(Some(9), "192.0.2.11".parse().unwrap());
+        assert_ne!(
+            first_node, second_node,
+            "two senders collapsed to one source label"
+        );
 
         // Same box, different agents (two sipnab instances on one host) must
         // still separate — that is what the capture-agent id is for.
-        let c = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
-        let d = hep_source_label(Some(8), "192.0.2.10".parse().unwrap());
-        assert_ne!(c, d, "same host, different --hep-id collapsed together");
+        let agent_7 = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+        let agent_8 = hep_source_label(Some(8), "192.0.2.10".parse().unwrap());
+        assert_ne!(
+            agent_7, agent_8,
+            "same host, different --hep-id collapsed together"
+        );
 
         // A sender that sets no id is still identified by where it came from,
         // rather than by the listener it happened to reach.
-        let e = hep_source_label(None, "192.0.2.10".parse().unwrap());
-        let f = hep_source_label(None, "192.0.2.11".parse().unwrap());
-        assert_ne!(e, f, "id-less senders collapsed to one source label");
+        let unnamed_10 = hep_source_label(None, "192.0.2.10".parse().unwrap());
+        let unnamed_11 = hep_source_label(None, "192.0.2.11".parse().unwrap());
+        assert_ne!(
+            unnamed_10, unnamed_11,
+            "id-less senders collapsed to one source label"
+        );
         assert!(
-            e.contains("192.0.2.10"),
-            "an id-less sender must still name its address, got {e:?}"
+            unnamed_10.contains("192.0.2.10"),
+            "an id-less sender must still name its address, got {unnamed_10:?}"
         );
     }
 

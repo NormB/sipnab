@@ -2,7 +2,7 @@
 
 //! The "Name Address" popup: manual IP-to-name mappings.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, Popup};
 
 /// Source + destination IPs of the selected dialog (for the Name Address
 /// popup). Resolved against the same displayed list as the renderer.
@@ -395,6 +395,7 @@ mod tests {
 #[cfg(test)]
 mod validation_tests {
     use super::*;
+    use crate::tui::NameTarget;
     use crossterm::event::KeyModifiers;
 
     /// An over-length name must say it is over-length, and by how much.

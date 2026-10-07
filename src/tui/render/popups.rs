@@ -3,7 +3,11 @@
 //! Modal popup rendering: save, name-address, file-open (browser +
 //! manual path), filter and settings dialogs.
 
-use crate::tui::*;
+use crate::tui::{
+    ALL_METHODS_IDX, App, Block, Borders, CANCEL_BUTTON_IDX, Clear, Color, Constraint,
+    FILTER_BUTTON_IDX, FILTER_METHODS, FilterDialogState, Layout, Line, METHOD_CHECKBOX_BASE,
+    Modifier, Paragraph, Rect, SaveFormat, Span, Style, Theme,
+};
 
 /// Compute a centered popup rectangle within the given area, clamping the
 /// requested `width`/`height` to the area's size. Pure.
@@ -1406,6 +1410,7 @@ pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Re
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
+    use crate::tui::{NameTarget, NoteEditorState, Popup};
 
     /// Flatten a rendered frame to text, one line per row.
     fn frame_text(buf: &ratatui::buffer::Buffer) -> String {

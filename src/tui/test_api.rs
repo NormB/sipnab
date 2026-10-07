@@ -4,7 +4,12 @@
 //! integration suites (tui_state_test, snapshots) and the in-crate
 //! unit tests. Moved verbatim from `tui/mod.rs`.
 
-use crate::tui::*;
+use crate::tui::{
+    App, Arc, CallListState, ColorMode, DialogStore, FromToMode, HashSet, KeyCode, KeyEvent,
+    KeyModifiers, Keymap, NameMode, NameResolver, PathBuf, Popup, Result, RwLock, SaveFormat,
+    SdpDisplayMode, StreamStore, Theme, TimestampMode, View, apply_filter_dialog, call_list,
+    controllers, filtered_dialog_count, handle_key_event, render_app,
+};
 
 // ── Test helpers (public for integration tests) ────────────────────
 

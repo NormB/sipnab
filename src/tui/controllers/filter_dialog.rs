@@ -2,7 +2,9 @@
 
 //! The structured filter dialog popup.
 
-use crate::tui::*;
+use crate::tui::{
+    App, CANCEL_BUTTON_IDX, FILTER_BUTTON_IDX, FilterExpr, KeyCode, KeyEvent, KeyModifiers,
+};
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
 ///
@@ -276,6 +278,7 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::Popup;
 
     /// A filter expression that fails to parse must keep the dialog open
     /// with an inline error (mirroring the file-open dialog) instead of
@@ -379,6 +382,10 @@ mod tests {
 #[cfg(test)]
 mod all_checkbox_order_tests {
     use super::*;
+    use crate::tui::{
+        ALL_METHODS_IDX, FILTER_METHODS, FILTER_TEXT_FIELD_COUNT, FilterDialogState,
+        METHOD_CHECKBOX_BASE, Popup,
+    };
     use crossterm::event::KeyModifiers;
 
     /// Build an unmodified `KeyEvent` for `code`.
@@ -526,6 +533,7 @@ mod all_checkbox_order_tests {
 #[cfg(test)]
 mod key_handling_tests {
     use super::*;
+    use crate::tui::{FilterDialogState, Popup};
     use crossterm::event::KeyModifiers;
 
     /// Build an unmodified `KeyEvent` for `code`.

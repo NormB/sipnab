@@ -24,6 +24,13 @@ resolver = "2"
 undocumented_unsafe_blocks = "warn"
 # A parking_lot guard held across .await deadlocks the runtime.
 await_holding_lock = "deny"
+# A glob import hides where each name comes from and lets a new export in the
+# source module shadow or collide with a local name silently. `use super::*` in
+# a `#[cfg(test)]` module stays allowed (clippy's default).
+wildcard_imports = "warn"
+# Five or more one-letter bindings in one scope leave the reader to track
+# what each stands for; name them.
+many_single_char_names = "warn"
 
 [lints]
 workspace = true

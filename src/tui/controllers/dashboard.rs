@@ -2,7 +2,7 @@
 
 //! Key handling for the live call-quality dashboard view.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, Keymap, View};
 
 /// Everything the quality dashboard view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
