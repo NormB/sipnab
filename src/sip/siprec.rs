@@ -438,24 +438,28 @@ pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadat
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A bare boundary parameter is extracted from Content-Type.
     #[test]
-    fn test_extract_boundary() {
+    fn test_extract_boundary() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=uniqueBoundary";
         assert_eq!(extract_boundary(ct), Some("uniqueBoundary".to_string()));
+        Ok(())
     }
 
     /// A quoted boundary parameter is extracted without the quotes.
     #[test]
-    fn test_extract_boundary_quoted() {
+    fn test_extract_boundary_quoted() -> Result<(), TestError> {
         let ct = r#"multipart/mixed; boundary="unique-Boundary""#;
         assert_eq!(extract_boundary(ct), Some("unique-Boundary".to_string()));
+        Ok(())
     }
 
     /// The `boundary` parameter name is case-insensitive ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045#section-5.1)), so an
     /// uppercase or mixed-case `BOUNDARY=` is still recognized.
     #[test]
-    fn test_extract_boundary_case_insensitive() {
+    fn test_extract_boundary_case_insensitive() -> Result<(), TestError> {
         assert_eq!(
             extract_boundary("multipart/mixed; BOUNDARY=upperCase"),
             Some("upperCase".to_string())
@@ -464,12 +468,13 @@ mod tests {
             extract_boundary(r#"multipart/mixed; Boundary="Mixed-Case""#),
             Some("Mixed-Case".to_string())
         );
+        Ok(())
     }
 
     /// A full SDP+metadata multipart body yields session, participant, and
     /// stream fields.
     #[test]
-    fn test_parse_siprec_body() {
+    fn test_parse_siprec_body() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=boundary1";
         let body = b"--boundary1\r\n\
 Content-Type: application/sdp\r\n\r\n\
@@ -490,12 +495,13 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
 </recording>\n\
 --boundary1--";
 
-        let result = parse_siprec_body(ct, body).unwrap();
+        let result = parse_siprec_body(ct, body)?;
         assert_eq!(result.session_id.as_deref(), Some("abc123"));
         assert_eq!(result.participants.len(), 1);
         assert_eq!(result.participants[0].name.as_deref(), Some("Alice"));
         assert_eq!(result.streams.len(), 1);
         assert_eq!(result.streams[0].label.as_deref(), Some("audio"));
+        Ok(())
     }
 
     /// The metadata OpenSIPS's `siprec` module actually emits.
@@ -557,14 +563,14 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// The recording mode is in `<datamode>`, which is what RFC 7866 defines
     /// and what OpenSIPS emits. Looking for `<mode>` finds nothing.
     #[test]
-    fn the_recording_mode_comes_from_datamode() {
-        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
-            .expect("OpenSIPS metadata parses");
+    fn the_recording_mode_comes_from_datamode() -> Result<(), TestError> {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())?;
         assert_eq!(
             md.mode.as_deref(),
             Some("complete"),
             "the mode an SRC declares is <datamode>, not <mode>"
         );
+        Ok(())
     }
 
     /// A stream belongs to the participant that SENDS it.
@@ -575,36 +581,36 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// lives in `<participantstreamassoc>`, whose `<send>` children name the
     /// streams that participant originates.
     #[test]
-    fn a_stream_is_owned_by_the_participant_that_sends_it() {
-        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
-            .expect("OpenSIPS metadata parses");
-        let owner = |id: &str| {
-            md.streams
+    fn a_stream_is_owned_by_the_participant_that_sends_it() -> Result<(), TestError> {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())?;
+        let owner = |id: &str| -> Result<_, TestError> {
+            Ok(md
+                .streams
                 .iter()
                 .find(|s| s.stream_id.as_deref() == Some(id))
-                .unwrap_or_else(|| panic!("stream {id} parsed"))
+                .ok_or_else(|| format!("stream {id} parsed"))?
                 .participant_id
-                .clone()
+                .clone())
         };
-        assert_eq!(owner("s-alice-audio").as_deref(), Some("p-alice"));
+        assert_eq!(owner("s-alice-audio")?.as_deref(), Some("p-alice"));
         assert_eq!(
-            owner("s-alice-video").as_deref(),
+            owner("s-alice-video")?.as_deref(),
             Some("p-alice"),
             "a participant's second stream is theirs too -- this is the audio \
              and video case, where each label is an m= line index"
         );
         assert_eq!(
-            owner("s-bob-audio").as_deref(),
+            owner("s-bob-audio")?.as_deref(),
             Some("p-bob"),
             "and a stream only Bob sends is Bob's, though Alice receives it"
         );
+        Ok(())
     }
 
     /// Every participant and stream OpenSIPS emits is found, with its label.
     #[test]
-    fn every_participant_and_stream_opensips_emits_is_found() {
-        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
-            .expect("OpenSIPS metadata parses");
+    fn every_participant_and_stream_opensips_emits_is_found() -> Result<(), TestError> {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())?;
         assert_eq!(md.session_id.as_deref(), Some("sess-1"));
         assert_eq!(md.participants.len(), 2, "two participants");
         assert_eq!(md.streams.len(), 3, "three streams");
@@ -623,6 +629,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             ["0", "1", "2"],
             "labels are the m= line indices, carried verbatim"
         );
+        Ok(())
     }
 
     /// A participant whose `<nameID>` is self-closing still yields its AOR.
@@ -630,15 +637,15 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// OpenSIPS writes `<nameID aor="..."/>` when it has no display name for
     /// the party, which is the common case for the callee.
     #[test]
-    fn a_self_closing_nameid_still_yields_its_aor() {
-        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
-            .expect("OpenSIPS metadata parses");
+    fn a_self_closing_nameid_still_yields_its_aor() -> Result<(), TestError> {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())?;
         let bob = &md.participants[1];
         assert_eq!(bob.aor.as_deref(), Some("sip:bob@example.invalid"));
         assert_eq!(
             bob.name, None,
             "no display name was sent, so none is invented"
         );
+        Ok(())
     }
 
     /// `<participantsessionassoc>` and `<participantstreamassoc>` are not
@@ -648,9 +655,8 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// scan that finds participants is a substring search. Counting them as
     /// participants would double a call's party list.
     #[test]
-    fn an_assoc_element_is_not_mistaken_for_a_participant() {
-        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())
-            .expect("OpenSIPS metadata parses");
+    fn an_assoc_element_is_not_mistaken_for_a_participant() -> Result<(), TestError> {
+        let md = parse_siprec_body("multipart/mixed; boundary=OSS", &opensips_body())?;
         assert_eq!(
             md.participants.len(),
             2,
@@ -664,6 +670,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "an assoc block would parse as a participant with neither: {:?}",
             md.participants
         );
+        Ok(())
     }
 
     /// An assoc naming a stream the metadata never described owns nothing.
@@ -673,12 +680,12 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// carry. Inventing a stream to hang the id on would put a row in front of
     /// an operator that no SRC ever sent.
     #[test]
-    fn an_assoc_naming_an_unknown_stream_owns_nothing() {
+    fn an_assoc_naming_an_unknown_stream_owns_nothing() -> Result<(), TestError> {
         let xml = "<recording><datamode>complete</datamode>\
 <stream stream_id=\"known\"><label>0</label></stream>\
 <participantstreamassoc participant_id=\"p1\"><send>never-described</send>\
 </participantstreamassoc></recording>";
-        let md = parse_rs_metadata(xml).expect("parses");
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(
             md.streams.len(),
             1,
@@ -689,6 +696,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             md.streams[0].participant_id, None,
             "and the one real stream stays unowned, because nothing claimed it"
         );
+        Ok(())
     }
 
     /// A stream no assoc claims has no owner, rather than a guessed one.
@@ -697,16 +705,17 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// theirs: a recording with two parties and one described stream is
     /// exactly the case where guessing picks wrong half the time.
     #[test]
-    fn a_stream_no_assoc_claims_has_no_owner() {
+    fn a_stream_no_assoc_claims_has_no_owner() -> Result<(), TestError> {
         let xml = "<recording>\
 <participant participant_id=\"p1\"><nameID aor=\"sip:a@b\"/></participant>\
 <stream stream_id=\"s1\"><label>0</label></stream></recording>";
-        let md = parse_rs_metadata(xml).expect("parses");
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(md.streams.len(), 1);
         assert_eq!(
             md.streams[0].participant_id, None,
             "a single participant is not a reason to assign the stream to them"
         );
+        Ok(())
     }
 
     /// When two participants both send one stream, the last assoc read wins.
@@ -715,18 +724,19 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// than a case with a right answer. What matters is that it is
     /// deterministic and that neither claim silently disappears into a panic.
     #[test]
-    fn the_last_assoc_wins_when_two_claim_one_stream() {
+    fn the_last_assoc_wins_when_two_claim_one_stream() -> Result<(), TestError> {
         let xml = "<recording>\
 <stream stream_id=\"s1\"><label>0</label></stream>\
 <participantstreamassoc participant_id=\"p1\"><send>s1</send></participantstreamassoc>\
 <participantstreamassoc participant_id=\"p2\"><send>s1</send></participantstreamassoc>\
 </recording>";
-        let md = parse_rs_metadata(xml).expect("parses");
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(
             md.streams[0].participant_id.as_deref(),
             Some("p2"),
             "document order decides, so the same input always reads the same way"
         );
+        Ok(())
     }
 
     /// A metadata part delimited with bare LF parses.
@@ -735,14 +745,15 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// a log, or a test fixture may not be, and the boundary scan already
     /// tolerates it. The XML reading must not be stricter than the framing.
     #[test]
-    fn metadata_delimited_with_bare_lf_still_parses() {
+    fn metadata_delimited_with_bare_lf_still_parses() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b";
         let body = b"--b\nContent-Type: application/rs-metadata+xml\n\n\
 <recording><datamode>complete</datamode>\
 <session session_id=\"s\"/></recording>\n--b--";
-        let md = parse_siprec_body(ct, body).expect("bare LF parses");
+        let md = parse_siprec_body(ct, body)?;
         assert_eq!(md.session_id.as_deref(), Some("s"));
         assert_eq!(md.mode.as_deref(), Some("complete"));
+        Ok(())
     }
 
     /// A multipart Content-Type with no boundary parameter is refused.
@@ -751,11 +762,12 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// guessing one would either find nothing or find the wrong bytes. The
     /// error is the honest answer.
     #[test]
-    fn a_multipart_content_type_with_no_boundary_is_refused() {
+    fn a_multipart_content_type_with_no_boundary_is_refused() -> Result<(), TestError> {
         assert!(
             parse_siprec_body("multipart/mixed", b"--x\r\n\r\n<recording/>\r\n--x--").is_err(),
             "a body that cannot be split must not report empty metadata"
         );
+        Ok(())
     }
 
     /// The all-occurrences reader returns every match, in document order.
@@ -764,7 +776,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// field that appears once and wrong for `<send>`. This is the difference
     /// between a participant owning one stream and owning both.
     #[test]
-    fn extract_all_xml_content_returns_every_occurrence_in_order() {
+    fn extract_all_xml_content_returns_every_occurrence_in_order() -> Result<(), TestError> {
         let block = "<a><send>one</send><send>two</send><send>three</send></a>";
         assert_eq!(
             extract_all_xml_content(block, "send"),
@@ -779,6 +791,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             ["only"],
             "and a single match still comes back"
         );
+        Ok(())
     }
 
     /// An empty element must not end the scan.
@@ -790,7 +803,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// SRC said. Losing an association is worse than reporting none: the
     /// operator sees a plausible answer with a stream missing from it.
     #[test]
-    fn an_empty_element_does_not_end_the_scan() {
+    fn an_empty_element_does_not_end_the_scan() -> Result<(), TestError> {
         assert_eq!(
             extract_all_xml_content("<a><send></send><send>s1</send></a>", "send"),
             ["s1"],
@@ -806,6 +819,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             ["s3"],
             "whitespace-only content is empty too, and just as fatal to the scan"
         );
+        Ok(())
     }
 
     /// A longer tag that starts with this one's name is a different tag.
@@ -816,7 +830,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// element. The guard is one `matches!` on the delimiter, and nothing
     /// tested it until a mutation removed it and every test stayed green.
     #[test]
-    fn a_tag_whose_name_merely_starts_the_same_is_not_matched() {
+    fn a_tag_whose_name_merely_starts_the_same_is_not_matched() -> Result<(), TestError> {
         assert_eq!(
             extract_all_xml_content("<a><sendonly>no</sendonly><send>s1</send></a>", "send"),
             ["s1"],
@@ -828,6 +842,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "and with no real <send> present the answer is none, not the \
              longer tag's content"
         );
+        Ok(())
     }
 
     /// A self-closing element must not swallow the next one's content.
@@ -836,13 +851,14 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// the NEXT element's, so a self-closing entry can consume the following
     /// stream id and report it as the first one's.
     #[test]
-    fn a_self_closing_element_does_not_swallow_the_next() {
+    fn a_self_closing_element_does_not_swallow_the_next() -> Result<(), TestError> {
         assert_eq!(
             extract_all_xml_content("<a><send/><send>s1</send></a>", "send"),
             ["s1"],
             "a self-closing element carries no id, and must not be credited \
              with the following one's"
         );
+        Ok(())
     }
 
     /// A participant that sends one stream after an empty entry still owns it.
@@ -851,14 +867,14 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// `<send>` list, so a dropped entry leaves a real stream unowned while
     /// every other field looks right.
     #[test]
-    fn an_empty_send_does_not_orphan_the_streams_after_it() {
+    fn an_empty_send_does_not_orphan_the_streams_after_it() -> Result<(), TestError> {
         let xml = "<recording>\
 <stream stream_id=\"s1\"><label>0</label></stream>\
 <stream stream_id=\"s2\"><label>1</label></stream>\
 <participantstreamassoc participant_id=\"p1\">\
 <send></send><send>s1</send><send>s2</send>\
 </participantstreamassoc></recording>";
-        let md = parse_rs_metadata(xml).expect("parses");
+        let md = parse_rs_metadata(xml)?;
         let owner = |id: &str| {
             md.streams
                 .iter()
@@ -871,19 +887,21 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             Some("p1"),
             "both streams are p1's; an empty <send> must not orphan them"
         );
+        Ok(())
     }
 
     /// A multipart body without an rs-metadata part is an error.
     #[test]
-    fn test_no_metadata_part() {
+    fn test_no_metadata_part() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"--b1\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n--b1--";
         assert!(parse_siprec_body(ct, body).is_err());
+        Ok(())
     }
 
     /// A body missing the final `--boundary--` terminator still parses.
     #[test]
-    fn test_truncated_body_no_final_boundary() {
+    fn test_truncated_body_no_final_boundary() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"--b1\r\nContent-Type: application/rs-metadata+xml\r\n\r\n\
 <recording><session session_id=\"abc\"></session></recording>";
@@ -895,34 +913,36 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "truncated body should parse gracefully: {:?}",
             result.err()
         );
-        assert_eq!(result.unwrap().session_id.as_deref(), Some("abc"));
+        assert_eq!(result?.session_id.as_deref(), Some("abc"));
+        Ok(())
     }
 
     /// A boundary string occurring mid-line inside part content is NOT a
     /// delimiter ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046#section-5.1.1): delimiters must start a line); the part
     /// content must survive intact.
     #[test]
-    fn test_boundary_mid_line_content_not_split() {
+    fn test_boundary_mid_line_content_not_split() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"--b1\r\n\
 Content-Type: application/rs-metadata+xml\r\n\r\n\
 <recording><session session_id=\"abc\"><participant participant_id=\"p1\">\
 <name>Acme--b1 Corp</name></participant></session></recording>\r\n\
 --b1--";
-        let result = parse_siprec_body(ct, body).unwrap();
+        let result = parse_siprec_body(ct, body)?;
         assert_eq!(result.session_id.as_deref(), Some("abc"));
         assert_eq!(result.participants.len(), 1);
         assert_eq!(
             result.participants[0].name.as_deref(),
             Some("Acme--b1 Corp")
         );
+        Ok(())
     }
 
     /// Direct split check: a mid-line boundary occurrence in an SDP part does
     /// not create extra parts, while line-anchored delimiters (including the
     /// closing `--b1--`) still split correctly.
     #[test]
-    fn test_split_multipart_line_anchored_only() {
+    fn test_split_multipart_line_anchored_only() -> Result<(), TestError> {
         let body = "--b1\r\n\
 Content-Type: application/sdp\r\n\r\n\
 v=0\r\ns=call--b1session\r\n\
@@ -939,11 +959,12 @@ hello\r\n\
             parts[0].body
         );
         assert_eq!(parts[1].body.trim(), "hello");
+        Ok(())
     }
 
     /// Bare-LF line endings are still tolerated for delimiter anchoring.
     #[test]
-    fn test_split_multipart_bare_lf_delimiters() {
+    fn test_split_multipart_bare_lf_delimiters() -> Result<(), TestError> {
         let body = "--b1\n\
 Content-Type: application/sdp\n\n\
 v=0\n\
@@ -954,27 +975,29 @@ world\n\
         let parts = split_multipart(body, "b1");
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[1].body.trim(), "world");
+        Ok(())
     }
 
     /// Preamble text before the first delimiter does not break part
     /// extraction (first delimiter anchored by the preamble's CRLF).
     #[test]
-    fn test_split_multipart_with_preamble() {
+    fn test_split_multipart_with_preamble() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"preamble text\r\n\
 --b1\r\n\
 Content-Type: application/rs-metadata+xml\r\n\r\n\
 <recording><session session_id=\"xyz\"></session></recording>\r\n\
 --b1--";
-        let result = parse_siprec_body(ct, body).unwrap();
+        let result = parse_siprec_body(ct, body)?;
         assert_eq!(result.session_id.as_deref(), Some("xyz"));
+        Ok(())
     }
 
     /// A part whose `Content-Type` header is folded across lines
     /// (RFC 5322 continuation lines starting with SP/HTAB) is unfolded
     /// before parsing, so the full media type + parameters are recovered.
     #[test]
-    fn test_split_multipart_unfolds_folded_content_type() {
+    fn test_split_multipart_unfolds_folded_content_type() -> Result<(), TestError> {
         // Note: the SP after `;\r\n` is written before the `\` line-continuation
         // so it survives in the literal — the continuation line genuinely starts
         // with a space (an RFC 5322 fold).
@@ -994,11 +1017,12 @@ charset=\"utf-8\"\r\n\r\n\
             Some("application/rs-metadata+xml; charset=\"utf-8\""),
             "folded Content-Type must be unfolded to its full value"
         );
+        Ok(())
     }
 
     /// A folded HTAB continuation is also unfolded.
     #[test]
-    fn test_split_multipart_unfolds_htab_continuation() {
+    fn test_split_multipart_unfolds_htab_continuation() -> Result<(), TestError> {
         // HTAB written before the `\` line-continuation so the fold survives.
         let body = "--b1\r\n\
 Content-Type: application/rs-metadata+xml;\r\n\t\
@@ -1017,57 +1041,62 @@ charset=\"utf-8\"\r\n\r\n\
             parts[0].content_type.as_deref(),
             Some("application/rs-metadata+xml;\tcharset=\"utf-8\"")
         );
+        Ok(())
     }
 
     /// RFC 7865 canonical participant AOR: the `aor` attribute on `<nameID>`.
     #[test]
-    fn test_participant_aor_attribute_form() {
+    fn test_participant_aor_attribute_form() -> Result<(), TestError> {
         let xml = "<recording><participant participant_id=\"p1\">\
 <nameID aor=\"sip:alice@example.com\"><name>Alice</name></nameID>\
 </participant></recording>";
-        let md = parse_rs_metadata(xml).unwrap();
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(md.participants.len(), 1);
         assert_eq!(
             md.participants[0].aor.as_deref(),
             Some("sip:alice@example.com")
         );
+        Ok(())
     }
 
     /// The non-standard `<aor>` child-element form remains supported.
     #[test]
-    fn test_participant_aor_element_form_still_supported() {
+    fn test_participant_aor_element_form_still_supported() -> Result<(), TestError> {
         let xml = "<recording><participant participant_id=\"p1\">\
 <nameID><aor>sip:bob@example.com</aor></nameID></participant></recording>";
-        let md = parse_rs_metadata(xml).unwrap();
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(
             md.participants[0].aor.as_deref(),
             Some("sip:bob@example.com")
         );
+        Ok(())
     }
 
     /// When both the RFC 7865 `aor` attribute and a non-standard `<aor>`
     /// child element are present, the canonical attribute wins.
     #[test]
-    fn test_participant_aor_attribute_wins_over_element() {
+    fn test_participant_aor_attribute_wins_over_element() -> Result<(), TestError> {
         let xml = "<recording><participant participant_id=\"p1\">\
 <nameID aor=\"sip:attr@example.com\"><aor>sip:elem@example.com</aor></nameID>\
 </participant></recording>";
-        let md = parse_rs_metadata(xml).unwrap();
+        let md = parse_rs_metadata(xml)?;
         assert_eq!(
             md.participants[0].aor.as_deref(),
             Some("sip:attr@example.com"),
             "RFC 7865 aor attribute takes precedence over the <aor> child element"
         );
+        Ok(())
     }
 
     /// Malformed XML degrades to default metadata instead of failing.
     #[test]
-    fn test_malformed_xml() {
+    fn test_malformed_xml() -> Result<(), TestError> {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"--b1\r\nContent-Type: application/rs-metadata+xml\r\n\r\n\
 <not-valid-xml";
         // Should return Ok with empty/default metadata, not panic
         let result = parse_siprec_body(ct, body);
         assert!(result.is_ok());
+        Ok(())
     }
 }

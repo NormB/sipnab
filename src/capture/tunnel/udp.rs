@@ -886,13 +886,15 @@ fn plausible_inner_ethernet(d: &[u8]) -> bool {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     // ── builders ──────────────────────────────────────────────────────
 
     /// A realistic RTP packet: the [RFC 3550 section 5.1](https://www.rfc-editor.org/rfc/rfc3550#section-5.1) fixed header (V=2, P=0, X=0,
     /// CC=0, M=0, PT=0 — PCMU, [RFC 3551 section 6](https://www.rfc-editor.org/rfc/rfc3551#section-6)) followed by 160 octets of G.711
     /// µ-law, i.e. one 20 ms frame at 8 kHz. This is the single most common
     /// payload on a VoIP wire and the thing every decoder here must refuse.
-    fn rtp_pcmu() -> Vec<u8> {
+    fn rtp_pcmu() -> Result<Vec<u8>, TestError> {
         let mut p = Vec::with_capacity(172);
         p.push(0x80); // V=2, P=0, X=0, CC=0
         p.push(0x00); // M=0, PT=0 (PCMU)
@@ -902,38 +904,38 @@ mod tests {
         // Speech-like, not a constant: a payload of identical octets could let
         // a decoder pass or fail for reasons unrelated to its header checks.
         for i in 0..160u32 {
-            p.push(u8::try_from((0x30 + i * 7) % 251).unwrap());
+            p.push(u8::try_from((0x30 + i * 7) % 251)?);
         }
-        p
+        Ok(p)
     }
 
     /// A well-formed IPv4 packet of exactly `total` octets (`total >= 20`).
-    fn ipv4(total: usize) -> Vec<u8> {
+    fn ipv4(total: usize) -> Result<Vec<u8>, TestError> {
         let mut p = vec![0u8; total];
         p[0] = 0x45; // version 4, IHL 5
-        p[2..4].copy_from_slice(&u16::try_from(total).unwrap().to_be_bytes());
+        p[2..4].copy_from_slice(&u16::try_from(total)?.to_be_bytes());
         p[8] = 64; // TTL
         p[9] = 17; // UDP
-        p
+        Ok(p)
     }
 
     /// A well-formed IPv6 packet with `payload` octets after the 40-octet
     /// fixed header.
-    fn ipv6(payload: usize) -> Vec<u8> {
+    fn ipv6(payload: usize) -> Result<Vec<u8>, TestError> {
         let mut p = vec![0u8; 40 + payload];
         p[0] = 0x60; // version 6
-        p[4..6].copy_from_slice(&u16::try_from(payload).unwrap().to_be_bytes());
+        p[4..6].copy_from_slice(&u16::try_from(payload)?.to_be_bytes());
         p[6] = 17; // next header: UDP
         p[7] = 64; // hop limit
-        p
+        Ok(p)
     }
 
     /// A Teredo client's IPv6 packet: source inside the Global Teredo IPv6
     /// Service Prefix 2001:0000::/32 ([RFC 4380 section 2.6](https://www.rfc-editor.org/rfc/rfc4380#section-2.6)).
-    fn ipv6_from_teredo(payload: usize) -> Vec<u8> {
-        let mut p = ipv6(payload);
+    fn ipv6_from_teredo(payload: usize) -> Result<Vec<u8>, TestError> {
+        let mut p = ipv6(payload)?;
         p[8..12].copy_from_slice(&[0x20, 0x01, 0x00, 0x00]);
-        p
+        Ok(p)
     }
 
     /// An Ethernet II frame carrying `ethertype` over `payload` octets.
@@ -952,20 +954,26 @@ mod tests {
     /// T-PDU. Length is filled in per [3GPP TS 29.281](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1699) clause 5.1: "the length in octets
     /// of the payload, i.e. the rest of the packet following the mandatory
     /// part of the GTP header (that is the first 8 octets)".
-    fn gtpu_pdu(first: u8, msg: u8, teid: u32, after: &[u8], inner: &[u8]) -> Vec<u8> {
+    fn gtpu_pdu(
+        first: u8,
+        msg: u8,
+        teid: u32,
+        after: &[u8],
+        inner: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
         let mut p = Vec::new();
         p.push(first);
         p.push(msg);
-        let len = u16::try_from(after.len() + inner.len()).unwrap();
+        let len = u16::try_from(after.len() + inner.len())?;
         p.extend_from_slice(&len.to_be_bytes());
         p.extend_from_slice(&teid.to_be_bytes());
         p.extend_from_slice(after);
         p.extend_from_slice(inner);
-        p
+        Ok(p)
     }
 
     /// A conforming GTP-U G-PDU with no optional fields, carrying `inner`.
-    fn gtpu_ok(inner: &[u8]) -> Vec<u8> {
+    fn gtpu_ok(inner: &[u8]) -> Result<Vec<u8>, TestError> {
         gtpu_pdu(0x30, 255, 0x1234_5678, &[], inner)
     }
 
@@ -1035,7 +1043,12 @@ mod tests {
 
     /// Assemble an L2TPv2 message ([RFC 2661 section 3.1](https://www.rfc-editor.org/rfc/rfc2661#section-3.1)). The Length field, when the
     /// L bit is set, is filled in as the total message length.
-    fn l2tpv2(shape: L2tpShape, tunnel: u16, session: u16, body: &[u8]) -> Vec<u8> {
+    fn l2tpv2(
+        shape: L2tpShape,
+        tunnel: u16,
+        session: u16,
+        body: &[u8],
+    ) -> Result<Vec<u8>, TestError> {
         let mut flags: u16 = 2; // Ver = 2
         if shape.control {
             flags |= 0x8000;
@@ -1067,15 +1080,15 @@ mod tests {
         }
         p.extend_from_slice(body);
         if let Some(at) = len_at {
-            let total = u16::try_from(p.len()).unwrap();
+            let total = u16::try_from(p.len())?;
             p[at..at + 2].copy_from_slice(&total.to_be_bytes());
         }
-        p
+        Ok(p)
     }
 
     /// A plain L2TPv2 data message: no Length, no sequence numbers, no
     /// offset.
-    fn l2tp_data(body: &[u8]) -> Vec<u8> {
+    fn l2tp_data(body: &[u8]) -> Result<Vec<u8>, TestError> {
         l2tpv2(L2tpShape::default(), 7, 9, body)
     }
 
@@ -1090,30 +1103,33 @@ mod tests {
     // ── GTP-U ─────────────────────────────────────────────────────────
 
     #[test]
-    fn gtpu_g_pdu_without_optional_fields_puts_the_t_pdu_at_eight() {
-        let p = gtpu_ok(&ipv4(40));
+    fn gtpu_g_pdu_without_optional_fields_puts_the_t_pdu_at_eight() -> Result<(), TestError> {
+        let p = gtpu_ok(&ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(8)));
         assert_eq!(gtpu(&p, 100), Some(Inner::Ip(108)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_sequence_flag_adds_the_whole_four_octet_optional_block() {
+    fn gtpu_sequence_flag_adds_the_whole_four_octet_optional_block() -> Result<(), TestError> {
         // TS 29.281 §5.1 NOTE 4: the Sequence Number, N-PDU Number and Next
         // Extension Header Type "shall be present if and only if any one or
         // more of the S, PN and E flags are set" — all four octets, not just
         // the two the S flag names.
-        let p = gtpu_pdu(0x32, 255, 1, &[0, 7, 0, 0], &ipv4(40));
+        let p = gtpu_pdu(0x32, 255, 1, &[0, 7, 0, 0], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(12)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_pn_flag_alone_also_adds_all_four_optional_octets() {
-        let p = gtpu_pdu(0x31, 255, 1, &[0, 0, 9, 0], &ipv4(40));
+    fn gtpu_pn_flag_alone_also_adds_all_four_optional_octets() -> Result<(), TestError> {
+        let p = gtpu_pdu(0x31, 255, 1, &[0, 0, 9, 0], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(12)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_a_next_extension_type_is_ignored_when_the_e_flag_is_clear() {
+    fn gtpu_a_next_extension_type_is_ignored_when_the_e_flag_is_clear() -> Result<(), TestError> {
         // §5.1, E flag: "When it is set to '0', the Next Extension Header
         // field either is not present or, if present, shall not be
         // interpreted." The S flag alone brings the four-octet block into
@@ -1121,12 +1137,13 @@ mod tests {
         // but a receiver that walked a chain out of whatever is actually in
         // that octet would follow attacker-chosen lengths on a packet with
         // no extension headers at all.
-        let p = gtpu_pdu(0x32, 255, 1, &[0, 7, 0, 0x40], &ipv4(40));
+        let p = gtpu_pdu(0x32, 255, 1, &[0, 7, 0, 0x40], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(12)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_one_extension_header_is_walked() {
+    fn gtpu_one_extension_header_is_walked() -> Result<(), TestError> {
         // E set; Next Extension Header Type 0x40 (UDP Port), one 4-octet
         // extension whose own next-type is 0 (no more).
         let p = gtpu_pdu(
@@ -1134,109 +1151,122 @@ mod tests {
             255,
             1,
             &[0, 0, 0, 0x40, 0x01, 0x12, 0x34, 0x00],
-            &ipv4(40),
-        );
+            &ipv4(40)?,
+        )?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(16)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_a_chain_of_two_extension_headers_is_walked() {
+    fn gtpu_a_chain_of_two_extension_headers_is_walked() -> Result<(), TestError> {
         let after = [
             0, 0, 0, 0x40, 0x01, 0x12, 0x34, 0xC0, 0x01, 0x00, 0x05, 0x00,
         ];
-        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40));
+        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(20)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_extension_header_length_is_read_in_four_octet_units() {
+    fn gtpu_extension_header_length_is_read_in_four_octet_units() -> Result<(), TestError> {
         // TS 29.281 §5.2.1: "The Extension Header Length field specifies the
         // length of the particular Extension header in 4 octets units."
         // Length 2 means the extension occupies 8 octets.
         let after = [0, 0, 0, 0xC0, 0x02, 1, 2, 3, 4, 5, 6, 0x00];
-        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40));
+        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(20)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_accepts_an_inner_ipv6_t_pdu() {
-        let p = gtpu_ok(&ipv6(8));
+    fn gtpu_accepts_an_inner_ipv6_t_pdu() -> Result<(), TestError> {
+        let p = gtpu_ok(&ipv6(8)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_accepts_an_all_zero_teid() {
+    fn gtpu_accepts_an_all_zero_teid() -> Result<(), TestError> {
         // TS 29.281 §5.1 permits it "for backward compatibility": a peer that
         // was handed an all-zero TEID "shall accept this value as valid and
         // send the subsequent G-PDU with the TEID field ... set to the value
         // 'all zeros'". A non-zero-TEID gate would drop real traffic.
-        let p = gtpu_pdu(0x30, 255, 0, &[], &ipv4(40));
+        let p = gtpu_pdu(0x30, 255, 0, &[], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_every_control_plane_message_type() {
+    fn gtpu_rejects_every_control_plane_message_type() -> Result<(), TestError> {
         // Table 6.1-1: only 255 (G-PDU) is "a packet including a GTP-U header
         // and a T-PDU". The rest carry information elements or nothing.
         for msg in [1u8, 2, 26, 31, 254, 0, 100] {
-            let p = gtpu_pdu(0x30, msg, 1, &[], &ipv4(40));
+            let p = gtpu_pdu(0x30, msg, 1, &[], &ipv4(40)?)?;
             assert_eq!(gtpu(&p, 0), None, "message type {msg} must not decap");
         }
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_a_version_other_than_one() {
+    fn gtpu_rejects_a_version_other_than_one() -> Result<(), TestError> {
         for ver in [0u8, 2, 3, 4, 5, 6, 7] {
-            let p = gtpu_pdu((ver << 5) | 0x10, 255, 1, &[], &ipv4(40));
+            let p = gtpu_pdu((ver << 5) | 0x10, 255, 1, &[], &ipv4(40)?)?;
             assert_eq!(gtpu(&p, 0), None, "version {ver} must not decap");
         }
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_gtp_prime() {
+    fn gtpu_rejects_gtp_prime() -> Result<(), TestError> {
         // PT = 0 selects GTP' (TS 32.295), whose header fields "may be
         // different in GTP' than in GTP".
-        let p = gtpu_pdu(0x20, 255, 1, &[], &ipv4(40));
+        let p = gtpu_pdu(0x20, 255, 1, &[], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_a_set_spare_bit() {
-        let p = gtpu_pdu(0x38, 255, 1, &[], &ipv4(40));
+    fn gtpu_rejects_a_set_spare_bit() -> Result<(), TestError> {
+        let p = gtpu_pdu(0x38, 255, 1, &[], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_a_length_field_that_undercounts_the_payload() {
-        let mut p = gtpu_ok(&ipv4(40));
+    fn gtpu_rejects_a_length_field_that_undercounts_the_payload() -> Result<(), TestError> {
+        let mut p = gtpu_ok(&ipv4(40)?)?;
         p[2..4].copy_from_slice(&10u16.to_be_bytes()); // says 10, carries 40
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_accepts_a_length_field_that_overcounts_a_truncated_capture() {
+    fn gtpu_accepts_a_length_field_that_overcounts_a_truncated_capture() -> Result<(), TestError> {
         // A snaplen'd capture legitimately holds less than the header claims.
-        let mut p = gtpu_ok(&ipv4(400));
+        let mut p = gtpu_ok(&ipv4(400)?)?;
         p.truncate(8 + 60);
         assert_eq!(gtpu(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_a_zero_length_extension_header() {
+    fn gtpu_rejects_a_zero_length_extension_header() -> Result<(), TestError> {
         // Length 0 would advance the walk by nothing. TS 29.281 §5.2.1:
         // "m+1 = n*4 octets, where n is a positive integer".
-        let p = gtpu_pdu(0x34, 255, 1, &[0, 0, 0, 0x40, 0x00, 0, 0, 0], &ipv4(40));
+        let p = gtpu_pdu(0x34, 255, 1, &[0, 0, 0, 0x40, 0x00, 0, 0, 0], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_an_extension_chain_that_runs_past_the_payload() {
-        let p = gtpu_pdu(0x34, 255, 1, &[0, 0, 0, 0x40, 0xFF, 0, 0, 0], &ipv4(40));
+    fn gtpu_rejects_an_extension_chain_that_runs_past_the_payload() -> Result<(), TestError> {
+        let p = gtpu_pdu(0x34, 255, 1, &[0, 0, 0, 0x40, 0xFF, 0, 0, 0], &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_an_extension_chain_longer_than_the_cap() {
+    fn gtpu_rejects_an_extension_chain_longer_than_the_cap() -> Result<(), TestError> {
         // Nine chained 4-octet extensions, each pointing at the next.
         let mut after = vec![0, 0, 0, 0x40];
         for _ in 0..9 {
@@ -1244,204 +1274,242 @@ mod tests {
         }
         let last = after.len() - 1;
         after[last] = 0x00;
-        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40));
+        let p = gtpu_pdu(0x34, 255, 1, &after, &ipv4(40)?)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_a_t_pdu_whose_version_nibble_is_neither_four_nor_six() {
-        let p = gtpu_ok(&[0u8; 40]);
+    fn gtpu_rejects_a_t_pdu_whose_version_nibble_is_neither_four_nor_six() -> Result<(), TestError>
+    {
+        let p = gtpu_ok(&[0u8; 40])?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_rejects_an_inner_ipv4_header_with_a_short_ihl() {
-        let mut inner = ipv4(40);
+    fn gtpu_rejects_an_inner_ipv4_header_with_a_short_ihl() -> Result<(), TestError> {
+        let mut inner = ipv4(40)?;
         inner[0] = 0x44; // IHL 4 — below the 20-octet minimum header
-        let p = gtpu_ok(&inner);
+        let p = gtpu_ok(&inner)?;
         assert_eq!(gtpu(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn gtpu_truncated_at_every_boundary_returns_none() {
+    fn gtpu_truncated_at_every_boundary_returns_none() -> Result<(), TestError> {
         let full = gtpu_pdu(
             0x34,
             255,
             1,
             &[0, 0, 0, 0x40, 0x01, 0x12, 0x34, 0x00],
-            &ipv4(40),
-        );
+            &ipv4(40)?,
+        )?;
         for cut in 0..16 {
             assert_eq!(gtpu(&full[..cut], 0), None, "truncated to {cut} octets");
         }
+        Ok(())
     }
 
     // ── VXLAN ─────────────────────────────────────────────────────────
 
     #[test]
-    fn vxlan_puts_the_inner_ethernet_frame_at_eight() {
-        let p = vxlan_ok(&eth(0x0800, &ipv4(40)));
+    fn vxlan_puts_the_inner_ethernet_frame_at_eight() -> Result<(), TestError> {
+        let p = vxlan_ok(&eth(0x0800, &ipv4(40)?));
         assert_eq!(vxlan(&p, 0), Some(Inner::Ethernet(8)));
         assert_eq!(vxlan(&p, 50), Some(Inner::Ethernet(58)));
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_a_clear_i_flag() {
+    fn vxlan_rejects_a_clear_i_flag() -> Result<(), TestError> {
         // RFC 7348 §5: "the I flag MUST be set to 1 for a valid VXLAN Network
         // ID (VNI)".
-        let p = vxlan_pdu(0x00, [0, 0, 0], [0, 0x30, 0x39], 0, &eth(0x0800, &ipv4(40)));
+        let p = vxlan_pdu(
+            0x00,
+            [0, 0, 0],
+            [0, 0x30, 0x39],
+            0,
+            &eth(0x0800, &ipv4(40)?),
+        );
         assert_eq!(vxlan(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_each_reserved_flag_bit_on_its_own() {
+    fn vxlan_rejects_each_reserved_flag_bit_on_its_own() -> Result<(), TestError> {
         for bit in [0x01u8, 0x02, 0x04, 0x10, 0x20, 0x40, 0x80] {
             let p = vxlan_pdu(
                 0x08 | bit,
                 [0, 0, 0],
                 [0, 0x30, 0x39],
                 0,
-                &eth(0x0800, &ipv4(40)),
+                &eth(0x0800, &ipv4(40)?),
             );
             assert_eq!(vxlan(&p, 0), None, "reserved flag bit {bit:#04x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_a_nonzero_twenty_four_bit_reserved_field() {
+    fn vxlan_rejects_a_nonzero_twenty_four_bit_reserved_field() -> Result<(), TestError> {
         for r in [[1u8, 0, 0], [0, 1, 0], [0, 0, 1]] {
-            let p = vxlan_pdu(0x08, r, [0, 0x30, 0x39], 0, &eth(0x0800, &ipv4(40)));
+            let p = vxlan_pdu(0x08, r, [0, 0x30, 0x39], 0, &eth(0x0800, &ipv4(40)?));
             assert_eq!(vxlan(&p, 0), None, "reserved {r:?}");
         }
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_a_nonzero_trailing_reserved_octet() {
-        let p = vxlan_pdu(0x08, [0, 0, 0], [0, 0x30, 0x39], 1, &eth(0x0800, &ipv4(40)));
+    fn vxlan_rejects_a_nonzero_trailing_reserved_octet() -> Result<(), TestError> {
+        let p = vxlan_pdu(
+            0x08,
+            [0, 0, 0],
+            [0, 0x30, 0x39],
+            1,
+            &eth(0x0800, &ipv4(40)?),
+        );
         assert_eq!(vxlan(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_a_group_addressed_inner_source_mac() {
-        let mut frame = eth(0x0800, &ipv4(40));
+    fn vxlan_rejects_a_group_addressed_inner_source_mac() -> Result<(), TestError> {
+        let mut frame = eth(0x0800, &ipv4(40)?);
         frame[6] |= 0x01; // Group bit set on the source address
         let p = vxlan_ok(&frame);
         assert_eq!(vxlan(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn vxlan_rejects_an_inner_ethertype_it_cannot_lead_anywhere_with() {
+    fn vxlan_rejects_an_inner_ethertype_it_cannot_lead_anywhere_with() -> Result<(), TestError> {
         for et in [0x0000u16, 0x0005, 0x88CC, 0x88E5, 0x8100 - 1] {
-            let p = vxlan_ok(&eth(et, &ipv4(40)));
+            let p = vxlan_ok(&eth(et, &ipv4(40)?));
             assert_eq!(vxlan(&p, 0), None, "ethertype {et:#06x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn vxlan_accepts_a_vlan_tagged_inner_frame() {
-        let p = vxlan_ok(&eth(0x8100, &ipv4(40)));
+    fn vxlan_accepts_a_vlan_tagged_inner_frame() -> Result<(), TestError> {
+        let p = vxlan_ok(&eth(0x8100, &ipv4(40)?));
         assert_eq!(vxlan(&p, 0), Some(Inner::Ethernet(8)));
+        Ok(())
     }
 
     #[test]
-    fn vxlan_truncated_at_every_boundary_returns_none() {
-        let full = vxlan_ok(&eth(0x0800, &ipv4(40)));
+    fn vxlan_truncated_at_every_boundary_returns_none() -> Result<(), TestError> {
+        let full = vxlan_ok(&eth(0x0800, &ipv4(40)?));
         for cut in 0..22 {
             assert_eq!(vxlan(&full[..cut], 0), None, "truncated to {cut} octets");
         }
+        Ok(())
     }
 
     // ── Geneve ────────────────────────────────────────────────────────
 
     #[test]
-    fn geneve_without_options_puts_the_inner_frame_at_eight() {
-        let p = geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+    fn geneve_without_options_puts_the_inner_frame_at_eight() -> Result<(), TestError> {
+        let p = geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), Some(Inner::Ethernet(8)));
         assert_eq!(geneve(&p, 7), Some(Inner::Ethernet(15)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_opt_len_is_counted_in_four_octet_multiples() {
+    fn geneve_opt_len_is_counted_in_four_octet_multiples() -> Result<(), TestError> {
         // RFC 8926 §3.4: Opt Len is "the length of the option fields,
         // expressed in 4-byte multiples". Two 4-octet options → Opt Len 2.
         let mut opts = geneve_option_empty();
         opts.extend(geneve_option_empty());
-        let p = geneve_pdu(0x02, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)));
+        let p = geneve_pdu(0x02, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), Some(Inner::Ethernet(16)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_option_data_is_counted_in_four_octet_multiples() {
+    fn geneve_option_data_is_counted_in_four_octet_multiples() -> Result<(), TestError> {
         // One option with Length 2 → 4 octets of header plus 8 of data.
         let mut opts = vec![0x01, 0x02, 0x03, 0x02];
         opts.extend_from_slice(&[0; 8]);
-        let p = geneve_pdu(0x03, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)));
+        let p = geneve_pdu(0x03, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), Some(Inner::Ethernet(20)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_ipv4_protocol_type_yields_an_ip_offset() {
-        let p = geneve_pdu(0x00, 0x00, 0x0800, &[], &ipv4(40));
+    fn geneve_ipv4_protocol_type_yields_an_ip_offset() -> Result<(), TestError> {
+        let p = geneve_pdu(0x00, 0x00, 0x0800, &[], &ipv4(40)?);
         assert_eq!(geneve(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_ipv6_protocol_type_yields_an_ip_offset() {
-        let p = geneve_pdu(0x00, 0x00, 0x86DD, &[], &ipv6(8));
+    fn geneve_ipv6_protocol_type_yields_an_ip_offset() -> Result<(), TestError> {
+        let p = geneve_pdu(0x00, 0x00, 0x86DD, &[], &ipv6(8)?);
         assert_eq!(geneve(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_protocol_type_that_disagrees_with_the_inner_version_nibble() {
+    fn geneve_rejects_a_protocol_type_that_disagrees_with_the_inner_version_nibble()
+    -> Result<(), TestError> {
         // A header that says IPv4 over a packet that says IPv6 is not a
         // Geneve packet, and vice versa.
-        let v4_over_v6 = geneve_pdu(0x00, 0x00, 0x0800, &[], &ipv6(8));
+        let v4_over_v6 = geneve_pdu(0x00, 0x00, 0x0800, &[], &ipv6(8)?);
         assert_eq!(geneve(&v4_over_v6, 0), None);
-        let v6_over_v4 = geneve_pdu(0x00, 0x00, 0x86DD, &[], &ipv4(40));
+        let v6_over_v4 = geneve_pdu(0x00, 0x00, 0x86DD, &[], &ipv4(40)?);
         assert_eq!(geneve(&v6_over_v4, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn geneve_control_packet_is_reported_opaque_not_decapsulated() {
+    fn geneve_control_packet_is_reported_opaque_not_decapsulated() -> Result<(), TestError> {
         // RFC 8926 §3.4, O bit: "Tunnel endpoints MUST NOT forward the
         // payload, and transit devices MUST NOT attempt to interpret it."
-        let p = geneve_pdu(0x00, 0x80, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+        let p = geneve_pdu(0x00, 0x80, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), Some(Inner::Opaque("Geneve control packet")));
+        Ok(())
     }
 
     #[test]
-    fn geneve_critical_options_bit_does_not_block_decapsulation() {
+    fn geneve_critical_options_bit_does_not_block_decapsulation() -> Result<(), TestError> {
         // The C bit tells an *endpoint* it must parse options. A passive
         // observer that skips them by Opt Len is unaffected.
-        let p = geneve_pdu(0x00, 0x40, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+        let p = geneve_pdu(0x00, 0x40, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), Some(Inner::Ethernet(8)));
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_nonzero_version() {
+    fn geneve_rejects_a_nonzero_version() -> Result<(), TestError> {
         for ver in [1u8, 2, 3] {
-            let p = geneve_pdu(ver << 6, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+            let p = geneve_pdu(ver << 6, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
             assert_eq!(geneve(&p, 0), None, "version {ver}");
         }
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_nonzero_reserved_field() {
+    fn geneve_rejects_a_nonzero_reserved_field() -> Result<(), TestError> {
         for bit in [0x01u8, 0x02, 0x04, 0x08, 0x10, 0x20] {
-            let p = geneve_pdu(0x00, bit, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+            let p = geneve_pdu(0x00, bit, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
             assert_eq!(geneve(&p, 0), None, "rsvd bit {bit:#04x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_nonzero_reserved_octet_after_the_vni() {
-        let mut p = geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+    fn geneve_rejects_a_nonzero_reserved_octet_after_the_vni() -> Result<(), TestError> {
+        let mut p = geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
         p[7] = 0x01;
         assert_eq!(geneve(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_options_that_do_not_sum_to_opt_len() {
+    fn geneve_rejects_options_that_do_not_sum_to_opt_len() -> Result<(), TestError> {
         // RFC 8926 §3.5: "Packets in which the total length of all options is
         // not equal to the 'Opt Len' in the base header are invalid and MUST
         // be silently dropped".
@@ -1454,113 +1522,125 @@ mod tests {
         // own header says the boundary is somewhere else.
         let mut opts = vec![0x01, 0x02, 0x03, 0x02];
         opts.extend_from_slice(&[0xAA; 4]);
-        let p = geneve_pdu(0x02, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)));
+        let p = geneve_pdu(0x02, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_nonzero_option_r_flag() {
+    fn geneve_rejects_a_nonzero_option_r_flag() -> Result<(), TestError> {
         for bit in [0x20u8, 0x40, 0x80] {
             let opts = vec![0x01, 0x02, 0x03, bit];
-            let p = geneve_pdu(0x01, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)));
+            let p = geneve_pdu(0x01, 0x00, 0x6558, &opts, &eth(0x0800, &ipv4(40)?));
             assert_eq!(geneve(&p, 0), None, "option R bit {bit:#04x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_opt_len_running_past_the_payload() {
-        let p = geneve_pdu(0x3F, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)));
+    fn geneve_rejects_opt_len_running_past_the_payload() -> Result<(), TestError> {
+        let p = geneve_pdu(0x3F, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)?));
         assert_eq!(geneve(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_a_protocol_type_it_cannot_lead_anywhere_with() {
+    fn geneve_rejects_a_protocol_type_it_cannot_lead_anywhere_with() -> Result<(), TestError> {
         for proto in [0x0000u16, 0x0806, 0x8847, 0x894F] {
-            let p = geneve_pdu(0x00, 0x00, proto, &[], &eth(0x0800, &ipv4(40)));
+            let p = geneve_pdu(0x00, 0x00, proto, &[], &eth(0x0800, &ipv4(40)?));
             assert_eq!(geneve(&p, 0), None, "protocol type {proto:#06x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn geneve_rejects_an_ethernet_payload_that_is_not_a_frame() {
-        let mut frame = eth(0x0800, &ipv4(40));
+    fn geneve_rejects_an_ethernet_payload_that_is_not_a_frame() -> Result<(), TestError> {
+        let mut frame = eth(0x0800, &ipv4(40)?);
         frame[6] |= 0x01; // group-addressed source MAC
         let p = geneve_pdu(0x00, 0x00, 0x6558, &[], &frame);
         assert_eq!(geneve(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn geneve_truncated_at_every_boundary_returns_none() {
+    fn geneve_truncated_at_every_boundary_returns_none() -> Result<(), TestError> {
         let full = geneve_pdu(
             0x01,
             0x00,
             0x6558,
             &geneve_option_empty(),
-            &eth(0x0800, &ipv4(40)),
+            &eth(0x0800, &ipv4(40)?),
         );
         for cut in 0..26 {
             assert_eq!(geneve(&full[..cut], 0), None, "truncated to {cut} octets");
         }
+        Ok(())
     }
 
     // ── Teredo ────────────────────────────────────────────────────────
 
     #[test]
-    fn teredo_simple_encapsulation_starts_at_zero() {
-        let p = ipv6_from_teredo(8);
+    fn teredo_simple_encapsulation_starts_at_zero() -> Result<(), TestError> {
+        let p = ipv6_from_teredo(8)?;
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(0)));
         assert_eq!(teredo(&p, 42), Some(Inner::Ip(42)));
+        Ok(())
     }
 
     #[test]
-    fn teredo_origin_indication_is_skipped() {
+    fn teredo_origin_indication_is_skipped() -> Result<(), TestError> {
         let mut p = teredo_origin();
-        p.extend(ipv6_from_teredo(8));
+        p.extend(ipv6_from_teredo(8)?);
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn teredo_authentication_header_is_skipped() {
+    fn teredo_authentication_header_is_skipped() -> Result<(), TestError> {
         let auth = teredo_auth(4, 16);
         let mut p = auth.clone();
-        p.extend(ipv6_from_teredo(8));
+        p.extend(ipv6_from_teredo(8)?);
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(auth.len())));
+        Ok(())
     }
 
     #[test]
-    fn teredo_authentication_precedes_origin_indication() {
+    fn teredo_authentication_precedes_origin_indication() -> Result<(), TestError> {
         // RFC 4380 §5.1.1: "the authentication encapsulation MUST be the
         // first element in the UDP payload".
         let auth = teredo_auth(0, 0);
         let mut p = auth.clone();
         p.extend(teredo_origin());
-        p.extend(ipv6_from_teredo(8));
+        p.extend(ipv6_from_teredo(8)?);
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(auth.len() + 8)));
+        Ok(())
     }
 
     #[test]
-    fn teredo_accepts_a_link_local_router_solicitation() {
+    fn teredo_accepts_a_link_local_router_solicitation() -> Result<(), TestError> {
         // RFC 4380 §5.2.1 qualification: the client has no Teredo address
         // yet, so the RS goes from its link-local address to FF02::2.
-        let mut p = ipv6(24);
+        let mut p = ipv6(24)?;
         p[6] = 58; // ICMPv6
         p[8..10].copy_from_slice(&[0xFE, 0x80]);
         p[24..26].copy_from_slice(&[0xFF, 0x02]);
         p[39] = 0x02;
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(0)));
+        Ok(())
     }
 
     #[test]
-    fn teredo_accepts_a_native_source_bound_for_a_teredo_destination() {
+    fn teredo_accepts_a_native_source_bound_for_a_teredo_destination() -> Result<(), TestError> {
         // RFC 4380 §5.2.3 rule 6: source not a Teredo address, destination a
         // Teredo address allocated through this server — "SHOULD be accepted".
-        let mut p = ipv6(8);
+        let mut p = ipv6(8)?;
         p[24..28].copy_from_slice(&[0x20, 0x01, 0x00, 0x00]);
         assert_eq!(teredo(&p, 0), Some(Inner::Ip(0)));
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_a_source_outside_the_link_local_prefix() {
+    fn teredo_rejects_a_source_outside_the_link_local_prefix() -> Result<(), TestError> {
         // FEC0::/10 is site-local (deprecated), not link-local; and an
         // address that starts FE80 but carries bits in the rest of the /64 is
         // not the FE80::/64 form RFC 4380 §5.1 describes.
@@ -1569,119 +1649,133 @@ mod tests {
             [0xFE, 0x00, 0, 0, 0, 0, 0, 0],
             [0xFE, 0x80, 0, 0, 0, 0, 0, 1],
         ] {
-            let mut p = ipv6(24);
+            let mut p = ipv6(24)?;
             p[6] = 58; // ICMPv6
             p[8..16].copy_from_slice(&prefix);
             p[24..26].copy_from_slice(&[0xFF, 0x02]);
             p[39] = 0x02;
             assert_eq!(teredo(&p, 0), None, "source prefix {prefix:?}");
         }
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_a_link_local_source_not_bound_for_all_routers() {
+    fn teredo_rejects_a_link_local_source_not_bound_for_all_routers() -> Result<(), TestError> {
         // RFC 4380 §5.2.3 rule 4 admits a link-local source only when the
         // destination "is the link-local scope all routers multicast address
         // (FF02::2)". A link-local source with any other destination falls to
         // rule 7, "silently discarded".
-        let mut p = ipv6(24);
+        let mut p = ipv6(24)?;
         p[6] = 58; // ICMPv6
         p[8..10].copy_from_slice(&[0xFE, 0x80]);
         p[24..26].copy_from_slice(&[0xFF, 0x02]);
         p[39] = 0x01; // FF02::1, all-nodes, not all-routers
         assert_eq!(teredo(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_a_packet_with_no_teredo_address_at_either_end() {
-        let p = ipv6(8); // both ends all-zero
+    fn teredo_rejects_a_packet_with_no_teredo_address_at_either_end() -> Result<(), TestError> {
+        let p = ipv6(8)?; // both ends all-zero
         assert_eq!(teredo(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_a_version_nibble_that_is_not_six() {
+    fn teredo_rejects_a_version_nibble_that_is_not_six() -> Result<(), TestError> {
         for nib in [0x40u8, 0x50, 0x70, 0x80, 0x90] {
-            let mut p = ipv6_from_teredo(8);
+            let mut p = ipv6_from_teredo(8)?;
             p[0] = nib;
             assert_eq!(teredo(&p, 0), None, "version nibble {nib:#04x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_an_ipv6_payload_length_that_undercounts_the_capture() {
-        let mut p = ipv6_from_teredo(64);
+    fn teredo_rejects_an_ipv6_payload_length_that_undercounts_the_capture() -> Result<(), TestError>
+    {
+        let mut p = ipv6_from_teredo(64)?;
         p[4..6].copy_from_slice(&8u16.to_be_bytes());
         assert_eq!(teredo(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn teredo_rejects_an_authentication_header_longer_than_the_payload() {
+    fn teredo_rejects_an_authentication_header_longer_than_the_payload() -> Result<(), TestError> {
         let mut p = vec![0x00, 0x01, 0xFF, 0xFF];
-        p.extend(ipv6_from_teredo(8));
+        p.extend(ipv6_from_teredo(8)?);
         assert_eq!(teredo(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn teredo_truncated_at_every_boundary_returns_none() {
+    fn teredo_truncated_at_every_boundary_returns_none() -> Result<(), TestError> {
         let mut full = teredo_origin();
-        full.extend(ipv6_from_teredo(8));
+        full.extend(ipv6_from_teredo(8)?);
         for cut in 0..48 {
             assert_eq!(teredo(&full[..cut], 0), None, "truncated to {cut} octets");
         }
+        Ok(())
     }
 
     // ── UDP-encapsulated ESP ──────────────────────────────────────────
 
     #[test]
-    fn esp_with_a_nonzero_spi_is_reported_opaque() {
+    fn esp_with_a_nonzero_spi_is_reported_opaque() -> Result<(), TestError> {
         let mut p = 0x1234_5678u32.to_be_bytes().to_vec(); // SPI
         p.extend_from_slice(&1u32.to_be_bytes()); // sequence number
         p.extend_from_slice(&[0xAB; 24]); // IV + ciphertext + ICV
         assert_eq!(esp_in_udp(&p), Some(Inner::Opaque("UDP-encapsulated ESP")));
+        Ok(())
     }
 
     #[test]
-    fn esp_rejects_the_non_esp_marker_that_introduces_ike() {
+    fn esp_rejects_the_non_esp_marker_that_introduces_ike() -> Result<(), TestError> {
         // RFC 3948 §2.2: "A Non-ESP Marker is 4 zero-valued bytes aligning
         // with the SPI field of an ESP packet." IKE carries no user packet.
         let mut p = vec![0u8; 4];
         p.extend_from_slice(&[0x11; 28]); // IKE header
         assert_eq!(esp_in_udp(&p), None);
+        Ok(())
     }
 
     #[test]
-    fn esp_rejects_a_nat_keepalive() {
+    fn esp_rejects_a_nat_keepalive() -> Result<(), TestError> {
         // RFC 3948 §2.3: "The sender MUST use a one-octet-long payload with
         // the value 0xFF."
         assert_eq!(esp_in_udp(&[0xFF]), None);
+        Ok(())
     }
 
     #[test]
-    fn esp_rejects_a_payload_that_is_not_a_multiple_of_four_octets() {
+    fn esp_rejects_a_payload_that_is_not_a_multiple_of_four_octets() -> Result<(), TestError> {
         let mut p = 0x1234_5678u32.to_be_bytes().to_vec();
         p.extend_from_slice(&[0xAB; 27]);
         assert_eq!(esp_in_udp(&p), None);
+        Ok(())
     }
 
     #[test]
-    fn esp_rejects_a_payload_below_the_structural_minimum() {
+    fn esp_rejects_a_payload_below_the_structural_minimum() -> Result<(), TestError> {
         for len in [0usize, 4, 8] {
             let p = vec![0x11u8; len];
             assert_eq!(esp_in_udp(&p), None, "{len} octets");
         }
+        Ok(())
     }
 
     // ── L2TP ──────────────────────────────────────────────────────────
 
     #[test]
-    fn l2tpv2_data_message_with_a_ppp_ipv4_frame() {
-        let p = l2tp_data(&ppp_ipv4(&ipv4(40)));
+    fn l2tpv2_data_message_with_a_ppp_ipv4_frame() -> Result<(), TestError> {
+        let p = l2tp_data(&ppp_ipv4(&ipv4(40)?))?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(10)));
         assert_eq!(l2tp(&p, 3), Some(Inner::Ip(13)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_length_flag_inserts_two_octets_before_the_tunnel_id() {
+    fn l2tpv2_length_flag_inserts_two_octets_before_the_tunnel_id() -> Result<(), TestError> {
         let p = l2tpv2(
             L2tpShape {
                 length: true,
@@ -1689,13 +1783,14 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(12)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_sequence_flag_inserts_ns_and_nr() {
+    fn l2tpv2_sequence_flag_inserts_ns_and_nr() -> Result<(), TestError> {
         let p = l2tpv2(
             L2tpShape {
                 sequence: true,
@@ -1703,13 +1798,14 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(14)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_offset_size_field_and_its_padding_are_skipped() {
+    fn l2tpv2_offset_size_field_and_its_padding_are_skipped() -> Result<(), TestError> {
         let p = l2tpv2(
             L2tpShape {
                 offset_pad: Some(5),
@@ -1717,13 +1813,14 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(17)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_all_optional_fields_together() {
+    fn l2tpv2_all_optional_fields_together() -> Result<(), TestError> {
         // flags 2 + Length 2 + Tunnel 2 + Session 2 + Ns/Nr 4 + Offset Size 2
         // + 3 pad = 17, then PPP FF 03 00 21 = 4.
         let p = l2tpv2(
@@ -1735,37 +1832,41 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(21)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_accepts_a_ppp_frame_without_address_and_control() {
+    fn l2tpv2_accepts_a_ppp_frame_without_address_and_control() -> Result<(), TestError> {
         let mut body = vec![0x00, 0x21];
-        body.extend(ipv4(40));
-        let p = l2tp_data(&body);
+        body.extend(ipv4(40)?);
+        let p = l2tp_data(&body)?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(8)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_accepts_a_protocol_field_compressed_ppp_frame() {
+    fn l2tpv2_accepts_a_protocol_field_compressed_ppp_frame() -> Result<(), TestError> {
         let mut body = vec![0xFF, 0x03, 0x21];
-        body.extend(ipv4(40));
-        let p = l2tp_data(&body);
+        body.extend(ipv4(40)?);
+        let p = l2tp_data(&body)?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(9)));
+        Ok(())
     }
 
     #[test]
-    fn l2tpv2_accepts_a_ppp_ipv6_frame() {
+    fn l2tpv2_accepts_a_ppp_ipv6_frame() -> Result<(), TestError> {
         let mut body = vec![0xFF, 0x03, 0x00, 0x57];
-        body.extend(ipv6(8));
-        let p = l2tp_data(&body);
+        body.extend(ipv6(8)?);
+        let p = l2tp_data(&body)?;
         assert_eq!(l2tp(&p, 0), Some(Inner::Ip(10)));
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_a_control_message() {
+    fn l2tp_rejects_a_control_message() -> Result<(), TestError> {
         // T = 1: the payload is AVPs, not a PPP frame.
         let p = l2tpv2(
             L2tpShape {
@@ -1776,52 +1877,58 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         assert_eq!(l2tp(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_version_one_which_is_l2f() {
+    fn l2tp_rejects_version_one_which_is_l2f() -> Result<(), TestError> {
         // RFC 2661 §8.1: "Port 1701 is used for both L2F and L2TP packets.
         // The Version field ... L2F uses a value of 1".
-        let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)));
+        let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)?))?;
         p[1] = 1;
         assert_eq!(l2tp(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_version_three_because_the_cookie_length_is_unknowable() {
+    fn l2tp_rejects_version_three_because_the_cookie_length_is_unknowable() -> Result<(), TestError>
+    {
         // RFC 3931 §4.1: "The Session ID alone provides the necessary context
         // for all further packet processing, including the presence, size,
         // and value of the Cookie" — context this decoder does not have.
-        let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)));
+        let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)?))?;
         p[1] = 3;
         assert_eq!(l2tp(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_a_set_reserved_bit() {
+    fn l2tp_rejects_a_set_reserved_bit() -> Result<(), TestError> {
         for (byte, bit) in [(0usize, 0x20u8), (0, 0x10), (0, 0x04), (1, 0x10), (1, 0x80)] {
-            let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)));
+            let mut p = l2tp_data(&ppp_ipv4(&ipv4(40)?))?;
             p[byte] |= bit;
             assert_eq!(l2tp(&p, 0), None, "reserved bit {bit:#04x} in octet {byte}");
         }
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_a_zero_tunnel_or_session_id() {
+    fn l2tp_rejects_a_zero_tunnel_or_session_id() -> Result<(), TestError> {
         // RFC 2661 §5.3: "The value of 0 for Session ID and Tunnel ID is
         // special and MUST NOT be used as an Assigned Session ID or Assigned
         // Tunnel ID" — a data message always carries assigned, non-zero ids.
         for (t, s) in [(0u16, 9u16), (7, 0), (0, 0)] {
-            let p = l2tpv2(L2tpShape::default(), t, s, &ppp_ipv4(&ipv4(40)));
+            let p = l2tpv2(L2tpShape::default(), t, s, &ppp_ipv4(&ipv4(40)?))?;
             assert_eq!(l2tp(&p, 0), None, "tunnel {t} session {s}");
         }
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_a_length_field_that_undercounts_the_message() {
+    fn l2tp_rejects_a_length_field_that_undercounts_the_message() -> Result<(), TestError> {
         let mut p = l2tpv2(
             L2tpShape {
                 length: true,
@@ -1829,25 +1936,27 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         p[2..4].copy_from_slice(&12u16.to_be_bytes());
         assert_eq!(l2tp(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_a_ppp_protocol_that_is_not_ip() {
+    fn l2tp_rejects_a_ppp_protocol_that_is_not_ip() -> Result<(), TestError> {
         for proto in [0xC021u16, 0x8021, 0x0057 + 1, 0x0000] {
             let mut body = vec![0xFF, 0x03];
             body.extend_from_slice(&proto.to_be_bytes());
-            body.extend(ipv4(40));
-            let p = l2tp_data(&body);
+            body.extend(ipv4(40)?);
+            let p = l2tp_data(&body)?;
             assert_eq!(l2tp(&p, 0), None, "PPP protocol {proto:#06x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn l2tp_rejects_an_offset_size_that_runs_past_the_payload() {
+    fn l2tp_rejects_an_offset_size_that_runs_past_the_payload() -> Result<(), TestError> {
         let mut p = l2tpv2(
             L2tpShape {
                 offset_pad: Some(2),
@@ -1855,14 +1964,15 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         p[6..8].copy_from_slice(&4000u16.to_be_bytes());
         assert_eq!(l2tp(&p, 0), None);
+        Ok(())
     }
 
     #[test]
-    fn l2tp_truncated_at_every_boundary_returns_none() {
+    fn l2tp_truncated_at_every_boundary_returns_none() -> Result<(), TestError> {
         let full = l2tpv2(
             L2tpShape {
                 length: true,
@@ -1872,32 +1982,36 @@ mod tests {
             },
             7,
             9,
-            &ppp_ipv4(&ipv4(40)),
-        );
+            &ppp_ipv4(&ipv4(40)?),
+        )?;
         for cut in 0..24 {
             assert_eq!(l2tp(&full[..cut], 0), None, "truncated to {cut} octets");
         }
+        Ok(())
     }
 
     // ── dispatch ──────────────────────────────────────────────────────
 
     #[test]
-    fn dispatch_routes_each_claimed_destination_port() {
-        assert_eq!(decap(&gtpu_ok(&ipv4(40)), 0, PORT_GTPU), Some(Inner::Ip(8)));
+    fn dispatch_routes_each_claimed_destination_port() -> Result<(), TestError> {
         assert_eq!(
-            decap(&vxlan_ok(&eth(0x0800, &ipv4(40))), 0, PORT_VXLAN),
+            decap(&gtpu_ok(&ipv4(40)?)?, 0, PORT_GTPU),
+            Some(Inner::Ip(8))
+        );
+        assert_eq!(
+            decap(&vxlan_ok(&eth(0x0800, &ipv4(40)?)), 0, PORT_VXLAN),
             Some(Inner::Ethernet(8))
         );
         assert_eq!(
             decap(
-                &geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40))),
+                &geneve_pdu(0x00, 0x00, 0x6558, &[], &eth(0x0800, &ipv4(40)?)),
                 0,
                 PORT_GENEVE
             ),
             Some(Inner::Ethernet(8))
         );
         assert_eq!(
-            decap(&ipv6_from_teredo(8), 0, PORT_TEREDO),
+            decap(&ipv6_from_teredo(8)?, 0, PORT_TEREDO),
             Some(Inner::Ip(0))
         );
         let mut esp = 0x1234_5678u32.to_be_bytes().to_vec();
@@ -1907,45 +2021,49 @@ mod tests {
             Some(Inner::Opaque("UDP-encapsulated ESP"))
         );
         assert_eq!(
-            decap(&l2tp_data(&ppp_ipv4(&ipv4(40))), 0, PORT_L2TP),
+            decap(&l2tp_data(&ppp_ipv4(&ipv4(40)?))?, 0, PORT_L2TP),
             Some(Inner::Ip(10))
         );
+        Ok(())
     }
 
     #[test]
-    fn dispatch_adds_the_base_offset_to_every_result() {
+    fn dispatch_adds_the_base_offset_to_every_result() -> Result<(), TestError> {
         assert_eq!(
-            decap(&gtpu_ok(&ipv4(40)), 64, PORT_GTPU),
+            decap(&gtpu_ok(&ipv4(40)?)?, 64, PORT_GTPU),
             Some(Inner::Ip(72))
         );
+        Ok(())
     }
 
     #[test]
-    fn dispatch_returns_none_for_an_unclaimed_destination_port() {
-        let p = gtpu_ok(&ipv4(40));
+    fn dispatch_returns_none_for_an_unclaimed_destination_port() -> Result<(), TestError> {
+        let p = gtpu_ok(&ipv4(40)?)?;
         for port in [
             0u16, 53, 5060, 5061, 1700, 1702, 2151, 2153, 6080, 6082, 16384, 65535,
         ] {
             assert_eq!(decap(&p, 0, port), None, "port {port}");
         }
+        Ok(())
     }
 
     #[test]
-    fn dispatch_never_looks_at_the_source_port() {
+    fn dispatch_never_looks_at_the_source_port() -> Result<(), TestError> {
         // The realistic false positive: an RTP stream whose ephemeral source
         // port happens to be a tunnel port, sent to an ordinary media port.
         // Only the destination is consulted, so nothing matches at all.
-        let rtp = rtp_pcmu();
+        let rtp = rtp_pcmu()?;
         for dst in [5004u16, 16384, 40000] {
             assert_eq!(decap(&rtp, 0, dst), None, "media destination {dst}");
         }
+        Ok(())
     }
 
     #[test]
-    fn a_realistic_rtp_packet_is_rejected_on_every_decapsulating_port() {
+    fn a_realistic_rtp_packet_is_rejected_on_every_decapsulating_port() -> Result<(), TestError> {
         // The heart of the false-positive defense. If any of these ever
         // returns an offset, sipnab is inventing a call out of voice samples.
-        let rtp = rtp_pcmu();
+        let rtp = rtp_pcmu()?;
         assert_eq!(gtpu(&rtp, 0), None);
         assert_eq!(vxlan(&rtp, 0), None);
         assert_eq!(geneve(&rtp, 0), None);
@@ -1954,10 +2072,11 @@ mod tests {
         for port in [PORT_GTPU, PORT_VXLAN, PORT_GENEVE, PORT_TEREDO, PORT_L2TP] {
             assert_eq!(decap(&rtp, 0, port), None, "destination port {port}");
         }
+        Ok(())
     }
 
     #[test]
-    fn rtp_sent_to_port_4500_is_opaque_and_that_is_the_correct_answer() {
+    fn rtp_sent_to_port_4500_is_opaque_and_that_is_the_correct_answer() -> Result<(), TestError> {
         // ESP is the one decoder that cannot structurally reject RTP: past
         // the SPI every octet is ciphertext, so there is nothing left to
         // check. That is safe *because* the answer is `Opaque` — it reports
@@ -1968,13 +2087,14 @@ mod tests {
         // Asserted rather than merely commented so that anyone who later
         // makes ESP return an offset has to come here and confront it.
         assert_eq!(
-            esp_in_udp(&rtp_pcmu()),
+            esp_in_udp(&rtp_pcmu()?),
             Some(Inner::Opaque("UDP-encapsulated ESP"))
         );
+        Ok(())
     }
 
     #[test]
-    fn every_decoder_survives_an_empty_payload() {
+    fn every_decoder_survives_an_empty_payload() -> Result<(), TestError> {
         assert_eq!(gtpu(&[], 0), None);
         assert_eq!(vxlan(&[], 0), None);
         assert_eq!(geneve(&[], 0), None);
@@ -1991,133 +2111,154 @@ mod tests {
         ] {
             assert_eq!(decap(&[], 0, port), None, "port {port}");
         }
+        Ok(())
     }
 
     // ── inner-header plausibility gates ───────────────────────────────
 
     #[test]
-    fn inner_ipv4_gate_accepts_a_well_formed_header() {
-        assert!(plausible_inner_ipv4(&ipv4(40)));
-        assert!(plausible_inner_ip(&ipv4(40)));
+    fn inner_ipv4_gate_accepts_a_well_formed_header() -> Result<(), TestError> {
+        assert!(plausible_inner_ipv4(&ipv4(40)?));
+        assert!(plausible_inner_ip(&ipv4(40)?));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_a_version_nibble_that_is_not_four() {
-        let mut p = ipv4(40);
+    fn inner_ipv4_gate_rejects_a_version_nibble_that_is_not_four() -> Result<(), TestError> {
+        let mut p = ipv4(40)?;
         p[0] = 0x55;
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_an_ihl_below_five() {
-        let mut p = ipv4(40);
+    fn inner_ipv4_gate_rejects_an_ihl_below_five() -> Result<(), TestError> {
+        let mut p = ipv4(40)?;
         p[0] = 0x44;
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_a_total_length_below_the_header() {
+    fn inner_ipv4_gate_rejects_a_total_length_below_the_header() -> Result<(), TestError> {
         // IHL 15 declares a 60-octet header, so a Total Length of 40 is
         // shorter than the header it is supposed to contain — while still
         // covering all 40 captured octets, so the separate "undercounts the
         // capture" check stays silent and this one has to do the work.
-        let mut p = ipv4(40);
+        let mut p = ipv4(40)?;
         p[0] = 0x4F;
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_a_total_length_that_undercounts_the_capture() {
-        let mut p = ipv4(40);
+    fn inner_ipv4_gate_rejects_a_total_length_that_undercounts_the_capture() -> Result<(), TestError>
+    {
+        let mut p = ipv4(40)?;
         p[2..4].copy_from_slice(&24u16.to_be_bytes());
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_accepts_a_total_length_that_overcounts_a_truncated_capture() {
-        let mut p = ipv4(400);
+    fn inner_ipv4_gate_accepts_a_total_length_that_overcounts_a_truncated_capture()
+    -> Result<(), TestError> {
+        let mut p = ipv4(400)?;
         p.truncate(40);
         assert!(plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_the_reserved_flag_bit() {
-        let mut p = ipv4(40);
+    fn inner_ipv4_gate_rejects_the_reserved_flag_bit() -> Result<(), TestError> {
+        let mut p = ipv4(40)?;
         p[6] |= 0x80;
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_a_zero_time_to_live() {
-        let mut p = ipv4(40);
+    fn inner_ipv4_gate_rejects_a_zero_time_to_live() -> Result<(), TestError> {
+        let mut p = ipv4(40)?;
         p[8] = 0;
         assert!(!plausible_inner_ipv4(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv4_gate_rejects_a_header_shorter_than_twenty_octets() {
-        let full = ipv4(40);
+    fn inner_ipv4_gate_rejects_a_header_shorter_than_twenty_octets() -> Result<(), TestError> {
+        let full = ipv4(40)?;
         for cut in 0..IPV4_HEADER_MIN {
             assert!(!plausible_inner_ipv4(&full[..cut]), "{cut} octets");
             assert!(!plausible_inner_ip(&full[..cut]), "{cut} octets");
         }
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv6_gate_accepts_a_well_formed_header() {
-        assert!(plausible_inner_ipv6(&ipv6(8)));
-        assert!(plausible_inner_ip(&ipv6(8)));
+    fn inner_ipv6_gate_accepts_a_well_formed_header() -> Result<(), TestError> {
+        assert!(plausible_inner_ipv6(&ipv6(8)?));
+        assert!(plausible_inner_ip(&ipv6(8)?));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv6_gate_rejects_a_version_nibble_that_is_not_six() {
-        let mut p = ipv6(8);
+    fn inner_ipv6_gate_rejects_a_version_nibble_that_is_not_six() -> Result<(), TestError> {
+        let mut p = ipv6(8)?;
         p[0] = 0x40;
         assert!(!plausible_inner_ipv6(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv6_gate_rejects_a_payload_length_that_undercounts_the_capture() {
-        let mut p = ipv6(64);
+    fn inner_ipv6_gate_rejects_a_payload_length_that_undercounts_the_capture()
+    -> Result<(), TestError> {
+        let mut p = ipv6(64)?;
         p[4..6].copy_from_slice(&8u16.to_be_bytes());
         assert!(!plausible_inner_ipv6(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv6_gate_rejects_a_zero_hop_limit() {
-        let mut p = ipv6(8);
+    fn inner_ipv6_gate_rejects_a_zero_hop_limit() -> Result<(), TestError> {
+        let mut p = ipv6(8)?;
         p[7] = 0;
         assert!(!plausible_inner_ipv6(&p));
+        Ok(())
     }
 
     #[test]
-    fn inner_ipv6_gate_rejects_a_header_shorter_than_forty_octets() {
-        let full = ipv6(8);
+    fn inner_ipv6_gate_rejects_a_header_shorter_than_forty_octets() -> Result<(), TestError> {
+        let full = ipv6(8)?;
         for cut in 0..IPV6_HEADER_LEN {
             assert!(!plausible_inner_ipv6(&full[..cut]), "{cut} octets");
             assert!(!plausible_inner_ip(&full[..cut]), "{cut} octets");
         }
+        Ok(())
     }
 
     #[test]
-    fn inner_ethernet_gate_accepts_every_allowed_ethertype() {
+    fn inner_ethernet_gate_accepts_every_allowed_ethertype() -> Result<(), TestError> {
         for et in INNER_ETHERTYPES {
-            assert!(plausible_inner_ethernet(&eth(et, &ipv4(40))), "{et:#06x}");
+            assert!(plausible_inner_ethernet(&eth(et, &ipv4(40)?)), "{et:#06x}");
         }
+        Ok(())
     }
 
     #[test]
-    fn inner_ethernet_gate_rejects_a_group_addressed_source_mac() {
-        let mut f = eth(ETHERTYPE_IPV4, &ipv4(40));
+    fn inner_ethernet_gate_rejects_a_group_addressed_source_mac() -> Result<(), TestError> {
+        let mut f = eth(ETHERTYPE_IPV4, &ipv4(40)?);
         f[6] |= 0x01;
         assert!(!plausible_inner_ethernet(&f));
+        Ok(())
     }
 
     #[test]
-    fn inner_ethernet_gate_rejects_a_frame_shorter_than_its_header() {
-        let full = eth(ETHERTYPE_IPV4, &ipv4(40));
+    fn inner_ethernet_gate_rejects_a_frame_shorter_than_its_header() -> Result<(), TestError> {
+        let full = eth(ETHERTYPE_IPV4, &ipv4(40)?);
         for cut in 0..14 {
             assert!(!plausible_inner_ethernet(&full[..cut]), "{cut} octets");
         }
+        Ok(())
     }
 }

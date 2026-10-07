@@ -246,6 +246,8 @@ impl FindingsLog {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::DateTime::parse_from_rfc3339("2026-08-04T20:00:00Z")
             .map(|d| d.with_timezone(&chrono::Utc))
@@ -265,14 +267,17 @@ mod tests {
     /// A recorded finding's log line names the capture and store revision
     /// it was about, so an operator can tie the agent's claim to what it read.
     #[test]
-    fn the_log_line_names_the_capture_the_finding_was_about() {
+    fn the_log_line_names_the_capture_the_finding_was_about() -> Result<(), TestError> {
         let mut log = FindingsLog::new();
+        let mut recorded = None;
         let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
-            rec(&mut log, "a finding").expect("under the cap");
+            recorded = rec(&mut log, "a finding");
         });
+        recorded.ok_or("under the cap")?;
         assert!(logs.contains("capture_instance=\"cap-1\""), "{logs}");
         assert!(logs.contains("dialog_generation=1"), "{logs}");
         assert!(logs.contains("stream_generation=2"), "{logs}");
+        Ok(())
     }
 
     fn rec(log: &mut FindingsLog, summary: &str) -> Option<Recorded> {
@@ -280,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn the_process_cap_refuses_rather_than_dropping_silently() {
+    fn the_process_cap_refuses_rather_than_dropping_silently() -> Result<(), TestError> {
         let mut log = FindingsLog::new();
         for i in 0..DEFAULT_MAX_FINDINGS_PER_PROCESS {
             assert!(
@@ -295,71 +300,78 @@ mod tests {
             rec(&mut log, "one too many").is_none(),
             "past the cap the write must fail visibly"
         );
+        Ok(())
     }
 
     #[test]
-    fn remaining_counts_down_so_the_bound_is_visible_before_it_bites() {
+    fn remaining_counts_down_so_the_bound_is_visible_before_it_bites() -> Result<(), TestError> {
         let mut log = FindingsLog::new();
-        let first = rec(&mut log, "first").expect("accepted");
+        let first = rec(&mut log, "first").ok_or("accepted")?;
         assert_eq!(first.recorded_total, 1);
         assert_eq!(first.remaining, DEFAULT_MAX_FINDINGS_PER_PROCESS - 1);
-        let second = rec(&mut log, "second").expect("accepted");
+        let second = rec(&mut log, "second").ok_or("accepted")?;
         assert_eq!(second.remaining, DEFAULT_MAX_FINDINGS_PER_PROCESS - 2);
+        Ok(())
     }
 
     #[test]
-    fn sequence_numbers_are_monotonic_and_never_reused() {
+    fn sequence_numbers_are_monotonic_and_never_reused() -> Result<(), TestError> {
         let mut log = FindingsLog::new();
-        let a = rec(&mut log, "a").expect("accepted");
-        let b = rec(&mut log, "b").expect("accepted");
-        let c = rec(&mut log, "c").expect("accepted");
+        let a = rec(&mut log, "a").ok_or("accepted")?;
+        let b = rec(&mut log, "b").ok_or("accepted")?;
+        let c = rec(&mut log, "c").ok_or("accepted")?;
         assert_eq!((a.seq, b.seq, c.seq), (0, 1, 2));
+        Ok(())
     }
 
     #[test]
-    fn over_long_text_is_clipped_and_the_original_length_reported() {
+    fn over_long_text_is_clipped_and_the_original_length_reported() -> Result<(), TestError> {
         let mut log = FindingsLog::new();
         let long = "x".repeat(MAX_SUMMARY_CHARS + 250);
-        let r = rec(&mut log, &long).expect("accepted");
+        let r = rec(&mut log, &long).ok_or("accepted")?;
         assert!(r.truncated, "a clipped finding must say it was clipped");
         assert_eq!(
             r.summary_chars_submitted,
             MAX_SUMMARY_CHARS + 250,
             "the response reports what was SENT, so the writer can tell how much was lost"
         );
+        Ok(())
     }
 
     #[test]
-    fn text_within_the_ceiling_is_not_flagged_as_truncated() {
+    fn text_within_the_ceiling_is_not_flagged_as_truncated() -> Result<(), TestError> {
         // Mutation guard for the test above: were `truncated` hardcoded true,
         // that test would still pass and this one would fail.
         let mut log = FindingsLog::new();
-        let r = rec(&mut log, "short enough").expect("accepted");
+        let r = rec(&mut log, "short enough").ok_or("accepted")?;
         assert!(!r.truncated);
         assert_eq!(r.summary_chars_submitted, "short enough".chars().count());
+        Ok(())
     }
 
     #[test]
-    fn a_long_detail_alone_still_reports_truncation() {
+    fn a_long_detail_alone_still_reports_truncation() -> Result<(), TestError> {
         // The summary is within bounds, so only the detail can set the flag.
         // Guards against a `truncated` that only ever looks at the summary.
         let mut log = FindingsLog::new();
         let detail = "y".repeat(MAX_DETAIL_CHARS + 10);
         let r = log
             .record(ts(), None, "fine", Some(&detail), &etag())
-            .expect("accepted");
+            .ok_or("accepted")?;
         assert!(r.truncated);
         assert_eq!(r.detail_chars_submitted, MAX_DETAIL_CHARS + 10);
+        Ok(())
     }
 
     #[test]
-    fn multibyte_text_clips_on_a_character_boundary_without_panicking() {
+    fn multibyte_text_clips_on_a_character_boundary_without_panicking() -> Result<(), TestError> {
         // The text an agent quotes back can be any UTF-8, because it came off
         // the wire. Byte-index truncation would panic mid-sequence.
         let mut log = FindingsLog::new();
         let emoji = "🙂".repeat(MAX_SUMMARY_CHARS + 40);
-        let r = rec(&mut log, &emoji).expect("accepted");
+        let r = rec(&mut log, &emoji).ok_or("accepted")?;
         assert!(r.truncated);
         assert_eq!(r.summary_chars_submitted, MAX_SUMMARY_CHARS + 40);
+        Ok(())
     }
 }

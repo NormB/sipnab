@@ -701,6 +701,8 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixed 127.0.0.1 address used as both source and destination of
     /// every test message.
     fn localhost() -> IpAddr {
@@ -708,15 +710,19 @@ mod tests {
     }
 
     /// Fixed timestamp (2024-06-15 12:00:00 UTC) so tests are deterministic.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Build and parse a minimal INVITE (CSeq 1, from-tag only) for the
     /// shared `dialog-test@example.com` Call-ID.
-    fn make_invite() -> SipMessage {
+    fn make_invite() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -728,21 +734,24 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse INVITE")
+        )?)
     }
 
     /// Build and parse a response with the given status, reason phrase, and
     /// CSeq method, carrying both from- and to-tags.
-    fn make_response(status: u16, reason: &str, cseq_method: &str) -> SipMessage {
+    fn make_response(
+        status: u16,
+        reason: &str,
+        cseq_method: &str,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -754,20 +763,19 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse response")
+        )?)
     }
 
     /// Build and parse an in-dialog request (CSeq 2) for the given method.
-    fn make_request(method: &str) -> SipMessage {
+    fn make_request(method: &str) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("{method} sip:bob@example.com SIP/2.0"),
             &[
@@ -779,16 +787,15 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse request")
+        )?)
     }
 
     /// Build `n` dialogs whose opening method is `method`.
@@ -798,9 +805,11 @@ mod tests {
     /// `SipDialog::new` rather than by struct literal, so a change to how the
     /// opening method is derived reaches these tests instead of being masked
     /// by a hand-set field.
-    fn dialogs_of(method: &str, n: usize) -> Vec<SipDialog> {
+    fn dialogs_of(method: &str, n: usize) -> Result<Vec<SipDialog>, TestError> {
         (0..n)
-            .map(|_| SipDialog::new(&make_request(method)).expect("a request opens a dialog"))
+            .map(|_| -> Result<SipDialog, TestError> {
+                Ok(SipDialog::new(&make_request(method)?).ok_or("a request opens a dialog")?)
+            })
             .collect()
     }
 
@@ -810,18 +819,20 @@ mod tests {
     /// capture matches nothing, and a caller that trusts `by_method[0]` must
     /// find an empty array rather than a fabricated bucket.
     #[test]
-    fn method_breakdown_of_nothing_is_empty() {
+    fn method_breakdown_of_nothing_is_empty() -> Result<(), TestError> {
         assert!(method_breakdown(std::iter::empty()).is_empty());
+        Ok(())
     }
 
     /// One method, many dialogs: one row carrying the whole population.
     #[test]
-    fn method_breakdown_counts_every_dialog_in_one_bucket() {
-        let dialogs = dialogs_of("REGISTER", 7);
+    fn method_breakdown_counts_every_dialog_in_one_bucket() -> Result<(), TestError> {
+        let dialogs = dialogs_of("REGISTER", 7)?;
         assert_eq!(
             method_breakdown(dialogs.iter()),
             vec![("REGISTER".to_string(), 7)]
         );
+        Ok(())
     }
 
     /// The dominant method comes first, whatever order the dialogs arrive in.
@@ -830,10 +841,10 @@ mod tests {
     /// order is the ordering a broken implementation would fall back to and
     /// this is the case that separates the two.
     #[test]
-    fn method_breakdown_ranks_by_count_not_by_arrival() {
-        let mut dialogs = dialogs_of("MESSAGE", 1);
-        dialogs.extend(dialogs_of("REGISTER", 2));
-        dialogs.extend(dialogs_of("INVITE", 5));
+    fn method_breakdown_ranks_by_count_not_by_arrival() -> Result<(), TestError> {
+        let mut dialogs = dialogs_of("MESSAGE", 1)?;
+        dialogs.extend(dialogs_of("REGISTER", 2)?);
+        dialogs.extend(dialogs_of("INVITE", 5)?);
 
         assert_eq!(
             method_breakdown(dialogs.iter()),
@@ -843,6 +854,7 @@ mod tests {
                 ("MESSAGE".to_string(), 1),
             ]
         );
+        Ok(())
     }
 
     /// Equal counts are ordered by method name, so two runs cannot disagree.
@@ -858,15 +870,16 @@ mod tests {
     /// The methods are added in reverse alphabetical order so insertion order
     /// and name order disagree.
     #[test]
-    fn method_breakdown_breaks_ties_by_name() {
-        let mut dialogs = dialogs_of("SUBSCRIBE", 3);
-        dialogs.extend(dialogs_of("REGISTER", 3));
-        dialogs.extend(dialogs_of("INVITE", 3));
+    fn method_breakdown_breaks_ties_by_name() -> Result<(), TestError> {
+        let mut dialogs = dialogs_of("SUBSCRIBE", 3)?;
+        dialogs.extend(dialogs_of("REGISTER", 3)?);
+        dialogs.extend(dialogs_of("INVITE", 3)?);
 
         let rows = method_breakdown(dialogs.iter());
         let names: Vec<&str> = rows.iter().map(|(m, _)| m.as_str()).collect();
         assert_eq!(names, vec!["INVITE", "REGISTER", "SUBSCRIBE"]);
         assert!(rows.iter().all(|(_, c)| *c == 3), "got {rows:?}");
+        Ok(())
     }
 
     /// A method sipnab has no variant for still gets its own bucket.
@@ -877,24 +890,26 @@ mod tests {
     /// breakdown of a capture full of vendor methods would see one meaningless
     /// bucket.
     #[test]
-    fn method_breakdown_keeps_unknown_methods_apart() {
-        let mut dialogs = dialogs_of("FROBNICATE", 2);
-        dialogs.extend(dialogs_of("WIDGET", 1));
+    fn method_breakdown_keeps_unknown_methods_apart() -> Result<(), TestError> {
+        let mut dialogs = dialogs_of("FROBNICATE", 2)?;
+        dialogs.extend(dialogs_of("WIDGET", 1)?);
 
         assert_eq!(
             method_breakdown(dialogs.iter()),
             vec![("FROBNICATE".to_string(), 2), ("WIDGET".to_string(), 1)]
         );
+        Ok(())
     }
 
     /// One dialog is one row of one — the smallest population that is not empty.
     #[test]
-    fn method_breakdown_of_a_single_dialog_is_one_row() {
-        let dialogs = dialogs_of("INVITE", 1);
+    fn method_breakdown_of_a_single_dialog_is_one_row() -> Result<(), TestError> {
+        let dialogs = dialogs_of("INVITE", 1)?;
         assert_eq!(
             method_breakdown(dialogs.iter()),
             vec![("INVITE".to_string(), 1)]
         );
+        Ok(())
     }
 
     /// Every dialog lands in exactly one bucket: the counts sum to the input.
@@ -904,16 +919,17 @@ mod tests {
     /// and a filter; this checks the arithmetic itself, so a failure here says
     /// the tally is wrong rather than that the filter is.
     #[test]
-    fn method_breakdown_counts_sum_to_the_population() {
-        let mut dialogs = dialogs_of("INVITE", 4);
-        dialogs.extend(dialogs_of("REGISTER", 3));
-        dialogs.extend(dialogs_of("OPTIONS", 9));
+    fn method_breakdown_counts_sum_to_the_population() -> Result<(), TestError> {
+        let mut dialogs = dialogs_of("INVITE", 4)?;
+        dialogs.extend(dialogs_of("REGISTER", 3)?);
+        dialogs.extend(dialogs_of("OPTIONS", 9)?);
 
         let total: usize = method_breakdown(dialogs.iter())
             .iter()
             .map(|(_, c)| c)
             .sum();
         assert_eq!(total, dialogs.len());
+        Ok(())
     }
 
     /// Two runs over one population return byte-identical rows.
@@ -924,16 +940,17 @@ mod tests {
     /// randomized per process — and the failure would be intermittent, which is
     /// the kind nobody reproduces.
     #[test]
-    fn method_breakdown_is_deterministic_across_runs() {
-        let mut dialogs = dialogs_of("INVITE", 2);
-        dialogs.extend(dialogs_of("REGISTER", 2));
-        dialogs.extend(dialogs_of("OPTIONS", 2));
-        dialogs.extend(dialogs_of("SUBSCRIBE", 2));
+    fn method_breakdown_is_deterministic_across_runs() -> Result<(), TestError> {
+        let mut dialogs = dialogs_of("INVITE", 2)?;
+        dialogs.extend(dialogs_of("REGISTER", 2)?);
+        dialogs.extend(dialogs_of("OPTIONS", 2)?);
+        dialogs.extend(dialogs_of("SUBSCRIBE", 2)?);
 
         assert_eq!(
             method_breakdown(dialogs.iter()),
             method_breakdown(dialogs.iter())
         );
+        Ok(())
     }
 
     /// A dialog opened by a RESPONSE is bucketed by its CSeq method.
@@ -944,21 +961,22 @@ mod tests {
     /// saw only request-opened dialogs would silently under-count exactly the
     /// captures an operator takes during an incident.
     #[test]
-    fn method_breakdown_buckets_a_response_opened_dialog_by_its_cseq() {
-        let dialog = SipDialog::new(&make_response(200, "OK", "INVITE"))
-            .expect("a response opens a dialog through its CSeq");
+    fn method_breakdown_buckets_a_response_opened_dialog_by_its_cseq() -> Result<(), TestError> {
+        let dialog = SipDialog::new(&make_response(200, "OK", "INVITE")?)
+            .ok_or("a response opens a dialog through its CSeq")?;
         assert_eq!(
             method_breakdown(std::iter::once(&dialog)),
             vec![("INVITE".to_string(), 1)]
         );
+        Ok(())
     }
 
     /// Full INVITE lifecycle: Trying → (100) Trying → (180) Ringing →
     /// (200) InCall → (BYE) Completed, with identity fields populated.
     #[test]
-    fn invite_full_lifecycle() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_full_lifecycle() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
         assert_eq!(dialog.state, DialogState::Trying);
         assert_eq!(dialog.method, SipMethod::Invite);
@@ -970,46 +988,48 @@ mod tests {
         assert_eq!(dialog.from_tag.as_deref(), Some("t1"));
 
         // 100 Trying
-        let trying = make_response(100, "Trying", "INVITE");
+        let trying = make_response(100, "Trying", "INVITE")?;
         update_state(&mut dialog, &trying);
         assert_eq!(dialog.state, DialogState::Trying);
 
         // 180 Ringing
-        let ringing = make_response(180, "Ringing", "INVITE");
+        let ringing = make_response(180, "Ringing", "INVITE")?;
         update_state(&mut dialog, &ringing);
         assert_eq!(dialog.state, DialogState::Ringing);
         assert_eq!(dialog.to_tag.as_deref(), Some("t2"));
 
         // 200 OK
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::InCall);
 
         // BYE
-        let bye = make_request("BYE");
+        let bye = make_request("BYE")?;
         update_state(&mut dialog, &bye);
         assert_eq!(dialog.state, DialogState::Completed);
+        Ok(())
     }
 
     /// CANCEL during Ringing moves the dialog to Canceled, and the 487
     /// confirmation keeps it there.
     #[test]
-    fn invite_canceled() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_canceled() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ringing = make_response(180, "Ringing", "INVITE");
+        let ringing = make_response(180, "Ringing", "INVITE")?;
         update_state(&mut dialog, &ringing);
         assert_eq!(dialog.state, DialogState::Ringing);
 
-        let cancel = make_request("CANCEL");
+        let cancel = make_request("CANCEL")?;
         update_state(&mut dialog, &cancel);
         assert_eq!(dialog.state, DialogState::Canceled);
 
         // 487 confirms the cancellation
-        let terminated = make_response(487, "Request Terminated", "INVITE");
+        let terminated = make_response(487, "Request Terminated", "INVITE")?;
         update_state(&mut dialog, &terminated);
         assert_eq!(dialog.state, DialogState::Canceled);
+        Ok(())
     }
 
     /// A 487 with no CANCEL in the capture still marks the dialog Canceled.
@@ -1026,16 +1046,16 @@ mod tests {
     /// call still waiting for an answer, which is a different diagnosis from
     /// the one the wire actually carried.
     #[test]
-    fn invite_487_without_a_captured_cancel_is_canceled() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_487_without_a_captured_cancel_is_canceled() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ringing = make_response(180, "Ringing", "INVITE");
+        let ringing = make_response(180, "Ringing", "INVITE")?;
         update_state(&mut dialog, &ringing);
         assert_eq!(dialog.state, DialogState::Ringing);
 
         // No CANCEL is fed in: the 487 is the only evidence of termination.
-        let terminated = make_response(487, "Request Terminated", "INVITE");
+        let terminated = make_response(487, "Request Terminated", "INVITE")?;
         update_state(&mut dialog, &terminated);
         assert_eq!(
             dialog.state,
@@ -1043,6 +1063,7 @@ mod tests {
             "a 487 is proof the INVITE transaction was terminated, with or \
              without the CANCEL in the capture"
         );
+        Ok(())
     }
 
     /// A 487 arriving after the call was answered does NOT cancel it.
@@ -1052,21 +1073,22 @@ mod tests {
     /// is what keeps a late or duplicated 487 from rewriting an established
     /// call, and mirrors the guard the 2xx arm uses.
     #[test]
-    fn invite_487_after_answer_does_not_cancel() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_487_after_answer_does_not_cancel() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::InCall);
 
-        let terminated = make_response(487, "Request Terminated", "INVITE");
+        let terminated = make_response(487, "Request Terminated", "INVITE")?;
         update_state(&mut dialog, &terminated);
         assert_eq!(
             dialog.state,
             DialogState::InCall,
             "a 487 after a 2xx must not un-answer an established call"
         );
+        Ok(())
     }
 
     /// An answered call's outcome is its 2xx, not a later re-INVITE (or forked)
@@ -1075,18 +1097,19 @@ mod tests {
     /// in-call dialog counted as Failed, corrupting endpoint failure rates and
     /// group ASR/NER. The doc says the 2xx is the outcome of an answered call.
     #[test]
-    fn final_status_code_prefers_a_2xx_over_a_later_failure() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("dialog");
-        dialog.messages.push(make_response(200, "OK", "INVITE"));
+    fn final_status_code_prefers_a_2xx_over_a_later_failure() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("dialog")?;
+        dialog.messages.push(make_response(200, "OK", "INVITE")?);
         dialog
             .messages
-            .push(make_response(488, "Not Acceptable Here", "INVITE"));
+            .push(make_response(488, "Not Acceptable Here", "INVITE")?);
         assert_eq!(
             dialog.final_status_code(),
             Some(200),
             "an answered call reports its 2xx, not a later re-INVITE/forked failure"
         );
+        Ok(())
     }
 
     /// A challenged INVITE that then authenticates reaches `InCall`.
@@ -1103,61 +1126,64 @@ mod tests {
     /// is why the sample captures read correctly and this survived. It bit a
     /// call still up, or one whose BYE was not captured. That is live capture.
     #[test]
-    fn invite_challenged_then_answered_is_in_call() {
-        let invite = make_invite();
-        let mut d = SipDialog::new(&invite).expect("dialog");
+    fn invite_challenged_then_answered_is_in_call() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
 
-        update_state(&mut d, &make_response(100, "Trying", "INVITE"));
-        update_state(&mut d, &make_response(401, "Unauthorized", "INVITE"));
+        update_state(&mut d, &make_response(100, "Trying", "INVITE")?);
+        update_state(&mut d, &make_response(401, "Unauthorized", "INVITE")?);
         assert_ne!(
             d.state,
             DialogState::Failed,
             "an auth challenge is intermediate, not an outcome"
         );
 
-        update_state(&mut d, &make_invite());
-        update_state(&mut d, &make_response(180, "Ringing", "INVITE"));
+        update_state(&mut d, &make_invite()?);
+        update_state(&mut d, &make_response(180, "Ringing", "INVITE")?);
         assert_eq!(d.state, DialogState::Ringing);
 
-        update_state(&mut d, &make_response(200, "OK", "INVITE"));
+        update_state(&mut d, &make_response(200, "OK", "INVITE")?);
         assert_eq!(
             d.state,
             DialogState::InCall,
             "a challenged call that authenticates and answers is in call"
         );
+        Ok(())
     }
 
     /// A 407 proxy challenge behaves the same as a 401.
     #[test]
-    fn invite_proxy_challenged_then_answered_is_in_call() {
-        let invite = make_invite();
-        let mut d = SipDialog::new(&invite).expect("dialog");
+    fn invite_proxy_challenged_then_answered_is_in_call() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
         update_state(
             &mut d,
-            &make_response(407, "Proxy Authentication Required", "INVITE"),
+            &make_response(407, "Proxy Authentication Required", "INVITE")?,
         );
-        update_state(&mut d, &make_response(200, "OK", "INVITE"));
+        update_state(&mut d, &make_response(200, "OK", "INVITE")?);
         assert_eq!(d.state, DialogState::InCall);
+        Ok(())
     }
 
     /// A SUBSCRIBE challenge does not terminate the subscription.
     ///
     /// Same rule, same reason: the client re-subscribes with credentials.
     #[test]
-    fn subscribe_auth_challenge_is_not_terminal() {
-        let sub = make_request("SUBSCRIBE");
-        let mut d = SipDialog::new(&sub).expect("dialog");
+    fn subscribe_auth_challenge_is_not_terminal() -> Result<(), TestError> {
+        let sub = make_request("SUBSCRIBE")?;
+        let mut d = SipDialog::new(&sub).ok_or("dialog")?;
         for code in [401u16, 407] {
             d.state = DialogState::Trying;
-            update_state(&mut d, &make_response(code, "Challenge", "SUBSCRIBE"));
+            update_state(&mut d, &make_response(code, "Challenge", "SUBSCRIBE")?);
             assert_ne!(
                 d.state,
                 DialogState::Terminated,
                 "{code} challenge must not terminate a SUBSCRIBE dialog"
             );
         }
-        update_state(&mut d, &make_response(200, "OK", "SUBSCRIBE"));
+        update_state(&mut d, &make_response(200, "OK", "SUBSCRIBE")?);
         assert_eq!(d.state, DialogState::Active);
+        Ok(())
     }
 
     /// A challenge a client never answers leaves no success behind.
@@ -1166,16 +1192,20 @@ mod tests {
     /// still reports the challenge, which is the documented rule: the challenge
     /// becomes the answer only for a call that drew one and never authenticated.
     #[test]
-    fn invite_challenged_and_never_authenticated_does_not_reach_in_call() {
-        let invite = make_invite();
-        let mut d = SipDialog::new(&invite).expect("dialog");
-        update_state(&mut d, &make_response(407, "Proxy Auth Required", "INVITE"));
+    fn invite_challenged_and_never_authenticated_does_not_reach_in_call() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
+        update_state(
+            &mut d,
+            &make_response(407, "Proxy Auth Required", "INVITE")?,
+        );
         assert!(
             matches!(d.state, DialogState::Trying | DialogState::Ringing),
             "expected a pre-answer state, got {:?}",
             d.state
         );
         assert_ne!(d.state, DialogState::InCall);
+        Ok(())
     }
 
     /// Every seed method, crossed with every transaction a response can
@@ -1203,7 +1233,7 @@ mod tests {
     /// that the pipeline around it — dialog creation, the creating message's
     /// own transition, family selection — feeds it the right coordinate.
     #[test]
-    fn every_method_and_class_reaches_a_declared_state() {
+    fn every_method_and_class_reaches_a_declared_state() -> Result<(), TestError> {
         use crate::sip::response_codes::{ResponseClass, response_class};
 
         const METHODS: [&str; 14] = [
@@ -1244,21 +1274,23 @@ mod tests {
         let responses: Vec<(u16, &str, SipMessage)> = CODES
             .iter()
             .flat_map(|&code| {
-                CSEQ_METHODS
-                    .iter()
-                    .map(move |&m| (code, m, make_response(code, "x", m)))
+                CSEQ_METHODS.iter().map(move |&m| -> Result<_, TestError> {
+                    Ok((code, m, make_response(code, "x", m)?))
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         let warm_responses: Vec<(u16, SipMessage)> = [180u16, 200]
             .iter()
-            .map(|&code| (code, make_response(code, "x", "INVITE")))
-            .collect();
-        let warm = |code: u16| -> &SipMessage {
-            &warm_responses
+            .map(|&code| -> Result<_, TestError> {
+                Ok((code, make_response(code, "x", "INVITE")?))
+            })
+            .collect::<Result<_, _>>()?;
+        let warm = |code: u16| -> Result<&SipMessage, TestError> {
+            Ok(&warm_responses
                 .iter()
                 .find(|(c, _)| *c == code)
-                .expect("warmup response built above")
-                .1
+                .ok_or("warmup response built above")?
+                .1)
         };
 
         /// Does this state mean the dialog still has no outcome?
@@ -1273,9 +1305,9 @@ mod tests {
         let mut warmed_past_setup = 0usize;
         for method in METHODS {
             let req = if method == "INVITE" {
-                make_invite()
+                make_invite()?
             } else {
-                make_request(method)
+                make_request(method)?
             };
             if SipDialog::new(&req).is_none() {
                 continue;
@@ -1285,20 +1317,20 @@ mod tests {
                 // creating message's own transition is applied, so a
                 // BYE-seeded dialog starts Completed and a CANCEL-seeded one
                 // starts Canceled.
-                let mut seeded = SipDialog::new(&req).expect("the seed just constructed");
+                let mut seeded = SipDialog::new(&req).ok_or("the seed just constructed")?;
                 update_state(&mut seeded, &req);
                 for &code in warmup {
-                    update_state(&mut seeded, warm(code));
+                    update_state(&mut seeded, warm(code)?);
                 }
                 let start = seeded.state.clone();
                 if !undecided(&start) {
                     warmed_past_setup += 1;
                 }
                 for (code, cseq_method, response) in &responses {
-                    let mut dialog = SipDialog::new(&req).expect("the seed just constructed");
+                    let mut dialog = SipDialog::new(&req).ok_or("the seed just constructed")?;
                     update_state(&mut dialog, &req);
                     for &code in warmup {
-                        update_state(&mut dialog, warm(code));
+                        update_state(&mut dialog, warm(code)?);
                     }
                     update_state(&mut dialog, response);
                     let class = response_class(*code);
@@ -1363,6 +1395,7 @@ mod tests {
             "every coordinate started in a pre-answer state — the state axis is \
              not being exercised, which is the gap this sweep was widened to close"
         );
+        Ok(())
     }
 
     /// A 3xx moves the dialog to `Redirected`, not `Failed` and not `Trying`.
@@ -1373,18 +1406,19 @@ mod tests {
     /// at all and the dialog kept its pre-answer state — a redirected call was
     /// indistinguishable from one nobody answered.
     #[test]
-    fn invite_redirect_is_redirected() {
+    fn invite_redirect_is_redirected() -> Result<(), TestError> {
         for code in [300u16, 301, 302, 305, 380] {
-            let invite = make_invite();
-            let mut d = SipDialog::new(&invite).expect("dialog");
-            update_state(&mut d, &make_response(180, "Ringing", "INVITE"));
-            update_state(&mut d, &make_response(code, "Redirect", "INVITE"));
+            let invite = make_invite()?;
+            let mut d = SipDialog::new(&invite).ok_or("dialog")?;
+            update_state(&mut d, &make_response(180, "Ringing", "INVITE")?);
+            update_state(&mut d, &make_response(code, "Redirect", "INVITE")?);
             assert_eq!(
                 d.state,
                 DialogState::Redirected,
                 "{code} should redirect the dialog, not fail or stall it"
             );
         }
+        Ok(())
     }
 
     /// A 3xx after the call is answered changes nothing.
@@ -1392,43 +1426,46 @@ mod tests {
     /// Guarded on the pre-answer states like every other final-response
     /// transition: a late or spurious redirect must not un-answer a live call.
     #[test]
-    fn invite_redirect_after_answer_does_not_redirect() {
-        let invite = make_invite();
-        let mut d = SipDialog::new(&invite).expect("dialog");
-        update_state(&mut d, &make_response(200, "OK", "INVITE"));
-        update_state(&mut d, &make_response(302, "Moved Temporarily", "INVITE"));
+    fn invite_redirect_after_answer_does_not_redirect() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
+        update_state(&mut d, &make_response(200, "OK", "INVITE")?);
+        update_state(&mut d, &make_response(302, "Moved Temporarily", "INVITE")?);
         assert_eq!(d.state, DialogState::InCall);
+        Ok(())
     }
 
     /// REGISTER, SUBSCRIBE and the generic machine redirect too.
     #[test]
-    fn other_machines_redirect() {
+    fn other_machines_redirect() -> Result<(), TestError> {
         for (method, _) in [("REGISTER", ()), ("SUBSCRIBE", ()), ("OPTIONS", ())] {
-            let req = make_request(method);
-            let mut d = SipDialog::new(&req).expect("dialog");
-            update_state(&mut d, &make_response(302, "Moved Temporarily", method));
+            let req = make_request(method)?;
+            let mut d = SipDialog::new(&req).ok_or("dialog")?;
+            update_state(&mut d, &make_response(302, "Moved Temporarily", method)?);
             assert_eq!(
                 d.state,
                 DialogState::Redirected,
                 "{method} should redirect on a 3xx"
             );
         }
+        Ok(())
     }
 
     /// A 503 error response to the initial INVITE moves the dialog to Failed.
     #[test]
-    fn invite_failed() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_failed() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let error = make_response(503, "Service Unavailable", "INVITE");
+        let error = make_response(503, "Service Unavailable", "INVITE")?;
         update_state(&mut dialog, &error);
         assert_eq!(dialog.state, DialogState::Failed);
+        Ok(())
     }
 
     /// A REGISTER dialog starts in Trying and moves to Registered on 200 OK.
     #[test]
-    fn register_success() {
+    fn register_success() -> Result<(), TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar.example.com SIP/2.0",
             &[
@@ -1442,45 +1479,46 @@ mod tests {
         );
         let register = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REGISTER");
+        )?;
 
-        let mut dialog = SipDialog::new(&register).expect("should create dialog");
+        let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
         assert_eq!(dialog.state, DialogState::Trying);
         assert_eq!(dialog.method, SipMethod::Register);
 
-        let ok = make_response(200, "OK", "REGISTER");
+        let ok = make_response(200, "OK", "REGISTER")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::Registered);
+        Ok(())
     }
 
     /// A 200 OK to INVITE that races a CANCEL — the UAS answered before the
     /// CANCEL arrived — establishes the call per RFC 3261 (the CANCEL has no
     /// effect once a final 2xx exists), overriding the Canceled state.
     #[test]
-    fn invite_200_after_cancel_becomes_incall() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn invite_200_after_cancel_becomes_incall() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        update_state(&mut dialog, &make_response(180, "Ringing", "INVITE"));
-        update_state(&mut dialog, &make_request("CANCEL"));
+        update_state(&mut dialog, &make_response(180, "Ringing", "INVITE")?);
+        update_state(&mut dialog, &make_request("CANCEL")?);
         assert_eq!(dialog.state, DialogState::Canceled);
 
         // The 200 races the CANCEL and wins — the call was established.
-        update_state(&mut dialog, &make_response(200, "OK", "INVITE"));
+        update_state(&mut dialog, &make_response(200, "OK", "INVITE")?);
         assert_eq!(dialog.state, DialogState::InCall);
+        Ok(())
     }
 
     /// A 401/407 auth challenge to REGISTER is intermediate — the client
     /// re-registers with credentials — so it must not mark the dialog Failed.
     #[test]
-    fn register_auth_challenge_is_not_failure() {
+    fn register_auth_challenge_is_not_failure() -> Result<(), TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar.example.com SIP/2.0",
             &[
@@ -1494,20 +1532,19 @@ mod tests {
         );
         let register = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REGISTER");
+        )?;
 
         for code in [401u16, 407] {
-            let mut dialog = SipDialog::new(&register).expect("should create dialog");
+            let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
             update_state(
                 &mut dialog,
-                &make_response(code, "Auth Required", "REGISTER"),
+                &make_response(code, "Auth Required", "REGISTER")?,
             );
             assert_ne!(
                 dialog.state,
@@ -1515,13 +1552,14 @@ mod tests {
                 "{code} auth challenge must not mark REGISTER Failed"
             );
         }
+        Ok(())
     }
 
     /// A genuine 4xx failure (403 Forbidden) moves a REGISTER dialog to
     /// Failed. (401/407 auth challenges are intermediate — see
     /// `register_auth_challenge_is_not_failure`.)
     #[test]
-    fn register_failure() {
+    fn register_failure() -> Result<(), TestError> {
         let raw = build_sip(
             "REGISTER sip:registrar.example.com SIP/2.0",
             &[
@@ -1535,25 +1573,25 @@ mod tests {
         );
         let register = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REGISTER");
+        )?;
 
-        let mut dialog = SipDialog::new(&register).expect("should create dialog");
+        let mut dialog = SipDialog::new(&register).ok_or("should create dialog")?;
 
-        let error = make_response(403, "Forbidden", "REGISTER");
+        let error = make_response(403, "Forbidden", "REGISTER")?;
         update_state(&mut dialog, &error);
         assert_eq!(dialog.state, DialogState::Failed);
+        Ok(())
     }
 
     /// A SUBSCRIBE dialog starts in Pending and moves to Active on 200 OK.
     #[test]
-    fn subscribe_lifecycle() {
+    fn subscribe_lifecycle() -> Result<(), TestError> {
         let raw = build_sip(
             "SUBSCRIBE sip:bob@example.com SIP/2.0",
             &[
@@ -1568,28 +1606,28 @@ mod tests {
         );
         let subscribe = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse SUBSCRIBE");
+        )?;
 
-        let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
+        let mut dialog = SipDialog::new(&subscribe).ok_or("should create dialog")?;
         assert_eq!(dialog.state, DialogState::Pending);
         assert_eq!(dialog.method, SipMethod::Subscribe);
 
-        let ok = make_response(200, "OK", "SUBSCRIBE");
+        let ok = make_response(200, "OK", "SUBSCRIBE")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::Active);
+        Ok(())
     }
 
     /// An in-dialog NOTIFY activates a Pending SUBSCRIBE dialog even
     /// before any 200 OK arrives.
     #[test]
-    fn subscribe_notify_activates() {
+    fn subscribe_notify_activates() -> Result<(), TestError> {
         let raw = build_sip(
             "SUBSCRIBE sip:bob@example.com SIP/2.0",
             &[
@@ -1603,55 +1641,57 @@ mod tests {
         );
         let subscribe = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse SUBSCRIBE");
+        )?;
 
-        let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
+        let mut dialog = SipDialog::new(&subscribe).ok_or("should create dialog")?;
         assert_eq!(dialog.state, DialogState::Pending);
 
-        let notify = make_request("NOTIFY");
+        let notify = make_request("NOTIFY")?;
         update_state(&mut dialog, &notify);
         assert_eq!(dialog.state, DialogState::Active);
+        Ok(())
     }
 
     /// An ACK after the 200 OK leaves the dialog in InCall (no transition).
     #[test]
-    fn ack_does_not_change_state() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn ack_does_not_change_state() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::InCall);
 
-        let ack = make_request("ACK");
+        let ack = make_request("ACK")?;
         update_state(&mut dialog, &ack);
         assert_eq!(dialog.state, DialogState::InCall); // Unchanged
+        Ok(())
     }
 
     /// The remote To tag, absent on the initial INVITE, is captured from
     /// the first response that carries one (180 Ringing here).
     #[test]
-    fn to_tag_captured_from_response() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn to_tag_captured_from_response() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
         // Initial INVITE has no to_tag
         assert!(dialog.to_tag.is_none());
 
-        let ringing = make_response(180, "Ringing", "INVITE");
+        let ringing = make_response(180, "Ringing", "INVITE")?;
         update_state(&mut dialog, &ringing);
         assert_eq!(dialog.to_tag.as_deref(), Some("t2"));
+        Ok(())
     }
 
     /// SipDialog::new returns None for a message without a Call-ID header.
     #[test]
-    fn missing_call_id_returns_none() {
+    fn missing_call_id_returns_none() -> Result<(), TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1663,35 +1703,36 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
+        )?;
 
         assert!(SipDialog::new(&msg).is_none());
+        Ok(())
     }
 
     /// 183 Session Progress triggers the Ringing state just like 180.
     #[test]
-    fn session_progress_triggers_ringing() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn session_progress_triggers_ringing() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
         // 183 Session Progress should also trigger Ringing state
-        let progress = make_response(183, "Session Progress", "INVITE");
+        let progress = make_response(183, "Session Progress", "INVITE")?;
         update_state(&mut dialog, &progress);
         assert_eq!(dialog.state, DialogState::Ringing);
+        Ok(())
     }
 
     // ── Transfer detection tests ────────────────────────────────────────
 
     /// Build and parse an in-dialog REFER (CSeq 3) with a Refer-To header
     /// targeting carol.
-    fn make_refer() -> SipMessage {
+    fn make_refer() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "REFER sip:bob@example.com SIP/2.0",
             &[
@@ -1704,21 +1745,20 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse REFER")
+        )?)
     }
 
     /// Build and parse a NOTIFY with `Subscription-State: terminated`
     /// (signals the end of a REFER-initiated transfer subscription).
-    fn make_notify_terminated() -> SipMessage {
+    fn make_notify_terminated() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
             &[
@@ -1731,21 +1771,20 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse NOTIFY")
+        )?)
     }
 
     /// Build and parse a NOTIFY with `Subscription-State: active` (transfer
     /// still in progress).
-    fn make_notify_active() -> SipMessage {
+    fn make_notify_active() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
             &[
@@ -1758,86 +1797,89 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse NOTIFY")
+        )?)
     }
 
     /// A REFER received while InCall moves the dialog to Transferring.
     #[test]
-    fn refer_during_incall_transitions_to_transferring() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn refer_during_incall_transitions_to_transferring() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
         assert_eq!(dialog.state, DialogState::InCall);
 
-        let refer = make_refer();
+        let refer = make_refer()?;
         update_state(&mut dialog, &refer);
         assert_eq!(dialog.state, DialogState::Transferring);
+        Ok(())
     }
 
     /// A NOTIFY with `Subscription-State: terminated` while Transferring
     /// returns the dialog to InCall.
     #[test]
-    fn notify_terminated_returns_to_incall() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn notify_terminated_returns_to_incall() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
-        let refer = make_refer();
+        let refer = make_refer()?;
         update_state(&mut dialog, &refer);
         assert_eq!(dialog.state, DialogState::Transferring);
 
-        let notify = make_notify_terminated();
+        let notify = make_notify_terminated()?;
         update_state(&mut dialog, &notify);
         assert_eq!(dialog.state, DialogState::InCall);
+        Ok(())
     }
 
     /// A REFER received while still Trying does not start a transfer —
     /// only InCall dialogs can transition to Transferring.
     #[test]
-    fn refer_outside_incall_no_transition() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn refer_outside_incall_no_transition() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
         assert_eq!(dialog.state, DialogState::Trying);
 
-        let refer = make_refer();
+        let refer = make_refer()?;
         update_state(&mut dialog, &refer);
         // Should remain Trying — REFER only triggers transfer from InCall
         assert_eq!(dialog.state, DialogState::Trying);
+        Ok(())
     }
 
     /// A NOTIFY with `Subscription-State: active` keeps a Transferring
     /// dialog in Transferring (only "terminated" ends the transfer).
     #[test]
-    fn notify_active_does_not_change_transferring() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn notify_active_does_not_change_transferring() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
-        let refer = make_refer();
+        let refer = make_refer()?;
         update_state(&mut dialog, &refer);
         assert_eq!(dialog.state, DialogState::Transferring);
 
         // NOTIFY with Subscription-State: active should NOT transition back
-        let notify = make_notify_active();
+        let notify = make_notify_active()?;
         update_state(&mut dialog, &notify);
         assert_eq!(dialog.state, DialogState::Transferring);
+        Ok(())
     }
 
     /// Build a NOTIFY carrying an arbitrary `Subscription-State` value.
-    fn make_notify_sub_state(value: &str) -> SipMessage {
+    fn make_notify_sub_state(value: &str) -> Result<SipMessage, TestError> {
         let sub_state = format!("Subscription-State: {value}");
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
@@ -1851,39 +1893,39 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse NOTIFY")
+        )?)
     }
 
     /// A NOTIFY whose `Subscription-State` merely *starts with* "terminated"
     /// (e.g. `terminatedfoo`) must NOT end the transfer — only the exact
     /// `terminated` value token does ([RFC 6665 section 8.4](https://www.rfc-editor.org/rfc/rfc6665#section-8.4)).
     #[test]
-    fn notify_terminatedfoo_does_not_return_to_incall() {
-        let invite = make_invite();
-        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+    fn notify_terminatedfoo_does_not_return_to_incall() -> Result<(), TestError> {
+        let invite = make_invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("should create dialog")?;
 
-        let ok = make_response(200, "OK", "INVITE");
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut dialog, &ok);
-        let refer = make_refer();
+        let refer = make_refer()?;
         update_state(&mut dialog, &refer);
         assert_eq!(dialog.state, DialogState::Transferring);
 
-        let notify = make_notify_sub_state("terminatedfoo");
+        let notify = make_notify_sub_state("terminatedfoo")?;
         update_state(&mut dialog, &notify);
         assert_eq!(
             dialog.state,
             DialogState::Transferring,
             "a Subscription-State prefixed with 'terminated' must not end the transfer"
         );
+        Ok(())
     }
 
     /// A response with no CSeq creates no dialog, and — the point of the change
@@ -1896,7 +1938,8 @@ mod tests {
     /// and the wrong method survived for the rest of the capture. The second
     /// half of this test is what distinguishes a fix from a rename.
     #[test]
-    fn a_response_without_cseq_does_not_poison_the_dialog_its_invite_creates() {
+    fn a_response_without_cseq_does_not_poison_the_dialog_its_invite_creates()
+    -> Result<(), TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1909,14 +1952,13 @@ mod tests {
         );
         let orphan = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse response");
+        )?;
         assert!(orphan.cseq().is_none(), "fixture must have no CSeq");
 
         assert!(
@@ -1926,14 +1968,15 @@ mod tests {
         );
 
         // The genuine INVITE, same Call-ID, is unaffected and correct.
-        let invite = make_request("INVITE");
-        let dialog = SipDialog::new(&invite).expect("INVITE creates a dialog");
+        let invite = make_request("INVITE")?;
+        let dialog = SipDialog::new(&invite).ok_or("INVITE creates a dialog")?;
         assert_eq!(
             dialog.method,
             SipMethod::Invite,
             "the INVITE's own method must be recorded, not inherited from an \
              earlier malformed message"
         );
+        Ok(())
     }
     /// Every surface spells a state the same way, for every variant.
     ///
@@ -1948,7 +1991,7 @@ mod tests {
     /// Drives every variant through `ALL`, so a new state is covered the day
     /// it is added rather than the day someone remembers to extend a list.
     #[test]
-    fn every_surface_spells_every_state_the_same_way() {
+    fn every_surface_spells_every_state_the_same_way() -> Result<(), TestError> {
         for state in DialogState::ALL {
             let canonical = state.as_str();
             assert!(
@@ -1967,6 +2010,7 @@ mod tests {
                  {state:?}, so a filter naming it would match nothing"
             );
         }
+        Ok(())
     }
 
     /// `is_final` names exactly the states a dialog ends in, over every state.
@@ -1977,7 +2021,7 @@ mod tests {
     /// wrongly counted final exports a call mid-conversation, and one wrongly
     /// counted running is never exported while the capture runs.
     #[test]
-    fn is_final_names_exactly_the_states_a_dialog_ends_in() {
+    fn is_final_names_exactly_the_states_a_dialog_ends_in() -> Result<(), TestError> {
         let expected_final = [
             DialogState::Completed,
             DialogState::Canceled,
@@ -1993,6 +2037,7 @@ mod tests {
                 "{state:?} is classified the wrong way by is_final"
             );
         }
+        Ok(())
     }
 
     /// `ALL` really is all of them.
@@ -2003,7 +2048,7 @@ mod tests {
     /// `ALL` fails to compile when a variant is added and fails at runtime
     /// when `ALL` forgets one.
     #[test]
-    fn every_state_is_listed_in_all() {
+    fn every_state_is_listed_in_all() -> Result<(), TestError> {
         let named: Vec<&'static str> = DialogState::ALL.iter().map(|s| s.as_str()).collect();
         for state in [
             DialogState::Trying,
@@ -2033,6 +2078,7 @@ mod tests {
              every ALL-driven gate cover the wrong set",
             named.len()
         );
+        Ok(())
     }
 
     /// An answered call and a busy one differ in state and outcome code, but
@@ -2041,17 +2087,17 @@ mod tests {
     /// the shared rule is that neither surface diffs the pair itself and reports
     /// a difference that is not there.
     #[test]
-    fn compare_names_only_the_fields_that_differ() {
+    fn compare_names_only_the_fields_that_differ() -> Result<(), TestError> {
         // Build each dialog the way ingest does: advance state on the message
         // and then record it, so `state()` and the message-scanning accessors
         // (`final_status_code`, method set, count) agree.
-        let mut answered = SipDialog::new(&make_invite()).expect("dialog");
-        let ok = make_response(200, "OK", "INVITE");
+        let mut answered = SipDialog::new(&make_invite()?).ok_or("dialog")?;
+        let ok = make_response(200, "OK", "INVITE")?;
         update_state(&mut answered, &ok);
         answered.messages.push(ok);
 
-        let mut busy = SipDialog::new(&make_invite()).expect("dialog");
-        let busy_resp = make_response(486, "Busy Here", "INVITE");
+        let mut busy = SipDialog::new(&make_invite()?).ok_or("dialog")?;
+        let busy_resp = make_response(486, "Busy Here", "INVITE")?;
         update_state(&mut busy, &busy_resp);
         busy.messages.push(busy_resp);
 
@@ -2071,5 +2117,6 @@ mod tests {
             cmp.differences,
             vec!["state".to_string(), "final_status_code".to_string()]
         );
+        Ok(())
     }
 }

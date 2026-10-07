@@ -207,95 +207,104 @@ impl ControlChannels {
 mod control_channel_tests {
     use super::*;
 
-    fn relay() -> std::net::SocketAddr {
-        "192.0.2.40:7722".parse().expect("addr")
+    type TestError = Box<dyn std::error::Error>;
+
+    fn relay() -> Result<std::net::SocketAddr, TestError> {
+        Ok("192.0.2.40:7722".parse()?)
     }
 
-    fn feed(channels: &mut ControlChannels, cookie: &str, command: bool) {
+    fn feed(channels: &mut ControlChannels, cookie: &str, command: bool) -> Result<(), TestError> {
         channels.record(&ControlCookie {
-            relay: relay(),
+            relay: relay()?,
             implementation: RelayImplementation::Rtpproxy,
             cookie: cookie.to_string(),
             command,
         });
+        Ok(())
     }
 
     /// A command answered and then sent again is one retry after an answer;
     /// one sent twice before any answer is a retry with none.
     #[test]
-    fn retries_are_counted_and_told_apart_by_whether_the_answer_was_seen() {
+    fn retries_are_counted_and_told_apart_by_whether_the_answer_was_seen() -> Result<(), TestError>
+    {
         let mut ch = ControlChannels::new(16);
-        feed(&mut ch, "c1", true);
-        feed(&mut ch, "c1", false);
-        feed(&mut ch, "c1", true);
-        feed(&mut ch, "c1", false);
-        feed(&mut ch, "c2", true);
-        feed(&mut ch, "c2", true);
-        feed(&mut ch, "c2", false);
-        feed(&mut ch, "c3", true);
-        feed(&mut ch, "c3", false);
+        feed(&mut ch, "c1", true)?;
+        feed(&mut ch, "c1", false)?;
+        feed(&mut ch, "c1", true)?;
+        feed(&mut ch, "c1", false)?;
+        feed(&mut ch, "c2", true)?;
+        feed(&mut ch, "c2", true)?;
+        feed(&mut ch, "c2", false)?;
+        feed(&mut ch, "c3", true)?;
+        feed(&mut ch, "c3", false)?;
         let rows = ch.summary();
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
-        assert_eq!(row.relay, relay());
+        assert_eq!(row.relay, relay()?);
         assert_eq!(row.implementation, RelayImplementation::Rtpproxy);
         assert_eq!(row.commands, 5);
         assert_eq!(row.retried_commands, 2);
         assert_eq!(row.retried_after_answer, 1);
+        Ok(())
     }
 
     /// Every repeat is a retry: a cookie sent three times is two retries.
     #[test]
-    fn each_repeat_of_a_cookie_is_a_retry() {
+    fn each_repeat_of_a_cookie_is_a_retry() -> Result<(), TestError> {
         let mut ch = ControlChannels::new(16);
         for _ in 0..3 {
-            feed(&mut ch, "c1", true);
+            feed(&mut ch, "c1", true)?;
         }
         assert_eq!(ch.summary()[0].retried_commands, 2);
+        Ok(())
     }
 
     /// A reply alone is not a command, and a reply with no command before it
     /// does not make a later first command a retry.
     #[test]
-    fn replies_are_not_commands() {
+    fn replies_are_not_commands() -> Result<(), TestError> {
         let mut ch = ControlChannels::new(16);
-        feed(&mut ch, "c1", false);
-        feed(&mut ch, "c1", true);
+        feed(&mut ch, "c1", false)?;
+        feed(&mut ch, "c1", true)?;
         let row = &ch.summary()[0];
         assert_eq!(row.commands, 1);
         assert_eq!(row.retried_commands, 0);
+        Ok(())
     }
 
     /// Memory is bounded: past `capacity` cookies the oldest is forgotten, so
     /// its repeat is no longer recognized. The bound is what keeps a busy
     /// control channel from growing the store without limit.
     #[test]
-    fn the_cookie_memory_is_bounded() {
+    fn the_cookie_memory_is_bounded() -> Result<(), TestError> {
         let mut ch = ControlChannels::new(2);
-        feed(&mut ch, "a", true);
-        feed(&mut ch, "b", true);
-        feed(&mut ch, "c", true);
-        feed(&mut ch, "a", true);
+        feed(&mut ch, "a", true)?;
+        feed(&mut ch, "b", true)?;
+        feed(&mut ch, "c", true)?;
+        feed(&mut ch, "a", true)?;
         assert_eq!(ch.summary()[0].retried_commands, 0, "a was forgotten");
-        feed(&mut ch, "c", true);
+        feed(&mut ch, "c", true)?;
         assert_eq!(ch.summary()[0].retried_commands, 1, "c was remembered");
+        Ok(())
     }
 
     /// `--cores` merges the workers' counts by relay.
     #[test]
-    fn merging_adds_counts_per_relay() {
+    fn merging_adds_counts_per_relay() -> Result<(), TestError> {
         let mut a = ControlChannels::new(16);
-        feed(&mut a, "c1", true);
-        feed(&mut a, "c1", true);
-        feed(&mut a, "c1", false);
+        feed(&mut a, "c1", true)?;
+        feed(&mut a, "c1", true)?;
+        feed(&mut a, "c1", false)?;
         let mut b = ControlChannels::new(16);
-        feed(&mut b, "c2", true);
-        feed(&mut b, "c2", false);
-        feed(&mut b, "c2", true);
+        feed(&mut b, "c2", true)?;
+        feed(&mut b, "c2", false)?;
+        feed(&mut b, "c2", true)?;
         a.merge(b);
         let row = &a.summary()[0];
         assert_eq!(row.commands, 4);
         assert_eq!(row.retried_commands, 2, "both workers' retries");
         assert_eq!(row.retried_after_answer, 1, "the second worker's");
+        Ok(())
     }
 }

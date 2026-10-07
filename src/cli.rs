@@ -6614,6 +6614,8 @@ fn parse_quality_threshold(s: &str) -> Result<f64, String> {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     // ── --vcon-forward: a separate process that captures nothing ────────
 
     /// The forwarder flags every forwarder run needs: the spool, the URL and
@@ -6672,7 +6674,7 @@ mod tests {
     /// and no export may share its command line. The capture process keeps
     /// making no outbound connection, and the forwarder reads no packet.
     #[test]
-    fn vcon_forward_refuses_every_capture_flag() {
+    fn vcon_forward_refuses_every_capture_flag() -> Result<(), TestError> {
         let capture: &[&[&str]] = &[
             &["-d", "eth0"],
             &["-I", "x.pcap"],
@@ -6700,13 +6702,15 @@ mod tests {
                 "--vcon-forward accepted {extra:?}"
             );
         }
+        Ok(())
     }
 
     /// Each forwarder option names something only the forwarder does, so on
     /// a capture run it is a mistake to report, and the forwarder itself
     /// cannot start without a URL or an auth file.
     #[test]
-    fn vcon_forward_options_need_the_mode_and_the_mode_needs_url_and_auth() {
+    fn vcon_forward_options_need_the_mode_and_the_mode_needs_url_and_auth() -> Result<(), TestError>
+    {
         for opt in [
             &["--vcon-forward-url", "http://127.0.0.1:8000/x"][..],
             &["--vcon-forward-auth-file", "/etc/x"],
@@ -6737,6 +6741,7 @@ mod tests {
         bad.extend(FORWARD);
         bad.extend(["--vcon-forward-compat", "something-else"]);
         assert!(Cli::try_parse_from(&bad).is_err(), "unknown compat mode");
+        Ok(())
     }
 
     // ── --version and the libpcap it runs on (CT6b) ─────────────────────
@@ -6746,7 +6751,7 @@ mod tests {
     /// sample reads (`sipnab X.Y.Z (…) features: …`) is unchanged. `-V` stays
     /// that one line.
     #[test]
-    fn long_version_adds_the_running_libpcap_on_its_own_line() {
+    fn long_version_adds_the_running_libpcap_on_its_own_line() -> Result<(), TestError> {
         use clap::CommandFactory;
         let cmd = Cli::command();
         let build_line = format!("sipnab {}", build_version());
@@ -6767,6 +6772,7 @@ mod tests {
             build_line,
             "-V is the short form and stays the single build line"
         );
+        Ok(())
     }
 
     // ── Help-heading placement (P2 item 1) ──────────────────────────────
@@ -6781,7 +6787,7 @@ mod tests {
     /// `flag_coverage` gate treats a `--flag` token in any test text as a
     /// reference, and syslog is a deliberately-waived entry there.)
     #[test]
-    fn hep_and_alert_flags_are_not_under_mcp_heading() {
+    fn hep_and_alert_flags_are_not_under_mcp_heading() -> Result<(), TestError> {
         use clap::CommandFactory;
         let cmd = Cli::command();
         let heading_of = |long: &str| -> Option<String> {
@@ -6815,6 +6821,7 @@ mod tests {
                 "{long} is an alert channel and belongs under Security, not MCP"
             );
         }
+        Ok(())
     }
 
     // ── Parse-time value validation (P2 item 2) ─────────────────────────
@@ -6822,7 +6829,7 @@ mod tests {
     /// `--color` rejects an out-of-set value at PARSE time rather than silently
     /// falling back to `auto` in the downstream match.
     #[test]
-    fn fraud_destination_list_is_normalized() {
+    fn fraud_destination_list_is_normalized() -> Result<(), TestError> {
         let cli = Cli::parse_from(["sipnab", "--fraud-destination", "do, GB ,,do,vg"]);
         assert_eq!(cli.fraud_destinations(), ["DO", "GB", "VG"]);
         let none = Cli::parse_from(["sipnab"]);
@@ -6830,12 +6837,13 @@ mod tests {
             none.fraud_destinations().is_empty(),
             "absent flag: an empty watch list"
         );
+        Ok(())
     }
 
     #[test]
-    fn max_capture_sources_flag_beats_config_beats_default() {
+    fn max_capture_sources_flag_beats_config_beats_default() -> Result<(), TestError> {
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(
             plain.max_capture_sources(&config),
             crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES,
@@ -6847,68 +6855,70 @@ mod tests {
             5_000,
             "the key when there is no flag"
         );
-        let flagged =
-            Cli::try_parse_from(["sipnab", "--max-capture-sources", "7000"]).expect("parses");
+        let flagged = Cli::try_parse_from(["sipnab", "--max-capture-sources", "7000"])?;
         assert_eq!(
             flagged.max_capture_sources(&config),
             7_000,
             "the flag over the key"
         );
+        Ok(())
     }
 
     #[test]
-    fn mcp_tools_flag_beats_config_beats_full() {
+    fn mcp_tools_flag_beats_config_beats_full() -> Result<(), TestError> {
         use crate::mcp_profile::ToolSelection;
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(plain.mcp_tool_selection(&config), Ok(ToolSelection::Full));
         config.mcp.tools = Some(vec!["relay".into()]);
-        let sel = plain.mcp_tool_selection(&config).expect("config list");
+        let sel = plain.mcp_tool_selection(&config)?;
         assert_eq!(sel.asked(), vec!["relay".to_string()]);
         assert!(sel.keeps("query_relay") && !sel.keeps("get_dialog"));
-        let flagged = Cli::try_parse_from(["sipnab", "--mcp-tools", "core,get_sdp_timeline"])
-            .expect("parses");
-        let sel = flagged.mcp_tool_selection(&config).expect("flag list");
+        let flagged = Cli::try_parse_from(["sipnab", "--mcp-tools", "core,get_sdp_timeline"])?;
+        let sel = flagged.mcp_tool_selection(&config)?;
         assert!(sel.keeps("get_dialog") && sel.keeps("get_sdp_timeline"));
         assert!(
             !sel.keeps("query_relay"),
             "the flag replaces the config list"
         );
+        Ok(())
     }
 
     #[test]
-    fn mcp_tools_flag_can_name_a_config_bundle() {
+    fn mcp_tools_flag_can_name_a_config_bundle() -> Result<(), TestError> {
         let mut config = crate::config::Config::default();
         config
             .mcp
             .bundles
             .insert("voice".into(), vec!["media".into(), "rtp_stats".into()]);
-        let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", "voice"]).expect("parses");
-        let sel = cli.mcp_tool_selection(&config).expect("custom bundle");
+        let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", "voice"])?;
+        let sel = cli.mcp_tool_selection(&config)?;
         assert!(sel.keeps("export_audio") && sel.keeps("rtp_stats"));
+        Ok(())
     }
 
     #[test]
-    fn mcp_tools_flag_refuses_unknown_and_empty_names_naming_the_flag() {
+    fn mcp_tools_flag_refuses_unknown_and_empty_names_naming_the_flag() -> Result<(), TestError> {
         let config = crate::config::Config::default();
         for bad in ["minimal", "core,,relay", "", "core,Relay"] {
-            let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", bad]).expect("parses");
-            let e = cli.mcp_tool_selection(&config).expect_err(bad);
+            let cli = Cli::try_parse_from(["sipnab", "--mcp-tools", bad])?;
+            let e = cli.mcp_tool_selection(&config).err().ok_or(bad)?;
             assert!(e.contains("--mcp-tools"), "{bad}: {e}");
         }
         let mut config = crate::config::Config::default();
         config.mcp.tools = Some(vec!["nope".into()]);
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
-        let e = plain.mcp_tool_selection(&config).expect_err("config");
+        let plain = Cli::try_parse_from(["sipnab"])?;
+        let e = plain.mcp_tool_selection(&config).err().ok_or("config")?;
         assert!(e.contains("[mcp] tools"), "{e}");
+        Ok(())
     }
 
     /// `--api-allowed-host` is repeatable and replaces `[api] allowed_hosts`;
     /// with neither, there are no additions.
     #[test]
-    fn api_allowed_hosts_none_then_config_then_flag() {
+    fn api_allowed_hosts_none_then_config_then_flag() -> Result<(), TestError> {
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert!(
             plain.api_allowed_hosts(&config).is_empty(),
             "none by default"
@@ -6924,19 +6934,19 @@ mod tests {
             "proxy.example",
             "--api-allowed-host",
             "*",
-        ])
-        .expect("parses");
+        ])?;
         assert_eq!(
             flagged.api_allowed_hosts(&config),
             vec!["proxy.example".to_string(), "*".to_string()],
             "the flag replaces the config list"
         );
+        Ok(())
     }
 
     /// Each listener's certificate and key: none by default, then the
     /// `[section]` keys, then the flags, each flag replacing its own key.
     #[test]
-    fn listener_tls_files_none_then_config_then_flag() {
+    fn listener_tls_files_none_then_config_then_flag() -> Result<(), TestError> {
         type Resolve = fn(&Cli, &crate::config::Config) -> (Option<String>, Option<String>);
         type SetKeys = fn(&mut crate::config::Config, &str, &str);
         let cases: [(&str, Resolve, SetKeys); 3] = [
@@ -6955,7 +6965,7 @@ mod tests {
         ];
         for (surface, resolve, set) in cases {
             let mut config = crate::config::Config::default();
-            let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+            let plain = Cli::try_parse_from(["sipnab"])?;
             assert_eq!(
                 resolve(&plain, &config),
                 (None, None),
@@ -6974,13 +6984,14 @@ mod tests {
                 "mcp" => argv.extend(["--mcp", "--mcp-transport", "http"]),
                 _ => {}
             }
-            let flagged = Cli::try_parse_from(&argv).expect("parses");
+            let flagged = Cli::try_parse_from(&argv)?;
             assert_eq!(
                 resolve(&flagged, &config),
                 (Some("flag.pem".into()), Some("file.key".into())),
                 "{surface}: the flag replaces its own key and leaves the other"
             );
         }
+        Ok(())
     }
 
     /// The HEP sender's trust is ONE setting: a command line naming either
@@ -6988,10 +6999,10 @@ mod tests {
     /// about trust, so a file's `tls_ca` cannot combine with a flag's extra
     /// CA into a contradiction.
     #[test]
-    fn hep_tls_trust_resolves_as_one_setting() {
+    fn hep_tls_trust_resolves_as_one_setting() -> Result<(), TestError> {
         use std::path::PathBuf;
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(plain.hep_tls_trust(&config), (None, None));
         config.hep.tls_ca = Some(PathBuf::from("file-ca.pem"));
         assert_eq!(
@@ -7007,21 +7018,21 @@ mod tests {
             "tls",
             "--hep-tls-extra-ca",
             "flag-extra.pem",
-        ])
-        .expect("parses");
+        ])?;
         assert_eq!(
             extra.hep_tls_trust(&config),
             (None, Some(PathBuf::from("flag-extra.pem"))),
             "the flag's choice replaces the file's, both halves"
         );
+        Ok(())
     }
 
     /// The HEP listener's pair resolves key by key, like the other listeners.
     #[test]
-    fn hep_tls_listener_files_none_then_config_then_flag() {
+    fn hep_tls_listener_files_none_then_config_then_flag() -> Result<(), TestError> {
         use std::path::PathBuf;
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(plain.hep_tls_files(&config), (None, None));
         config.hep.tls_cert = Some(PathBuf::from("file.pem"));
         config.hep.tls_key = Some(PathBuf::from("file.key"));
@@ -7033,8 +7044,7 @@ mod tests {
             "tls",
             "--hep-tls-cert",
             "flag.pem",
-        ])
-        .expect("parses: the key may come from the file");
+        ])?;
         assert_eq!(
             flagged.hep_tls_files(&config),
             (
@@ -7042,13 +7052,14 @@ mod tests {
                 Some(PathBuf::from("file.key"))
             )
         );
+        Ok(())
     }
 
     /// The pairing rules run on the RESOLVED values, so a half from the
     /// command line and a half from the file make a pair, and a half alone
     /// from either is refused naming both its flag and its key.
     #[test]
-    fn the_tls_pairing_rules_see_both_sources() {
+    fn the_tls_pairing_rules_see_both_sources() -> Result<(), TestError> {
         use std::path::PathBuf;
         let mcp_http = ["sipnab", "--mcp", "--mcp-transport", "http"];
 
@@ -7056,7 +7067,7 @@ mod tests {
         config.mcp.tls_key = Some("file.key".into());
         let mut argv = mcp_http.to_vec();
         argv.extend(["--mcp-tls-cert", "flag.pem"]);
-        let cli = Cli::try_parse_from(&argv).expect("parses");
+        let cli = Cli::try_parse_from(&argv)?;
         assert_eq!(
             cli.tls_settings_problem(&config),
             None,
@@ -7065,10 +7076,10 @@ mod tests {
 
         let mut config = crate::config::Config::default();
         config.metrics.tls_cert = Some("file.pem".into());
-        let cli = Cli::try_parse_from(["sipnab", "--metrics", "127.0.0.1:0"]).expect("parses");
+        let cli = Cli::try_parse_from(["sipnab", "--metrics", "127.0.0.1:0"])?;
         let problem = cli
             .tls_settings_problem(&config)
-            .expect("a certificate with no key from either source");
+            .ok_or("a certificate with no key from either source")?;
         assert!(
             problem.contains("[metrics] tls_cert")
                 && problem.contains("--metrics-tls-key")
@@ -7078,8 +7089,10 @@ mod tests {
 
         let mut config = crate::config::Config::default();
         config.api.tls_key = Some("file.key".into());
-        let cli = Cli::try_parse_from(["sipnab"]).expect("parses");
-        let problem = cli.tls_settings_problem(&config).expect("an API key alone");
+        let cli = Cli::try_parse_from(["sipnab"])?;
+        let problem = cli
+            .tls_settings_problem(&config)
+            .ok_or("an API key alone")?;
         assert!(problem.contains("--api-tls-cert"), "{problem}");
 
         let mut config = crate::config::Config::default();
@@ -7087,7 +7100,7 @@ mod tests {
         config.hep.tls_extra_ca = Some(PathBuf::from("b.pem"));
         let problem = cli
             .tls_settings_problem(&config)
-            .expect("replace and add at once");
+            .ok_or("replace and add at once")?;
         assert!(
             problem.contains("[hep] tls_ca") && problem.contains("[hep] tls_extra_ca"),
             "{problem}"
@@ -7100,10 +7113,10 @@ mod tests {
             "--hep-listen-transport",
             "tls",
         ];
-        let cli = Cli::try_parse_from(listener).expect("parses");
+        let cli = Cli::try_parse_from(listener)?;
         let problem = cli
             .tls_settings_problem(&crate::config::Config::default())
-            .expect("a TLS listener with nothing to present");
+            .ok_or("a TLS listener with nothing to present")?;
         assert!(
             problem.contains("--hep-tls-cert") && problem.contains("[hep] tls_cert"),
             "{problem}"
@@ -7116,27 +7129,29 @@ mod tests {
             None,
             "the file's pair is enough for a TLS listener"
         );
+        Ok(())
     }
 
     #[test]
-    fn mcp_output_schemas_default_off_config_then_flag() {
+    fn mcp_output_schemas_default_off_config_then_flag() -> Result<(), TestError> {
         let mut config = crate::config::Config::default();
-        let plain = Cli::try_parse_from(["sipnab"]).expect("parses");
+        let plain = Cli::try_parse_from(["sipnab"])?;
         assert!(!plain.mcp_output_schemas(&config), "off by default");
         config.mcp.output_schemas = Some(true);
         assert!(plain.mcp_output_schemas(&config), "the key turns them on");
-        let off = Cli::try_parse_from(["sipnab", "--mcp-output-schemas=false"]).expect("parses");
+        let off = Cli::try_parse_from(["sipnab", "--mcp-output-schemas=false"])?;
         assert!(
             !off.mcp_output_schemas(&config),
             "the flag turns them off again"
         );
-        let on = Cli::try_parse_from(["sipnab", "--mcp-output-schemas"]).expect("parses");
+        let on = Cli::try_parse_from(["sipnab", "--mcp-output-schemas"])?;
         assert!(on.mcp_output_schemas(&crate::config::Config::default()));
         assert!(Cli::try_parse_from(["sipnab", "--mcp-output-schemas=maybe"]).is_err());
+        Ok(())
     }
 
     #[test]
-    fn max_capture_sources_flag_accepts_positive_integers_only() {
+    fn max_capture_sources_flag_accepts_positive_integers_only() -> Result<(), TestError> {
         for bad in ["0", "-1", "many", "1.5", "", "99999999999999999999999"] {
             assert!(
                 Cli::try_parse_from(["sipnab", "--max-capture-sources", bad]).is_err(),
@@ -7153,24 +7168,28 @@ mod tests {
             Cli::try_parse_from(["sipnab", "--max-capture-sources"]).is_err(),
             "the flag needs a value"
         );
+        Ok(())
     }
 
     #[test]
-    fn color_rejects_unknown_value_at_parse_time() {
+    fn color_rejects_unknown_value_at_parse_time() -> Result<(), TestError> {
         let err = Cli::try_parse_from(["sipnab", "--color", "bogus"])
-            .expect_err("an unknown --color value must be rejected at parse time");
+            .err()
+            .ok_or("an unknown --color value must be rejected at parse time")?;
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        Ok(())
     }
 
     /// Every documented `--color` value still parses and round-trips.
     #[test]
-    fn color_accepts_documented_values() {
+    fn color_accepts_documented_values() -> Result<(), TestError> {
         for v in ["auto", "always", "never"] {
             let cli = Cli::try_parse_from(["sipnab", "--color", v])
-                .unwrap_or_else(|e| panic!("--color {v} must parse: {e}"));
+                .map_err(|e| format!("--color {v} must parse: {e}"))?;
             let cfg = crate::config::Config::default();
             assert_eq!(cli.color_mode(&cfg), v, "an explicit --color must win");
         }
+        Ok(())
     }
 
     /// With no flag and no config key, the resolved color mode is `auto`.
@@ -7181,36 +7200,38 @@ mod tests {
     /// unreachable. A test that reads the field cannot tell a working key from
     /// a dead one.
     #[test]
-    fn color_default_is_auto() {
-        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+    fn color_default_is_auto() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab"])?;
         let cfg = crate::config::Config::default();
         assert_eq!(
             cli.output_args.color, None,
             "no flag given, so the field stays empty"
         );
         assert_eq!(cli.color_mode(&cfg), "auto");
+        Ok(())
     }
 
     /// `[display] color` is honored when the flag is absent, and loses to it
     /// when present. This is the wiring the old field-assertion could not see.
     #[test]
-    fn config_color_is_reachable_and_the_flag_still_wins() {
+    fn config_color_is_reachable_and_the_flag_still_wins() -> Result<(), TestError> {
         let mut cfg = crate::config::Config::default();
         cfg.display.color = Some("always".to_string());
 
-        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        let cli = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(
             cli.color_mode(&cfg),
             "always",
             "[display] color must reach the run when no --color is given"
         );
 
-        let cli = Cli::try_parse_from(["sipnab", "--color", "never"]).unwrap();
+        let cli = Cli::try_parse_from(["sipnab", "--color", "never"])?;
         assert_eq!(
             cli.color_mode(&cfg),
             "never",
             "--color must beat the config key"
         );
+        Ok(())
     }
 
     /// `[security] kill_rate_limit` reaches the resolver, and
@@ -7221,27 +7242,26 @@ mod tests {
     /// `app::batch::tests::the_configured_kill_rate_limit_bounds_what_the_worker_sends`
     /// — a resolver test alone would pass against a caller that never asked.
     #[test]
-    fn config_kill_rate_limit_is_reachable_and_the_flag_still_wins() {
+    fn config_kill_rate_limit_is_reachable_and_the_flag_still_wins() -> Result<(), TestError> {
         let mut cfg = crate::config::Config::default();
         cfg.security.kill_rate_limit = Some(7);
-        let cli = Cli::try_parse_from(["sipnab"]).expect("parse");
+        let cli = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(
             cli.kill_rate_limit(&cfg),
             7,
             "[security] kill_rate_limit must reach the run when no flag is given"
         );
-        let cli = Cli::try_parse_from(["sipnab", "--kill-rate-limit", "3"]).expect("parse");
+        let cli = Cli::try_parse_from(["sipnab", "--kill-rate-limit", "3"])?;
         assert_eq!(
             cli.kill_rate_limit(&cfg),
             3,
             "--kill-rate-limit must beat [security] kill_rate_limit"
         );
         assert_eq!(
-            Cli::try_parse_from(["sipnab"])
-                .expect("parse")
-                .kill_rate_limit(&crate::config::Config::default()),
+            Cli::try_parse_from(["sipnab"])?.kill_rate_limit(&crate::config::Config::default()),
             Cli::DEFAULT_KILL_RATE_LIMIT
         );
+        Ok(())
     }
 
     /// The same, for `[security] findings_history`.
@@ -7250,68 +7270,73 @@ mod tests {
     /// retains — is asserted in
     /// `app::batch::tests::the_configured_findings_history_bounds_what_is_retained`.
     #[test]
-    fn config_findings_history_is_reachable_and_the_flag_still_wins() {
+    fn config_findings_history_is_reachable_and_the_flag_still_wins() -> Result<(), TestError> {
         let mut cfg = crate::config::Config::default();
         cfg.security.findings_history = Some(25);
-        let cli = Cli::try_parse_from(["sipnab"]).expect("parse");
+        let cli = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(cli.findings_history(&cfg), 25);
-        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "5"]).expect("parse");
+        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "5"])?;
         assert_eq!(
             cli.findings_history(&cfg),
             5,
             "--findings-history must beat [security] findings_history"
         );
         // Zero is a real setting — keep nothing — not "unset".
-        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "0"]).expect("parse");
+        let cli = Cli::try_parse_from(["sipnab", "--findings-history", "0"])?;
         assert_eq!(cli.findings_history(&cfg), 0);
+        Ok(())
     }
 
     /// The same, for `[security] kill_response`.
     #[test]
-    fn config_kill_response_is_reachable_and_the_flag_still_wins() {
+    fn config_kill_response_is_reachable_and_the_flag_still_wins() -> Result<(), TestError> {
         let mut cfg = crate::config::Config::default();
         cfg.security.kill_response = Some(486);
 
-        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        let cli = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(
             cli.kill_response_code(&cfg),
             486,
             "[security] kill_response must reach the run when no flag is given"
         );
 
-        let cli = Cli::try_parse_from(["sipnab", "--kill-response", "603"]).unwrap();
+        let cli = Cli::try_parse_from(["sipnab", "--kill-response", "603"])?;
         assert_eq!(
             cli.kill_response_code(&cfg),
             603,
             "the flag must beat the key"
         );
 
-        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        let cli = Cli::try_parse_from(["sipnab"])?;
         assert_eq!(
             cli.kill_response_code(&crate::config::Config::default()),
             Cli::DEFAULT_KILL_RESPONSE,
             "neither given: the named default, not a clap-filled field"
         );
+        Ok(())
     }
 
     /// `--mcp-transport` rejects an unknown transport at parse time — the old
     /// free-text String let a typo pass parse and only fail (or be silently
     /// ignored) later, and only when `--mcp` was also set.
     #[test]
-    fn mcp_transport_rejects_unknown_value_at_parse_time() {
+    fn mcp_transport_rejects_unknown_value_at_parse_time() -> Result<(), TestError> {
         let err = Cli::try_parse_from(["sipnab", "--mcp-transport", "carrier-pigeon"])
-            .expect_err("an unknown --mcp-transport must be rejected at parse time");
+            .err()
+            .ok_or("an unknown --mcp-transport must be rejected at parse time")?;
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+        Ok(())
     }
 
     /// Both documented transports still parse and round-trip.
     #[test]
-    fn mcp_transport_accepts_documented_values() {
+    fn mcp_transport_accepts_documented_values() -> Result<(), TestError> {
         for v in ["stdio", "http"] {
             let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
-                .unwrap_or_else(|e| panic!("--mcp-transport {v} must parse: {e}"));
+                .map_err(|e| format!("--mcp-transport {v} must parse: {e}"))?;
             assert_eq!(cli.mcp_args.mcp_transport, v);
         }
+        Ok(())
     }
 
     /// The pcap-export-mode flag constrains its accepted values at parse time.
@@ -7319,61 +7344,68 @@ mod tests {
     /// arg's long name, not by passing the flag on a parse line) so the flag
     /// stays where the `flag_coverage` gate's waiver list has it.
     #[test]
-    fn pcap_export_mode_possible_values_are_constrained() {
+    fn pcap_export_mode_possible_values_are_constrained() -> Result<(), TestError> {
         use clap::CommandFactory;
         let cmd = Cli::command();
         let arg = cmd
             .get_arguments()
             .find(|a| a.get_long() == Some("pcap-export-mode"))
-            .expect("pcap-export-mode arg exists");
+            .ok_or("pcap-export-mode arg exists")?;
         let vals: Vec<String> = arg
             .get_possible_values()
             .iter()
             .map(|pv| pv.get_name().to_string())
             .collect();
         assert_eq!(vals, vec!["decrypted", "encrypted+dsb", "raw"]);
+        Ok(())
     }
 
     /// A set secret file wins over the inline value and is whitespace-trimmed.
     #[test]
-    fn resolve_secret_prefers_file_over_inline() {
-        let dir = tempfile::tempdir().unwrap();
+    fn resolve_secret_prefers_file_over_inline() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("secret");
-        std::fs::write(&path, "  file-secret\n").unwrap();
-        let got = resolve_file_or_inline_secret(Some("inline"), Some(&path), "--x").unwrap();
+        std::fs::write(&path, "  file-secret\n")?;
+        let got = resolve_file_or_inline_secret(Some("inline"), Some(&path), "--x")?;
         assert_eq!(
             got.as_deref(),
             Some("file-secret"),
             "file wins and is trimmed"
         );
+        Ok(())
     }
 
     /// With no file set, the inline secret is returned as-is.
     #[test]
-    fn resolve_secret_falls_back_to_inline() {
-        let got = resolve_file_or_inline_secret(Some("inline"), None, "--x").unwrap();
+    fn resolve_secret_falls_back_to_inline() -> Result<(), TestError> {
+        let got = resolve_file_or_inline_secret(Some("inline"), None, "--x")?;
         assert_eq!(got.as_deref(), Some("inline"));
+        Ok(())
     }
 
     /// Neither source set resolves to `Ok(None)` (no secret configured).
     #[test]
-    fn resolve_secret_none_when_neither_set() {
-        let got = resolve_file_or_inline_secret(None, None, "--x").unwrap();
+    fn resolve_secret_none_when_neither_set() -> Result<(), TestError> {
+        let got = resolve_file_or_inline_secret(None, None, "--x")?;
         assert_eq!(got, None);
+        Ok(())
     }
 
     /// A whitespace-only secret file errors loudly, naming the flag.
     #[test]
-    fn resolve_secret_empty_file_is_error() {
-        let dir = tempfile::tempdir().unwrap();
+    fn resolve_secret_empty_file_is_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty");
-        std::fs::write(&path, "   \n").unwrap();
-        let err = resolve_file_or_inline_secret(None, Some(&path), "--x").unwrap_err();
+        std::fs::write(&path, "   \n")?;
+        let err = resolve_file_or_inline_secret(None, Some(&path), "--x")
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(err.contains("--x"), "error names the flag, got: {err}");
         assert!(
             err.contains("empty"),
             "error explains emptiness, got: {err}"
         );
+        Ok(())
     }
 
     /// An empty inline secret is refused, exactly as an empty file is.
@@ -7388,9 +7420,10 @@ mod tests {
     ///
     /// The file path has always refused this. The two sources are one rule.
     #[test]
-    fn an_empty_inline_secret_is_refused_like_an_empty_file() {
+    fn an_empty_inline_secret_is_refused_like_an_empty_file() -> Result<(), TestError> {
         let err = resolve_file_or_inline_secret(Some(""), None, "--hep-auth")
-            .expect_err("an empty inline secret must be refused");
+            .err()
+            .ok_or("an empty inline secret must be refused")?;
         assert!(
             err.contains("--hep-auth"),
             "the refusal names the flag the operator set: {err}"
@@ -7399,6 +7432,7 @@ mod tests {
             err.contains("empty"),
             "and says what was wrong with it: {err}"
         );
+        Ok(())
     }
 
     /// A whitespace-only inline secret is refused too.
@@ -7408,7 +7442,7 @@ mod tests {
     /// bytes are a fatal error from one source and a valid secret from the
     /// other.
     #[test]
-    fn a_whitespace_only_inline_secret_is_refused() {
+    fn a_whitespace_only_inline_secret_is_refused() -> Result<(), TestError> {
         for candidate in ["   ", "\t", "\n", " \r\n "] {
             assert!(
                 resolve_file_or_inline_secret(Some(candidate), None, "--hep-auth").is_err(),
@@ -7416,6 +7450,7 @@ mod tests {
                  trimmed, and a file holding it is refused"
             );
         }
+        Ok(())
     }
 
     /// An inline secret is trimmed, so moving it into a file does not change
@@ -7426,22 +7461,25 @@ mod tests {
     /// otherwise be authenticating with different bytes afterwards, and the
     /// symptom is every agent failing auth with nothing to point at.
     #[test]
-    fn an_inline_secret_is_trimmed_like_a_file_one() {
-        let resolved = resolve_file_or_inline_secret(Some("  s3cret  "), None, "--hep-auth")
-            .expect("a real secret resolves");
+    fn an_inline_secret_is_trimmed_like_a_file_one() -> Result<(), TestError> {
+        let resolved = resolve_file_or_inline_secret(Some("  s3cret  "), None, "--hep-auth")?;
         assert_eq!(
             resolved.as_deref(),
             Some("s3cret"),
             "the same bytes must resolve the same way from either source"
         );
+        Ok(())
     }
 
     /// A nonexistent secret file errors, naming the flag.
     #[test]
-    fn resolve_secret_missing_file_is_error() {
+    fn resolve_secret_missing_file_is_error() -> Result<(), TestError> {
         let path = std::path::Path::new("/nonexistent/sipnab/secret");
-        let err = resolve_file_or_inline_secret(None, Some(path), "--x").unwrap_err();
+        let err = resolve_file_or_inline_secret(None, Some(path), "--x")
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(err.contains("--x"), "error names the flag, got: {err}");
+        Ok(())
     }
 
     /// `--capture-profile signaling` picks a snaplen that keeps every SIP
@@ -7452,7 +7490,7 @@ mod tests {
     /// re-emit, so lowering the bare default would quietly damage those for
     /// everyone. A profile makes the trade explicit and reversible.
     #[test]
-    fn capture_profile_resolves_to_a_snaplen() {
+    fn capture_profile_resolves_to_a_snaplen() -> Result<(), TestError> {
         use crate::cli::CaptureProfile;
         assert_eq!(CaptureProfile::Full.snaplen(), 65535);
         let signaling = CaptureProfile::Signaling.snaplen();
@@ -7465,13 +7503,14 @@ mod tests {
             signaling < CaptureProfile::Full.snaplen(),
             "the point of the profile is that it truncates"
         );
+        Ok(())
     }
 
     /// An explicit `--snaplen` beats the profile. The profile is a convenience
     /// for people who do not want to pick a number; someone who picked one has
     /// already answered the question it asks.
     #[test]
-    fn an_explicit_snaplen_overrides_the_profile() {
+    fn an_explicit_snaplen_overrides_the_profile() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "--capture-profile",
@@ -7484,20 +7523,22 @@ mod tests {
             cli.capture_args.capture_profile,
             Some(crate::cli::CaptureProfile::Signaling)
         );
+        Ok(())
     }
 
     /// `--cores N` parses into the offline reconstruction core count.
     #[test]
-    fn cores_flag_parses() {
+    fn cores_flag_parses() -> Result<(), TestError> {
         // `--cores N` selects the multi-core offline reconstruction core count.
         let cli = Cli::parse_from_args(["sipnab", "--cores", "4", "-I", "x.pcap"]);
         assert_eq!(cli.limits_args.cores, 4);
+        Ok(())
     }
 
     /// HEP auth-file, per-peer rate limit, HEP-kill opt-in, and metrics
     /// auth-file flags all parse together.
     #[test]
-    fn security_secret_and_kill_flags_parse() {
+    fn security_secret_and_kill_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-L",
@@ -7528,11 +7569,12 @@ mod tests {
             cli.listener_args.metrics_auth_file.as_deref(),
             Some(std::path::Path::new("/etc/sipnab/metrics.cred"))
         );
+        Ok(())
     }
 
     /// HEP-origin scanner-kill and the per-peer cap both default off.
     #[test]
-    fn hep_allow_kill_defaults_off() {
+    fn hep_allow_kill_defaults_off() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
         assert!(
             !cli.security_args.hep_allow_kill,
@@ -7543,11 +7585,12 @@ mod tests {
             PerPeerLimit::Off,
             "per-peer cap off by default"
         );
+        Ok(())
     }
 
     /// `--hep-rate-limit-per-peer auto` parses to `PerPeerLimit::Auto`.
     #[test]
-    fn hep_rate_limit_per_peer_accepts_auto() {
+    fn hep_rate_limit_per_peer_accepts_auto() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-L",
@@ -7556,11 +7599,12 @@ mod tests {
             "auto",
         ]);
         assert_eq!(cli.hep_args.hep_rate_limit_per_peer, PerPeerLimit::Auto);
+        Ok(())
     }
 
     /// A non-numeric, non-keyword per-peer value is rejected at parse time.
     #[test]
-    fn hep_rate_limit_per_peer_rejects_invalid_value() {
+    fn hep_rate_limit_per_peer_rejects_invalid_value() -> Result<(), TestError> {
         let err = Cli::try_parse_from([
             "sipnab",
             "-L",
@@ -7572,12 +7616,13 @@ mod tests {
             err.is_err(),
             "non-numeric, non-keyword value must be rejected"
         );
+        Ok(())
     }
 
     /// `PerPeerLimit::from_str` accepts auto/off/numbers (0 = off),
     /// case-insensitively, and rejects everything else.
     #[test]
-    fn per_peer_limit_from_str() {
+    fn per_peer_limit_from_str() -> Result<(), TestError> {
         use std::str::FromStr;
         assert_eq!(PerPeerLimit::from_str("auto"), Ok(PerPeerLimit::Auto));
         assert_eq!(PerPeerLimit::from_str("AUTO"), Ok(PerPeerLimit::Auto));
@@ -7589,12 +7634,13 @@ mod tests {
         );
         assert!(PerPeerLimit::from_str("fast").is_err());
         assert!(PerPeerLimit::from_str("-1").is_err());
+        Ok(())
     }
 
     /// `resolve` maps Off to 0, passes Fixed through, and divides the
     /// global ceiling for Auto (staying off with an empty allowlist).
     #[test]
-    fn per_peer_limit_resolve() {
+    fn per_peer_limit_resolve() -> Result<(), TestError> {
         assert_eq!(PerPeerLimit::Off.resolve(50000, 4), 0);
         assert_eq!(PerPeerLimit::Fixed(2000).resolve(50000, 4), 2000);
         // Fixed ignores the allowlist entirely.
@@ -7603,28 +7649,31 @@ mod tests {
         assert_eq!(PerPeerLimit::Auto.resolve(40000, 4), 10000);
         // Auto with no allowlist stays disabled (nothing to divide by).
         assert_eq!(PerPeerLimit::Auto.resolve(50000, 0), 0);
+        Ok(())
     }
 
     /// Auto with more allowlist entries than the global ceiling must floor
     /// at 1 pps, not truncate to 0 — a 0 here means DISABLED, silently
     /// removing the per-peer cap the operator asked for.
     #[test]
-    fn per_peer_limit_auto_floors_at_one() {
+    fn per_peer_limit_auto_floors_at_one() -> Result<(), TestError> {
         assert_eq!(PerPeerLimit::Auto.resolve(5, 10), 1);
         // Exact division and the normal case are unchanged.
         assert_eq!(PerPeerLimit::Auto.resolve(10, 10), 1);
         assert_eq!(PerPeerLimit::Auto.resolve(40000, 4), 10000);
+        Ok(())
     }
 
     /// `HepAuthMode::from_str` accepts plain/hmac case-insensitively,
     /// rejects other strings, and defaults to `Plain`.
     #[test]
-    fn hep_auth_mode_from_str() {
+    fn hep_auth_mode_from_str() -> Result<(), TestError> {
         use std::str::FromStr;
         assert_eq!(HepAuthMode::from_str("plain"), Ok(HepAuthMode::Plain));
         assert_eq!(HepAuthMode::from_str("HMAC"), Ok(HepAuthMode::Hmac));
         assert!(HepAuthMode::from_str("sigv4").is_err());
         assert_eq!(HepAuthMode::default(), HepAuthMode::Plain);
+        Ok(())
     }
 
     /// `HepTransport::from_str` names the three transports and nothing else,
@@ -7634,14 +7683,16 @@ mod tests {
     /// always spoken: a run that names no transport must behave exactly as it
     /// did before the flag existed.
     #[test]
-    fn hep_transport_is_named_by_the_operator_and_defaults_to_udp() {
+    fn hep_transport_is_named_by_the_operator_and_defaults_to_udp() -> Result<(), TestError> {
         use std::str::FromStr;
         assert_eq!(HepTransport::from_str("udp"), Ok(HepTransport::Udp));
         assert_eq!(HepTransport::from_str("tcp"), Ok(HepTransport::Tcp));
         assert_eq!(HepTransport::from_str("tls"), Ok(HepTransport::Tls));
         assert_eq!(HepTransport::from_str("  TCP "), Ok(HepTransport::Tcp));
         assert_eq!(HepTransport::default(), HepTransport::Udp);
-        let err = HepTransport::from_str("sctp").expect_err("sctp is not offered");
+        let err = HepTransport::from_str("sctp")
+            .err()
+            .ok_or("sctp is not offered")?;
         for choice in ["udp", "tcp", "tls"] {
             assert!(
                 err.contains(choice),
@@ -7650,6 +7701,7 @@ mod tests {
             );
         }
         assert_eq!(HepTransport::Tls.to_string(), "tls");
+        Ok(())
     }
 
     /// Each transport flag names the side it governs, and the side it does
@@ -7660,7 +7712,7 @@ mod tests {
     /// so, and neither does a reader of the command line have a way to tell
     /// which half a bare `--hep-transport` meant.
     #[test]
-    fn each_hep_transport_flag_governs_one_side() {
+    fn each_hep_transport_flag_governs_one_side() -> Result<(), TestError> {
         let listening = Cli::parse_from_args([
             "sipnab",
             "-L",
@@ -7692,6 +7744,7 @@ mod tests {
         let bare = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
         assert_eq!(bare.hep_listen_transport(), HepTransport::Udp);
         assert_eq!(bare.hep_send_transport(), HepTransport::Udp);
+        Ok(())
     }
 
     /// A transport or TLS flag whose side is not in the run configures
@@ -7701,7 +7754,7 @@ mod tests {
     /// three outcomes: the operator believes the feed is encrypted, the exit
     /// status agrees with them, and the packets are in the clear.
     #[test]
-    fn the_hep_transport_flags_refuse_to_be_inert() {
+    fn the_hep_transport_flags_refuse_to_be_inert() -> Result<(), TestError> {
         for lonely in [
             vec!["--hep-listen-transport", "tcp"],
             vec!["--hep-send-transport", "tcp"],
@@ -7716,6 +7769,7 @@ mod tests {
                 "{lonely:?} without the side it governs configures nothing"
             );
         }
+        Ok(())
     }
 
     /// `--hep-tls-extra-ca` on a plaintext sender verifies nothing and is
@@ -7723,7 +7777,7 @@ mod tests {
     /// at all clap refuses it; beside `--hep-tls-ca` it contradicts it; and on
     /// a TLS sender it is accepted (the negative control).
     #[test]
-    fn the_extra_ca_flag_is_refused_where_it_would_do_nothing() {
+    fn the_extra_ca_flag_is_refused_where_it_would_do_nothing() -> Result<(), TestError> {
         let base = ["sipnab", "-N", "-d", "eth0", "-H", "127.0.0.1:9060"];
         let mut plaintext = base.to_vec();
         plaintext.extend([
@@ -7732,10 +7786,10 @@ mod tests {
             "--hep-tls-extra-ca",
             "ca.pem",
         ]);
-        let refusal = Cli::try_parse_from(&plaintext)
-            .expect("clap accepts it; validate must not")
+        let refusal = Cli::try_parse_from(&plaintext)?
             .validate()
-            .expect_err("an extra CA verifies nothing on a plaintext sender");
+            .err()
+            .ok_or("an extra CA verifies nothing on a plaintext sender")?;
         assert!(
             refusal.to_string().contains("--hep-tls-extra-ca")
                 && refusal.to_string().contains("--hep-send-transport tls"),
@@ -7757,7 +7811,9 @@ mod tests {
             "--hep-tls-extra-ca",
             "b.pem",
         ]);
-        let err = Cli::try_parse_from(&both).expect_err("replace and add at once");
+        let err = Cli::try_parse_from(&both)
+            .err()
+            .ok_or("replace and add at once")?;
         assert!(
             err.to_string().contains("--hep-tls-extra-ca")
                 && err.to_string().contains("--hep-tls-ca"),
@@ -7771,16 +7827,14 @@ mod tests {
             "--hep-tls-extra-ca",
             "ca.pem",
         ]);
-        Cli::try_parse_from(&tls)
-            .expect("parses")
-            .validate()
-            .expect("an extra CA on a TLS sender is what the flag is for");
+        Cli::try_parse_from(&tls)?.validate()?;
+        Ok(())
     }
 
     /// `--hep-tls-ca` belongs to the sender and the certificate pair to the
     /// listener; each is refused on the other side's transport.
     #[test]
-    fn each_hep_tls_flag_is_refused_on_the_side_it_cannot_reach() {
+    fn each_hep_tls_flag_is_refused_on_the_side_it_cannot_reach() -> Result<(), TestError> {
         let ca_on_a_plaintext_sender = Cli::try_parse_from([
             "sipnab",
             "-N",
@@ -7792,11 +7846,11 @@ mod tests {
             "tcp",
             "--hep-tls-ca",
             "ca.pem",
-        ])
-        .expect("clap accepts it; validate must not");
+        ])?;
         let refusal = ca_on_a_plaintext_sender
             .validate()
-            .expect_err("a CA verifies nothing on a plaintext sender");
+            .err()
+            .ok_or("a CA verifies nothing on a plaintext sender")?;
         assert!(
             refusal.to_string().contains("--hep-send-transport tls"),
             "the refusal has to name what would make the flag live: {refusal}"
@@ -7813,15 +7867,16 @@ mod tests {
             "c.pem",
             "--hep-tls-key",
             "k.pem",
-        ])
-        .expect("clap accepts it; validate must not");
+        ])?;
         let refusal = cert_on_a_plaintext_listener
             .validate()
-            .expect_err("a certificate serves nothing on a plaintext listener");
+            .err()
+            .ok_or("a certificate serves nothing on a plaintext listener")?;
         assert!(
             refusal.to_string().contains("--hep-listen-transport tls"),
             "the refusal has to name what would make the flags live: {refusal}"
         );
+        Ok(())
     }
 
     /// A TLS listener with no certificate cannot serve one, and says so at
@@ -7829,7 +7884,7 @@ mod tests {
     /// file is read (`tls_settings_problem`), because `[hep] tls_cert` and
     /// `tls_key` can supply the pair; `validate` alone must accept it.
     #[test]
-    fn a_tls_hep_listener_without_a_certificate_is_refused() {
+    fn a_tls_hep_listener_without_a_certificate_is_refused() -> Result<(), TestError> {
         let naked = Cli::try_parse_from([
             "sipnab",
             "-N",
@@ -7837,23 +7892,21 @@ mod tests {
             "127.0.0.1:9060",
             "--hep-listen-transport",
             "tls",
-        ])
-        .expect("clap accepts it");
-        naked
-            .validate()
-            .expect("the pair may still come from the config file");
+        ])?;
+        naked.validate()?;
         let text = naked
             .tls_settings_problem(&crate::config::Config::default())
-            .expect("a TLS server with no certificate cannot complete a handshake");
+            .ok_or("a TLS server with no certificate cannot complete a handshake")?;
         assert!(
             text.contains("--hep-tls-cert") && text.contains("--hep-tls-key"),
             "the refusal names both halves the listener is missing: {text}"
         );
+        Ok(())
     }
 
     /// `--hep-auth-mode hmac` parses; the flag defaults to `plain`.
     #[test]
-    fn hep_auth_mode_flag_parses() {
+    fn hep_auth_mode_flag_parses() -> Result<(), TestError> {
         let cli =
             Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060", "--hep-auth-mode", "hmac"]);
         assert_eq!(cli.hep_args.hep_auth_mode, HepAuthMode::Hmac);
@@ -7863,12 +7916,13 @@ mod tests {
             HepAuthMode::Plain,
             "plain is the default mode"
         );
+        Ok(())
     }
 
     /// A bare `sipnab` invocation yields the documented default values
     /// for every defaulted flag, including rotate-on (SNB-0004).
     #[test]
-    fn defaults_are_sane() {
+    fn defaults_are_sane() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab"]);
         assert_eq!(
             cli.capture_args.portrange, None,
@@ -7902,6 +7956,7 @@ mod tests {
         // store evicts the oldest dialog rather than dropping new legitimate
         // calls — a privileged sniffer must bound dialog state safely by default.
         assert!(cli.rotate_enabled(), "rotate must default ON");
+        Ok(())
     }
 
     /// `--mcp-audit-file` parses as a path, and is `None` when absent.
@@ -7910,7 +7965,7 @@ mod tests {
     /// audit write means (the call is refused), so a run that never asked for
     /// a file must not acquire that behavior by default.
     #[test]
-    fn mcp_audit_file_parses_and_defaults_to_off() {
+    fn mcp_audit_file_parses_and_defaults_to_off() -> Result<(), TestError> {
         let on = Cli::parse_from_args(["sipnab", "--mcp-audit-file", "/var/log/sipnab-mcp.jsonl"]);
         assert_eq!(
             on.mcp_args.mcp_audit_file.as_deref(),
@@ -7921,13 +7976,14 @@ mod tests {
             off.mcp_args.mcp_audit_file, None,
             "an unflagged run must not gain the fail-closed audit behavior"
         );
+        Ok(())
     }
 
     /// The `--mcp-max-concurrent` cap parses as a number, and `0` is accepted
     /// as the "unlimited" spelling — the value the MCP server turns into no cap
     /// at all rather than a zero-permit semaphore that refuses every call.
     #[test]
-    fn mcp_max_concurrent_parses_including_the_unlimited_zero() {
+    fn mcp_max_concurrent_parses_including_the_unlimited_zero() -> Result<(), TestError> {
         let capped = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "5"]);
         assert_eq!(capped.mcp_args.mcp_max_concurrent, 5);
         let unlimited = Cli::parse_from_args(["sipnab", "--mcp-max-concurrent", "0"]);
@@ -7935,6 +7991,7 @@ mod tests {
             unlimited.mcp_args.mcp_max_concurrent, 0,
             "0 must parse as the unlimited spelling, not be rejected"
         );
+        Ok(())
     }
 
     /// The `--mcp-rate-limit-per-peer` cap parses as a number, and `0` is
@@ -7942,7 +7999,7 @@ mod tests {
     /// `--mcp-max-concurrent` uses, so the two MCP caps read alike rather than
     /// one meaning "off" by 0 and the other refusing every call.
     #[test]
-    fn mcp_rate_limit_per_peer_parses_including_the_unlimited_zero() {
+    fn mcp_rate_limit_per_peer_parses_including_the_unlimited_zero() -> Result<(), TestError> {
         let capped = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "5"]);
         assert_eq!(capped.mcp_args.mcp_rate_limit_per_peer, 5);
         let unlimited = Cli::parse_from_args(["sipnab", "--mcp-rate-limit-per-peer", "0"]);
@@ -7950,6 +8007,7 @@ mod tests {
             unlimited.mcp_args.mcp_rate_limit_per_peer, 0,
             "0 must parse as the unlimited spelling, not be rejected"
         );
+        Ok(())
     }
 
     /// `--call-report` sets `no_tui` at the parse boundary, and only then.
@@ -7960,7 +8018,7 @@ mod tests {
     /// `--call-report <id> --markdown` came to emit terminal escape codes
     /// instead of a report.
     #[test]
-    fn call_report_normalizes_to_non_interactive() {
+    fn call_report_normalizes_to_non_interactive() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--call-report", "a@b"]);
         assert!(
             cli.mode_args.no_tui,
@@ -7986,6 +8044,7 @@ mod tests {
         // An explicit -N is unchanged, not doubly applied.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "-N"]);
         assert!(cli.mode_args.no_tui);
+        Ok(())
     }
 
     /// `--export-vcon` implies `-N`, and OWNS stdout when the container goes
@@ -8005,7 +8064,7 @@ mod tests {
     /// what turns "I typed the attribute" into "the parser enforces it".
     #[cfg(feature = "vcon")]
     #[test]
-    fn export_vcon_when_and_its_directory_require_each_other() {
+    fn export_vcon_when_and_its_directory_require_each_other() -> Result<(), TestError> {
         let alone = Cli::try_parse_from([
             "sipnab",
             "-I",
@@ -8026,6 +8085,7 @@ mod tests {
             "--export-vcon-dir alone names a destination for containers no \
              predicate selects"
         );
+        Ok(())
     }
 
     /// `--vcon-max-inline-media` parses in MiB and stands alone.
@@ -8037,9 +8097,8 @@ mod tests {
     /// what stops that being re-added by symmetry with its neighbors.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_evidence_ring_is_off_unless_asked_and_counts_in_mib() {
-        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "256"])
-            .expect("the ring is not tied to any other flag");
+    fn the_evidence_ring_is_off_unless_asked_and_counts_in_mib() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "256"])?;
         assert_eq!(
             cli.mcp_args.mcp_evidence_ring,
             Some(256),
@@ -8047,27 +8106,26 @@ mod tests {
              conversion to bytes happens once, where the ring is built"
         );
 
-        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert_eq!(
             unset.mcp_args.mcp_evidence_ring, None,
             "off unless asked. This is memory spent on a running capture, and \
              a default that spends it is a default nobody chose"
         );
 
-        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "0"])
-            .expect("zero is a setting, not an error");
+        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--mcp-evidence-ring", "0"])?;
         assert_eq!(
             zero.mcp_args.mcp_evidence_ring,
             Some(0),
             "0 retains nothing while leaving the ring wired, which is how an \
              operator turns retention off without changing anything else"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_inline_media_budget_flag_stands_alone_and_counts_in_mib() {
-        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "64"])
-            .expect("the budget is not tied to any other flag");
+    fn the_inline_media_budget_flag_stands_alone_and_counts_in_mib() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "64"])?;
         assert_eq!(
             cli.output_args.vcon_max_inline_media,
             Some(64),
@@ -8075,8 +8133,7 @@ mod tests {
              the point the exporter is handed a budget"
         );
 
-        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "0"])
-            .expect("zero is a setting, not an error");
+        let zero = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-max-inline-media", "0"])?;
         assert_eq!(
             zero.output_args.vcon_max_inline_media,
             Some(0),
@@ -8084,7 +8141,7 @@ mod tests {
              operator no way to say that"
         );
 
-        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        let unset = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert_eq!(
             unset.output_args.vcon_max_inline_media, None,
             "unset must stay None so the MEASURED default applies rather than \
@@ -8096,6 +8153,7 @@ mod tests {
                 .is_err(),
             "a negative budget is not a smaller budget"
         );
+        Ok(())
     }
 
     /// `--content-deny-tombstone` needs the header it acts on.
@@ -8106,7 +8164,7 @@ mod tests {
     /// attribute" into "the parser enforces it".
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_tombstone_flag_requires_the_deny_header_it_acts_on() {
+    fn the_tombstone_flag_requires_the_deny_header_it_acts_on() -> Result<(), TestError> {
         assert!(
             Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--content-deny-tombstone"]).is_err(),
             "a tombstone setting with no deny rule configures nothing"
@@ -8119,8 +8177,7 @@ mod tests {
             "--content-deny-header",
             "X-No-Record",
             "--content-deny-tombstone",
-        ])
-        .expect("the pair is valid");
+        ])?;
         assert!(paired.output_args.content_deny_tombstone);
 
         let header_alone = Cli::try_parse_from([
@@ -8129,13 +8186,13 @@ mod tests {
             "x.pcap",
             "--content-deny-header",
             "X-No-Record",
-        ])
-        .expect("the header stands alone");
+        ])?;
         assert!(
             !header_alone.output_args.content_deny_tombstone,
             "OFF by default: a tombstone reveals that the call EXISTED, and \
              that disclosure is the operator's to choose"
         );
+        Ok(())
     }
 
     /// Every redaction flag needs `--redact`, and `--redact` needs an export.
@@ -8146,7 +8203,7 @@ mod tests {
     /// of the run is not. Refusing costs a re-run; accepting costs a
     /// disclosure.
     #[test]
-    fn the_redaction_flags_refuse_to_be_inert() {
+    fn the_redaction_flags_refuse_to_be_inert() -> Result<(), TestError> {
         for lonely in [
             vec!["--redact-key-file", "k"],
             vec!["--redact-keep-prefix", "3"],
@@ -8160,21 +8217,22 @@ mod tests {
             );
         }
 
-        let inert = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--redact"])
-            .expect("clap accepts it; validate must not");
+        let inert = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--redact"])?;
         let refusal = inert
             .validate()
-            .expect_err("--redact with no export is a promise over nothing");
+            .err()
+            .ok_or("--redact with no export is a promise over nothing")?;
         assert!(
             refusal.to_string().contains("exports none"),
             "the refusal has to say WHY: {refusal}"
         );
+        Ok(())
     }
 
     /// `--redact` parses beside an export, carrying its two settings.
     #[cfg(feature = "vcon")]
     #[test]
-    fn redaction_parses_beside_an_export() {
+    fn redaction_parses_beside_an_export() -> Result<(), TestError> {
         let cli = Cli::try_parse_from([
             "sipnab",
             "-N",
@@ -8189,32 +8247,33 @@ mod tests {
             "4",
             "--redact-map",
             "map.tsv",
-        ])
-        .expect("the combination is valid");
+        ])?;
         assert!(cli.redacting());
         assert_eq!(cli.output_args.redact_keep_prefix, Some(4));
         assert_eq!(
             cli.output_args.redact_map.as_deref(),
             Some(std::path::Path::new("map.tsv"))
         );
-        cli.validate().expect("an export is present");
+        cli.validate()?;
+        Ok(())
     }
 
     /// Nothing is retained by default, and that default is the privacy one.
     #[test]
-    fn no_digits_are_retained_until_asked_for() {
-        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+    fn no_digits_are_retained_until_asked_for() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert_eq!(
             cli.output_args.redact_keep_prefix, None,
             "every retained digit is a real subscriber digit published in the \
              clear, so sipnab keeps none until an operator decides otherwise"
         );
         assert!(!cli.redacting());
+        Ok(())
     }
 
     /// The lint suppression flags need the linter they configure.
     #[test]
-    fn the_lint_suppression_flags_need_the_linter() {
+    fn the_lint_suppression_flags_need_the_linter() -> Result<(), TestError> {
         for lonely in [
             vec!["--lint-suppress-file", ".sipnablint"],
             vec!["--lint-no-suppress"],
@@ -8236,24 +8295,23 @@ mod tests {
             "--lint-suppress-file",
             "ci.sipnablint",
             "--lint-no-suppress",
-        ])
-        .expect("the override is allowed to sit beside the file it overrides");
+        ])?;
         assert_eq!(
             both.output_args.lint_suppress_file.as_deref(),
             Some("ci.sipnablint")
         );
         assert!(both.output_args.lint_no_suppress);
+        Ok(())
     }
 
     /// `--vcon-digest` is a plain switch and defaults off.
     #[cfg(feature = "vcon")]
     #[test]
-    fn the_digest_flag_is_off_until_asked_for() {
-        let on = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-digest"])
-            .expect("the switch stands alone");
+    fn the_digest_flag_is_off_until_asked_for() -> Result<(), TestError> {
+        let on = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--vcon-digest"])?;
         assert!(on.output_args.vcon_digest);
 
-        let off = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+        let off = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert!(
             !off.output_args.vcon_digest,
             "digests go to stdout, so emitting them unasked would put lines \
@@ -8264,14 +8322,14 @@ mod tests {
         // parser as an ordinary argument rather than being swallowed as an
         // algorithm choice, because no such choice exists -- the format is
         // fixed at SHA-256 so `sha256sum -c` can read it.
-        let followed = Cli::try_parse_from(["sipnab", "--vcon-digest", "-I", "x.pcap"])
-            .expect("a flag taking no value leaves the next token alone");
+        let followed = Cli::try_parse_from(["sipnab", "--vcon-digest", "-I", "x.pcap"])?;
         assert!(followed.output_args.vcon_digest);
         assert_eq!(
             followed.capture_args.input,
             vec!["x.pcap".to_string()],
             "`-I` after the switch must still be read as the input"
         );
+        Ok(())
     }
 
     /// Naming one call and a predicate at once is refused.
@@ -8281,7 +8339,7 @@ mod tests {
     /// a run that accepted both would have to pick one silently.
     #[cfg(feature = "vcon")]
     #[test]
-    fn export_vcon_and_export_vcon_when_cannot_both_be_given() {
+    fn export_vcon_and_export_vcon_when_cannot_both_be_given() -> Result<(), TestError> {
         let both = Cli::try_parse_from([
             "sipnab",
             "-I",
@@ -8298,6 +8356,7 @@ mod tests {
             "one Call-ID to stdout and a predicate to a directory are two \
              different runs, and picking one silently is the failure"
         );
+        Ok(())
     }
 
     /// `persists_content` is true for exactly the flags that write content.
@@ -8307,15 +8366,14 @@ mod tests {
     /// `authorized: false` while the exporter went on writing -- the gate
     /// lying in the one direction that matters.
     #[test]
-    fn persists_content_names_every_flag_that_writes_content() {
-        let bare = Cli::try_parse_from(["sipnab", "-I", "x.pcap"]).expect("parses");
+    fn persists_content_names_every_flag_that_writes_content() -> Result<(), TestError> {
+        let bare = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert!(
             !bare.persists_content(),
             "a run with no persistence flags writes no content"
         );
 
-        let single = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--export-vcon", "abc@1"])
-            .expect("parses");
+        let single = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--export-vcon", "abc@1"])?;
         assert!(
             single.persists_content(),
             "--export-vcon writes a container"
@@ -8329,12 +8387,12 @@ mod tests {
             "state == 'Failed'",
             "--export-vcon-dir",
             "/tmp/out",
-        ])
-        .expect("parses");
+        ])?;
         assert!(
             predicate.persists_content(),
             "--export-vcon-when writes containers"
         );
+        Ok(())
     }
 
     /// Flags that read, filter, or report do not authorize persistence.
@@ -8343,7 +8401,7 @@ mod tests {
     /// reports authority over a run that never writes, so an operator closing
     /// it is told it worked when there was nothing to close.
     #[test]
-    fn reading_and_reporting_flags_do_not_authorize_persistence() {
+    fn reading_and_reporting_flags_do_not_authorize_persistence() -> Result<(), TestError> {
         for extra in [
             vec!["--report"],
             vec!["--json"],
@@ -8352,12 +8410,13 @@ mod tests {
         ] {
             let mut argv = vec!["sipnab", "-I", "x.pcap"];
             argv.extend(extra.iter().copied());
-            let cli = Cli::try_parse_from(&argv).expect("parses");
+            let cli = Cli::try_parse_from(&argv)?;
             assert!(
                 !cli.persists_content(),
                 "{extra:?} does not write content and must not authorize it"
             );
         }
+        Ok(())
     }
 
     /// `--content-deny-header` parses, and stands alone.
@@ -8372,15 +8431,14 @@ mod tests {
     /// same flag.
     #[cfg(feature = "vcon")]
     #[test]
-    fn content_deny_header_parses_and_needs_no_companion_flag() {
+    fn content_deny_header_parses_and_needs_no_companion_flag() -> Result<(), TestError> {
         let cli = Cli::try_parse_from([
             "sipnab",
             "-I",
             "x.pcap",
             "--content-deny-header",
             "X-No-Record",
-        ])
-        .expect("the flag stands alone");
+        ])?;
         assert_eq!(
             cli.output_args.content_deny_header.as_deref(),
             Some("X-No-Record"),
@@ -8397,12 +8455,12 @@ mod tests {
             "/tmp/out",
             "--content-deny-header",
             "Privacy",
-        ])
-        .expect("and pairs with the export flags");
+        ])?;
         assert_eq!(
             with_export.output_args.content_deny_header.as_deref(),
             Some("Privacy")
         );
+        Ok(())
     }
 
     /// `--export-vcon-when` implies `-N` too.
@@ -8416,7 +8474,8 @@ mod tests {
     /// It does NOT take stdout the way `--export-vcon` does: these containers
     /// go to a directory, so a per-message stream on stdout spoils nothing.
     #[test]
-    fn export_vcon_when_normalizes_to_non_interactive_without_taking_stdout() {
+    fn export_vcon_when_normalizes_to_non_interactive_without_taking_stdout()
+    -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-I",
@@ -8434,6 +8493,7 @@ mod tests {
             !cli.output_args.no_cli_print,
             "the containers go to a directory, so stdout is still the              operator's -- suppressing it would discard output they asked for"
         );
+        Ok(())
     }
 
     /// `--mcp` implies `-N`, as its own help has always said.
@@ -8443,13 +8503,14 @@ mod tests {
     /// same promise and keep it, so `--mcp` was the outlier, and an agent host
     /// reading the help wrote an invocation that failed on first run.
     #[test]
-    fn mcp_normalizes_to_non_interactive_as_its_help_promises() {
+    fn mcp_normalizes_to_non_interactive_as_its_help_promises() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp"]);
         assert!(
             cli.mode_args.no_tui,
             "--mcp says `Implies --no-tui` in its own help; it must set it \
              rather than refuse the operator for not typing it"
         );
+        Ok(())
     }
 
     /// Every flag whose help claims to imply non-interactive actually does.
@@ -8458,7 +8519,7 @@ mod tests {
     /// promise nothing checks is the one that drifts -- this is how `--mcp`
     /// came to say "implies" while refusing.
     #[test]
-    fn every_flag_that_claims_to_imply_no_tui_actually_implies_it() {
+    fn every_flag_that_claims_to_imply_no_tui_actually_implies_it() -> Result<(), TestError> {
         let cases: &[(&str, &[&str])] = &[
             ("--mcp", &["sipnab", "-I", "x.pcap", "--mcp"]),
             (
@@ -8491,6 +8552,7 @@ mod tests {
                  refusal"
             );
         }
+        Ok(())
     }
 
     /// Removing the refusal did not remove the guard beside it.
@@ -8500,7 +8562,7 @@ mod tests {
     /// JSON-RPC wire, and a flag that also writes there corrupts the protocol
     /// rather than merely printing twice.
     #[test]
-    fn mcp_still_refuses_a_flag_that_would_write_to_its_wire() {
+    fn mcp_still_refuses_a_flag_that_would_write_to_its_wire() -> Result<(), TestError> {
         for flag in ["--json", "--json-pretty", "--report", "--stun"] {
             let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", flag]);
             assert!(
@@ -8509,6 +8571,7 @@ mod tests {
                  needs it for the JSON-RPC wire"
             );
         }
+        Ok(())
     }
 
     /// No help text claims an implication the binary does not perform.
@@ -8518,7 +8581,7 @@ mod tests {
     /// reads the doc comments and requires every flag that claims to imply
     /// non-interactive mode to be one `normalize` actually sets.
     #[test]
-    fn no_help_text_claims_an_implication_the_binary_does_not_perform() {
+    fn no_help_text_claims_an_implication_the_binary_does_not_perform() -> Result<(), TestError> {
         // Production source only. This test's own doc comment quotes the
         // string it searches for, and scanning the whole file made the gate
         // match its own documentation and report `<unknown>`. A scanner that
@@ -8529,7 +8592,7 @@ mod tests {
         let src = whole.split("\nmod tests {").next().unwrap_or(whole);
         let normalize_at = src
             .find("fn normalize(&mut self)")
-            .expect("cli.rs no longer has a normalize function");
+            .ok_or("cli.rs no longer has a normalize function")?;
         let normalize_end = src[normalize_at..]
             .find("\n    }")
             .map_or(src.len(), |e| normalize_at + e);
@@ -8576,6 +8639,7 @@ mod tests {
                  set it, so the help makes a promise the binary breaks"
             );
         }
+        Ok(())
     }
 
     /// The implication scan reads assignments, not the comments beside them.
@@ -8587,7 +8651,7 @@ mod tests {
     /// source, so it gets a test of its own rather than a resolution to be
     /// careful.
     #[test]
-    fn the_implication_scan_reads_code_and_not_comments() {
+    fn the_implication_scan_reads_code_and_not_comments() -> Result<(), TestError> {
         // A body whose ONLY mention of the field is in a comment must not
         // count as setting it.
         let commented = "// sets self.mcp_args.mcp\nlet x = 1;";
@@ -8613,6 +8677,7 @@ mod tests {
             "stripping comments removed real code; the gate would then report \
              every flag as unfulfilled"
         );
+        Ok(())
     }
 
     /// Implicit and explicit `-N` reach the same state.
@@ -8622,7 +8687,7 @@ mod tests {
     /// `-N` would get a quietly different run -- which is worse than the
     /// refusal it replaced.
     #[test]
-    fn mcp_with_and_without_an_explicit_no_tui_agree() {
+    fn mcp_with_and_without_an_explicit_no_tui_agree() -> Result<(), TestError> {
         let implicit = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp"]);
         let explicit = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "-N"]);
 
@@ -8640,10 +8705,11 @@ mod tests {
             explicit.validate().is_ok(),
             "one form validates and the other does not"
         );
+        Ok(())
     }
 
     #[test]
-    fn export_vcon_normalizes_to_non_interactive_and_owns_stdout() {
+    fn export_vcon_normalizes_to_non_interactive_and_owns_stdout() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
         assert!(
             cli.mode_args.no_tui,
@@ -8678,6 +8744,7 @@ mod tests {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         assert!(!cli.mode_args.no_tui);
         assert!(!cli.output_args.no_cli_print);
+        Ok(())
     }
 
     /// A build carrying the exporter accepts `--export-vcon`.
@@ -8687,12 +8754,13 @@ mod tests {
     /// nothing exercises.
     #[cfg(feature = "vcon")]
     #[test]
-    fn export_vcon_validates_on_a_build_that_carries_the_exporter() {
+    fn export_vcon_validates_on_a_build_that_carries_the_exporter() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
         assert!(
             cli.validate().is_ok(),
             "this build carries the vcon feature and validate() still refused"
         );
+        Ok(())
     }
 
     /// Every flag that only the `vcon` exporter reads, with a value where it
@@ -8716,14 +8784,14 @@ mod tests {
     /// without `vcon`. Driven with `has_exporter = false` so it runs in every
     /// build, including the ones CI tests, which all carry the feature.
     #[test]
-    fn every_vcon_flag_is_refused_by_a_build_without_the_exporter() {
+    fn every_vcon_flag_is_refused_by_a_build_without_the_exporter() -> Result<(), TestError> {
         for flags in VCON_ONLY_FLAGS {
             let mut argv = vec!["sipnab", "-I", "x.pcap"];
             argv.extend_from_slice(flags);
             let cli = Cli::parse_from_args(argv);
             let message = cli
                 .vcon_refusal(false)
-                .unwrap_or_else(|| panic!("{flags:?} was not refused by a build without vcon"));
+                .ok_or_else(|| format!("{flags:?} was not refused by a build without vcon"))?;
             for flag in flags.iter().filter(|f| f.starts_with("--")) {
                 assert!(
                     message.contains(flag),
@@ -8735,12 +8803,13 @@ mod tests {
                 "the refusal must say what builds a binary that can: {message}"
             );
         }
+        Ok(())
     }
 
     /// The same flags are fine in a build that carries the exporter, and a run
     /// that names no vCon flag is never refused in either.
     #[test]
-    fn only_a_vcon_flag_in_a_build_without_vcon_is_refused() {
+    fn only_a_vcon_flag_in_a_build_without_vcon_is_refused() -> Result<(), TestError> {
         for flags in VCON_ONLY_FLAGS {
             let mut argv = vec!["sipnab", "-I", "x.pcap"];
             argv.extend_from_slice(flags);
@@ -8753,6 +8822,7 @@ mod tests {
         let plain = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         assert_eq!(plain.vcon_refusal(false), None);
         assert_eq!(plain.vcon_refusal(true), None);
+        Ok(())
     }
 
     /// LIVE-VCON-1: a live `--export-vcon-when` writes each container on a
@@ -8762,7 +8832,7 @@ mod tests {
     /// tombstones would never be written. Refused, with the reason and the
     /// `-I` alternative in the message.
     #[test]
-    fn a_live_vcon_export_refuses_the_flags_that_only_write_at_the_end() {
+    fn a_live_vcon_export_refuses_the_flags_that_only_write_at_the_end() -> Result<(), TestError> {
         let live = ["sipnab", "-N", "-d", "any"];
         let hep = ["sipnab", "-N", "--hep-listen", "127.0.0.1:9060"];
         let export = [
@@ -8788,12 +8858,12 @@ mod tests {
                 let cli = Cli::parse_from_args(argv.clone());
                 let refusal = cli
                     .live_vcon_refusal()
-                    .unwrap_or_else(|| panic!("{argv:?} was not refused"));
+                    .ok_or_else(|| format!("{argv:?} was not refused"))?;
                 let named = extra
                     .iter()
                     .rev()
                     .find(|f| f.starts_with("--"))
-                    .expect("every case names a flag");
+                    .ok_or("every case names a flag")?;
                 assert!(
                     refusal.contains(named),
                     "the refusal must name {named}: {refusal}"
@@ -8808,12 +8878,13 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The same flags on a `-I` run, and a live export without them, are not
     /// refused: the rule is about live runs and end-of-run-only flags together.
     #[test]
-    fn a_file_run_or_a_live_run_without_end_only_flags_is_not_refused() {
+    fn a_file_run_or_a_live_run_without_end_only_flags_is_not_refused() -> Result<(), TestError> {
         let file = Cli::parse_from_args([
             "sipnab",
             "-N",
@@ -8844,13 +8915,14 @@ mod tests {
             "X-No-Record",
         ]);
         assert_eq!(live.live_vcon_refusal(), None);
+        Ok(())
     }
 
     /// STOP-AUDIT-1: a live `--export-vcon <CALL-ID>` is a live export, so the
     /// call's container is written when the call ends and a stop writes
     /// nothing. The same flag on a `-I` run is not.
     #[test]
-    fn a_live_single_call_export_is_a_live_export() {
+    fn a_live_single_call_export_is_a_live_export() -> Result<(), TestError> {
         for source in [
             &["sipnab", "-N", "-d", "any"][..],
             &["sipnab", "-N", "--hep-listen", "127.0.0.1:9060"][..],
@@ -8873,6 +8945,7 @@ mod tests {
             "/tmp/one.json",
         ]);
         assert!(!file.exports_vcon_live(), "a -I run writes at its end");
+        Ok(())
     }
 
     /// STOP-AUDIT-1: `--redact` (and `--redact-map`) on a live `--export-vcon`
@@ -8880,7 +8953,7 @@ mod tests {
     /// the end of a run, which a stopped live run never reaches. The message
     /// names the export flag the operator actually gave.
     #[test]
-    fn a_live_single_call_export_refuses_redaction() {
+    fn a_live_single_call_export_refuses_redaction() -> Result<(), TestError> {
         for extra in [
             &["--redact"][..],
             &["--redact", "--redact-map", "/tmp/map.json"][..],
@@ -8899,12 +8972,12 @@ mod tests {
             let cli = Cli::parse_from_args(argv.clone());
             let refusal = cli
                 .live_vcon_refusal()
-                .unwrap_or_else(|| panic!("{argv:?} was not refused"));
+                .ok_or_else(|| format!("{argv:?} was not refused"))?;
             let named = extra
                 .iter()
                 .rev()
                 .find(|f| f.starts_with("--"))
-                .expect("every case names a flag");
+                .ok_or("every case names a flag")?;
             assert!(refusal.contains(named), "must name {named}: {refusal}");
             assert!(
                 refusal.contains("--export-vcon ") && !refusal.contains("--export-vcon-when"),
@@ -8915,12 +8988,13 @@ mod tests {
                 "validate() must refuse {argv:?}"
             );
         }
+        Ok(())
     }
 
     /// `validate()` asks the rule with this build's own answer, so the wiring
     /// is exercised in every build: refused exactly when `vcon` is absent.
     #[test]
-    fn validate_refuses_vcon_flags_exactly_when_the_build_lacks_vcon() {
+    fn validate_refuses_vcon_flags_exactly_when_the_build_lacks_vcon() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-I",
@@ -8935,6 +9009,7 @@ mod tests {
             .err()
             .is_some_and(|e| e.to_string().contains("--export-vcon-when"));
         assert_eq!(refused, !cfg!(feature = "vcon"));
+        Ok(())
     }
 
     /// A build without the exporter refuses `--export-vcon` before capture.
@@ -8945,11 +9020,12 @@ mod tests {
     /// written the file.
     #[cfg(not(feature = "vcon"))]
     #[test]
-    fn export_vcon_is_refused_when_the_build_carries_no_exporter() {
+    fn export_vcon_is_refused_when_the_build_carries_no_exporter() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--export-vcon", "a@b"]);
         let err = cli
             .validate()
-            .expect_err("a build with no exporter must refuse the flag");
+            .err()
+            .ok_or("a build with no exporter must refuse the flag")?;
         let message = err.to_string();
         assert!(
             message.contains("vcon"),
@@ -8959,12 +9035,13 @@ mod tests {
             message.contains("--features"),
             "the refusal must name what produces a binary that can: {message}"
         );
+        Ok(())
     }
 
     /// Rotation defaults on; `--no-rotate` opts out; when both flags are
     /// given the last one wins.
     #[test]
-    fn rotate_defaults_on_and_negation_works() {
+    fn rotate_defaults_on_and_negation_works() -> Result<(), TestError> {
         // default: rotate on
         assert!(Cli::parse_from_args(["sipnab"]).rotate_enabled());
         // explicit --rotate / -R: still on (affirms the default, back-compat)
@@ -8975,18 +9052,20 @@ mod tests {
         // last flag wins when both are given
         assert!(!Cli::parse_from_args(["sipnab", "--rotate", "--no-rotate"]).rotate_enabled());
         assert!(Cli::parse_from_args(["sipnab", "--no-rotate", "--rotate"]).rotate_enabled());
+        Ok(())
     }
 
     /// `--setup-caps` parses into the capability-setup boolean.
     #[test]
-    fn setup_caps_flag_parses() {
+    fn setup_caps_flag_parses() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--setup-caps"]);
         assert!(cli.privilege_args.setup_caps);
+        Ok(())
     }
 
     /// `--resolve`, `--reverse-dns`, and repeatable `--names` files parse.
     #[test]
-    fn name_resolution_flags_parse() {
+    fn name_resolution_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "--resolve",
@@ -9002,12 +9081,13 @@ mod tests {
             cli.name_args.names,
             vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
         );
+        Ok(())
     }
 
     /// `-B`/`--buffer` and `--buffer-budget` parse numbers and reject
     /// non-numeric values.
     #[test]
-    fn buffer_flags_parse_and_reject_invalid() {
+    fn buffer_flags_parse_and_reject_invalid() -> Result<(), TestError> {
         // Kernel capture buffer (--buffer / -B).
         assert_eq!(
             Cli::parse_from_args(["sipnab", "--buffer", "32"])
@@ -9031,12 +9111,13 @@ mod tests {
         // Non-numeric values are rejected by clap.
         assert!(Cli::try_parse_from(["sipnab", "--buffer-budget", "huge"]).is_err());
         assert!(Cli::try_parse_from(["sipnab", "--buffer", "huge"]).is_err());
+        Ok(())
     }
 
     /// `--from-to-mode` parses the kebab-case modes, is `None` when
     /// absent, and rejects unknown values.
     #[test]
-    fn from_to_mode_flag_parses_and_rejects_invalid() {
+    fn from_to_mode_flag_parses_and_rejects_invalid() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "host-port"]);
         assert_eq!(cli.name_args.from_to_mode, Some(FromToModeArg::HostPort));
         let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "user-host-port"]);
@@ -9051,19 +9132,21 @@ mod tests {
         );
         // Invalid value is rejected by clap (I4).
         assert!(Cli::try_parse_from(["sipnab", "--from-to-mode", "bogus"]).is_err());
+        Ok(())
     }
 
     /// `--strip-secrets OUTPUT` parses alongside `-I`.
     #[test]
-    fn strip_secrets_flag_parses() {
+    fn strip_secrets_flag_parses() -> Result<(), TestError> {
         let cli =
             Cli::parse_from_args(["sipnab", "-I", "in.pcapng", "--strip-secrets", "out.pcapng"]);
         assert_eq!(cli.name_args.strip_secrets.as_deref(), Some("out.pcapng"));
+        Ok(())
     }
 
     /// Device, input/output pcap, `--no-rtp`, and `--multi-device` parse.
     #[test]
-    fn capture_flags_parse() {
+    fn capture_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-d",
@@ -9080,12 +9163,13 @@ mod tests {
         assert_eq!(cli.capture_args.output.as_deref(), Some("out.pcap"));
         assert!(cli.capture_args.no_rtp);
         assert!(cli.capture_args.multi_device);
+        Ok(())
     }
 
     /// Header filters (`--from`/`--to`/`--ua`) and the `-i`/`-v`/`-w`
     /// match modifiers parse.
     #[test]
-    fn matching_flags_parse() {
+    fn matching_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab", "--from", "alice", "--to", "bob", "--ua", "friendly", "-i", "-v", "-w",
         ]);
@@ -9095,29 +9179,32 @@ mod tests {
         assert!(cli.matching_args.ignore_case);
         assert!(cli.matching_args.invert);
         assert!(cli.matching_args.word);
+        Ok(())
     }
 
     /// `validate` rejects `--json` without `-N` and accepts it with `-N`.
     #[test]
-    fn output_flags_require_no_tui() {
+    fn output_flags_require_no_tui() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--json"]);
         assert!(cli.validate().is_err());
 
         let cli = Cli::parse_from_args(["sipnab", "-N", "--json"]);
         assert!(cli.validate().is_ok());
+        Ok(())
     }
 
     /// `--call-report` implies non-interactive output, so output flags
     /// validate without an explicit `-N`.
     #[test]
-    fn call_report_bypasses_no_tui_requirement() {
+    fn call_report_bypasses_no_tui_requirement() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--call-report", "abc123"]);
         assert!(cli.validate().is_ok());
+        Ok(())
     }
 
     /// `--kill-scanner`, `--fraud-detect`, and repeatable `--alert` parse.
     #[test]
-    fn security_flags_parse() {
+    fn security_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "--kill-scanner",
@@ -9130,21 +9217,23 @@ mod tests {
         assert!(cli.security_args.kill_scanner);
         assert!(cli.security_args.fraud_detect);
         assert_eq!(cli.security_args.alert, vec!["syslog", "json"]);
+        Ok(())
     }
 
     /// Trailing positional words are collected verbatim as the BPF filter.
     #[test]
-    fn bpf_filter_positional() {
+    fn bpf_filter_positional() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "host", "10.0.0.1", "and", "port", "5060"]);
         assert_eq!(
             cli.bpf_filter,
             vec!["host", "10.0.0.1", "and", "port", "5060"]
         );
+        Ok(())
     }
 
     /// `-S`/`--limitlen` and `--no-reassembly` parse; both default off.
     #[test]
-    fn limitlen_and_no_reassembly_flags_parse() {
+    fn limitlen_and_no_reassembly_flags_parse() -> Result<(), TestError> {
         // Short form.
         let cli = Cli::parse_from_args(["sipnab", "-S", "512", "--no-reassembly"]);
         assert_eq!(cli.capture_args.limitlen, Some(512));
@@ -9155,22 +9244,24 @@ mod tests {
         let d = Cli::parse_from_args(["sipnab"]);
         assert_eq!(d.capture_args.limitlen, None);
         assert!(!d.capture_args.no_reassembly);
+        Ok(())
     }
 
     /// `--hep-id` and `--hep-auth` parse; both are `None` when absent.
     #[test]
-    fn hep_id_and_auth_flags_parse() {
+    fn hep_id_and_auth_flags_parse() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--hep-id", "7", "--hep-auth", "secret"]);
         assert_eq!(cli.hep_args.hep_id, Some(7));
         assert_eq!(cli.hep_args.hep_auth.as_deref(), Some("secret"));
         let none = Cli::parse_from_args(["sipnab"]);
         assert_eq!(none.hep_args.hep_id, None);
         assert_eq!(none.hep_args.hep_auth, None);
+        Ok(())
     }
 
     /// `-p` and `--no-promisc` both set the flag; it defaults off.
     #[test]
-    fn no_promisc_short_and_long_flags() {
+    fn no_promisc_short_and_long_flags() -> Result<(), TestError> {
         assert!(
             Cli::parse_from_args(["sipnab", "-p"])
                 .capture_args
@@ -9182,6 +9273,7 @@ mod tests {
                 .no_promisc
         );
         assert!(!Cli::parse_from_args(["sipnab"]).capture_args.no_promisc);
+        Ok(())
     }
 
     /// `--capture-tunnels` takes an optional value: bare it means the three
@@ -9192,7 +9284,7 @@ mod tests {
     /// filter builder resolves, so the flag's advertised default and the ports
     /// actually captured cannot drift apart.
     #[test]
-    fn capture_tunnels_optional_value() {
+    fn capture_tunnels_optional_value() -> Result<(), TestError> {
         assert_eq!(
             Cli::parse_from_args(["sipnab", "--capture-tunnels"])
                 .capture_args
@@ -9214,12 +9306,13 @@ mod tests {
                 .as_deref(),
             None
         );
+        Ok(())
     }
 
     /// `--kill-spoof` defaults to auto, parses raw/ephemeral, and rejects
     /// unknown modes.
     #[test]
-    fn kill_spoof_flag_parses_with_auto_default() {
+    fn kill_spoof_flag_parses_with_auto_default() -> Result<(), TestError> {
         assert_eq!(
             Cli::parse_from_args(["sipnab"]).security_args.kill_spoof,
             KillSpoof::Auto
@@ -9238,12 +9331,13 @@ mod tests {
         );
         // Unknown mode is rejected by clap's value-enum parsing.
         assert!(Cli::try_parse_from(["sipnab", "--kill-spoof", "bogus"]).is_err());
+        Ok(())
     }
 
     /// `-K`/`--kill-target` is repeatable and does not steal the trailing
     /// BPF positional.
     #[test]
-    fn kill_target_repeatable_and_coexists() {
+    fn kill_target_repeatable_and_coexists() -> Result<(), TestError> {
         let cli = Cli::parse_from_args([
             "sipnab",
             "-K",
@@ -9257,27 +9351,31 @@ mod tests {
             vec!["10.0.0.1:5060-5090", "192.168.1.5"]
         );
         assert_eq!(cli.bpf_filter, vec!["host 10.0.0.1"]);
+        Ok(())
     }
 
     /// `validate` fails fast on a malformed `--kill-target` spec.
     #[test]
-    fn validate_rejects_bad_kill_target() {
+    fn validate_rejects_bad_kill_target() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-K", "not-an-ip"]);
-        let err = cli.validate().unwrap_err();
+        let err = cli.validate().err().ok_or("expected an error, got Ok")?;
         assert!(err.to_string().contains("--kill-target"));
+        Ok(())
     }
 
     /// Two keylog sources are ambiguous, so `validate` refuses rather than
     /// silently picking one and decrypting nothing the operator expected.
     #[test]
-    fn validate_rejects_two_keylog_sources() {
+    fn validate_rejects_two_keylog_sources() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--keylog", "/run/k", "--keylog-fd", "3"]);
         let err = cli
             .validate()
-            .expect_err("--keylog and --keylog-fd name different sources");
+            .err()
+            .ok_or("--keylog and --keylog-fd name different sources")?;
         let msg = err.to_string();
         assert!(msg.contains("--keylog-fd"), "names the flag: {msg}");
         assert!(msg.contains("--keylog"), "names both flags: {msg}");
+        Ok(())
     }
 
     /// A descriptor must be one sipnab could actually have inherited.
@@ -9285,32 +9383,36 @@ mod tests {
     /// Written `--keylog-fd=-1`, because clap reads a bare `-1` as a flag and
     /// rejects it at parse time — which never reaches the check under test.
     #[test]
-    fn validate_rejects_a_negative_keylog_fd() {
+    fn validate_rejects_a_negative_keylog_fd() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--keylog-fd=-1"]);
         let err = cli
             .validate()
-            .expect_err("a negative descriptor is not one");
+            .err()
+            .ok_or("a negative descriptor is not one")?;
         assert!(err.to_string().contains("--keylog-fd"));
+        Ok(())
     }
 
     /// `--keylog-fd` on its own is a complete, valid keylog configuration.
     #[test]
-    fn validate_accepts_keylog_fd_alone() {
+    fn validate_accepts_keylog_fd_alone() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--keylog-fd", "3"]);
         assert!(cli.validate().is_ok());
         assert_eq!(cli.tls_args.keylog_fd, Some(3));
+        Ok(())
     }
 
     /// `validate` accepts well-formed v4 port-range and bracketed v6 targets.
     #[test]
-    fn validate_accepts_good_kill_targets() {
+    fn validate_accepts_good_kill_targets() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "-K", "10.0.0.1:5060-5090", "-K", "[::1]:5060"]);
         assert!(cli.validate().is_ok());
+        Ok(())
     }
 
     /// `-e` and `--match` both set the payload match expression.
     #[test]
-    fn match_expr_short_and_long_flags() {
+    fn match_expr_short_and_long_flags() -> Result<(), TestError> {
         let short = Cli::parse_from_args(["sipnab", "-e", "INVITE sip:"]);
         assert_eq!(
             short.matching_args.match_expr.as_deref(),
@@ -9322,11 +9424,12 @@ mod tests {
 
         let none = Cli::parse_from_args(["sipnab"]);
         assert_eq!(none.matching_args.match_expr, None);
+        Ok(())
     }
 
     /// `--proto-number` (long-only) parses; defaults off.
     #[test]
-    fn proto_number_flag_parses() {
+    fn proto_number_flag_parses() -> Result<(), TestError> {
         // Long-only: `-N` is already taken by `--no-tui`.
         assert!(
             Cli::parse_from_args(["sipnab", "--proto-number"])
@@ -9334,11 +9437,12 @@ mod tests {
                 .proto_number
         );
         assert!(!Cli::parse_from_args(["sipnab"]).output_args.proto_number);
+        Ok(())
     }
 
     /// `--show-empty` and its `--full` alias both set the flag.
     #[test]
-    fn show_empty_flag_and_full_alias_parse() {
+    fn show_empty_flag_and_full_alias_parse() -> Result<(), TestError> {
         assert!(
             Cli::parse_from_args(["sipnab", "--show-empty"])
                 .output_args
@@ -9351,11 +9455,12 @@ mod tests {
                 .show_empty
         );
         assert!(!Cli::parse_from_args(["sipnab"]).output_args.show_empty);
+        Ok(())
     }
 
     /// `-x` and `--quiet-bad-parse` both set the flag; defaults off.
     #[test]
-    fn quiet_bad_parse_short_and_long_flags() {
+    fn quiet_bad_parse_short_and_long_flags() -> Result<(), TestError> {
         assert!(
             Cli::parse_from_args(["sipnab", "-x"])
                 .capture_args
@@ -9371,12 +9476,13 @@ mod tests {
                 .capture_args
                 .quiet_bad_parse
         );
+        Ok(())
     }
 
     /// The `-e` payload expression and the trailing BPF positional stay
     /// independent — neither steals the other's tokens.
     #[test]
-    fn match_expr_coexists_with_bpf_positional() {
+    fn match_expr_coexists_with_bpf_positional() -> Result<(), TestError> {
         // The payload match-expression (-e) and the trailing BPF positional
         // are independent: neither steals the other's tokens.
         let cli = Cli::parse_from_args(["sipnab", "-e", "friendly-scanner", "host", "10.0.0.1"]);
@@ -9385,16 +9491,18 @@ mod tests {
             Some("friendly-scanner")
         );
         assert_eq!(cli.bpf_filter, vec!["host", "10.0.0.1"]);
+        Ok(())
     }
 
     /// The validation error names every offending output flag at once.
     #[test]
-    fn validate_multiple_output_flags() {
+    fn validate_multiple_output_flags() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--report", "--fail2ban"]);
-        let err = cli.validate().unwrap_err();
+        let err = cli.validate().err().ok_or("expected an error, got Ok")?;
         assert!(err.to_string().contains("--json"));
         assert!(err.to_string().contains("--report"));
         assert!(err.to_string().contains("--fail2ban"));
+        Ok(())
     }
 
     /// Every `[quality]` key moves the band a measurement lands in, and every
@@ -9410,7 +9518,7 @@ mod tests {
     /// precedence chain is written out per field: a copy-paste slip in the
     /// seventh is invisible to a test that exercises the first.
     #[test]
-    fn every_quality_key_moves_its_band_and_every_flag_outranks_its_key() {
+    fn every_quality_key_moves_its_band_and_every_flag_outranks_its_key() -> Result<(), TestError> {
         use crate::rtp::bands::{Band, QualityBands};
 
         /// One boundary: how to set it from a file, how to set it from the
@@ -9568,6 +9676,7 @@ mod tests {
                 c.key
             );
         }
+        Ok(())
     }
 
     /// The detector-state sweep age outlasts every window it ages state for,
@@ -9579,7 +9688,7 @@ mod tests {
     /// nothing says so. Asserted as the RELATION rather than as a number, so a
     /// future window that is wider still cannot pass by arithmetic accident.
     #[test]
-    fn the_sweep_age_outlasts_every_window_it_ages_state_for() {
+    fn the_sweep_age_outlasts_every_window_it_ages_state_for() -> Result<(), TestError> {
         let cases: [(&str, u64); 4] = [
             ("fraud_wangiri_window_secs", 900),
             ("fraud_volume_window_secs", 600),
@@ -9614,6 +9723,7 @@ mod tests {
                 Cli::SHIPPED_SWEEP_MAX_AGE
             );
         }
+        Ok(())
     }
 
     /// The detector-state sweep outlasts the registration-flood window and
@@ -9624,7 +9734,7 @@ mod tests {
     /// transactions a late challenge would settle: an operator who sets a
     /// ten-minute timeout would get two minutes, and nothing would say so.
     #[test]
-    fn the_sweep_age_outlasts_the_reg_flood_window_and_timeout() {
+    fn the_sweep_age_outlasts_the_reg_flood_window_and_timeout() -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         for (window, timeout_ms) in [(3_600, 32_000), (1, 600_000), (1, 64_000)] {
             let mut config = crate::config::Config::default();
@@ -9638,6 +9748,7 @@ mod tests {
                  the sweep discards pending REGISTERs before their transaction ends"
             );
         }
+        Ok(())
     }
 
     /// A run that declares nothing sweeps at exactly the age it always did.
@@ -9646,13 +9757,14 @@ mod tests {
     /// deriving the age must not move it for the deployments that never set a
     /// window.
     #[test]
-    fn the_shipped_sweep_age_is_unchanged_by_the_derivation() {
+    fn the_shipped_sweep_age_is_unchanged_by_the_derivation() -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         assert_eq!(
             bare.security_sweep_max_age(&crate::config::Config::default())
                 .as_secs(),
             Cli::SHIPPED_SWEEP_MAX_AGE
         );
+        Ok(())
     }
 
     /// Every truncation/refusal cap resolves flag over key over the SHIPPED
@@ -9667,7 +9779,8 @@ mod tests {
     /// Each case sets the key and the flag to DIFFERENT values, so "the flag
     /// won" and "the key was never read" cannot look alike.
     #[test]
-    fn every_truncation_cap_resolves_flag_over_key_over_the_shipped_constant() {
+    fn every_truncation_cap_resolves_flag_over_key_over_the_shipped_constant()
+    -> Result<(), TestError> {
         /// One cap: how to set it from a file, how to set it from the command
         /// line, and how to ask the resolver what it decided.
         struct Case {
@@ -9888,6 +10001,7 @@ mod tests {
                 c.key
             );
         }
+        Ok(())
     }
 
     /// `[limits] max_tracked_peers` reaches the resolver, and with no key set
@@ -9898,7 +10012,8 @@ mod tests {
     /// a running listener is proved end-to-end by the `[limits]` gate in
     /// `tests/config_wiring_test.rs`.
     #[test]
-    fn the_tracked_peer_capacity_comes_from_the_file_or_the_limiters_constant() {
+    fn the_tracked_peer_capacity_comes_from_the_file_or_the_limiters_constant()
+    -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         assert_eq!(
             bare.tracked_peer_capacity(&crate::config::Config::default()),
@@ -9918,6 +10033,7 @@ mod tests {
             9,
             "[limits] max_tracked_peers must reach the resolver"
         );
+        Ok(())
     }
 
     /// `--hep-hmac-window` beats `[security] hep_hmac_window_secs`, which beats
@@ -9928,7 +10044,7 @@ mod tests {
     /// listener in `tests/hep_test.rs`.
     #[cfg(feature = "hep")]
     #[test]
-    fn the_hmac_window_is_flag_then_key_then_the_verifiers_constant() {
+    fn the_hmac_window_is_flag_then_key_then_the_verifiers_constant() -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         let shipped = crate::capture::hep::DEFAULT_HMAC_WINDOW_SECS;
         assert_eq!(
@@ -9953,6 +10069,7 @@ mod tests {
             7,
             "--hep-hmac-window must outrank the key it shadows"
         );
+        Ok(())
     }
 
     /// Neither end of the HMAC window can be reached from the command line.
@@ -9961,7 +10078,7 @@ mod tests {
     /// this is the half that keeps the flag from being the lenient way in.
     #[cfg(feature = "hep")]
     #[test]
-    fn clap_refuses_an_hmac_window_outside_the_documented_range() {
+    fn clap_refuses_an_hmac_window_outside_the_documented_range() -> Result<(), TestError> {
         for bad in ["0", "301"] {
             assert!(
                 Cli::try_parse_from(["sipnab", "--hep-hmac-window", bad]).is_err(),
@@ -9977,6 +10094,7 @@ mod tests {
             .is_ok(),
             "the documented maximum itself must be accepted, or the range is off by one"
         );
+        Ok(())
     }
 
     /// `0` is refused by clap on every byte/count cap, so the permissive
@@ -9985,7 +10103,7 @@ mod tests {
     /// The config layer refuses it by name; a flag that accepted it would make
     /// the guard bypassable by the shorter route.
     #[test]
-    fn zero_is_refused_on_every_truncation_flag() {
+    fn zero_is_refused_on_every_truncation_flag() -> Result<(), TestError> {
         for flag in [
             "--max-lost-sequences",
             "--max-metadata-file-bytes",
@@ -9997,7 +10115,8 @@ mod tests {
             "--api-max-rows",
         ] {
             let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "0"])
-                .expect_err("0 must be refused");
+                .err()
+                .ok_or("0 must be refused")?;
             assert!(
                 err.to_string().contains("0"),
                 "{flag} must refuse 0 and say so: {err}"
@@ -10014,19 +10133,21 @@ mod tests {
                 flag,
                 "0",
             ])
-            .expect_err("0 must be refused");
+            .err()
+            .ok_or("0 must be refused")?;
             assert!(
                 err.to_string().contains("0"),
                 "{flag} must refuse 0 and say so: {err}"
             );
         }
+        Ok(())
     }
 
     /// The registration-flood policy resolves flag over `[security]` key over
     /// the built-in, field by field, and a run that sets nothing gets the
     /// shipped 50 failures, one-second window and 32-second Timer F.
     #[test]
-    fn reg_flood_policy_resolves_flag_over_key_over_built_in() {
+    fn reg_flood_policy_resolves_flag_over_key_over_built_in() -> Result<(), TestError> {
         use crate::security::RegFloodPolicy;
         let bare = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
         let none = crate::config::Config::default();
@@ -10075,13 +10196,14 @@ mod tests {
             },
             "each flag must beat its key"
         );
+        Ok(())
     }
 
     /// clap refuses the same absurd values `SecurityConfig::validate` refuses
     /// for the two registration-flood policy flags, so neither door is the
     /// lenient way in.
     #[test]
-    fn reg_flood_policy_flags_refuse_absurd_values() {
+    fn reg_flood_policy_flags_refuse_absurd_values() -> Result<(), TestError> {
         use crate::security::reg_flood::{
             MAX_TRANSACTION_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_TRANSACTION_TIMEOUT_MS,
         };
@@ -10109,7 +10231,8 @@ mod tests {
             for v in bad {
                 let v = v.to_string();
                 let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, &v])
-                    .expect_err("an out-of-range value must be refused");
+                    .err()
+                    .ok_or("an out-of-range value must be refused")?;
                 let msg = err.to_string();
                 assert!(
                     msg.contains(flag) && msg.contains(&v),
@@ -10117,6 +10240,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// `0` is refused by clap on the fraud, registration-flood, dialog-limit
@@ -10128,7 +10252,7 @@ mod tests {
     /// (`--fraud-short-call 0` counts no call as short, so wangiri never fires;
     /// `--reg-flood-threshold 0` reports every REGISTER as a flood).
     #[test]
-    fn zero_is_refused_on_fraud_reg_flood_and_cap_flags() {
+    fn zero_is_refused_on_fraud_reg_flood_and_cap_flags() -> Result<(), TestError> {
         // (flag, extra args the flag needs before it can parse)
         let cases: &[(&str, &[&str])] = &[
             ("--reg-flood-threshold", &[]),
@@ -10157,12 +10281,14 @@ mod tests {
             zero.push(flag);
             zero.push("0");
             let err = Cli::try_parse_from(zero.iter().copied())
-                .expect_err("0 must be refused by clap, as the config file refuses it");
+                .err()
+                .ok_or("0 must be refused by clap, as the config file refuses it")?;
             assert!(
                 err.to_string().contains('0'),
                 "{flag} must refuse 0 and say so: {err}"
             );
         }
+        Ok(())
     }
 
     /// `--quality-threshold` is a MOS on the documented 1.0-5.0 scale, so a
@@ -10171,7 +10297,7 @@ mod tests {
     /// always false (hooks never fire); a negative made it always true (fires on
     /// every stream); both parsed without complaint before.
     #[test]
-    fn quality_threshold_rejects_non_finite_and_out_of_range() {
+    fn quality_threshold_rejects_non_finite_and_out_of_range() -> Result<(), TestError> {
         for bad in ["nan", "-1", "0", "6", "inf"] {
             assert!(
                 Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--quality-threshold", bad])
@@ -10186,6 +10312,7 @@ mod tests {
                 "--quality-threshold {good} must be accepted"
             );
         }
+        Ok(())
     }
 
     /// A `--max-tcp-buffer` below one SIP header line is refused by clap, by
@@ -10197,24 +10324,27 @@ mod tests {
     /// flag that accepted them would let a run destroy every SIP/TCP message in
     /// the capture on a value that looked like a setting.
     #[test]
-    fn a_tcp_buffer_below_one_header_line_is_refused_by_clap_and_by_the_file() {
+    fn a_tcp_buffer_below_one_header_line_is_refused_by_clap_and_by_the_file()
+    -> Result<(), TestError> {
         let floor = crate::capture::reassembly::MIN_TCP_BUFFER;
         for value in ["0", "1", "4096"] {
             let err =
                 Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--max-tcp-buffer", value])
-                    .expect_err("a ceiling below one header line must be refused");
+                    .err()
+                    .ok_or("a ceiling below one header line must be refused")?;
             assert!(
                 err.to_string().contains(&floor.to_string()),
                 "--max-tcp-buffer must name the floor it enforces: {err}"
             );
 
             let limits = crate::config::LimitsConfig {
-                max_tcp_buffer: Some(value.parse().expect("test values are numbers")),
+                max_tcp_buffer: Some(value.parse()?),
                 ..Default::default()
             };
             let err = limits
                 .validate()
-                .expect_err("the file must not be the lenient way in");
+                .err()
+                .ok_or("the file must not be the lenient way in")?;
             assert!(
                 err.to_string().contains("max_tcp_buffer"),
                 "the file's refusal must name the key: {err}"
@@ -10242,6 +10372,7 @@ mod tests {
             limits.validate().is_ok(),
             "the floor must be reachable from the file"
         );
+        Ok(())
     }
 
     /// `--cn-suppression-ratio` resolves over `[diagnosis] cn_suppression_ratio`
@@ -10252,7 +10383,7 @@ mod tests {
     /// explanation for one-way audio on every call carrying a single CN frame,
     /// and the operator would see a quiet report rather than an error.
     #[test]
-    fn the_cn_suppression_ratio_resolves_and_refuses_a_non_share() {
+    fn the_cn_suppression_ratio_resolves_and_refuses_a_non_share() -> Result<(), TestError> {
         let built_in = crate::rtp::diagnosis::AsymmetryThresholds::BUILT_IN.cn_suppression_ratio;
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         assert_eq!(
@@ -10294,24 +10425,27 @@ mod tests {
                 "x.pcap",
                 &format!("--cn-suppression-ratio={value}"),
             ])
-            .expect_err("a ratio outside (0, 1] must be refused");
+            .err()
+            .ok_or("a ratio outside (0, 1] must be refused")?;
             assert!(
                 err.to_string().contains("cn-suppression-ratio"),
                 "the refusal must name the flag: {err}"
             );
 
             let cfg = crate::config::DiagnosisConfig {
-                cn_suppression_ratio: Some(value.parse().expect("test values parse as f64")),
+                cn_suppression_ratio: Some(value.parse()?),
                 ..Default::default()
             };
             let err = cfg
                 .validate()
-                .expect_err("the file must not be the lenient way in");
+                .err()
+                .ok_or("the file must not be the lenient way in")?;
             assert!(
                 err.to_string().contains("cn_suppression_ratio"),
                 "the file's refusal must name the key: {err}"
             );
         }
+        Ok(())
     }
 
     /// `-E` / `--hep-parse` or `[capture] hep_parse = true` turns HEP
@@ -10319,7 +10453,7 @@ mod tests {
     /// cannot be overridden off from the command line, only on; an explicit
     /// `false` in the file is the default, not a veto over the flag.
     #[test]
-    fn switch_follows_the_flag_typed_then_the_key_then_the_default() {
+    fn switch_follows_the_flag_typed_then_the_key_then_the_default() -> Result<(), TestError> {
         // (on flag, off flag, key, default) -> value
         let cases = [
             (true, false, None, false, true),
@@ -10338,12 +10472,13 @@ mod tests {
                 "{on} {off} {key:?} {default}"
             );
         }
+        Ok(())
     }
 
     /// `--no-hep-parse` turns off what `[capture] hep_parse = true` turned
     /// on, and the last of `-E` / `--no-hep-parse` typed wins.
     #[test]
-    fn no_hep_parse_overrides_the_file_and_the_last_flag_typed_wins() {
+    fn no_hep_parse_overrides_the_file_and_the_last_flag_typed_wins() -> Result<(), TestError> {
         let mut on = crate::config::Config::default();
         on.capture.hep_parse = Some(true);
         let off = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--no-hep-parse"]);
@@ -10360,6 +10495,7 @@ mod tests {
         let last_off =
             Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "-E", "--no-hep-parse"]);
         assert!(!last_off.hep_parse(&on), "--no-hep-parse typed last wins");
+        Ok(())
     }
 
     /// Every switch: (on flag, off flag, set the key to true, read the value).
@@ -10432,7 +10568,7 @@ mod tests {
     /// The failure that motivated the off flags: a file turns a switch on, and
     /// the off flag turns it off again. Before, only `--no-config` could.
     #[test]
-    fn every_off_flag_beats_a_file_that_turned_its_switch_on() {
+    fn every_off_flag_beats_a_file_that_turned_its_switch_on() -> Result<(), TestError> {
         for (on, off, set, read) in switches() {
             let mut cfg = crate::config::Config::default();
             set(&mut cfg);
@@ -10442,11 +10578,12 @@ mod tests {
                 "{off} must beat the file's true"
             );
         }
+        Ok(())
     }
 
     /// The last of the pair typed wins, in either order.
     #[test]
-    fn the_last_of_each_switch_pair_typed_wins() {
+    fn the_last_of_each_switch_pair_typed_wins() -> Result<(), TestError> {
         let cfg = crate::config::Config::default();
         for (on, off, _, read) in switches() {
             assert!(
@@ -10458,11 +10595,12 @@ mod tests {
                 "{on} {off}: {off} typed last"
             );
         }
+        Ok(())
     }
 
     /// With no flag, the key decides, and its absence means the default.
     #[test]
-    fn every_switch_falls_back_to_its_key_then_off() {
+    fn every_switch_falls_back_to_its_key_then_off() -> Result<(), TestError> {
         for (on, _, set, read) in switches() {
             assert!(
                 !read(&parse(&[]), &crate::config::Config::default()),
@@ -10472,11 +10610,12 @@ mod tests {
             set(&mut cfg);
             assert!(read(&parse(&[]), &cfg), "{on}: the key decides");
         }
+        Ok(())
     }
 
     /// `--no-resolve` wins over every other way names get turned on.
     #[test]
-    fn no_resolve_beats_names_files_hosts_files_and_reverse_dns() {
+    fn no_resolve_beats_names_files_hosts_files_and_reverse_dns() -> Result<(), TestError> {
         let mut cfg = crate::config::Config::default();
         cfg.names.hosts_file = Some("/etc/sipnab/hosts".into());
         cfg.names.reverse_dns = Some(true);
@@ -10487,10 +10626,11 @@ mod tests {
         );
         assert!(!cli.reverse_dns(&cfg), "no lookups when names are off");
         assert!(parse(&["--names", "lab.hosts"]).resolve_names(&crate::config::Config::default()));
+        Ok(())
     }
 
     #[test]
-    fn hep_parse_resolves_from_the_flag_or_the_config_key() {
+    fn hep_parse_resolves_from_the_flag_or_the_config_key() -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         let flagged = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "-E"]);
         let unset = crate::config::Config::default();
@@ -10510,17 +10650,17 @@ mod tests {
             flagged.hep_parse(&off),
             "-E must not be vetoed by the file's false"
         );
+        Ok(())
     }
 
     /// `--ws-portrange` resolves over `[capture] ws_ports` over the shipped
     /// set, and a malformed range from either source is refused by its source's
     /// name.
     #[test]
-    fn the_ws_port_range_resolves_and_names_a_malformed_source() {
+    fn the_ws_port_range_resolves_and_names_a_malformed_source() -> Result<(), TestError> {
         let bare = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         assert_eq!(
-            bare.ws_port_range(&crate::config::Config::default())
-                .expect("nothing declared is not an error"),
+            bare.ws_port_range(&crate::config::Config::default())?,
             None,
             "with neither given the shipped set stands, which is NOT an empty set"
         );
@@ -10528,7 +10668,7 @@ mod tests {
         let mut tuned = crate::config::Config::default();
         tuned.capture.ws_ports = Some("8081-8090".into());
         assert_eq!(
-            bare.ws_port_range(&tuned).expect("a valid range"),
+            bare.ws_port_range(&tuned)?,
             Some((8081, 8090)),
             "[capture] ws_ports must reach the resolver"
         );
@@ -10542,7 +10682,7 @@ mod tests {
             "5443-5443",
         ]);
         assert_eq!(
-            flagged.ws_port_range(&tuned).expect("a valid range"),
+            flagged.ws_port_range(&tuned)?,
             Some((5443, 5443)),
             "--ws-portrange must outrank the [capture] ws_ports it shadows"
         );
@@ -10551,7 +10691,8 @@ mod tests {
         broken.capture.ws_ports = Some("8090-8081".into());
         let err = bare
             .ws_port_range(&broken)
-            .expect_err("start > end must be refused");
+            .err()
+            .ok_or("start > end must be refused")?;
         assert!(
             err.to_string().contains("ws_ports"),
             "the refusal must name the source that carried it: {err}"
@@ -10560,11 +10701,13 @@ mod tests {
             Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--ws-portrange", "80"]);
         let err = flagged
             .ws_port_range(&crate::config::Config::default())
-            .expect_err("a single port is not a range");
+            .err()
+            .ok_or("a single port is not a range")?;
         assert!(
             err.to_string().contains("--ws-portrange"),
             "the refusal must name the flag that carried it: {err}"
         );
+        Ok(())
     }
 
     /// `--max-groups` and `--max-grouped-messages` arm nothing without
@@ -10574,14 +10717,16 @@ mod tests {
     /// accepted and then ignored looks, from the operator's side, exactly like
     /// one that worked.
     #[test]
-    fn the_group_caps_are_refused_without_the_grouping_they_bound() {
+    fn the_group_caps_are_refused_without_the_grouping_they_bound() -> Result<(), TestError> {
         for flag in ["--max-groups", "--max-grouped-messages"] {
             let err = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", flag, "5"])
-                .expect_err("must require --group-by");
+                .err()
+                .ok_or("must require --group-by")?;
             assert!(
                 err.to_string().contains("--group-by"),
                 "{flag} without --group-by must name what it needs: {err}"
             );
         }
+        Ok(())
     }
 }

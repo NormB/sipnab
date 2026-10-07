@@ -81,13 +81,15 @@ pub fn find(uri: &str) -> Option<Reference> {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every reference carries content, and a real amount of it.
     ///
     /// `include_str!` of a path that exists but was emptied still compiles, so
     /// the failure this guards is a resource that lists, reads, and returns
     /// nothing -- which an agent cannot tell apart from a grammar with no rules.
     #[test]
-    fn every_reference_carries_substantial_content() {
+    fn every_reference_carries_substantial_content() -> Result<(), TestError> {
         for r in all() {
             assert!(
                 r.text.len() > 500,
@@ -98,6 +100,7 @@ mod tests {
                 r.text.len()
             );
         }
+        Ok(())
     }
 
     /// The DSL reference actually describes the DSL.
@@ -105,18 +108,19 @@ mod tests {
     /// Pins content, not size. Pointing `include_str!` at the wrong file still
     /// yields a large string, and a large wrong answer is worse than an error.
     #[test]
-    fn the_dsl_reference_describes_the_filter_language() {
-        let dsl = find("sipnab://reference/filter-dsl").expect("the DSL reference is served");
+    fn the_dsl_reference_describes_the_filter_language() -> Result<(), TestError> {
+        let dsl = find("sipnab://reference/filter-dsl").ok_or("the DSL reference is served")?;
         assert!(
             dsl.text.contains("filter") || dsl.text.contains("DSL"),
             "the filter-dsl resource does not mention filtering; include_str! is \
              pointed at the wrong page"
         );
+        Ok(())
     }
 
     /// URIs are unique, so a read resolves to one answer.
     #[test]
-    fn reference_uris_do_not_collide() {
+    fn reference_uris_do_not_collide() -> Result<(), TestError> {
         let mut seen = std::collections::BTreeSet::new();
         for r in all() {
             assert!(
@@ -126,14 +130,16 @@ mod tests {
                 r.uri
             );
         }
+        Ok(())
     }
 
     /// An unknown URI resolves to nothing rather than to the first entry.
     #[test]
-    fn an_unknown_uri_finds_nothing() {
+    fn an_unknown_uri_finds_nothing() -> Result<(), TestError> {
         assert!(
             find("sipnab://reference/does-not-exist").is_none(),
             "an unknown reference must not fall through to a real one"
         );
+        Ok(())
     }
 }

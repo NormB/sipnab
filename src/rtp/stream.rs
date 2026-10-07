@@ -1362,6 +1362,8 @@ pub fn clock_rate_from_pt(pt: u8) -> Option<u32> {
 #[cfg(test)]
 mod tests {
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A rate no codec can produce is reported as impossible (#72).
     ///
     /// Two byte-identical copies of a capture read as one `-I` set doubled a
@@ -1370,7 +1372,7 @@ mod tests {
     /// arithmetically impossible one, and sipnab emitted it silently. Doubled
     /// counts read as a busier network rather than a duplicated input.
     #[test]
-    fn a_doubled_pcmu_stream_reports_an_impossible_rate() {
+    fn a_doubled_pcmu_stream_reports_an_impossible_rate() -> Result<(), TestError> {
         let t0 = chrono::Utc::now();
         let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
         s.codec = Some("PCMU".to_string());
@@ -1389,12 +1391,13 @@ mod tests {
         s.octet_count = 2 * 8 * 8_000;
         let m = s
             .impossible_rate_multiple()
-            .expect("128 kbps of PCMU is physically impossible and must be said");
+            .ok_or("128 kbps of PCMU is physically impossible and must be said")?;
         assert!(
             (m - 2.0).abs() < 0.05,
             "the multiple must name HOW impossible, so 2x reads as duplicate \
              input rather than as an unspecified anomaly: got {m}"
         );
+        Ok(())
     }
 
     /// Short and single-packet streams are not flagged, and neither is a codec
@@ -1404,7 +1407,7 @@ mod tests {
     /// against a rate that does not exist, turning the check into noise — and a
     /// warning that fires constantly is one nobody reads.
     #[test]
-    fn the_impossible_rate_check_stays_silent_where_it_cannot_know() {
+    fn the_impossible_rate_check_stays_silent_where_it_cannot_know() -> Result<(), TestError> {
         let t0 = chrono::Utc::now();
         let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
         s.codec = Some("PCMU".to_string());
@@ -1428,6 +1431,7 @@ mod tests {
             s.impossible_rate_multiple().is_none(),
             "an unknown codec must not be judged against a rate we guessed"
         );
+        Ok(())
     }
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -1464,7 +1468,7 @@ mod tests {
     /// Recording more snapshots than the retention holds caps the trend
     /// history and evicts the oldest entries first.
     #[test]
-    fn quality_intervals_are_bounded_oldest_out() {
+    fn quality_intervals_are_bounded_oldest_out() -> Result<(), TestError> {
         // A long-lived stream must not grow its trend history without
         // bound: one interval per 5 s means a day-long call is 17k
         // entries per stream. The history is a ring capped at the stream's
@@ -1474,7 +1478,7 @@ mod tests {
         // the period and the retention move together now, and a test
         // holding its own copy of either would keep passing while the two
         // disagreed.
-        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0)?);
         let period = super::quality_interval_secs();
         let cap = super::quality_interval_cap(period);
         let n = cap + 10;
@@ -1482,7 +1486,7 @@ mod tests {
             // one packet every `period` seconds closes an interval
             s.update(
                 &make_header(i as u16, i as u32 * 160, 0),
-                ts(i as i64 * period),
+                ts(i as i64 * period)?,
                 160,
             );
         }
@@ -1493,18 +1497,19 @@ mod tests {
         );
         // oldest evicted: the first surviving interval is the 11th
         // recorded one, and order stays oldest-first.
-        let first = s.quality_intervals.first().expect("non-empty");
-        let last = s.quality_intervals.last().expect("non-empty");
+        let first = s.quality_intervals.first().ok_or("non-empty")?;
+        let last = s.quality_intervals.last().ok_or("non-empty")?;
         assert!(first.timestamp < last.timestamp, "oldest-first order");
         assert!(
-            first.timestamp >= ts(10 * period),
+            first.timestamp >= ts(10 * period)?,
             "the ten oldest intervals were evicted"
         );
+        Ok(())
     }
 
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
-    pub(super) fn ts(secs: i64) -> DateTime<Utc> {
-        DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    pub(super) fn ts(secs: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::from_timestamp(1_700_000_000 + secs, 0).ok_or("valid timestamp")?)
     }
 
     /// A reordered packet is not counted as loss. `1, 3, 2, 4` arrives with
@@ -1514,24 +1519,26 @@ mod tests {
     /// now only moves forward, and a presumed-lost sequence that arrives late
     /// is credited back.
     #[test]
-    fn a_reordered_packet_is_not_counted_as_loss() {
-        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0));
-        s.update(&make_header(3, 0, 0), ts(1), 160);
-        s.update(&make_header(2, 0, 0), ts(2), 160);
-        s.update(&make_header(4, 0, 0), ts(3), 160);
+    fn a_reordered_packet_is_not_counted_as_loss() -> Result<(), TestError> {
+        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0)?);
+        s.update(&make_header(3, 0, 0), ts(1)?, 160);
+        s.update(&make_header(2, 0, 0), ts(2)?, 160);
+        s.update(&make_header(4, 0, 0), ts(3)?, 160);
         assert_eq!(
             s.lost_packets, 0,
             "1,3,2,4 is a reorder of four consecutive packets — none were lost"
         );
+        Ok(())
     }
 
     /// A genuine gap is still counted: after seq 1, seq 4 arrives and 2 and 3
     /// never do, which is two lost.
     #[test]
-    fn a_real_sequence_gap_is_still_counted_as_loss() {
-        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0));
-        s.update(&make_header(4, 0, 0), ts(1), 160);
+    fn a_real_sequence_gap_is_still_counted_as_loss() -> Result<(), TestError> {
+        let mut s = RtpStream::new(make_key(), &make_header(1, 0, 0), ts(0)?);
+        s.update(&make_header(4, 0, 0), ts(1)?, 160);
         assert_eq!(s.lost_packets, 2, "a gap of seq 2 and 3 is two lost");
+        Ok(())
     }
 
     /// Burst/gap analysis must bound its window to the sequence range the
@@ -1541,8 +1548,8 @@ mod tests {
     /// reported NO burstiness — a silent undercount. Anchoring at the newest
     /// retained loss keeps the retained bursts visible.
     #[test]
-    fn burst_gap_window_bounded_to_retained_log() {
-        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+    fn burst_gap_window_bounded_to_retained_log() -> Result<(), TestError> {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0)?);
 
         // Retained log: 250 bursts of 4 consecutive losses, each separated by
         // a single received sequence — lost {1,2,3,4, 6,7,8,9, ...}. front=1,
@@ -1565,7 +1572,7 @@ mod tests {
         stream.last_seq = 1249 + stream.burst_window_cap() as u16 + 100;
         stream.packet_count = 20_000;
 
-        let bga = stream.burst_gap_analysis().expect("losses present");
+        let bga = stream.burst_gap_analysis().ok_or("losses present")?;
         assert!(
             bga.is_bursty,
             "retained bursts must stay visible, not undercount to zero"
@@ -1575,6 +1582,7 @@ mod tests {
             "expected the ~250 retained bursts, got {}",
             bga.burst_count
         );
+        Ok(())
     }
 
     /// Silence duration is derived from observed CN packet spacing, not a
@@ -1582,16 +1590,16 @@ mod tests {
     /// timestamp jumps between sparse CN frames, and the duration must follow
     /// it rather than assuming one 20 ms frame per packet.
     #[test]
-    fn silence_duration_derived_from_cn_spacing() {
+    fn silence_duration_derived_from_cn_spacing() -> Result<(), TestError> {
         // PCMU (8 kHz). CN frames arrive one sequence apart but 1600 RTP
         // timestamp units (200 ms) apart.
-        let mut stream = RtpStream::new(make_key(), &make_header(100, 0, 0), ts(0));
+        let mut stream = RtpStream::new(make_key(), &make_header(100, 0, 0), ts(0)?);
         for k in 0..4u32 {
             let seq = 101 + k as u16;
             let rtp_ts = 1600 * (k + 1);
-            stream.update(&make_header(seq, rtp_ts, 13), ts(1 + k as i64), 1);
+            stream.update(&make_header(seq, rtp_ts, 13), ts(1 + k as i64)?, 1);
         }
-        let sp = stream.silence_periods.last().expect("a silence period");
+        let sp = stream.silence_periods.last().ok_or("a silence period")?;
         // Span first→last = 3 × 200 ms = 600 ms, plus one nominal 20 ms
         // frame. The old fixed-20 ms-per-frame estimate reported only 80 ms.
         assert!(
@@ -1601,15 +1609,16 @@ mod tests {
         );
         assert_eq!(sp.start_seq, 101);
         assert_eq!(sp.end_seq, 104);
+        Ok(())
     }
 
     /// A fresh stream starts with packet_count 1, resolved PCMU codec, and
     /// zeroed jitter/loss/orphan state.
     #[test]
-    fn new_stream_initial_values() {
+    fn new_stream_initial_values() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
-        let stream = RtpStream::new(key.clone(), &hdr, ts(0));
+        let stream = RtpStream::new(key.clone(), &hdr, ts(0)?);
 
         assert_eq!(stream.key, key);
         assert_eq!(stream.payload_type, 0);
@@ -1626,6 +1635,7 @@ mod tests {
             "a brand-new stream is claimed by no dialog, and that IS what \
              orphaned means"
         );
+        Ok(())
     }
 
     /// `is_active_at` decides activity relative to an injected instant, so it
@@ -1633,53 +1643,55 @@ mod tests {
     /// its `last_seen` and inactive once the reference instant moves past that
     /// window. The 30 s boundary is exclusive.
     #[test]
-    fn is_active_at_is_deterministic() {
+    fn is_active_at_is_deterministic() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
         // last_seen is seeded to ts(0) by RtpStream::new.
-        let stream = RtpStream::new(key, &hdr, ts(0));
+        let stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Within the 30 s window (and at last_seen itself) → active.
-        assert!(stream.is_active_at(ts(0)));
-        assert!(stream.is_active_at(ts(29)));
+        assert!(stream.is_active_at(ts(0)?));
+        assert!(stream.is_active_at(ts(29)?));
         // Exactly 30 s later is the exclusive boundary → inactive.
-        assert!(!stream.is_active_at(ts(30)));
+        assert!(!stream.is_active_at(ts(30)?));
         // Well past the window → inactive.
-        assert!(!stream.is_active_at(ts(120)));
+        assert!(!stream.is_active_at(ts(120)?));
+        Ok(())
     }
 
     /// Nine sequential updates accumulate packet, octet, and sequence
     /// state correctly.
     #[test]
-    fn update_ten_packets() {
+    fn update_ten_packets() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         for i in 1..10 {
             let h = make_header(100 + i, (i as u32) * 160, 0);
-            stream.update(&h, ts(i as i64 * 20 / 1000), 160);
+            stream.update(&h, ts(i as i64 * 20 / 1000)?, 160);
         }
 
         assert_eq!(stream.packet_count, 10);
         assert_eq!(stream.octet_count, 160 * 9); // 9 updates
         assert_eq!(stream.last_seq, 109);
+        Ok(())
     }
 
     /// A reordered packet (RTP timestamp lower than its predecessor) must not
     /// blow up the jitter estimate: the wrapped timestamp difference is a
     /// signed (i32) transit delta per RFC 3550, not a ~4.29e9 unsigned spike.
     #[test]
-    fn reordered_packet_does_not_inflate_jitter() {
+    fn reordered_packet_does_not_inflate_jitter() -> Result<(), TestError> {
         let key = make_key();
         // 8 kHz PCMU, first packet at RTP ts 16000.
         let hdr = make_header(100, 16_000, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Second packet arrives 20 ms later but carries an EARLIER RTP
         // timestamp (reordered), one 20 ms frame back: 16000 - 160.
         let reordered = make_header(101, 15_840, 0);
-        let arrival = ts(0) + chrono::Duration::milliseconds(20);
+        let arrival = ts(0)? + chrono::Duration::milliseconds(20);
         stream.update(&reordered, arrival, 160);
 
         // Signed semantics keep the transit delta tiny; the old unsigned cast
@@ -1689,29 +1701,31 @@ mod tests {
             "reordered packet must not inflate jitter, got {}",
             stream.jitter
         );
+        Ok(())
     }
 
     /// Skipping sequence numbers 101-103 registers exactly 3 lost packets.
     #[test]
-    fn sequence_gap_increments_lost() {
+    fn sequence_gap_increments_lost() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Skip seq 101-103 (gap of 3)
         let h = make_header(104, 640, 0);
-        stream.update(&h, ts(1), 160);
+        stream.update(&h, ts(1)?, 160);
 
         assert_eq!(stream.lost_packets, 3);
         assert_eq!(stream.packet_count, 2);
+        Ok(())
     }
 
     /// The jitter estimator runs on every update and stays finite.
     #[test]
-    fn jitter_calculated_on_update() {
+    fn jitter_calculated_on_update() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Send packets with consistent 20ms intervals and 160-sample RTP timestamps
         // (8kHz * 20ms = 160). Perfect timing → jitter stays near 0.
@@ -1719,44 +1733,47 @@ mod tests {
             let h = make_header(100 + i, (i as u32) * 160, 0);
             // Exactly 20ms apart in wall-clock (but our timestamp resolution is seconds,
             // so jitter will be non-zero due to granularity; the algorithm still runs)
-            stream.update(&h, ts(i as i64), 160);
+            stream.update(&h, ts(i as i64)?, 160);
         }
 
         // Jitter should be calculated (non-NaN, finite)
         assert!(stream.jitter.is_finite());
+        Ok(())
     }
 
     /// Well-known static payload types map to their RFC 3551 codec names.
     #[test]
-    fn codec_from_pt_static_types() {
+    fn codec_from_pt_static_types() -> Result<(), TestError> {
         assert_eq!(codec_from_pt(0), Some("PCMU"));
         assert_eq!(codec_from_pt(8), Some("PCMA"));
         assert_eq!(codec_from_pt(9), Some("G722"));
         assert_eq!(codec_from_pt(18), Some("G729"));
         assert_eq!(codec_from_pt(3), Some("GSM"));
         assert_eq!(codec_from_pt(13), Some("CN"));
+        Ok(())
     }
 
     /// Dynamic payload types (96-127) have no static codec mapping.
     #[test]
-    fn codec_from_pt_dynamic_returns_none() {
+    fn codec_from_pt_dynamic_returns_none() -> Result<(), TestError> {
         assert_eq!(codec_from_pt(96), None);
         assert_eq!(codec_from_pt(111), None);
         assert_eq!(codec_from_pt(127), None);
+        Ok(())
     }
 
     /// Packets spanning more than 5 seconds produce at least one quality
     /// interval snapshot.
     #[test]
-    fn quality_interval_recorded() {
+    fn quality_interval_recorded() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Send packets spanning >5 seconds
         for i in 1..=10 {
             let h = make_header(100 + i, (i as u32) * 160, 0);
-            stream.update(&h, ts(i as i64), 160);
+            stream.update(&h, ts(i as i64)?, 160);
         }
 
         // After 10 seconds of packets with 5s intervals, we should have at least 1 interval
@@ -1764,12 +1781,13 @@ mod tests {
             !stream.quality_intervals.is_empty(),
             "Expected at least one quality interval after 10s"
         );
+        Ok(())
     }
 
     /// Static audio payload types report 8000 Hz; H263 video reports
     /// 90000 Hz.
     #[test]
-    fn clock_rate_from_pt_static_types() {
+    fn clock_rate_from_pt_static_types() -> Result<(), TestError> {
         // PCMU and other narrowband audio codecs use 8000 Hz
         assert_eq!(clock_rate_from_pt(0), Some(8000));
         assert_eq!(clock_rate_from_pt(3), Some(8000));
@@ -1780,100 +1798,107 @@ mod tests {
         assert_eq!(clock_rate_from_pt(18), Some(8000));
         // H263 video uses 90000 Hz
         assert_eq!(clock_rate_from_pt(34), Some(90000));
+        Ok(())
     }
 
     /// Dynamic payload types have no static clock rate.
     #[test]
-    fn clock_rate_from_pt_dynamic_returns_none() {
+    fn clock_rate_from_pt_dynamic_returns_none() -> Result<(), TestError> {
         assert_eq!(clock_rate_from_pt(96), None);
         assert_eq!(clock_rate_from_pt(111), None);
         assert_eq!(clock_rate_from_pt(127), None);
+        Ok(())
     }
 
     /// A new PCMU (PT 0) stream resolves its clock rate to 8000 Hz.
     #[test]
-    fn new_stream_clock_rate_pcmu() {
+    fn new_stream_clock_rate_pcmu() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 0); // PT 0 = PCMU
-        let stream = RtpStream::new(key, &hdr, ts(0));
+        let stream = RtpStream::new(key, &hdr, ts(0)?);
         assert_eq!(stream.clock_rate, 8000);
+        Ok(())
     }
 
     /// A new H263 (PT 34) stream resolves its clock rate to 90000 Hz.
     #[test]
-    fn new_stream_clock_rate_h263() {
+    fn new_stream_clock_rate_h263() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 34); // PT 34 = H263 (video)
-        let stream = RtpStream::new(key, &hdr, ts(0));
+        let stream = RtpStream::new(key, &hdr, ts(0)?);
         assert_eq!(stream.clock_rate, 90000);
+        Ok(())
     }
 
     /// A new stream on a dynamic PT falls back to the 8000 Hz default.
     #[test]
-    fn new_stream_clock_rate_dynamic_defaults_to_8000() {
+    fn new_stream_clock_rate_dynamic_defaults_to_8000() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(100, 0, 96); // PT 96 = dynamic
-        let stream = RtpStream::new(key, &hdr, ts(0));
+        let stream = RtpStream::new(key, &hdr, ts(0)?);
         // Dynamic types return None from clock_rate_from_pt; RtpStream::new
         // falls back to 8000 via unwrap_or(8000).
         assert_eq!(stream.clock_rate, 8000);
+        Ok(())
     }
 
     /// The jitter calculation scales RTP timestamp deltas by the stream's
     /// own clock rate (90 kHz for H263).
     #[test]
-    fn jitter_uses_correct_clock_rate() {
+    fn jitter_uses_correct_clock_rate() -> Result<(), TestError> {
         // Verify jitter calculation uses the stream's clock_rate.
         // With H263 (90000 Hz), 1 second = 90000 timestamp units.
         let key = make_key();
         let hdr = make_header(100, 0, 34); // H263
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
         assert_eq!(stream.clock_rate, 90000);
 
         // Send a second packet: 1 second later in wall-clock, 90000 ts units later
         // (perfect timing for 90 kHz clock -> jitter stays low).
         let h = make_header(101, 90000, 34);
-        stream.update(&h, ts(1), 1000);
+        stream.update(&h, ts(1)?, 1000);
         assert!(stream.jitter.is_finite());
+        Ok(())
     }
 
     /// A 65535 → 0 sequence wrap registers no false packet loss.
     #[test]
-    fn sequence_wraparound_no_false_loss() {
+    fn sequence_wraparound_no_false_loss() -> Result<(), TestError> {
         let key = make_key();
         let hdr = make_header(65534, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // seq 65535 (normal increment)
         let h = make_header(65535, 160, 0);
-        stream.update(&h, ts(1), 160);
+        stream.update(&h, ts(1)?, 160);
         assert_eq!(stream.lost_packets, 0);
 
         // seq 0 (wraparound)
         let h = make_header(0, 320, 0);
-        stream.update(&h, ts(2), 160);
+        stream.update(&h, ts(2)?, 160);
         assert_eq!(stream.lost_packets, 0);
 
         // seq 1 (normal after wrap)
         let h = make_header(1, 480, 0);
-        stream.update(&h, ts(3), 160);
+        stream.update(&h, ts(3)?, 160);
         assert_eq!(stream.lost_packets, 0);
+        Ok(())
     }
 
     /// The lost-sequence log caps at 1000 entries with correct oldest-out
     /// eviction across successive gaps.
     #[test]
-    fn lost_sequences_vecdeque_pop_front_over_1000() {
+    fn lost_sequences_vecdeque_pop_front_over_1000() -> Result<(), TestError> {
         // Fill lost_sequences beyond the 1000-entry cap and verify
         // pop_front eviction works correctly (no panic, correct count).
         let key = make_key();
         let hdr = make_header(0, 0, 0);
-        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        let mut stream = RtpStream::new(key, &hdr, ts(0)?);
 
         // Create a huge gap: jump from seq 0 to seq 2001 (gap of 2000).
         // The update loop caps recording at 1000 entries per gap.
         let h = make_header(2001, 2001 * 160, 0);
-        stream.update(&h, ts(1), 160);
+        stream.update(&h, ts(1)?, 160);
 
         assert_eq!(stream.lost_packets, 2000, "should detect 2000 lost packets");
         assert_eq!(
@@ -1899,7 +1924,7 @@ mod tests {
         // Jump from 2001 to 2502 (gap of 500). This should evict the
         // 500 oldest entries and push 500 new ones.
         let h = make_header(2502, 2502 * 160, 0);
-        stream.update(&h, ts(2), 160);
+        stream.update(&h, ts(2)?, 160);
 
         assert_eq!(stream.lost_packets, 2500, "total lost should be 2500");
         assert_eq!(
@@ -1920,6 +1945,7 @@ mod tests {
             Some(2501),
             "newest should be seq 2501"
         );
+        Ok(())
     }
 
     /// A raised retention keeps the whole loss region AND widens the burst/gap
@@ -1929,8 +1955,8 @@ mod tests {
     /// log retains ten times the history and then analyzes the same tail of
     /// it, which reads to an operator exactly like the setting doing nothing.
     #[test]
-    fn a_raised_retention_widens_both_the_log_and_the_burst_window() {
-        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+    fn a_raised_retention_widens_both_the_log_and_the_burst_window() -> Result<(), TestError> {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0)?);
         // Set the field rather than the process-wide declaration: this asserts
         // what a stream DOES with its retention, and a test that moved the
         // global would move it for every other test in this binary too.
@@ -1943,7 +1969,7 @@ mod tests {
 
         // One gap of 2000. At the shipped retention exactly half of it would
         // survive; at 5000 all of it does.
-        stream.update(&make_header(2001, 2001 * 160, 0), ts(1), 160);
+        stream.update(&make_header(2001, 2001 * 160, 0), ts(1)?, 160);
         assert_eq!(stream.lost_packets, 2000);
         assert_eq!(
             stream.lost_sequences.len(),
@@ -1952,16 +1978,18 @@ mod tests {
         );
         assert_eq!(stream.lost_sequences.front().copied(), Some(1));
         assert_eq!(stream.lost_sequences.back().copied(), Some(2000));
+        Ok(())
     }
 
     /// The burst window stops growing at one lap of the 16-bit sequence
     /// counter, past which a serial span repeats itself and the extra bitmap
     /// would be allocated for nothing.
     #[test]
-    fn the_burst_window_stops_at_one_lap_of_the_sequence_counter() {
-        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+    fn the_burst_window_stops_at_one_lap_of_the_sequence_counter() -> Result<(), TestError> {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0)?);
         stream.lost_seq_cap = 1_000_000;
         assert_eq!(stream.burst_window_cap(), BURST_WINDOW_SEQ_SPACE);
+        Ok(())
     }
 
     /// A stream is born with the retention the process declared.
@@ -1970,9 +1998,10 @@ mod tests {
     /// `--cores` shard or the WASM entry point relies on — neither of which
     /// can be handed a value — is the thing asserted.
     #[test]
-    fn a_new_stream_carries_the_declared_retention() {
-        let stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+    fn a_new_stream_carries_the_declared_retention() -> Result<(), TestError> {
+        let stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0)?);
         assert_eq!(stream.lost_seq_cap(), lost_seq_log_cap());
+        Ok(())
     }
 
     /// The loss figure is lost over received-PLUS-lost, and an empty stream
@@ -1984,7 +2013,7 @@ mod tests {
     /// apart at all, and a 0-loss fixture cannot tell them apart either — so
     /// this is the arithmetic the callers downstream are actually pinned to.
     #[test]
-    fn loss_percent_divides_by_received_plus_lost() {
+    fn loss_percent_divides_by_received_plus_lost() -> Result<(), TestError> {
         let t0 = chrono::Utc::now();
         let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), t0);
 
@@ -2014,6 +2043,7 @@ mod tests {
             "a stream where every packet was lost is 100%: got {}",
             s.loss_percent()
         );
+        Ok(())
     }
 }
 
@@ -2025,23 +2055,26 @@ mod quality_interval_period_tests {
         quality_interval_cap,
     };
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The shipped pair is unchanged: 720 entries of five seconds is an hour,
     /// which is what the constant used to say directly.
     #[test]
-    fn the_shipped_interval_still_retains_an_hour() {
+    fn the_shipped_interval_still_retains_an_hour() -> Result<(), TestError> {
         assert_eq!(quality_interval_cap(DEFAULT_QUALITY_INTERVAL_SECS), 720);
         assert_eq!(
             quality_interval_cap(DEFAULT_QUALITY_INTERVAL_SECS) as i64
                 * DEFAULT_QUALITY_INTERVAL_SECS,
             QUALITY_HISTORY_SPAN_SECS
         );
+        Ok(())
     }
 
     /// THE point of deriving it. A five-times finer interval against a fixed
     /// count of 720 would have bought resolution by throwing away
     /// fifty minutes of history, and nothing would have said so.
     #[test]
-    fn a_finer_interval_keeps_the_span_rather_than_the_count() {
+    fn a_finer_interval_keeps_the_span_rather_than_the_count() -> Result<(), TestError> {
         for secs in *PLAUSIBLE_QUALITY_INTERVAL_SECS.start()..=60 {
             let retained = quality_interval_cap(secs) as i64 * secs;
             assert!(
@@ -2050,20 +2083,22 @@ mod quality_interval_period_tests {
                  {QUALITY_HISTORY_SPAN_SECS}s span every interval must cover"
             );
         }
+        Ok(())
     }
 
     /// The other half: a coarser interval must not hoard entries it has no
     /// use for. An hour at one entry a minute is sixty entries, not 720.
     #[test]
-    fn a_coarser_interval_needs_fewer_entries() {
+    fn a_coarser_interval_needs_fewer_entries() -> Result<(), TestError> {
         assert_eq!(quality_interval_cap(60), 60);
         assert!(quality_interval_cap(60) < quality_interval_cap(5));
+        Ok(())
     }
 
     /// A period that does not divide the span rounds UP, because rounding down
     /// is the silent shortening this whole derivation exists to prevent.
     #[test]
-    fn an_interval_that_does_not_divide_the_span_rounds_up() {
+    fn an_interval_that_does_not_divide_the_span_rounds_up() -> Result<(), TestError> {
         let cap = quality_interval_cap(7);
         assert!(
             cap as i64 * 7 >= QUALITY_HISTORY_SPAN_SECS,
@@ -2074,6 +2109,7 @@ mod quality_interval_period_tests {
             (cap as i64 - 1) * 7 < QUALITY_HISTORY_SPAN_SECS,
             "and not one entry more than it needs"
         );
+        Ok(())
     }
 
     /// Zero is division by zero and a negative is a period that never elapses.
@@ -2081,7 +2117,7 @@ mod quality_interval_period_tests {
     /// earlier — but this function is what every stream constructor calls, and
     /// a panic here would take the capture down rather than the setting.
     #[test]
-    fn a_nonsense_period_falls_back_instead_of_dividing_by_zero() {
+    fn a_nonsense_period_falls_back_instead_of_dividing_by_zero() -> Result<(), TestError> {
         for secs in [0, -1, i64::MIN] {
             let cap = quality_interval_cap(secs);
             assert_eq!(
@@ -2090,6 +2126,7 @@ mod quality_interval_period_tests {
                 "a period of {secs}s must fall back to the shipped retention"
             );
         }
+        Ok(())
     }
 
     /// A stream carries the process declaration, not a constant.
@@ -2098,7 +2135,7 @@ mod quality_interval_period_tests {
     /// the global, because the global is shared with every other test in this
     /// binary and a period set here would follow them.
     #[test]
-    fn a_new_stream_carries_the_declared_period_and_its_retention() {
+    fn a_new_stream_carries_the_declared_period_and_its_retention() -> Result<(), TestError> {
         use super::{RtpStream, StreamKey, quality_interval_secs};
         use crate::rtp::parser::RtpHeader;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -2132,6 +2169,7 @@ mod quality_interval_period_tests {
             "the retention must be DERIVED from the period the stream carries, \
              not read separately"
         );
+        Ok(())
     }
 
     /// Owed, for a mutation that survived: hard-coding the retention to 720
@@ -2140,9 +2178,9 @@ mod quality_interval_period_tests {
     /// Every period below produces a DIFFERENT retention, so a constant of any
     /// value fails at least one of them.
     #[test]
-    fn the_retention_a_stream_carries_is_derived_from_its_period() {
+    fn the_retention_a_stream_carries_is_derived_from_its_period() -> Result<(), TestError> {
         for (period, expected) in [(1, 3600), (5, 720), (10, 360), (60, 60), (300, 12)] {
-            let stream = fixture_stream(period);
+            let stream = fixture_stream(period)?;
             assert_eq!(
                 stream.quality_interval_cap, expected,
                 "a {period}s period must retain {expected} snapshots to cover \
@@ -2151,20 +2189,21 @@ mod quality_interval_period_tests {
             );
             assert_eq!(stream.quality_interval_secs, period);
         }
+        Ok(())
     }
 
     /// Owed, same mutation, from the other side: the retention must actually
     /// BOUND the history at the derived number rather than merely be recorded
     /// on the stream.
     #[test]
-    fn a_wider_period_evicts_at_its_own_retention() {
+    fn a_wider_period_evicts_at_its_own_retention() -> Result<(), TestError> {
         let period = 60;
         let cap = quality_interval_cap(period);
-        let mut s = fixture_stream(period);
+        let mut s = fixture_stream(period)?;
         for i in 1..=(cap + 5) {
             s.update(
                 &super::tests::make_header(i as u16, i as u32 * 160, 0),
-                super::tests::ts(i as i64 * period),
+                super::tests::ts(i as i64 * period)?,
                 160,
             );
         }
@@ -2174,6 +2213,7 @@ mod quality_interval_period_tests {
             "a 60s stream must cap at its own 60 snapshots, not at the 720 the \
              shipped period derives"
         );
+        Ok(())
     }
 
     /// Owed, for the second surviving mutation: closing intervals on the
@@ -2184,12 +2224,12 @@ mod quality_interval_period_tests {
     /// closes one interval; a stream that ignored its period and used the
     /// shipped five seconds closes eleven.
     #[test]
-    fn a_stream_closes_intervals_on_its_own_period() {
-        let mut wide = fixture_stream(60);
-        let mut narrow = fixture_stream(5);
+    fn a_stream_closes_intervals_on_its_own_period() -> Result<(), TestError> {
+        let mut wide = fixture_stream(60)?;
+        let mut narrow = fixture_stream(5)?;
         for i in 1..=60u16 {
             let header = super::tests::make_header(i, u32::from(i) * 160, 0);
-            let at = super::tests::ts(i64::from(i));
+            let at = super::tests::ts(i64::from(i))?;
             wide.update(&header, at, 160);
             narrow.update(&header, at, 160);
         }
@@ -2205,6 +2245,7 @@ mod quality_interval_period_tests {
             narrow.quality_intervals.len(),
             wide.quality_intervals.len()
         );
+        Ok(())
     }
 
     /// Owed, same mutation: the period a stream was built with survives a
@@ -2215,44 +2256,46 @@ mod quality_interval_period_tests {
     /// entirely, which is the property that makes the three tests above
     /// independent of whatever else this binary has set.
     #[test]
-    fn an_explicit_period_ignores_the_process_declaration() {
+    fn an_explicit_period_ignores_the_process_declaration() -> Result<(), TestError> {
         let declared = super::quality_interval_secs();
         let other = if declared == 300 { 60 } else { 300 };
-        let stream = fixture_stream(other);
+        let stream = fixture_stream(other)?;
         assert_eq!(stream.quality_interval_secs, other);
         assert_ne!(
             stream.quality_interval_secs, declared,
             "the fixture must differ from the declaration or it proves nothing"
         );
         assert_eq!(stream.quality_interval_cap, quality_interval_cap(other));
+        Ok(())
     }
 
     /// A PCMU stream on an explicit snapshot period.
-    fn fixture_stream(period: i64) -> super::RtpStream {
-        super::RtpStream::with_quality_period(
+    fn fixture_stream(period: i64) -> Result<super::RtpStream, TestError> {
+        Ok(super::RtpStream::with_quality_period(
             super::tests::make_key(),
             &super::tests::make_header(0, 0, 0),
-            super::tests::ts(0),
+            super::tests::ts(0)?,
             period,
-        )
+        ))
     }
 
     /// The permitted range refuses the two settings that break the derivation:
     /// a period of zero, which divides the span by nothing, and one so wide
     /// that the trend is the stream-level figure with extra steps.
     #[test]
-    fn the_permitted_range_excludes_zero_and_the_absurd() {
+    fn the_permitted_range_excludes_zero_and_the_absurd() -> Result<(), TestError> {
         assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&0));
         assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&-1));
         assert!(!PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&(QUALITY_HISTORY_SPAN_SECS + 1)));
         assert!(PLAUSIBLE_QUALITY_INTERVAL_SECS.contains(&DEFAULT_QUALITY_INTERVAL_SECS));
+        Ok(())
     }
 
     /// The bound is a real bound: the widest permitted period still retains at
     /// least one entry, so no legal setting produces a history that can hold
     /// nothing.
     #[test]
-    fn every_permitted_period_retains_at_least_one_entry() {
+    fn every_permitted_period_retains_at_least_one_entry() -> Result<(), TestError> {
         for secs in [
             *PLAUSIBLE_QUALITY_INTERVAL_SECS.start(),
             *PLAUSIBLE_QUALITY_INTERVAL_SECS.end(),
@@ -2262,5 +2305,6 @@ mod quality_interval_period_tests {
                 "a period of {secs}s retained nothing"
             );
         }
+        Ok(())
     }
 }

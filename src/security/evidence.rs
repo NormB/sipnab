@@ -150,78 +150,83 @@ mod tests {
     use crate::capture::parse::InputOrigin;
     use std::net::Ipv4Addr;
 
-    fn ip(s: &str) -> IpAddr {
-        s.parse().expect("test address")
+    type TestError = Box<dyn std::error::Error>;
+
+    fn ip(s: &str) -> Result<IpAddr, TestError> {
+        Ok(s.parse()?)
     }
 
-    fn golden() -> Vec<String> {
+    fn golden() -> Result<Vec<String>, TestError> {
         let p = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/sipnab-evidence-golden.jsonl");
-        std::fs::read_to_string(p)
-            .expect("the golden fixture")
+        Ok(std::fs::read_to_string(p)?
             .lines()
             .map(str::to_string)
-            .collect()
+            .collect())
     }
 
     /// The emitted bytes are the contract, and the contract lives in a file
     /// the other project holds an identical copy of.
     #[test]
-    fn a_scanner_finding_serializes_to_the_golden_line() {
+    fn a_scanner_finding_serializes_to_the_golden_line() -> Result<(), TestError> {
         let e = Evidence {
-            src_ip: ip("198.51.100.20"),
+            src_ip: ip("198.51.100.20")?,
             rule: "scanner_detected".to_string(),
             evidence: r#"ua="pplsip" detection=ua_pattern"#.to_string(),
             ts: Some("2026-09-03T16:40:00Z".to_string()),
         };
-        assert_eq!(e.to_line().expect("serialize"), golden()[0]);
+        assert_eq!(e.to_line()?, golden()?[0]);
+        Ok(())
     }
 
     /// A finding with no time omits the key rather than writing null: the
     /// third golden line has no `ts` at all.
     #[test]
-    fn a_finding_without_a_timestamp_omits_the_key() {
+    fn a_finding_without_a_timestamp_omits_the_key() -> Result<(), TestError> {
         let e = Evidence {
-            src_ip: ip("192.0.2.77"),
+            src_ip: ip("192.0.2.77")?,
             rule: "register_scan".to_string(),
             evidence: "registers=40 success=0".to_string(),
             ts: None,
         };
-        let line = e.to_line().expect("serialize");
+        let line = e.to_line()?;
         assert!(!line.contains("ts"), "{line}");
-        assert_eq!(line, golden()[2]);
+        assert_eq!(line, golden()?[2]);
+        Ok(())
     }
 
     /// Every intact golden line round-trips: the reader on the other side
     /// parses exactly what this side writes.
     #[test]
-    fn every_intact_golden_line_round_trips() {
+    fn every_intact_golden_line_round_trips() -> Result<(), TestError> {
         let mut parsed = 0;
-        for line in golden() {
+        for line in golden()? {
             let Ok(e) = serde_json::from_str::<Evidence>(&line) else {
                 continue; // the fixture carries one torn line on purpose
             };
-            assert_eq!(e.to_line().expect("serialize"), line);
+            assert_eq!(e.to_line()?, line);
             parsed += 1;
         }
         assert_eq!(parsed, 4, "four of the five golden lines are intact");
+        Ok(())
     }
 
     /// The torn line is torn, or the round-trip test above proves nothing
     /// about a reader's tolerance.
     #[test]
-    fn the_golden_fixture_carries_one_unparseable_line() {
-        let torn = golden()
+    fn the_golden_fixture_carries_one_unparseable_line() -> Result<(), TestError> {
+        let torn = golden()?
             .iter()
             .filter(|l| serde_json::from_str::<Evidence>(l).is_err())
             .count();
         assert_eq!(torn, 1);
+        Ok(())
     }
 
     /// Wire-observed findings publish; HEP-asserted ones do not, unless the
     /// operator has said the feed is trusted.
     #[test]
-    fn hep_origin_publishes_no_evidence_without_the_opt_in() {
+    fn hep_origin_publishes_no_evidence_without_the_opt_in() -> Result<(), TestError> {
         assert!(publishable(InputOrigin::Wire, false));
         assert!(!publishable(InputOrigin::Hep, false));
         assert!(publishable(InputOrigin::Hep, true));
@@ -230,52 +235,54 @@ mod tests {
             !publishable(InputOrigin::Uprobe, true),
             "there is no addressing to publish, and no opt-in reaches this arm"
         );
+        Ok(())
     }
 
     /// A path that cannot be opened fails when the run starts.
     #[test]
-    fn an_unwritable_path_fails_at_open_not_at_the_first_finding() {
+    fn an_unwritable_path_fails_at_open_not_at_the_first_finding() -> Result<(), TestError> {
         let dir = std::env::temp_dir().join(format!("sipnab-ev-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::create_dir_all(&dir)?;
         let bad = dir.join("no-such-dir").join("evidence.jsonl");
         assert!(EvidenceSink::open(&bad.to_string_lossy()).is_err());
         let good = dir.join("evidence.jsonl");
         assert!(EvidenceSink::open(&good.to_string_lossy()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// A file sink appends whole lines, one per finding, flushed as it goes.
     #[test]
-    fn a_file_sink_appends_one_line_per_finding() {
+    fn a_file_sink_appends_one_line_per_finding() -> Result<(), TestError> {
         let dir = std::env::temp_dir().join(format!("sipnab-ev-app-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::create_dir_all(&dir)?;
         let path = dir.join("evidence.jsonl");
-        let mut sink = EvidenceSink::open(&path.to_string_lossy()).expect("open");
+        let mut sink = EvidenceSink::open(&path.to_string_lossy())?;
         for n in 1..=3u8 {
             sink.write(&Evidence {
                 src_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, n)),
                 rule: "scanner_detected".to_string(),
                 evidence: format!("n={n}"),
                 ts: None,
-            })
-            .expect("write");
+            })?;
         }
-        let body = std::fs::read_to_string(&path).expect("read");
+        let body = std::fs::read_to_string(&path)?;
         assert_eq!(body.lines().count(), 3, "{body}");
         assert!(body.ends_with('\n'), "each line is terminated");
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     /// The scanner rule is the name the shared fixture carries, so a real
     /// finding and the contract line are the same bytes but for the values.
     #[test]
-    fn the_scanner_rule_is_the_name_the_golden_fixture_uses() {
+    fn the_scanner_rule_is_the_name_the_golden_fixture_uses() -> Result<(), TestError> {
         use crate::security::detectors::DetectorKind;
         assert_eq!(rule_for(DetectorKind::Scanner), "scanner_detected");
         assert!(
-            golden()[0].contains(r#""rule":"scanner_detected""#),
+            golden()?[0].contains(r#""rule":"scanner_detected""#),
             "{}",
-            golden()[0]
+            golden()?[0]
         );
         for k in [
             DetectorKind::Fraud,
@@ -284,5 +291,6 @@ mod tests {
         ] {
             assert!(!rule_for(k).is_empty());
         }
+        Ok(())
     }
 }

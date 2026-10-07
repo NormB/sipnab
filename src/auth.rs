@@ -580,6 +580,8 @@ mod tests {
     //! `constant_time_eq` hardening cases.
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// First test signing key.
     ///
     /// Minted at runtime rather than pasted: a `mod tests` inside `src/` is
@@ -612,7 +614,7 @@ mod tests {
     /// The infallible serde path is now the only path, so this reproduction
     /// documents why the branch was dead-code+latent-bug and was dropped.
     #[test]
-    fn removed_hand_built_fallback_produced_invalid_json() {
+    fn removed_hand_built_fallback_produced_invalid_json() -> Result<(), TestError> {
         let id = "a\"b\\c\u{0001}";
         let exp = 0i64;
         // Exactly what the removed `unwrap_or_else` branch built by hand.
@@ -623,6 +625,7 @@ mod tests {
             "the removed fallback embedded id unescaped and produced invalid \
              JSON — proof it was a latent bug: {hand_built:?}"
         );
+        Ok(())
     }
 
     /// A token id carrying JSON metacharacters and a control character must be
@@ -630,18 +633,15 @@ mod tests {
     /// yields the exact id byte-for-byte and the token still verifies. Locks
     /// in that the (now sole) serde serialization path escapes correctly.
     #[test]
-    fn mint_escapes_hostile_id_in_payload() {
+    fn mint_escapes_hostile_id_in_payload() -> Result<(), TestError> {
         let hostile = "id\"with\\meta\tand\u{0001}control";
         let exp = 4_000_000_000i64;
         let token = mint(key_a(), hostile, exp, AUDIENCE_API, SCOPE_FULL);
 
         // The payload segment must be valid, escaped JSON decoding back to id.
-        let payload_b64 = token.split('.').nth(1).expect("payload segment");
-        let bytes = URL_SAFE_NO_PAD
-            .decode(payload_b64)
-            .expect("payload must be valid base64url");
-        let decoded: Payload =
-            serde_json::from_slice(&bytes).expect("payload must be valid, escaped JSON");
+        let payload_b64 = token.split('.').nth(1).ok_or("payload segment")?;
+        let bytes = URL_SAFE_NO_PAD.decode(payload_b64)?;
+        let decoded: Payload = serde_json::from_slice(&bytes)?;
         assert_eq!(decoded.id, hostile, "id must round-trip byte-for-byte");
 
         // And the whole token must verify against the signing key.
@@ -653,31 +653,34 @@ mod tests {
             v.verify(&token, exp - 1, SCOPE_FULL),
             "a token minted with a hostile id must still verify"
         );
+        Ok(())
     }
 
     // ── constant_time_eq hardening tests (relocated from output::api) ──
 
     /// Identical byte slices compare equal.
     #[test]
-    fn constant_time_eq_equal_slices() {
+    fn constant_time_eq_equal_slices() -> Result<(), TestError> {
         assert!(
             constant_time_eq(b"secret-key-12345", b"secret-key-12345"),
             "Identical slices should return true"
         );
+        Ok(())
     }
 
     /// Equal-length but differing slices compare unequal.
     #[test]
-    fn constant_time_eq_different_slices() {
+    fn constant_time_eq_different_slices() -> Result<(), TestError> {
         assert!(
             !constant_time_eq(b"secret-key-12345", b"secret-key-XXXXX"),
             "Different slices of same length should return false"
         );
+        Ok(())
     }
 
     /// Different-length slices compare unequal in both argument orders.
     #[test]
-    fn constant_time_eq_different_lengths() {
+    fn constant_time_eq_different_lengths() -> Result<(), TestError> {
         assert!(
             !constant_time_eq(b"short", b"much-longer-string"),
             "Different length slices should return false"
@@ -686,15 +689,17 @@ mod tests {
             !constant_time_eq(b"much-longer-string", b"short"),
             "Different length slices (reversed) should return false"
         );
+        Ok(())
     }
 
     /// Two empty slices compare equal.
     #[test]
-    fn constant_time_eq_empty() {
+    fn constant_time_eq_empty() -> Result<(), TestError> {
         assert!(
             constant_time_eq(b"", b""),
             "Two empty slices should return true"
         );
+        Ok(())
     }
 
     // ── token format ──────────────────────────────────────────────────
@@ -702,22 +707,23 @@ mod tests {
     /// A minted token is `s1.<payload>.<sig>` with the payload decoding to the
     /// expected compact `{"id":...,"exp":...}` JSON.
     #[test]
-    fn minted_token_has_expected_shape() {
+    fn minted_token_has_expected_shape() -> Result<(), TestError> {
         let token = mint(key_a(), "abc", 9999999999, AUDIENCE_API, SCOPE_FULL);
         let parts: Vec<&str> = token.split('.').collect();
         assert_eq!(parts.len(), 3, "token should have 3 dot-parts: {token}");
         assert_eq!(parts[0], "s2");
         // Payload decodes to compact JSON with id+exp+aud.
-        let payload = URL_SAFE_NO_PAD.decode(parts[1]).expect("payload b64");
-        let s = String::from_utf8(payload).expect("utf8");
+        let payload = URL_SAFE_NO_PAD.decode(parts[1])?;
+        let s = String::from_utf8(payload)?;
         assert_eq!(s, "{\"id\":\"abc\",\"exp\":9999999999,\"aud\":\"api\"}");
+        Ok(())
     }
 
     // ── valid / accept ─────────────────────────────────────────────────
 
     /// An unexpired token signed by a configured key verifies.
     #[test]
-    fn valid_token_accepted() {
+    fn valid_token_accepted() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             ..Default::default()
@@ -727,13 +733,14 @@ mod tests {
             v.verify(&token, 999, SCOPE_FULL),
             "unexpired token should verify"
         );
+        Ok(())
     }
 
     // ── expired ─────────────────────────────────────────────────────────
 
     /// A token is rejected once `now >= exp` (expiry is strict `exp > now`).
     #[test]
-    fn expired_token_rejected() {
+    fn expired_token_rejected() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             ..Default::default()
@@ -749,13 +756,14 @@ mod tests {
             !v.verify(&token, 1_001, SCOPE_FULL),
             "expired token should reject"
         );
+        Ok(())
     }
 
     // ── tampered payload ────────────────────────────────────────────────
 
     /// Flipping a byte in the payload breaks the signature and rejects.
     #[test]
-    fn tampered_payload_rejected() {
+    fn tampered_payload_rejected() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             ..Default::default()
@@ -767,19 +775,20 @@ mod tests {
         let mut bytes = payload.into_bytes();
         let idx = bytes.len() / 2;
         bytes[idx] = if bytes[idx] == b'A' { b'B' } else { b'A' };
-        parts[1] = String::from_utf8(bytes).unwrap();
+        parts[1] = String::from_utf8(bytes)?;
         let tampered = parts.join(".");
         assert!(
             !v.verify(&tampered, 1, SCOPE_FULL),
             "tampered payload must fail signature/parse"
         );
+        Ok(())
     }
 
     // ── forged / wrong-key signature ─────────────────────────────────────
 
     /// A token signed with a non-configured key is rejected.
     #[test]
-    fn forged_wrong_key_signature_rejected() {
+    fn forged_wrong_key_signature_rejected() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             ..Default::default()
@@ -790,11 +799,12 @@ mod tests {
             !v.verify(&forged, 1, SCOPE_FULL),
             "token signed with a non-configured key must reject"
         );
+        Ok(())
     }
 
     /// A range of malformed/garbage inputs all reject without panicking.
     #[test]
-    fn garbage_token_rejected_no_panic() {
+    fn garbage_token_rejected_no_panic() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             ..Default::default()
@@ -815,13 +825,14 @@ mod tests {
                 "junk {junk:?} must reject without panic"
             );
         }
+        Ok(())
     }
 
     // ── rotation ─────────────────────────────────────────────────────────
 
     /// With two signing keys configured, tokens signed by either verify.
     #[test]
-    fn rotation_accepts_either_key() {
+    fn rotation_accepts_either_key() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec(), key_b().to_vec()],
             ..Default::default()
@@ -836,11 +847,12 @@ mod tests {
             v.verify(&token_b, 1, SCOPE_FULL),
             "token signed by second key accepted"
         );
+        Ok(())
     }
 
     /// `mint` signs with the first key, so a verifier lacking it rejects.
     #[test]
-    fn mint_uses_first_key() {
+    fn mint_uses_first_key() -> Result<(), TestError> {
         // A verifier that only knows key_b() should reject a token minted by the
         // "first key" of a {A,B} config (which is A).
         let mint_cfg_first = key_a();
@@ -850,6 +862,7 @@ mod tests {
             ..Default::default()
         });
         assert!(!v_b_only.verify(&token, 1, SCOPE_FULL));
+        Ok(())
     }
 
     // ── revocation ───────────────────────────────────────────────────────
@@ -857,10 +870,10 @@ mod tests {
     /// A revoked id is rejected despite a valid signature, and removing it from
     /// the file (mtime change) causes a reload that re-accepts it.
     #[test]
-    fn revoked_id_rejected_and_reload_works() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn revoked_id_rejected_and_reload_works() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("revoked.txt");
-        std::fs::write(&path, "# comment\n\nrevoked-id-1\n").expect("write");
+        std::fs::write(&path, "# comment\n\nrevoked-id-1\n")?;
 
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -885,19 +898,20 @@ mod tests {
         // case the filesystem mtime granularity would otherwise collapse the
         // two writes.
         std::thread::sleep(std::time::Duration::from_millis(10));
-        std::fs::write(&path, "# nothing revoked now\n").expect("rewrite");
+        std::fs::write(&path, "# nothing revoked now\n")?;
         let after = mint(key_a(), "revoked-id-1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             v.verify(&after, 1, SCOPE_FULL),
             "after removing from denylist, id should be accepted (reload)"
         );
+        Ok(())
     }
 
     // ── backward compat (static secrets) ────────────────────────────────
 
     /// A configured static secret matches verbatim and never expires.
     #[test]
-    fn static_secret_backward_compat() {
+    fn static_secret_backward_compat() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             static_keys: vec!["legacy-secret".to_string()],
             ..Default::default()
@@ -915,6 +929,7 @@ mod tests {
             v.verify("legacy-secret", i64::MAX, SCOPE_FULL),
             "static secret has no expiry"
         );
+        Ok(())
     }
 
     /// A static secret shaped like an `s1.` token fails the signed path and so
@@ -923,7 +938,7 @@ mod tests {
     /// reaches the static comparison; one shaped like `s1.x.y` is no longer a
     /// recognized version, so it falls through and matches itself.
     #[test]
-    fn only_the_s2_prefix_shadows_a_static_secret() {
+    fn only_the_s2_prefix_shadows_a_static_secret() -> Result<(), TestError> {
         let s2_shaped = "s2.notreal.notreal";
         let v = verifier(VerifierConfig {
             static_keys: vec![s2_shaped.to_string()],
@@ -945,12 +960,13 @@ mod tests {
             v.verify(s1_shaped, 1, SCOPE_FULL),
             "an s1.-shaped static secret now falls through to the static path"
         );
+        Ok(())
     }
 
     /// With both signing keys and static secrets configured, each accepts and
     /// an unknown value rejects.
     #[test]
-    fn signing_and_static_both_configured() {
+    fn signing_and_static_both_configured() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
             static_keys: vec!["legacy".to_string()],
@@ -960,23 +976,25 @@ mod tests {
         assert!(v.verify(&token, 1, SCOPE_FULL), "signed token accepts");
         assert!(v.verify("legacy", 1, SCOPE_FULL), "static secret accepts");
         assert!(!v.verify("nope", 1, SCOPE_FULL), "unknown rejects");
+        Ok(())
     }
 
     /// An unconfigured verifier reports so and rejects everything.
     #[test]
-    fn unconfigured_verifier() {
+    fn unconfigured_verifier() -> Result<(), TestError> {
         let v = verifier(VerifierConfig::default());
         assert!(v.is_unconfigured());
         // With nothing configured, even a well-formed-looking token rejects
         // (no key to verify against, no static secret to match).
         assert!(!v.verify("anything", 1, SCOPE_FULL));
+        Ok(())
     }
 
     /// A token minted for the REST API must be rejected by the HTTP MCP
     /// surface even when BOTH share one signing key — the exact
     /// misconfiguration audience binding exists to defuse.
     #[test]
-    fn api_token_is_rejected_by_the_mcp_surface() {
+    fn api_token_is_rejected_by_the_mcp_surface() -> Result<(), TestError> {
         let shared = key_a();
         let api_token = mint(shared, "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
 
@@ -999,11 +1017,12 @@ mod tests {
             !mcp_v.verify(&api_token, 1_000, SCOPE_FULL),
             "an api token must NOT work on the mcp surface, even with a shared key"
         );
+        Ok(())
     }
 
     /// And symmetrically, so neither direction is special-cased.
     #[test]
-    fn mcp_token_is_rejected_by_the_api_surface() {
+    fn mcp_token_is_rejected_by_the_api_surface() -> Result<(), TestError> {
         let shared = key_a();
         let mcp_token = mint(shared, "id1", 1_000_000, AUDIENCE_MCP, SCOPE_FULL);
 
@@ -1020,13 +1039,14 @@ mod tests {
 
         assert!(mcp_v.verify(&mcp_token, 1_000, SCOPE_FULL));
         assert!(!api_v.verify(&mcp_token, 1_000, SCOPE_FULL));
+        Ok(())
     }
 
     /// Rewriting an `s2` token's version prefix to `s1` must not strip the
     /// audience check: the version is part of the signed input, so the
     /// downgrade invalidates the signature.
     #[test]
-    fn s2_token_cannot_be_downgraded_to_s1() {
+    fn s2_token_cannot_be_downgraded_to_s1() -> Result<(), TestError> {
         let token = mint(key_a(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         assert!(
             token.starts_with("s2."),
@@ -1043,13 +1063,14 @@ mod tests {
             !mcp_v.verify(&downgraded, 1_000, SCOPE_FULL),
             "a version-downgraded token must fail the signature check"
         );
+        Ok(())
     }
 
     /// A legacy `s1` token (no `aud`) must now be REJECTED. It was accepted
     /// during the transition; honoring it left the audience binding
     /// best-effort, since an `s1` token authenticates against both surfaces.
     #[test]
-    fn legacy_s1_token_is_rejected() {
+    fn legacy_s1_token_is_rejected() -> Result<(), TestError> {
         // Hand-build an s1 token: payload without `aud`, signed over "s1.".
         let payload = r#"{"id":"legacy-1","exp":1000000}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
@@ -1068,13 +1089,14 @@ mod tests {
                 "a correctly-signed, unexpired s1 token must be rejected on {aud}"
             );
         }
+        Ok(())
     }
 
     /// The s1 rejection must not be an accident of the static-secret fallback:
     /// even if an operator configured the whole token string as a static
     /// secret it would match, so prove rejection holds with signing keys only.
     #[test]
-    fn s1_rejection_is_not_a_static_secret_artifact() {
+    fn s1_rejection_is_not_a_static_secret_artifact() -> Result<(), TestError> {
         let payload = r#"{"id":"legacy-2","exp":1000000}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let signing_input = format!("s1.{payload_b64}");
@@ -1088,12 +1110,13 @@ mod tests {
             ..Default::default()
         });
         assert!(!v.verify(&token, 1_000, SCOPE_FULL));
+        Ok(())
     }
 
     /// An empty configured audience must reject every `s2` token rather than
     /// accepting any of them — fail closed on a misconfigured verifier.
     #[test]
-    fn empty_audience_rejects_every_s2_token() {
+    fn empty_audience_rejects_every_s2_token() -> Result<(), TestError> {
         let token = mint(key_a(), "id1", 1_000_000, AUDIENCE_API, SCOPE_FULL);
         // Bypass the test `verifier()` helper, which fills in a default.
         let v = TokenVerifier::new(VerifierConfig {
@@ -1102,6 +1125,7 @@ mod tests {
             ..Default::default()
         });
         assert!(!v.verify(&token, 1_000, SCOPE_FULL));
+        Ok(())
     }
 
     /// A `metrics`-scoped token reaches the metrics scope and nothing else.
@@ -1111,7 +1135,7 @@ mod tests {
     /// also reads `/v1/dialogs` and the message bodies underneath — which, on a
     /// TLS-decrypting capture tool, is the call content.
     #[test]
-    fn a_metrics_token_is_refused_where_full_access_is_required() {
+    fn a_metrics_token_is_refused_where_full_access_is_required() -> Result<(), TestError> {
         let token = mint(key_a(), "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -1127,6 +1151,7 @@ mod tests {
             "a metrics token must NOT satisfy a full requirement — that is the \
              entire restriction this claim exists to impose"
         );
+        Ok(())
     }
 
     /// A `full` token satisfies every requirement, including the narrow one.
@@ -1135,7 +1160,7 @@ mod tests {
     /// tokens, demanding `metrics` admits both. That is why `full` is the
     /// default requirement for any route that does not say otherwise.
     #[test]
-    fn a_full_token_satisfies_both_requirements() {
+    fn a_full_token_satisfies_both_requirements() -> Result<(), TestError> {
         let token = mint(key_a(), "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -1148,6 +1173,7 @@ mod tests {
             "a full token must still reach /metrics — adding this claim must not \
              narrow an existing deployment"
         );
+        Ok(())
     }
 
     /// A token minted before `scope` existed keeps full access.
@@ -1158,7 +1184,7 @@ mod tests {
     /// Asserted against a hand-built payload rather than `mint`, because `mint`
     /// can no longer produce one.
     #[test]
-    fn a_pre_scope_token_still_has_full_access() {
+    fn a_pre_scope_token_still_has_full_access() -> Result<(), TestError> {
         let payload = r#"{"id":"legacy","exp":2000,"aud":"api"}"#;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
         let signing_input = format!("{VERSION}.{payload_b64}");
@@ -1174,6 +1200,7 @@ mod tests {
             v.verify(&token, 1_000, SCOPE_FULL),
             "a token minted before the scope claim existed must keep working"
         );
+        Ok(())
     }
 
     /// The scope claim is signed: editing it in the payload breaks the token.
@@ -1181,15 +1208,15 @@ mod tests {
     /// Without this, "restricted" would be a suggestion — a holder could widen
     /// their own credential by rewriting one field.
     #[test]
-    fn a_scope_cannot_be_widened_by_editing_the_payload() {
+    fn a_scope_cannot_be_widened_by_editing_the_payload() -> Result<(), TestError> {
         let token = mint(key_a(), "scrape", 2_000, AUDIENCE_API, SCOPE_METRICS);
         let mut parts = token.split('.');
-        let version = parts.next().expect("version");
-        let payload_b64 = parts.next().expect("payload");
-        let sig_b64 = parts.next().expect("sig");
+        let version = parts.next().ok_or("version")?;
+        let payload_b64 = parts.next().ok_or("payload")?;
+        let sig_b64 = parts.next().ok_or("sig")?;
 
-        let decoded = URL_SAFE_NO_PAD.decode(payload_b64).expect("decode");
-        let json = String::from_utf8(decoded).expect("utf8");
+        let decoded = URL_SAFE_NO_PAD.decode(payload_b64)?;
+        let json = String::from_utf8(decoded)?;
         assert!(
             json.contains("\"scope\":\"metrics\""),
             "payload names the scope: {json}"
@@ -1208,6 +1235,7 @@ mod tests {
             !v.verify(&forged, 1_000, SCOPE_FULL),
             "stripping the scope claim must invalidate the signature"
         );
+        Ok(())
     }
 
     // ── verify_claims (scope returned, not compared) ─────────────────────
@@ -1216,7 +1244,7 @@ mod tests {
     /// scope intact, so the MCP dispatch layer has the claim to enforce
     /// per-tool.
     #[test]
-    fn a_read_token_round_trips_through_verify_claims() {
+    fn a_read_token_round_trips_through_verify_claims() -> Result<(), TestError> {
         let token = mint(key_a(), "agent", 2_000, AUDIENCE_API, SCOPE_READ);
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -1230,12 +1258,13 @@ mod tests {
             }),
             "the scope claim must come back exactly as minted"
         );
+        Ok(())
     }
 
     /// A token that carries no scope claim comes back as `full` — the same
     /// absent-means-full rule `verify` applies, now visible in the claims.
     #[test]
-    fn a_scopeless_token_comes_back_as_full() {
+    fn a_scopeless_token_comes_back_as_full() -> Result<(), TestError> {
         // `mint` omits the claim for `full`, so this payload has no `scope`.
         let token = mint(key_a(), "ops", 2_000, AUDIENCE_API, SCOPE_FULL);
         let v = verifier(VerifierConfig {
@@ -1246,13 +1275,14 @@ mod tests {
             v.verify_claims(&token, 1_000).map(|a| a.scope),
             Some(SCOPE_FULL.to_string())
         );
+        Ok(())
     }
 
     /// A static secret comes back as `full`: it carries no claims at all, so
     /// it cannot express a narrower scope — the operator who wants least
     /// privilege mints a token.
     #[test]
-    fn a_static_secret_comes_back_as_full() {
+    fn a_static_secret_comes_back_as_full() -> Result<(), TestError> {
         let v = verifier(VerifierConfig {
             static_keys: vec!["legacy-secret".to_string()],
             ..Default::default()
@@ -1266,6 +1296,7 @@ mod tests {
             None,
             "a wrong static secret must yield no claims"
         );
+        Ok(())
     }
 
     /// The `id` a token was minted with survives verification, and a static
@@ -1280,7 +1311,7 @@ mod tests {
     /// id, and a blank one would read like a token whose id happens to be
     /// empty.
     #[test]
-    fn verify_claims_carries_the_token_id_and_a_static_secret_has_none() {
+    fn verify_claims_carries_the_token_id_and_a_static_secret_has_none() -> Result<(), TestError> {
         let token = mint(key_a(), "ci-runner-1", 2_000, AUDIENCE_API, SCOPE_READ);
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -1303,6 +1334,7 @@ mod tests {
             }),
             "a static secret carries no id at all — absent, not empty"
         );
+        Ok(())
     }
 
     /// `verify_claims` applies the same non-scope checks as `verify`:
@@ -1310,10 +1342,10 @@ mod tests {
     /// Returning claims is not a relaxation of anything except the scope
     /// comparison, which the caller now owns.
     #[test]
-    fn verify_claims_rejects_expired_revoked_and_wrong_audience() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn verify_claims_rejects_expired_revoked_and_wrong_audience() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("revoked.txt");
-        std::fs::write(&path, "revoked-claims-id\n").expect("write");
+        std::fs::write(&path, "revoked-claims-id\n")?;
 
         let v = verifier(VerifierConfig {
             signing_keys: vec![key_a().to_vec()],
@@ -1339,6 +1371,7 @@ mod tests {
             None,
             "an mcp token must yield no claims on the api surface"
         );
+        Ok(())
     }
     /// The two `is_unconfigured` answers agree for every credential shape.
     ///
@@ -1354,7 +1387,7 @@ mod tests {
     /// rather than asserting the two functions are spelled alike, because what
     /// matters is that they never disagree.
     #[test]
-    fn both_unconfigured_answers_agree_for_every_credential_shape() {
+    fn both_unconfigured_answers_agree_for_every_credential_shape() -> Result<(), TestError> {
         for (label, signing, statics) in [
             ("neither", vec![], vec![]),
             ("signing only", vec![b"k".to_vec()], vec![]),
@@ -1375,6 +1408,7 @@ mod tests {
                  answer the same question the same way"
             );
         }
+        Ok(())
     }
 
     /// Only the empty shape is unconfigured.
@@ -1382,7 +1416,7 @@ mod tests {
     /// The half the agreement test cannot see: two functions that both always
     /// answered `true` would agree perfectly and open every surface.
     #[test]
-    fn a_configured_verifier_is_not_unconfigured() {
+    fn a_configured_verifier_is_not_unconfigured() -> Result<(), TestError> {
         let empty = VerifierConfig {
             signing_keys: vec![],
             static_keys: vec![],
@@ -1408,5 +1442,6 @@ mod tests {
             );
             assert!(!TokenVerifier::new(cfg).is_unconfigured(), "{label}");
         }
+        Ok(())
     }
 }

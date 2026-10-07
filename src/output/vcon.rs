@@ -3015,17 +3015,20 @@ fn format_uuid(bytes: &[u8; 16]) -> String {
 /// credential filter, and the UUIDv8 derivation.
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// A `json`-encoded body, parsed.
     ///
     /// [Section 2.3.2 of the core draft](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-2.3.2) makes `body` a STRING, so a read
     /// goes through here rather than indexing a `Value` that is not an object.
     /// The conserver's own model says the same in a comment: a caller handing
     /// it a dict gets it JSON-encoded before anything else sees the attachment.
-    fn body_of(node: &serde_json::Value) -> serde_json::Value {
+    fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
         let text = node["body"]
             .as_str()
-            .unwrap_or_else(|| panic!("a json body must be a string: {node}"));
-        serde_json::from_str(text).unwrap_or_else(|e| panic!("body must parse: {e}: {text}"))
+            .ok_or_else(|| format!("a json body must be a string: {node}"))?;
+        Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
     }
 
     use super::*;
@@ -3040,32 +3043,39 @@ mod tests {
     }
 
     /// A fixed capture clock, so a container is comparable across runs.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 24, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 24, 12, 0, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     /// The moment an export is stamped with, distinct from [`ts`] so a test
     /// can tell the two clocks apart.
-    fn exported_at() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 25, 9, 30, 0).unwrap()
+    fn exported_at() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 8, 25, 9, 30, 0)
+                .single()
+                .ok_or("invalid fixture timestamp")?,
+        )
     }
 
     /// Parse one message out of a first line and header list.
-    fn message(first_line: &str, headers: &[&str]) -> crate::sip::SipMessage {
-        parse_sip(
+    fn message(first_line: &str, headers: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_sip(
             &build_sip(first_line, headers, b""),
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("fixture parses")
+        )?)
     }
 
     /// An INVITE opening a dialog, with display names, Contact and User-Agent.
-    fn invite() -> crate::sip::SipMessage {
+    fn invite() -> Result<crate::sip::SipMessage, TestError> {
         message(
             "INVITE sip:bob@example.net SIP/2.0",
             &[
@@ -3081,7 +3091,7 @@ mod tests {
     }
 
     /// A response to the [`invite`] transaction.
-    fn response(code: u16, reason: &str) -> crate::sip::SipMessage {
+    fn response(code: u16, reason: &str) -> Result<crate::sip::SipMessage, TestError> {
         message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
@@ -3097,19 +3107,19 @@ mod tests {
     }
 
     /// A dialog carrying the opening INVITE and every supplied response.
-    fn dialog_with(responses: &[crate::sip::SipMessage]) -> SipDialog {
-        let invite = invite();
+    fn dialog_with(responses: &[crate::sip::SipMessage]) -> Result<SipDialog, TestError> {
+        let invite = invite()?;
         // `SipDialog::new` already stores the opening message, so pushing it
         // again would give the trace two INVITEs and quietly shift every
         // later index -- which is exactly how the first draft of
         // `the_trace_carries_every_message_through_the_shared_projection`
         // read a duplicate INVITE where it expected the 180.
-        let mut dialog = SipDialog::new(&invite).expect("INVITE opens a dialog");
+        let mut dialog = SipDialog::new(&invite).ok_or("INVITE opens a dialog")?;
         for r in responses {
             crate::sip::dialog::update_state(&mut dialog, r);
             dialog.messages.push(r.clone());
         }
-        dialog
+        Ok(dialog)
     }
 
     /// A capture that read frames and lost nothing.
@@ -3121,8 +3131,8 @@ mod tests {
     }
 
     /// Export against a supplied set of facts and no capture analysis.
-    fn export_with(dialog: &SipDialog, facts: &CaptureFacts) -> Vcon {
-        export_dialog_at(
+    fn export_with(dialog: &SipDialog, facts: &CaptureFacts) -> Result<Vcon, TestError> {
+        Ok(export_dialog_at(
             dialog,
             &ExportContext {
                 capture_id: "fixture.pcap",
@@ -3131,24 +3141,24 @@ mod tests {
                 analysis: None,
                 media: &[],
             },
-            exported_at(),
-        )
+            exported_at()?,
+        ))
     }
 
     /// The analysis body parsed out of an exported container.
-    fn report_body(v: &Vcon) -> serde_json::Value {
-        let json: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(v).expect("serializes")).expect("JSON");
-        serde_json::from_str(json["analysis"][0]["body"].as_str().expect("string body"))
-            .expect("the analysis body parses")
+    fn report_body(v: &Vcon) -> Result<serde_json::Value, TestError> {
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(v)?)?;
+        Ok(serde_json::from_str(
+            json["analysis"][0]["body"].as_str().ok_or("string body")?,
+        )?)
     }
 
     /// One PCMU stream's summary, as `GET /v1/streams` reports it.
-    fn pcmu_summary() -> crate::output::model::StreamSummary {
+    fn pcmu_summary() -> Result<crate::output::model::StreamSummary, TestError> {
         let key = crate::rtp::stream::StreamKey {
             ssrc: 0x1234_5678,
-            src: "10.0.0.1:20000".parse().expect("addr"),
-            dst: "10.0.0.2:30000".parse().expect("addr"),
+            src: "10.0.0.1:20000".parse()?,
+            dst: "10.0.0.2:30000".parse()?,
         };
         let hdr = crate::rtp::parser::RtpHeader {
             version: 2,
@@ -3162,19 +3172,22 @@ mod tests {
             ssrc: 0x1234_5678,
             payload_offset: 12,
         };
-        let mut stream = crate::rtp::stream::RtpStream::new(key, &hdr, exported_at());
+        let mut stream = crate::rtp::stream::RtpStream::new(key, &hdr, exported_at()?);
         stream.codec = Some("PCMU".to_string());
-        crate::output::model::StreamSummary::of(&stream, crate::rtp::quality::MosDelay::unknown())
+        Ok(crate::output::model::StreamSummary::of(
+            &stream,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
     }
 
     /// The report carries each stream's MOS, the figure `GET /v1/streams`
     /// reports, with what it rests on.
     #[test]
-    fn the_report_carries_each_streams_mos() {
-        let summary = pcmu_summary();
+    fn the_report_carries_each_streams_mos() -> Result<(), TestError> {
+        let summary = pcmu_summary()?;
         let facts = clean_facts();
         let v = export_dialog_at(
-            &dialog_with(&[response(200, "OK")]),
+            &dialog_with(&[response(200, "OK")?])?,
             &ExportContext {
                 capture_id: "fixture.pcap",
                 facts: &facts,
@@ -3182,9 +3195,9 @@ mod tests {
                 analysis: None,
                 media: std::slice::from_ref(&summary),
             },
-            exported_at(),
+            exported_at()?,
         );
-        let body = report_body(&v);
+        let body = report_body(&v)?;
         let row = &body["media_quality"][0];
         assert_eq!(row["ssrc"], summary.ssrc, "{body}");
         assert_eq!(row["codec"], "PCMU", "{body}");
@@ -3192,14 +3205,16 @@ mod tests {
         assert_eq!(row["r_factor"].as_f64(), Some(summary.r_factor), "{body}");
         assert_eq!(row["mos_grounded"], true, "{body}");
         assert_eq!(row["mos_grounding"], "published", "{body}");
+        Ok(())
     }
 
     /// No streams, no key: a dialog without media is not a dialog whose
     /// media scored nothing.
     #[test]
-    fn a_report_without_media_has_no_media_quality() {
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
-        assert!(report_body(&v).get("media_quality").is_none());
+    fn a_report_without_media_has_no_media_quality() -> Result<(), TestError> {
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        assert!(report_body(&v)?.get("media_quality").is_none());
+        Ok(())
     }
 
     // ── What the container says it does not contain ─────────────
@@ -3211,28 +3226,30 @@ mod tests {
     /// simply had fewer calls, and a reader comparing it against a switch's
     /// CDRs would conclude sipnab missed them.
     #[test]
-    fn a_run_whose_gate_closed_says_so_in_the_completeness_caveat() {
+    fn a_run_whose_gate_closed_says_so_in_the_completeness_caveat() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.gate_closed_during_run = true;
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
-        let json = serde_json::to_string(&v).expect("serializes");
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &facts)?;
+        let json = serde_json::to_string(&v)?;
         assert!(
             json.contains("closed the persistence gate"),
             "a run that stopped writing mid-capture does not reproduce from              the capture alone, and the container has to say so: {json}"
         );
+        Ok(())
     }
 
     /// A deny flag is recorded rather than leaving a silent absence.
     #[test]
-    fn a_deny_flag_is_recorded_rather_than_leaving_a_silent_absence() {
+    fn a_deny_flag_is_recorded_rather_than_leaving_a_silent_absence() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.dialogs_suppressed_by_deny = 3;
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
-        let json = serde_json::to_string(&v).expect("serializes");
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &facts)?;
+        let json = serde_json::to_string(&v)?;
         assert!(
             json.contains("3 dialog(s) carried a deny flag"),
             "absence reading as 'nothing happened' is the failure this module              exists to refuse: {json}"
         );
+        Ok(())
     }
 
     /// A dropped header is disclosed, not covered by the clean verdict.
@@ -3247,11 +3264,11 @@ mod tests {
     /// remedy. A reader who knows a header was withheld can go back to the
     /// capture; one told nothing was omitted cannot know to.
     #[test]
-    fn a_dropped_oversize_header_is_disclosed_in_the_note() {
+    fn a_dropped_oversize_header_is_disclosed_in_the_note() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.headers_dropped_oversize = 3;
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
-        let json = serde_json::to_string(&v).expect("serializes");
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &facts)?;
+        let json = serde_json::to_string(&v)?;
 
         assert!(
             !json.contains("No omissions recorded"),
@@ -3266,6 +3283,7 @@ mod tests {
             json.contains('3'),
             "and how many, so a reader can weigh it: {json}"
         );
+        Ok(())
     }
 
     /// A run with neither still earns the clean verdict.
@@ -3274,9 +3292,9 @@ mod tests {
     /// mentioned the gate would make every container read as suspect, and a
     /// caveat that fires on every run is one nobody reads.
     #[test]
-    fn a_run_with_no_suppression_says_nothing_about_it() {
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
-        let json = serde_json::to_string(&v).expect("serializes");
+    fn a_run_with_no_suppression_says_nothing_about_it() -> Result<(), TestError> {
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        let json = serde_json::to_string(&v)?;
         assert!(
             !json.contains("persistence gate"),
             "an untouched gate must not be mentioned: {json}"
@@ -3289,6 +3307,7 @@ mod tests {
             json.contains("No omissions recorded"),
             "and the run still earns the clean verdict: {json}"
         );
+        Ok(())
     }
 
     // ── The omissions, as rows a caller can branch on ───────────
@@ -3300,8 +3319,11 @@ mod tests {
     /// times, so a test reading it back would be asserting against a string it
     /// had to parse out of a string. This hands back the value the container
     /// was built from.
-    fn export_reporting(dialog: &SipDialog, facts: &CaptureFacts) -> ExportedDialog {
-        export_dialog_and_completeness(
+    fn export_reporting(
+        dialog: &SipDialog,
+        facts: &CaptureFacts,
+    ) -> Result<ExportedDialog, TestError> {
+        Ok(export_dialog_and_completeness(
             dialog,
             &ExportContext {
                 capture_id: "fixture.pcap",
@@ -3311,12 +3333,12 @@ mod tests {
                 media: &[],
             },
             ObservedAudio::NotConsidered,
-            exported_at(),
-        )
+            exported_at()?,
+        ))
     }
 
     /// Facts with exactly one loss counter set, named.
-    fn facts_losing(kind: &str, count: u64) -> CaptureFacts {
+    fn facts_losing(kind: &str, count: u64) -> Result<CaptureFacts, TestError> {
         let mut facts = clean_facts();
         match kind {
             "undecodable_frames" => facts.undecodable.frames = count,
@@ -3328,9 +3350,14 @@ mod tests {
             "gate_closed_during_run" => facts.gate_closed_during_run = count > 0,
             "dialogs_suppressed_by_deny" => facts.dialogs_suppressed_by_deny = count,
             "headers_dropped_oversize" => facts.headers_dropped_oversize = count,
-            other => panic!("no fixture for `{other}`; the list below and this must move together"),
+            other => {
+                return Err(format!(
+                    "no fixture for `{other}`; the list below and this must move together"
+                )
+                .into());
+            }
         }
-        facts
+        Ok(facts)
     }
 
     /// Every loss counter the note has a clause for.
@@ -3359,10 +3386,10 @@ mod tests {
     /// in [`CaptureCompleteness::omissions`] — or the reverse — fails here,
     /// naming the counter. Checking one half would certify half a fix.
     #[test]
-    fn an_omission_row_exists_for_every_incomplete_clause() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn an_omission_row_exists_for_every_incomplete_clause() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         for kind in LOSS_COUNTERS {
-            let exported = export_reporting(&dialog, &facts_losing(kind, 7));
+            let exported = export_reporting(&dialog, &facts_losing(kind, 7)?)?;
             let note = &exported.completeness.note;
             let rows = exported.completeness.omissions();
             assert_eq!(
@@ -3396,7 +3423,7 @@ mod tests {
         all.gate_closed_during_run = true;
         all.dialogs_suppressed_by_deny = 7;
         all.headers_dropped_oversize = 8;
-        let exported = export_reporting(&dialog, &all);
+        let exported = export_reporting(&dialog, &all)?;
         let rows = exported.completeness.omissions();
         assert_eq!(
             rows.len(),
@@ -3409,6 +3436,7 @@ mod tests {
             "the prose and the rows must describe one set: {}",
             exported.completeness.note
         );
+        Ok(())
     }
 
     /// A row carries the count and the unit, not merely the name.
@@ -3416,11 +3444,11 @@ mod tests {
     /// "Something was dropped" is the failure VAL13 was: a reader who cannot
     /// weigh the loss cannot decide whether to go back to the capture.
     #[test]
-    fn an_omission_row_carries_the_count_and_the_unit() {
+    fn an_omission_row_carries_the_count_and_the_unit() -> Result<(), TestError> {
         let exported = export_reporting(
-            &dialog_with(&[response(200, "OK")]),
-            &facts_losing("headers_dropped_oversize", 3),
-        );
+            &dialog_with(&[response(200, "OK")?])?,
+            &facts_losing("headers_dropped_oversize", 3)?,
+        )?;
         let rows = exported.completeness.omissions();
         assert_eq!(
             rows,
@@ -3431,6 +3459,7 @@ mod tests {
             }],
             "the row must say what was lost, how much, and in what unit"
         );
+        Ok(())
     }
 
     /// A capture that lost nothing records no omissions.
@@ -3439,8 +3468,8 @@ mod tests {
     /// reads, and `complete()` reporting `false` on a clean run would make
     /// every container read as suspect.
     #[test]
-    fn a_clean_capture_records_no_omissions() {
-        let exported = export_reporting(&dialog_with(&[response(200, "OK")]), &clean_facts());
+    fn a_clean_capture_records_no_omissions() -> Result<(), TestError> {
+        let exported = export_reporting(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
         assert!(
             exported.completeness.omissions().is_empty(),
             "a clean capture omitted nothing: {:?}",
@@ -3456,6 +3485,7 @@ mod tests {
             "which is the same answer the prose gives: {}",
             exported.completeness.note
         );
+        Ok(())
     }
 
     /// A ranked blind spot is an omission row; an analysis that found nothing
@@ -3464,10 +3494,10 @@ mod tests {
     /// `None` and `Some([])` are different answers on the carrier and stay
     /// different here: neither is an omission, and only a RANKED spot is.
     #[test]
-    fn a_ranked_blind_spot_is_an_omission_and_a_clean_analysis_is_not() {
+    fn a_ranked_blind_spot_is_an_omission_and_a_clean_analysis_is_not() -> Result<(), TestError> {
         use crate::analysis::{Finding, FindingKind};
 
-        let dialog = dialog_with(&[response(200, "OK")]);
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let facts = clean_facts();
         let ranked = CaptureAnalysis {
             frames_read: 120,
@@ -3497,7 +3527,7 @@ mod tests {
                     media: &[],
                 },
                 ObservedAudio::NotConsidered,
-                exported_at(),
+                exported_at()?,
             );
             let rows = exported.completeness.omissions();
             assert_eq!(
@@ -3513,6 +3543,7 @@ mod tests {
                 exported.completeness.note
             );
         }
+        Ok(())
     }
 
     /// RV5: a container's digest is the digest of the bytes an export writes.
@@ -3522,13 +3553,13 @@ mod tests {
     /// some other rendering of the same container would look right and match
     /// nothing.
     #[test]
-    fn a_container_digest_is_the_digest_of_the_bytes_an_export_writes() {
+    fn a_container_digest_is_the_digest_of_the_bytes_an_export_writes() -> Result<(), TestError> {
         use sha2::Digest as _;
 
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let container = export_with(&dialog, &clean_facts());
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let container = export_with(&dialog, &clean_facts())?;
         let sealed = seal(container, None);
-        let json = sealed_json(&sealed).expect("serializes");
+        let json = sealed_json(&sealed)?;
 
         let expected: String = sha2::Sha256::digest(json.as_bytes())
             .iter()
@@ -3540,6 +3571,7 @@ mod tests {
             "the digest must be SHA-256 over the container's own bytes, in the \
              lowercase hex `sha256sum` writes"
         );
+        Ok(())
     }
 
     /// Two different containers do not share a digest.
@@ -3547,17 +3579,21 @@ mod tests {
     /// The anti-vacuity half: a function returning a constant would satisfy
     /// the test above and identify nothing.
     #[test]
-    fn two_different_containers_do_not_share_a_digest() {
-        let ok = export_with(&dialog_with(&[response(200, "OK")]), &clean_facts());
-        let busy = export_with(&dialog_with(&[response(486, "Busy Here")]), &clean_facts());
-        let one = sealed_json(&seal(ok, None)).expect("serializes");
-        let two = sealed_json(&seal(busy, None)).expect("serializes");
+    fn two_different_containers_do_not_share_a_digest() -> Result<(), TestError> {
+        let ok = export_with(&dialog_with(&[response(200, "OK")?])?, &clean_facts())?;
+        let busy = export_with(
+            &dialog_with(&[response(486, "Busy Here")?])?,
+            &clean_facts(),
+        )?;
+        let one = sealed_json(&seal(ok, None))?;
+        let two = sealed_json(&seal(busy, None))?;
         assert_ne!(
             container_digest(one.as_bytes()),
             container_digest(two.as_bytes()),
             "two containers describing different calls hashed to one value, so \
              the digest identifies nothing"
         );
+        Ok(())
     }
 
     /// Zero suppressed dialogs is not "some".
@@ -3567,13 +3603,15 @@ mod tests {
     /// unconditionally, would put "0 dialog(s) carried a deny flag" into every
     /// container -- which reads as a measurement of something.
     #[test]
-    fn zero_suppressed_dialogs_produces_no_clause() {
+    fn zero_suppressed_dialogs_produces_no_clause() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.dialogs_suppressed_by_deny = 0;
-        let json =
-            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
-                .expect("serializes");
+        let json = serde_json::to_string(&export_with(
+            &dialog_with(&[response(200, "OK")?])?,
+            &facts,
+        )?)?;
         assert!(!json.contains("deny flag"), "zero is not some: {json}");
+        Ok(())
     }
 
     /// Both causes are reported when both happened.
@@ -3582,13 +3620,14 @@ mod tests {
     /// came second. The run that has both is the one whose container is least
     /// self-explanatory.
     #[test]
-    fn both_suppression_causes_appear_together() {
+    fn both_suppression_causes_appear_together() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.gate_closed_during_run = true;
         facts.dialogs_suppressed_by_deny = 2;
-        let json =
-            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
-                .expect("serializes");
+        let json = serde_json::to_string(&export_with(
+            &dialog_with(&[response(200, "OK")?])?,
+            &facts,
+        )?)?;
         assert!(
             json.contains("closed the persistence gate"),
             "the gate clause is missing: {json}"
@@ -3597,6 +3636,7 @@ mod tests {
             json.contains("2 dialog(s) carried a deny flag"),
             "the deny clause is missing: {json}"
         );
+        Ok(())
     }
 
     /// The counts reach the container as fields, not only as prose.
@@ -3604,20 +3644,17 @@ mod tests {
     /// A consumer branching on this should not have to parse an English
     /// sentence. The note explains; the fields are what a program reads.
     #[test]
-    fn suppression_is_carried_as_fields_a_program_can_read() {
+    fn suppression_is_carried_as_fields_a_program_can_read() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.gate_closed_during_run = true;
         facts.dialogs_suppressed_by_deny = 5;
-        let v = export_with(&dialog_with(&[response(200, "OK")]), &facts);
-        let json: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&v).expect("serializes"))
-                .expect("valid JSON");
+        let v = export_with(&dialog_with(&[response(200, "OK")?])?, &facts)?;
+        let json: serde_json::Value = serde_json::from_str(&serde_json::to_string(&v)?)?;
         let c = &json["analysis"][0]["body"];
         let body: serde_json::Value = serde_json::from_str(
             c.as_str()
-                .unwrap_or_else(|| panic!("an analysis body is a string: {json}")),
-        )
-        .expect("the analysis body parses");
+                .ok_or_else(|| format!("an analysis body is a string: {json}"))?,
+        )?;
         let completeness = &body["capture_completeness"];
         assert_eq!(
             completeness["gate_closed_during_run"], true,
@@ -3627,6 +3664,7 @@ mod tests {
             completeness["dialogs_suppressed_by_deny"], 5,
             "the deny count must be a field: {body}"
         );
+        Ok(())
     }
 
     /// A suppressed dialog is a decision, not a gap in what sipnab saw.
@@ -3636,25 +3674,27 @@ mod tests {
     /// report something an operator CHOSE. A reader who cannot tell them apart
     /// will go looking for a capture fault that does not exist.
     #[test]
-    fn a_deliberate_suppression_does_not_read_as_a_capture_fault() {
+    fn a_deliberate_suppression_does_not_read_as_a_capture_fault() -> Result<(), TestError> {
         let mut facts = clean_facts();
         facts.dialogs_suppressed_by_deny = 1;
-        let json =
-            serde_json::to_string(&export_with(&dialog_with(&[response(200, "OK")]), &facts))
-                .expect("serializes");
+        let json = serde_json::to_string(&export_with(
+            &dialog_with(&[response(200, "OK")?])?,
+            &facts,
+        )?)?;
         assert!(
             json.contains("not a gap in what sipnab saw"),
             "the clause must say the absence was chosen: {json}"
         );
+        Ok(())
     }
 
     /// The container's own fields: version, extensions, and the two things
     /// [core-03 section 4.1.7](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.1.7) and the signing decision say must NOT be
     /// there.
     #[test]
-    fn the_container_declares_its_version_and_signs_nothing() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn the_container_declares_its_version_and_signs_nothing() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
 
         assert_eq!(v["vcon"], VCON_SYNTAX_VERSION);
         // Both, and CC is not optional decoration: `Party.role` is a CC
@@ -3664,7 +3704,7 @@ mod tests {
         assert!(
             v["parties"]
                 .as_array()
-                .expect("parties is an array")
+                .ok_or("parties is an array")?
                 .iter()
                 .any(|p| p.get("role").is_some()),
             "the CC declaration above is only honest while some party \
@@ -3682,7 +3722,7 @@ mod tests {
         // NEVER become is a place for sipnab's words about the call: the
         // caveat has its own two surfaces, and a caveat here would read as
         // authoritative and sit where a reader expects the participants'.
-        let subject = v["subject"].as_str().expect("a subject is present");
+        let subject = v["subject"].as_str().ok_or("a subject is present")?;
         assert!(
             subject.contains("vcon-fixture@example.com"),
             "the subject must identify the dialog: {subject:?}"
@@ -3715,6 +3755,7 @@ mod tests {
                 "an observer vCon must carry no {banned}: {v}"
             );
         }
+        Ok(())
     }
 
     /// `created_at` is the EXPORT clock, not the dialog's.
@@ -3723,17 +3764,18 @@ mod tests {
     /// that stamped the call's start here would look contemporaneous with
     /// traffic it may describe years later.
     #[test]
-    fn created_at_is_the_export_time_and_not_the_dialog_time() {
-        let dialog = dialog_with(&[]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn created_at_is_the_export_time_and_not_the_dialog_time() -> Result<(), TestError> {
+        let dialog = dialog_with(&[])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
 
-        assert_eq!(v["created_at"], exported_at().to_rfc3339());
+        assert_eq!(v["created_at"], exported_at()?.to_rfc3339());
         assert_ne!(
             v["created_at"],
             serde_json::json!(dialog.created_at.to_rfc3339()),
             "created_at took the dialog's clock, so a re-export would claim \
              the conversation happened when the file was written"
         );
+        Ok(())
     }
 
     /// Parties come from the observed headers and always say
@@ -3747,10 +3789,10 @@ mod tests {
     /// a name under the declared key reads as what the header said. Withholding
     /// it instead only meant every generic consumer showed an unnamed party.
     #[test]
-    fn parties_are_the_observed_headers_and_never_a_verified_name() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let parties = v["parties"].as_array().expect("parties is an array");
+    fn parties_are_the_observed_headers_and_never_a_verified_name() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let parties = v["parties"].as_array().ok_or("parties is an array")?;
 
         assert_eq!(parties.len(), 3, "two observed parties plus the observer");
 
@@ -3776,17 +3818,18 @@ mod tests {
         // The callee's headers arrive on its own response, not on the INVITE.
         assert_eq!(parties[1]["sip_contact"], "<sip:bob@10.0.0.2:5060>");
         assert_eq!(parties[1]["sip_user_agent"], "BobUA/2.0");
+        Ok(())
     }
 
     /// The final party is sipnab, and it is unmistakably an observer.
     #[test]
-    fn the_last_party_is_the_sipnab_observer() {
-        let dialog = dialog_with(&[]);
-        let vcon = export_with(&dialog, &clean_facts());
+    fn the_last_party_is_the_sipnab_observer() -> Result<(), TestError> {
+        let dialog = dialog_with(&[])?;
+        let vcon = export_with(&dialog, &clean_facts())?;
         let observer = vcon.observer_index();
         assert_eq!(observer, vcon.parties.len() - 1);
 
-        let v = serde_json::to_value(&vcon).expect("serializes");
+        let v = serde_json::to_value(&vcon)?;
         let party = &v["parties"][observer];
         assert_eq!(party["role"], OBSERVER_ROLE);
         assert!(
@@ -3794,12 +3837,13 @@ mod tests {
             "sipnab sent no SIP; a URI here would be a participant that never \
              existed: {party}"
         );
-        let ua = party["sip_user_agent"].as_str().expect("names itself");
+        let ua = party["sip_user_agent"].as_str().ok_or("names itself")?;
         assert!(
             ua.contains(env!("CARGO_PKG_VERSION")) && ua.contains(node_name()),
             "the observer must name the build and the box that produced this \
              container, or an attachment's provenance resolves to nothing: {ua}"
         );
+        Ok(())
     }
 
     /// A dialog sipnab saw succeed carries an EMPTY Dialog Object.
@@ -3808,9 +3852,10 @@ mod tests {
     /// field may appear merely because the object exists, and `incomplete`
     /// must not appear merely because a signaling-only export has no media.
     #[test]
-    fn a_signaling_only_dialog_object_describes_no_media_and_claims_no_recording() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_signaling_only_dialog_object_describes_no_media_and_claims_no_recording()
+    -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
         assert_eq!(object["sip_call_id"], "vcon-fixture@example.com");
@@ -3836,6 +3881,7 @@ mod tests {
                  any: {object} carries {invented}"
             );
         }
+        Ok(())
     }
 
     /// A Dialog Object that carries nothing and failed at nothing asserts
@@ -3848,9 +3894,10 @@ mod tests {
     /// it to a call that "failed to be setup", which is a claim about the CALL
     /// that a successful capture must not make.
     #[test]
-    fn a_dialog_that_carries_nothing_and_failed_at_nothing_asserts_neither() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_dialog_that_carries_nothing_and_failed_at_nothing_asserts_neither() -> Result<(), TestError>
+    {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
         assert!(
@@ -3867,18 +3914,19 @@ mod tests {
             object["sip_call_id"], "vcon-fixture@example.com",
             "the object must still identify the dialog it stands for: {object}"
         );
+        Ok(())
     }
 
     /// The vendored schema's Dialog constraints, read from the file the gate
     /// validates against.
-    fn vendored_dialog_schema() -> serde_json::Value {
+    fn vendored_dialog_schema() -> Result<serde_json::Value, TestError> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/schemas/vcon.schema.json"
         );
-        let text = std::fs::read_to_string(path).expect("the vendored schema is readable");
-        let schema: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        schema["definitions"]["Dialog"].clone()
+        let text = std::fs::read_to_string(path)?;
+        let schema: serde_json::Value = serde_json::from_str(&text)?;
+        Ok(schema["definitions"]["Dialog"].clone())
     }
 
     /// The vendored schema departs from the published one at ONE point, and
@@ -3894,8 +3942,8 @@ mod tests {
     /// contradiction and breaks every signaling-only export. Whoever does it
     /// lands here and reads why before deciding.
     #[test]
-    fn the_vendored_schema_deviates_from_the_draft_at_exactly_one_point() {
-        let dialog = vendored_dialog_schema();
+    fn the_vendored_schema_deviates_from_the_draft_at_exactly_one_point() -> Result<(), TestError> {
+        let dialog = vendored_dialog_schema()?;
 
         assert_eq!(
             dialog["required"],
@@ -3909,7 +3957,7 @@ mod tests {
         // constraint, or the deviation has quietly grown past its warrant.
         let kinds = dialog["properties"]["type"]["enum"]
             .as_array()
-            .expect("type is still a closed enum");
+            .ok_or("type is still a closed enum")?;
         assert_eq!(
             kinds.len(),
             5,
@@ -3918,13 +3966,14 @@ mod tests {
         );
         let dispositions = dialog["properties"]["disposition"]["enum"]
             .as_array()
-            .expect("disposition is still a closed enum");
+            .ok_or("disposition is still a closed enum")?;
         assert_eq!(
             dispositions.len(),
             6,
             "§4.3.11 defines six dispositions, and the mapping below is \
              checked against exactly this list: {dispositions:?}"
         );
+        Ok(())
     }
 
     /// Every disposition the export can emit is one the schema admits.
@@ -3935,23 +3984,23 @@ mod tests {
     /// space, so a disposition invented outside [core-03 section 4.3.11](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-03#section-4.3.11)
     /// cannot reach a container by way of a code nobody wrote a case for.
     #[test]
-    fn every_disposition_the_export_can_emit_is_one_the_schema_admits() {
-        let schema = vendored_dialog_schema();
+    fn every_disposition_the_export_can_emit_is_one_the_schema_admits() -> Result<(), TestError> {
+        let schema = vendored_dialog_schema()?;
         let admitted: Vec<&str> = schema["properties"]["disposition"]["enum"]
             .as_array()
-            .expect("closed enum")
+            .ok_or("closed enum")?
             .iter()
-            .map(|v| v.as_str().expect("string"))
-            .collect();
+            .map(|v| v.as_str().ok_or("string"))
+            .collect::<Result<_, _>>()?;
 
         let mut emitted = std::collections::BTreeSet::new();
         for code in 100u16..=699 {
-            let dialog = dialog_with(&[response(code, "Sweep")]);
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let dialog = dialog_with(&[response(code, "Sweep")?])?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
             let Some(d) = v["dialog"][0].get("disposition") else {
                 continue;
             };
-            let d = d.as_str().expect("disposition is a string").to_string();
+            let d = d.as_str().ok_or("disposition is a string")?.to_string();
             assert!(
                 admitted.contains(&d.as_str()),
                 "status {code} emitted disposition {d:?}, which §4.3.11 does \
@@ -3965,6 +4014,7 @@ mod tests {
             "the sweep produced no disposition at all, so it proved nothing \
              -- the mapping or the fixture stopped reaching this branch"
         );
+        Ok(())
     }
 
     /// An object that names `incomplete` can always name WHY.
@@ -3975,10 +4025,10 @@ mod tests {
     /// the reason is a spec violation, and the reason without the type is an
     /// orphan field a consumer keyed on `type` will never read.
     #[test]
-    fn an_object_that_names_incomplete_can_always_name_why() {
+    fn an_object_that_names_incomplete_can_always_name_why() -> Result<(), TestError> {
         for code in [200u16, 100, 180, 302, 486, 503, 408, 404, 500, 600] {
-            let dialog = dialog_with(&[response(code, "Fixture")]);
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let dialog = dialog_with(&[response(code, "Fixture")?])?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
             let object = &v["dialog"][0];
             let typed_incomplete =
                 object.get("type").and_then(|t| t.as_str()) == Some(INCOMPLETE_TYPE);
@@ -3991,6 +4041,7 @@ mod tests {
                  {object}"
             );
         }
+        Ok(())
     }
 
     /// The three ways sipnab observes no failure all reach the same shape.
@@ -4001,17 +4052,17 @@ mod tests {
     /// container that distinguished them would be reporting something sipnab
     /// does not know.
     #[test]
-    fn no_observed_failure_reaches_one_shape_whatever_the_reason() {
-        let success = dialog_with(&[response(200, "OK")]);
-        let unanswered = dialog_with(&[response(100, "Trying")]);
-        let redirected = dialog_with(&[response(302, "Moved Temporarily")]);
+    fn no_observed_failure_reaches_one_shape_whatever_the_reason() -> Result<(), TestError> {
+        let success = dialog_with(&[response(200, "OK")?])?;
+        let unanswered = dialog_with(&[response(100, "Trying")?])?;
+        let redirected = dialog_with(&[response(302, "Moved Temporarily")?])?;
 
         for (label, dialog) in [
             ("answered", &success),
             ("no final response", &unanswered),
             ("redirected", &redirected),
         ] {
-            let v = serde_json::to_value(export_with(dialog, &clean_facts())).expect("serializes");
+            let v = serde_json::to_value(export_with(dialog, &clean_facts())?)?;
             let object = &v["dialog"][0];
             assert!(
                 object.get("type").is_none() && object.get("disposition").is_none(),
@@ -4020,6 +4071,7 @@ mod tests {
                  not have: {object}"
             );
         }
+        Ok(())
     }
 
     /// A type-free object still carries what a consumer indexes on.
@@ -4030,9 +4082,10 @@ mod tests {
     /// the right one, so an object stripped to nothing would make the
     /// reference unverifiable.
     #[test]
-    fn a_type_free_object_still_carries_the_identity_a_consumer_indexes_on() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_type_free_object_still_carries_the_identity_a_consumer_indexes_on() -> Result<(), TestError>
+    {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let object = &v["dialog"][0];
 
         assert!(object.get("type").is_none(), "premise: {object}");
@@ -4045,10 +4098,11 @@ mod tests {
             );
         }
         assert!(
-            object.as_object().expect("an object").len() >= 3,
+            object.as_object().ok_or("an object")?.len() >= 3,
             "the object collapsed to almost nothing, which is not the empty \
              shape §4.3 permits but an export that lost its identity: {object}"
         );
+        Ok(())
     }
 
     /// A FAILED call's container validates against the working group's schema.
@@ -4059,18 +4113,19 @@ mod tests {
     /// one that fills both fields from closed enums, and until now nothing
     /// checked its output against the schema at all.
     #[test]
-    fn a_failed_call_container_validates_against_the_working_group_schema() {
+    fn a_failed_call_container_validates_against_the_working_group_schema() -> Result<(), TestError>
+    {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/schemas/vcon.schema.json"
         );
-        let text = std::fs::read_to_string(path).expect("the vendored schema is readable");
-        let schema: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        let validator = jsonschema::validator_for(&schema).expect("the schema compiles");
+        let text = std::fs::read_to_string(path)?;
+        let schema: serde_json::Value = serde_json::from_str(&text)?;
+        let validator = jsonschema::validator_for(&schema)?;
 
         for code in [486u16, 503, 408, 480, 404, 500, 600] {
-            let dialog = dialog_with(&[response(code, "Fixture")]);
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let dialog = dialog_with(&[response(code, "Fixture")?])?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
             assert!(
                 v["dialog"][0].get("disposition").is_some(),
                 "premise: {code} must reach the failure branch, or this \
@@ -4078,13 +4133,16 @@ mod tests {
                 v["dialog"][0]
             );
             if let Err(e) = validator.validate(&v) {
-                panic!("the container for a {code} does not validate: {e}\n{v:#}");
+                return Err(
+                    format!("the container for a {code} does not validate: {e}\n{v:#}").into(),
+                );
             }
         }
+        Ok(())
     }
 
     /// An INVITE carrying the headers PV5-PV7 read.
-    fn invite_with_provenance() -> crate::sip::SipMessage {
+    fn invite_with_provenance() -> Result<crate::sip::SipMessage, TestError> {
         message(
             "INVITE sip:bob@example.net SIP/2.0",
             &[
@@ -4104,12 +4162,12 @@ mod tests {
     }
 
     /// A dialog opened by [`invite_with_provenance`].
-    fn provenance_dialog() -> SipDialog {
-        let invite = invite_with_provenance();
-        let mut dialog = SipDialog::new(&invite).expect("INVITE opens a dialog");
-        crate::sip::dialog::update_state(&mut dialog, &response(200, "OK"));
-        dialog.messages.push(response(200, "OK"));
-        dialog
+    fn provenance_dialog() -> Result<SipDialog, TestError> {
+        let invite = invite_with_provenance()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("INVITE opens a dialog")?;
+        crate::sip::dialog::update_state(&mut dialog, &response(200, "OK")?);
+        dialog.messages.push(response(200, "OK")?);
+        Ok(dialog)
     }
 
     /// PV4: the container names its own subject.
@@ -4119,15 +4177,16 @@ mod tests {
     /// is purely descriptive -- it names the dialog, it does not characterize
     /// the conversation, which an observer is in no position to do.
     #[test]
-    fn a_container_carries_a_subject_that_names_the_dialog() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let subject = v["subject"].as_str().expect("a subject is present");
+    fn a_container_carries_a_subject_that_names_the_dialog() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let subject = v["subject"].as_str().ok_or("a subject is present")?;
         assert!(
             subject.contains("vcon-fixture@example.com"),
             "the subject must carry the Call-ID or the container stays \
              unfindable by anything an operator knows: {subject:?}"
         );
+        Ok(())
     }
 
     /// PV5: the display name travels under the declared key too.
@@ -4136,10 +4195,10 @@ mod tests {
     /// `validation: "none"` on every party is what makes `name` honest: it
     /// says this is a name the wire carried, not a person sipnab identified.
     #[test]
-    fn a_party_carries_the_display_name_under_the_declared_key() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let parties = v["parties"].as_array().expect("parties");
+    fn a_party_carries_the_display_name_under_the_declared_key() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let parties = v["parties"].as_array().ok_or("parties")?;
 
         assert_eq!(parties[0]["name"], "Alice", "caller name: {}", parties[0]);
         assert_eq!(parties[1]["name"], "Bob", "callee name: {}", parties[1]);
@@ -4154,6 +4213,7 @@ mod tests {
             "the observer is not a named participant: {}",
             parties[2]
         );
+        Ok(())
     }
 
     /// PV6: an observed PASSporT is transcribed, never asserted.
@@ -4163,12 +4223,12 @@ mod tests {
     /// so `validation` stays `"none"` beside it. The pairing is the point: the
     /// PASSporT is evidence a consumer may verify, not a verdict sipnab reached.
     #[test]
-    fn an_observed_passport_is_copied_verbatim_and_still_unverified() {
-        let dialog = provenance_dialog();
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn an_observed_passport_is_copied_verbatim_and_still_unverified() -> Result<(), TestError> {
+        let dialog = provenance_dialog()?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let caller = &v["parties"][0];
 
-        let stir = caller["stir"].as_str().expect("the PASSporT is carried");
+        let stir = caller["stir"].as_str().ok_or("the PASSporT is carried")?;
         assert!(
             stir.starts_with("eyJhbGciOiJFUzI1NiJ9."),
             "the JWS must be copied verbatim, not reformatted: {stir:?}"
@@ -4189,6 +4249,7 @@ mod tests {
              the callee would invent an attestation: {}",
             v["parties"][1]
         );
+        Ok(())
     }
 
     /// PV7: RFC 7989 `Session-ID` becomes the declared `session_id`.
@@ -4198,9 +4259,9 @@ mod tests {
     /// correlation with custom `sip_from_tag`/`sip_to_tag`; this is the field
     /// a consumer already knows how to join on.
     #[test]
-    fn an_observed_session_id_is_carried_as_the_declared_pair() {
-        let dialog = provenance_dialog();
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn an_observed_session_id_is_carried_as_the_declared_pair() -> Result<(), TestError> {
+        let dialog = provenance_dialog()?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let sid = &v["dialog"][0]["session_id"];
 
         assert_eq!(
@@ -4211,6 +4272,7 @@ mod tests {
             sid["remote"], "47755a9de7794ba387653f2099600ef2",
             "the remote half is the one that survives the B2BUA: {sid}"
         );
+        Ok(())
     }
 
     /// A dialog whose messages carry neither header emits neither field.
@@ -4219,25 +4281,26 @@ mod tests {
     /// observed", and a synthesized empty `session_id` or `stir` would report
     /// a header that never arrived.
     #[test]
-    fn absent_provenance_headers_produce_no_fields_at_all() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn absent_provenance_headers_produce_no_fields_at_all() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
 
         assert!(
             v["dialog"][0].get("session_id").is_none(),
             "no Session-ID was observed: {}",
             v["dialog"][0]
         );
-        for (i, p) in v["parties"].as_array().expect("parties").iter().enumerate() {
+        for (i, p) in v["parties"].as_array().ok_or("parties")?.iter().enumerate() {
             assert!(
                 p.get("stir").is_none(),
                 "party {i} carries a PASSporT that never arrived: {p}"
             );
         }
+        Ok(())
     }
 
     /// A dialog whose opening INVITE carries one extra header.
-    fn dialog_carrying_header(name: &str, value: &str) -> SipDialog {
+    fn dialog_carrying_header(name: &str, value: &str) -> Result<SipDialog, TestError> {
         let invite = message(
             "INVITE sip:bob@example.net SIP/2.0",
             &[
@@ -4248,8 +4311,8 @@ mod tests {
                 &format!("{name}: {value}"),
                 "Content-Length: 0",
             ],
-        );
-        SipDialog::new(&invite).expect("INVITE opens a dialog")
+        )?;
+        Ok(SipDialog::new(&invite).ok_or("INVITE opens a dialog")?)
     }
     /// No party in ANY export shape carries a name without its disclaimer.
     ///
@@ -4258,16 +4321,16 @@ mod tests {
     /// that replaced it is a PAIRING, so it is checked here across every shape
     /// the exporter can produce rather than restated per surface.
     #[test]
-    fn no_export_shape_names_a_party_without_saying_it_verified_nothing() {
+    fn no_export_shape_names_a_party_without_saying_it_verified_nothing() -> Result<(), TestError> {
         let shapes: [(&str, SipDialog); 4] = [
-            ("answered", dialog_with(&[response(200, "OK")])),
-            ("failed", dialog_with(&[response(486, "Busy Here")])),
-            ("unanswered", dialog_with(&[response(100, "Trying")])),
-            ("with provenance headers", provenance_dialog()),
+            ("answered", dialog_with(&[response(200, "OK")?])?),
+            ("failed", dialog_with(&[response(486, "Busy Here")?])?),
+            ("unanswered", dialog_with(&[response(100, "Trying")?])?),
+            ("with provenance headers", provenance_dialog()?),
         ];
         for (label, dialog) in shapes {
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-            let parties = v["parties"].as_array().expect("parties");
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+            let parties = v["parties"].as_array().ok_or("parties")?;
             assert!(!parties.is_empty(), "{label}: no parties at all");
             for (i, p) in parties.iter().enumerate() {
                 assert_eq!(
@@ -4277,6 +4340,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A PASSporT never travels without the disclaimer either.
@@ -4286,20 +4350,21 @@ mod tests {
     /// sipnab fetched no certificate and checked no signature, so the token and
     /// `validation: "none"` are one statement split across two keys.
     #[test]
-    fn a_passport_never_travels_without_the_disclaimer_beside_it() {
-        let dialog = provenance_dialog();
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_passport_never_travels_without_the_disclaimer_beside_it() -> Result<(), TestError> {
+        let dialog = provenance_dialog()?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let carrier = v["parties"]
             .as_array()
-            .expect("parties")
+            .ok_or("parties")?
             .iter()
             .find(|p| p.get("stir").is_some())
-            .expect("premise: some party must carry the PASSporT");
+            .ok_or("premise: some party must carry the PASSporT")?;
         assert_eq!(
             carrier["validation"], "none",
             "a signed token beside a validation claim of anything but `none` \
              reports an attestation sipnab did not perform: {carrier}"
         );
+        Ok(())
     }
 
     /// The extractor takes the JWS and refuses everything that is not one.
@@ -4310,7 +4375,7 @@ mod tests {
     /// three dot-separated non-empty segments -- because verifying is
     /// precisely what sipnab must not claim to have done.
     #[test]
-    fn the_passport_extractor_keeps_the_token_and_drops_the_rest() {
+    fn the_passport_extractor_keeps_the_token_and_drops_the_rest() -> Result<(), TestError> {
         let token = "eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.SIGNATURE";
         assert_eq!(
             passport_of(&format!(
@@ -4343,6 +4408,7 @@ mod tests {
                  be published as a PASSporT"
             );
         }
+        Ok(())
     }
 
     /// A Session-ID nothing can join on is dropped, not transcribed.
@@ -4352,12 +4418,12 @@ mod tests {
     /// a correlation key that matches nothing -- worse than an absent field,
     /// because absence is readable and a dead key is not.
     #[test]
-    fn a_session_id_half_that_cannot_correlate_is_left_out() {
+    fn a_session_id_half_that_cannot_correlate_is_left_out() -> Result<(), TestError> {
         let local = "ab30317f1a784dc48ff824d0d3715d86";
 
         // A first INVITE carries only the local half.
-        let one_sided = dialog_carrying_header("Session-ID", local);
-        let pair = session_id_of(&one_sided).expect("the local half is usable");
+        let one_sided = dialog_carrying_header("Session-ID", local)?;
+        let pair = session_id_of(&one_sided).ok_or("the local half is usable")?;
         assert_eq!(pair.local.as_deref(), Some(local));
         assert!(
             pair.remote.is_none(),
@@ -4368,8 +4434,8 @@ mod tests {
         let nil_remote = dialog_carrying_header(
             "Session-ID",
             &format!("{local};remote=00000000000000000000000000000000"),
-        );
-        let pair = session_id_of(&nil_remote).expect("the local half is still usable");
+        )?;
+        let pair = session_id_of(&nil_remote).ok_or("the local half is still usable")?;
         assert!(
             pair.remote.is_none(),
             "the nil UUID is 'no value here' and must not become a \
@@ -4377,11 +4443,12 @@ mod tests {
         );
 
         // Nothing usable at all yields no field rather than an empty object.
-        let junk = dialog_carrying_header("Session-ID", "not-a-uuid;remote=also-not");
+        let junk = dialog_carrying_header("Session-ID", "not-a-uuid;remote=also-not")?;
         assert!(
             session_id_of(&junk).is_none(),
             "neither half can correlate, so the field would be dead weight"
         );
+        Ok(())
     }
 
     /// Each SIP response class is handled on its own signaling semantics.
@@ -4397,7 +4464,7 @@ mod tests {
     /// `final_status_code` prefers a non-challenge final precisely so the
     /// challenge does not become the reported result.
     #[test]
-    fn every_response_class_is_read_on_its_own_terms() {
+    fn every_response_class_is_read_on_its_own_terms() -> Result<(), TestError> {
         // (code, expect_incomplete, why)
         let cases: [(u16, bool, &str); 14] = [
             (
@@ -4437,8 +4504,8 @@ mod tests {
         ];
 
         for (code, expect_incomplete, why) in cases {
-            let dialog = dialog_with(&[response(code, "Fixture")]);
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let dialog = dialog_with(&[response(code, "Fixture")?])?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
             let object = &v["dialog"][0];
             let typed = object.get("type").and_then(|t| t.as_str());
 
@@ -4463,6 +4530,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// An authentication challenge is not the call's outcome.
@@ -4472,10 +4540,10 @@ mod tests {
     /// success is an ordinary authenticated call, and reporting the challenge
     /// as the result would mark every authenticated call a failure.
     #[test]
-    fn an_authentication_challenge_is_not_the_outcome_once_the_call_succeeds() {
-        let challenged_only = dialog_with(&[response(407, "Proxy Authentication Required")]);
-        let v = serde_json::to_value(export_with(&challenged_only, &clean_facts()))
-            .expect("serializes");
+    fn an_authentication_challenge_is_not_the_outcome_once_the_call_succeeds()
+    -> Result<(), TestError> {
+        let challenged_only = dialog_with(&[response(407, "Proxy Authentication Required")?])?;
+        let v = serde_json::to_value(export_with(&challenged_only, &clean_facts())?)?;
         assert_eq!(
             v["dialog"][0]["type"], INCOMPLETE_TYPE,
             "a challenge that was never answered is a setup that never \
@@ -4484,22 +4552,26 @@ mod tests {
         );
 
         let then_answered = dialog_with(&[
-            response(407, "Proxy Authentication Required"),
-            response(200, "OK"),
-        ]);
-        let v =
-            serde_json::to_value(export_with(&then_answered, &clean_facts())).expect("serializes");
+            response(407, "Proxy Authentication Required")?,
+            response(200, "OK")?,
+        ])?;
+        let v = serde_json::to_value(export_with(&then_answered, &clean_facts())?)?;
         assert!(
             v["dialog"][0].get("type").is_none() && v["dialog"][0].get("disposition").is_none(),
             "the challenge was answered and the call was set up; reporting the \
              407 as the outcome would fail every authenticated call: {}",
             v["dialog"][0]
         );
+        Ok(())
     }
 
     /// A withheld export against a stated deny header.
-    fn export_withheld(dialog: &SipDialog, facts: &CaptureFacts, header: &str) -> Vcon {
-        export_withheld_dialog_at(
+    fn export_withheld(
+        dialog: &SipDialog,
+        facts: &CaptureFacts,
+        header: &str,
+    ) -> Result<Vcon, TestError> {
+        Ok(export_withheld_dialog_at(
             dialog,
             &ExportContext {
                 capture_id: "fixture.pcap",
@@ -4509,8 +4581,8 @@ mod tests {
                 media: &[],
             },
             header,
-            exported_at(),
-        )
+            exported_at()?,
+        ))
     }
     /// PV2: a withheld dialog says so in the registered vocabulary.
     ///
@@ -4522,10 +4594,9 @@ mod tests {
     /// the thing that is true here: content was withheld and no unredacted
     /// instance exists anywhere to point at.
     #[test]
-    fn a_withheld_dialog_is_declared_redacted_with_nothing_to_point_at() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record"))
-            .expect("serializes");
+    fn a_withheld_dialog_is_declared_redacted_with_nothing_to_point_at() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record")?)?;
 
         let redacted = &v["redacted"];
         assert_eq!(
@@ -4544,6 +4615,7 @@ mod tests {
             "a url would offer the withheld content for retrieval, which is \
              the opposite of withholding it: {redacted}"
         );
+        Ok(())
     }
 
     /// The tombstone carries no content of any kind.
@@ -4552,10 +4624,9 @@ mod tests {
     /// nothing from it. A tombstone that leaked the trace would be worse than
     /// emitting nothing, because it would look like a deliberate disclosure.
     #[test]
-    fn a_withheld_dialog_carries_identity_and_no_content_whatsoever() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record"))
-            .expect("serializes");
+    fn a_withheld_dialog_carries_identity_and_no_content_whatsoever() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_withheld(&dialog, &clean_facts(), "X-No-Record")?)?;
 
         assert_eq!(
             v["dialog"][0]["sip_call_id"], "vcon-fixture@example.com",
@@ -4580,7 +4651,7 @@ mod tests {
         // SIP the deny header asked sipnab not to keep.
         let purposes: Vec<&str> = v["attachments"]
             .as_array()
-            .expect("attachments")
+            .ok_or("attachments")?
             .iter()
             .filter_map(|a| a["purpose"].as_str())
             .collect();
@@ -4589,6 +4660,7 @@ mod tests {
             "the trace is the withheld content; shipping it defeats the deny \
              header entirely: {purposes:?}"
         );
+        Ok(())
     }
 
     /// An ordinary container declares no redaction at all.
@@ -4597,20 +4669,21 @@ mod tests {
     /// content was withheld from calls nothing was withheld from, which is a
     /// claim about those calls.
     #[test]
-    fn a_container_nothing_was_withheld_from_declares_no_redaction() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_container_nothing_was_withheld_from_declares_no_redaction() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         assert!(
             v.get("redacted").is_none(),
             "nothing was withheld from this dialog: {v}"
         );
+        Ok(())
     }
 
     /// A dialog whose caller REFERs the callee elsewhere.
-    fn dialog_with_refer(refer_to: &str) -> SipDialog {
-        let invite = invite();
-        let mut dialog = SipDialog::new(&invite).expect("INVITE opens a dialog");
-        dialog.messages.push(response(200, "OK"));
+    fn dialog_with_refer(refer_to: &str) -> Result<SipDialog, TestError> {
+        let invite = invite()?;
+        let mut dialog = SipDialog::new(&invite).ok_or("INVITE opens a dialog")?;
+        dialog.messages.push(response(200, "OK")?);
         dialog.messages.push(message(
             "REFER sip:bob@example.net SIP/2.0",
             &[
@@ -4621,8 +4694,8 @@ mod tests {
                 &format!("Refer-To: {refer_to}"),
                 "Content-Length: 0",
             ],
-        ));
-        dialog
+        )?);
+        Ok(dialog)
     }
 
     /// A transfer object carries the `start` its own schema requires.
@@ -4640,14 +4713,14 @@ mod tests {
     /// an EMPTY object, and the draft's own schema rejecting `{}` is the
     /// working group's contradiction rather than sipnab's.
     #[test]
-    fn a_transfer_object_carries_the_start_its_schema_requires() {
-        let dialog = dialog_with_refer("<sip:carol@example.org>");
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let objects = v["dialog"].as_array().expect("dialog array");
+    fn a_transfer_object_carries_the_start_its_schema_requires() -> Result<(), TestError> {
+        let dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let objects = v["dialog"].as_array().ok_or("dialog array")?;
         let transfer = objects
             .iter()
             .find(|o| o["type"] == "transfer")
-            .expect("a transfer object");
+            .ok_or("a transfer object")?;
 
         let start = transfer.get("start").and_then(serde_json::Value::as_str);
         assert!(
@@ -4659,13 +4732,14 @@ mod tests {
         // The same instant as the signaling object it belongs to. A transfer
         // is a thing that happened during this dialog, so a different start
         // would assert a second conversation that nobody observed.
-        let signaling = objects.first().expect("a signaling object");
+        let signaling = objects.first().ok_or("a signaling object")?;
         assert_eq!(
             start,
             signaling.get("start").and_then(serde_json::Value::as_str),
             "the transfer belongs to this dialog and must share its start: \
              {transfer}"
         );
+        Ok(())
     }
 
     /// PV8: an observed REFER becomes a `transfer` Dialog Object.
@@ -4675,10 +4749,10 @@ mod tests {
     /// transfer is where a passive tap adds most over a recorder that only
     /// ever sees one leg.
     #[test]
-    fn an_observed_refer_becomes_a_transfer_object() {
-        let dialog = dialog_with_refer("<sip:carol@example.org>");
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let objects = v["dialog"].as_array().expect("dialog array");
+    fn an_observed_refer_becomes_a_transfer_object() -> Result<(), TestError> {
+        let dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let objects = v["dialog"].as_array().ok_or("dialog array")?;
 
         assert!(
             objects.len() >= 2,
@@ -4688,7 +4762,7 @@ mod tests {
         let transfer = objects
             .iter()
             .find(|o| o["type"] == "transfer")
-            .expect("a transfer object");
+            .ok_or("a transfer object")?;
 
         for content in ["body", "url", "mediatype", "encoding"] {
             assert!(
@@ -4700,23 +4774,24 @@ mod tests {
             transfer.get("disposition").is_none(),
             "`disposition` belongs to `incomplete`, and nothing failed: {transfer}"
         );
+        Ok(())
     }
 
     /// The transfer names who moved whom, by party index.
     #[test]
-    fn a_transfer_names_the_transferor_the_transferee_and_the_target() {
-        let dialog = dialog_with_refer("<sip:carol@example.org>");
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let parties = v["parties"].as_array().expect("parties");
+    fn a_transfer_names_the_transferor_the_transferee_and_the_target() -> Result<(), TestError> {
+        let dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let parties = v["parties"].as_array().ok_or("parties")?;
         let transfer = v["dialog"]
             .as_array()
-            .expect("dialog")
+            .ok_or("dialog")?
             .iter()
             .find(|o| o["type"] == "transfer")
-            .expect("a transfer object");
+            .ok_or("a transfer object")?;
 
-        let transferor = transfer["transferor"].as_u64().expect("transferor index") as usize;
-        let transferee = transfer["transferee"].as_u64().expect("transferee index") as usize;
+        let transferor = transfer["transferor"].as_u64().ok_or("transferor index")? as usize;
+        let transferee = transfer["transferee"].as_u64().ok_or("transferee index")? as usize;
         assert_eq!(
             parties[transferor]["sip"], "sip:alice@example.com",
             "the transferor is whoever SENT the REFER: {transfer}"
@@ -4726,7 +4801,7 @@ mod tests {
             "the transferee is the party being moved: {transfer}"
         );
 
-        let target = transfer["transfer_target"].as_u64().expect("target index") as usize;
+        let target = transfer["transfer_target"].as_u64().ok_or("target index")? as usize;
         assert_eq!(
             parties[target]["sip"], "sip:carol@example.org",
             "the target comes from `Refer-To`, and it is a party index — so \
@@ -4743,6 +4818,7 @@ mod tests {
             "`original` points at the dialog this transfer happened in, which \
              is always index 0: {transfer}"
         );
+        Ok(())
     }
 
     /// The observer stays LAST even after a transfer target is added.
@@ -4751,20 +4827,21 @@ mod tests {
     /// computed as the final entry. Appending a target party after it would
     /// silently re-point every attachment at a participant.
     #[test]
-    fn a_transfer_target_does_not_displace_the_observer() {
-        let dialog = dialog_with_refer("<sip:carol@example.org>");
-        let vcon = export_with(&dialog, &clean_facts());
+    fn a_transfer_target_does_not_displace_the_observer() -> Result<(), TestError> {
+        let dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        let vcon = export_with(&dialog, &clean_facts())?;
         let observer = vcon.observer_index();
         assert_eq!(observer, vcon.parties.len() - 1, "the observer is last");
 
-        let v = serde_json::to_value(&vcon).expect("serializes");
+        let v = serde_json::to_value(&vcon)?;
         assert_eq!(v["parties"][observer]["role"], "observer");
-        for attachment in v["attachments"].as_array().expect("attachments") {
+        for attachment in v["attachments"].as_array().ok_or("attachments")? {
             assert_eq!(
                 attachment["party"], observer,
                 "an attachment must still resolve to the observer: {attachment}"
             );
         }
+        Ok(())
     }
 
     /// An ATTENDED transfer names a consultation dialog that is empty.
@@ -4776,28 +4853,29 @@ mod tests {
     /// `consultation` points at: the call is known to have occurred and
     /// nothing about it is available.
     #[test]
-    fn an_attended_transfer_points_consultation_at_an_empty_object() {
+    fn an_attended_transfer_points_consultation_at_an_empty_object() -> Result<(), TestError> {
         let dialog = dialog_with_refer(
             "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
-        );
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let objects = v["dialog"].as_array().expect("dialog array");
+        )?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let objects = v["dialog"].as_array().ok_or("dialog array")?;
         let transfer = objects
             .iter()
             .find(|o| o["type"] == "transfer")
-            .expect("a transfer object");
+            .ok_or("a transfer object")?;
 
         let consultation = transfer["consultation"]
             .as_u64()
-            .expect("an attended transfer names its consultation")
+            .ok_or("an attended transfer names its consultation")?
             as usize;
         let empty = &objects[consultation];
         assert_eq!(
-            empty.as_object().expect("an object").len(),
+            empty.as_object().ok_or("an object")?.len(),
             0,
             "the consultation call happened and sipnab saw nothing of it. The \
              working group agreed on `{{}}` for exactly this case: {empty}"
         );
+        Ok(())
     }
 
     /// RV6: an ordinary container passes the vendored schema, and the
@@ -4807,16 +4885,15 @@ mod tests {
     /// test tree. This is the SHIPPED validator, run against the SHIPPED
     /// exporter — the pair a producer actually has.
     #[test]
-    fn an_exported_container_passes_the_vendored_schema_validator() {
+    fn an_exported_container_passes_the_vendored_schema_validator() -> Result<(), TestError> {
         use crate::output::vcon_schema::{SchemaVerdict, validate};
 
         for responses in [
-            vec![response(200, "OK")],
-            vec![response(486, "Busy Here")],
-            vec![response(180, "Ringing"), response(200, "OK")],
+            vec![response(200, "OK")?],
+            vec![response(486, "Busy Here")?],
+            vec![response(180, "Ringing")?, response(200, "OK")?],
         ] {
-            let v = serde_json::to_value(export_with(&dialog_with(&responses), &clean_facts()))
-                .expect("serializes");
+            let v = serde_json::to_value(export_with(&dialog_with(&responses)?, &clean_facts())?)?;
             let report = validate(&v);
             assert_eq!(
                 report.verdict,
@@ -4824,6 +4901,7 @@ mod tests {
                 "a container sipnab writes must satisfy the schema sipnab                  vendors: {report:#?}\n{v:#}"
             );
         }
+        Ok(())
     }
 
     /// An attended transfer's container carries the documented deviation, and
@@ -4834,13 +4912,13 @@ mod tests {
     /// send somebody hunting a bug that is a working-group decision, nor a
     /// clean bill, which would teach that a missing `start` is fine.
     #[test]
-    fn an_attended_transfer_container_reports_the_documented_deviation() {
+    fn an_attended_transfer_container_reports_the_documented_deviation() -> Result<(), TestError> {
         use crate::output::vcon_schema::{EMPTY_DIALOG_OBJECT, SchemaVerdict, validate};
 
         let dialog = dialog_with_refer(
             "<sip:carol@example.org?Replaces=abc%40example.org%3Bto-tag%3D1%3Bfrom-tag%3D2>",
-        );
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+        )?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let report = validate(&v);
 
         assert_eq!(
@@ -4862,6 +4940,7 @@ mod tests {
             report.explanations[0].explanation.contains("IETF 124"),
             "the reasoning has to travel with the finding, or a producer reads              a rejection with no way to tell whether it is theirs: {report:#?}"
         );
+        Ok(())
     }
 
     /// A BLIND transfer names no consultation at all.
@@ -4870,34 +4949,36 @@ mod tests {
     /// claim a consultative call for transfers that were blind, and the
     /// presence of the member is what distinguishes the two.
     #[test]
-    fn a_blind_transfer_claims_no_consultation() {
-        let dialog = dialog_with_refer("<sip:carol@example.org>");
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn a_blind_transfer_claims_no_consultation() -> Result<(), TestError> {
+        let dialog = dialog_with_refer("<sip:carol@example.org>")?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let transfer = v["dialog"]
             .as_array()
-            .expect("dialog")
+            .ok_or("dialog")?
             .iter()
             .find(|o| o["type"] == "transfer")
-            .expect("a transfer object");
+            .ok_or("a transfer object")?;
 
         assert!(
             transfer.get("consultation").is_none(),
             "no `Replaces` was observed, so no consultative call is known to \
              have happened: {transfer}"
         );
+        Ok(())
     }
 
     /// A dialog with no REFER gets no transfer object.
     #[test]
-    fn a_dialog_without_a_refer_has_no_transfer_object() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let objects = v["dialog"].as_array().expect("dialog array");
+    fn a_dialog_without_a_refer_has_no_transfer_object() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let objects = v["dialog"].as_array().ok_or("dialog array")?;
         assert_eq!(objects.len(), 1, "one signaling object only: {objects:#?}");
         assert!(
             objects.iter().all(|o| o["type"] != "transfer"),
             "nothing was transferred: {objects:#?}"
         );
+        Ok(())
     }
 
     /// A dialog with no final response at all is STILL not `incomplete`.
@@ -4906,9 +4987,9 @@ mod tests {
     /// answer is a fact about the capture; reporting it as `incomplete` would
     /// make it a fact about the call.
     #[test]
-    fn an_unanswered_dialog_is_not_reported_as_a_failed_call() {
-        let dialog = dialog_with(&[response(100, "Trying")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn an_unanswered_dialog_is_not_reported_as_a_failed_call() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(100, "Trying")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         // `type` is `incomplete` on every signaling-only object, so it carries
         // no claim about the CALL either way. `disposition` is where a claim
         // about the outcome would live, and this is the case that must not
@@ -4919,12 +5000,13 @@ mod tests {
              outcome; naming a disposition would invent one: {}",
             v["dialog"][0]
         );
+        Ok(())
     }
 
     /// An observed final failure DOES set a disposition, and the mapping is
     /// the one the outcome deserves.
     #[test]
-    fn an_observed_final_failure_maps_to_a_disposition() {
+    fn an_observed_final_failure_maps_to_a_disposition() -> Result<(), TestError> {
         for (code, expected) in [
             (486u16, "busy"),
             (600, "busy"),
@@ -4934,8 +5016,8 @@ mod tests {
             (403, "failed"),
             (500, "failed"),
         ] {
-            let dialog = dialog_with(&[response(code, "Fixture")]);
-            let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+            let dialog = dialog_with(&[response(code, "Fixture")?])?;
+            let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
             assert_eq!(
                 v["dialog"][0]["type"], "incomplete",
                 "{code} did not mark the dialog"
@@ -4948,24 +5030,25 @@ mod tests {
 
         // A redirect is not a failure. Left in the same test as the mapping so
         // widening the range to `300..=699` fails here rather than shipping.
-        let redirected = dialog_with(&[response(302, "Moved Temporarily")]);
-        let v = serde_json::to_value(export_with(&redirected, &clean_facts())).expect("serializes");
+        let redirected = dialog_with(&[response(302, "Moved Temporarily")?])?;
+        let v = serde_json::to_value(export_with(&redirected, &clean_facts())?)?;
         assert!(
             v["dialog"][0].get("disposition").is_none(),
             "a 3xx redirect did not fail: {}",
             v["dialog"][0]
         );
+        Ok(())
     }
 
     /// Every attachment names the observer as its party.
     #[test]
-    fn every_attachment_carries_the_observer_as_its_party() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let vcon = export_with(&dialog, &clean_facts());
+    fn every_attachment_carries_the_observer_as_its_party() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let vcon = export_with(&dialog, &clean_facts())?;
         let observer = vcon.observer_index();
-        let v = serde_json::to_value(&vcon).expect("serializes");
+        let v = serde_json::to_value(&vcon)?;
 
-        let attachments = v["attachments"].as_array().expect("attachments");
+        let attachments = v["attachments"].as_array().ok_or("attachments")?;
         assert_eq!(attachments.len(), 2, "the trace and the caveat");
         for attachment in attachments {
             assert_eq!(
@@ -4977,16 +5060,17 @@ mod tests {
         }
         assert_eq!(attachments[0]["purpose"], MESSAGE_TRACE_PURPOSE);
         assert_eq!(attachments[1]["purpose"], COMPLETENESS_PURPOSE);
+        Ok(())
     }
 
     /// The trace carries one entry per message, through the same projection
     /// `--json` writes.
     #[test]
-    fn the_trace_carries_every_message_through_the_shared_projection() {
-        let dialog = dialog_with(&[response(180, "Ringing"), response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let trace = body_of(&v["attachments"][0]);
-        let messages = trace["messages"].as_array().expect("messages");
+    fn the_trace_carries_every_message_through_the_shared_projection() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(180, "Ringing")?, response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let trace = body_of(&v["attachments"][0])?;
+        let messages = trace["messages"].as_array().ok_or("messages")?;
 
         assert_eq!(messages.len(), dialog.messages.len());
         assert_eq!(messages[0]["method"], "INVITE");
@@ -4998,6 +5082,7 @@ mod tests {
                 "the trace must be the projection --json already writes"
             );
         }
+        Ok(())
     }
 
     /// The trace carries the headers, which is what gives the filter work.
@@ -5008,15 +5093,15 @@ mod tests {
     /// It passed for the second reason until 0.5.125. Drop `headers` again and
     /// this fails, so the pair cannot silently go back to proving nothing.
     #[test]
-    fn the_trace_carries_the_headers_the_filter_exists_to_clean() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
-        let trace = body_of(&v["attachments"][0]);
+    fn the_trace_carries_the_headers_the_filter_exists_to_clean() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let trace = body_of(&v["attachments"][0])?;
         let first = &trace["messages"][0];
 
         let headers = first["headers"]
             .as_object()
-            .unwrap_or_else(|| panic!("every message must carry its headers: {first}"));
+            .ok_or_else(|| format!("every message must carry its headers: {first}"))?;
         assert!(
             !headers.is_empty(),
             "an empty header map gives the credential filter nothing to \
@@ -5034,6 +5119,7 @@ mod tests {
             "every header value must be an array so a consumer indexes one \
              shape and repeated headers keep every value: {headers:?}"
         );
+        Ok(())
     }
 
     /// The container publishes no `extension_headers` list.
@@ -5049,7 +5135,7 @@ mod tests {
     /// a `headers` OBJECT, which is strictly more useful and is the shape
     /// this boundary can police.
     #[test]
-    fn the_container_carries_no_extension_header_list() {
+    fn the_container_carries_no_extension_header_list() -> Result<(), TestError> {
         let msg = message(
             "REGISTER sip:example.com SIP/2.0",
             &[
@@ -5060,7 +5146,7 @@ mod tests {
                 "CSeq: 2 REGISTER",
                 "Content-Length: 0",
             ],
-        );
+        )?;
         // The projection this trace is built from really does carry it, or
         // this test proves nothing about the removal.
         assert!(
@@ -5070,14 +5156,13 @@ mod tests {
             "the shared projection must carry the field this removes"
         );
 
-        let dialog = SipDialog::new(&msg).expect("REGISTER opens a dialog");
-        let json = export_with(&dialog, &clean_facts())
-            .to_json()
-            .expect("serializes");
+        let dialog = SipDialog::new(&msg).ok_or("REGISTER opens a dialog")?;
+        let json = export_with(&dialog, &clean_facts())?.to_json()?;
         assert!(
             !json.contains("extension_headers"),
             "the wire-line list reached a published container:\n{json}"
         );
+        Ok(())
     }
 
     /// Nothing is lost by removing it: the map carries every header the list
@@ -5088,7 +5173,7 @@ mod tests {
     /// message and compares them as sets, so a header the map happens to miss
     /// fails here rather than going quietly missing from every export.
     #[test]
-    fn the_header_map_carries_every_header_the_list_would_have() {
+    fn the_header_map_carries_every_header_the_list_would_have() -> Result<(), TestError> {
         let msg = message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -5102,11 +5187,11 @@ mod tests {
                 "Diversion: <sip:1003@example.com>;reason=user-busy",
                 "Content-Length: 0",
             ],
-        );
+        )?;
         let listed: Vec<String> =
             crate::output::json::message_to_json_value(&msg)["extension_headers"]
                 .as_array()
-                .expect("the projection carries the list")
+                .ok_or("the projection carries the list")?
                 .iter()
                 .filter_map(|v| v.as_str())
                 .filter_map(|line| line.split_once(':').map(|(n, _)| n.to_ascii_lowercase()))
@@ -5117,7 +5202,7 @@ mod tests {
         );
 
         let mapped = header_map(&msg);
-        let mapped = mapped.as_object().expect("the map is an object");
+        let mapped = mapped.as_object().ok_or("the map is an object")?;
         for name in &listed {
             assert!(
                 mapped.keys().any(|k| k.to_ascii_lowercase() == *name),
@@ -5126,6 +5211,7 @@ mod tests {
                 mapped.keys().collect::<Vec<_>>()
             );
         }
+        Ok(())
     }
 
     /// A credential written as a wire LINE is filtered too.
@@ -5137,7 +5223,7 @@ mod tests {
     /// for the shape a field arrives in, not for the shape it had when the
     /// filter was written — the next field to arrive will not ask first.
     #[test]
-    fn a_credential_written_as_a_wire_line_is_filtered() {
+    fn a_credential_written_as_a_wire_line_is_filtered() -> Result<(), TestError> {
         // Markers are DERIVED rather than written as literals, and the
         // rendered container is never printed. Both are for CodeQL's
         // `rust/cleartext-logging`, which reads a literal beside `response=`
@@ -5159,7 +5245,7 @@ mod tests {
         strip_credentials(&mut value);
         let lines: Vec<String> = value["lines"]
             .as_array()
-            .expect("the array survives")
+            .ok_or("the array survives")?
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
@@ -5193,6 +5279,7 @@ mod tests {
             );
         }
         assert_eq!(lines.len(), 3, "three lines in, three of six kept");
+        Ok(())
     }
 
     /// A credential is removed at any depth, in either shape.
@@ -5204,7 +5291,7 @@ mod tests {
     /// that policed only the top level would have passed every test written
     /// against a flat fixture while removing nothing from a real export.
     #[test]
-    fn a_credential_is_removed_at_any_depth_in_either_shape() {
+    fn a_credential_is_removed_at_any_depth_in_either_shape() -> Result<(), TestError> {
         let marker = |n: usize| format!("marker-{n}");
         let mut value = serde_json::json!({
             "attachments": [{
@@ -5255,6 +5342,7 @@ mod tests {
             value["attachments"][0]["body"]["messages"][0]["headers"]["Via"].is_array(),
             "the headers object was destroyed rather than filtered: {rendered}"
         );
+        Ok(())
     }
 
     /// No exported container carries a credential, by either route.
@@ -5266,7 +5354,7 @@ mod tests {
     /// A message carrying credentials in BOTH shapes at once is the case no
     /// earlier fixture produced.
     #[test]
-    fn no_exported_container_carries_a_credential_by_either_route() {
+    fn no_exported_container_carries_a_credential_by_either_route() -> Result<(), TestError> {
         let marker = |n: usize| format!("marker-{n}");
         let msg = message(
             "REGISTER sip:example.com SIP/2.0",
@@ -5280,7 +5368,7 @@ mod tests {
                 &format!("Proxy-Authorization: Digest nonce=\"{}\"", marker(2)),
                 "Content-Length: 0",
             ],
-        );
+        )?;
         // The projection really does carry both shapes, or this proves nothing
         // about the exporter.
         let projected = crate::output::json::message_to_json_value(&msg).to_string();
@@ -5289,10 +5377,8 @@ mod tests {
             "the shared projection must carry the credentials this removes"
         );
 
-        let dialog = SipDialog::new(&msg).expect("REGISTER opens a dialog");
-        let json = export_with(&dialog, &clean_facts())
-            .to_json()
-            .expect("serializes");
+        let dialog = SipDialog::new(&msg).ok_or("REGISTER opens a dialog")?;
+        let json = export_with(&dialog, &clean_facts())?.to_json()?;
 
         for n in 1..=2 {
             assert!(
@@ -5313,6 +5399,7 @@ mod tests {
             json.contains("vcon-both-shapes@example.com"),
             "the dialog itself was dropped rather than filtered"
         );
+        Ok(())
     }
 
     /// The wire-line rule reads a header name the way RFC 3261 does.
@@ -5322,7 +5409,7 @@ mod tests {
     /// allows linear whitespace before the colon, so a filter matching one
     /// spelling is a filter a sender can walk past by choosing another.
     #[test]
-    fn the_wire_line_rule_reads_a_header_name_the_way_rfc_3261_does() {
+    fn the_wire_line_rule_reads_a_header_name_the_way_rfc_3261_does() -> Result<(), TestError> {
         for line in [
             "Authorization: Digest x",
             "authorization: Digest x",
@@ -5350,6 +5437,7 @@ mod tests {
                 "{line:?} is not one of the four and must survive"
             );
         }
+        Ok(())
     }
 
     /// **Second of two.** The rule and the list it reads cannot drift apart.
@@ -5359,7 +5447,7 @@ mod tests {
     /// release paid for twice — one boundary policing one shape while another
     /// shape walked through.
     #[test]
-    fn every_credential_header_is_recognized_in_both_shapes() {
+    fn every_credential_header_is_recognized_in_both_shapes() -> Result<(), TestError> {
         assert_eq!(
             CREDENTIAL_HEADERS.len(),
             4,
@@ -5383,6 +5471,7 @@ mod tests {
                 "the filter removed a header that is not on the list"
             );
         }
+        Ok(())
     }
 
     /// `Via` does not publish the operator's proxy chain.
@@ -5403,7 +5492,7 @@ mod tests {
     /// cannot exist. The rule here is the one a rewriter can keep: a header
     /// whose grammar says where the host is has its host rewritten.
     #[test]
-    fn a_via_header_does_not_publish_the_proxy_chain() {
+    fn a_via_header_does_not_publish_the_proxy_chain() -> Result<(), TestError> {
         let msg = message(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -5415,15 +5504,14 @@ mod tests {
                 "CSeq: 1 INVITE",
                 "Content-Length: 0",
             ],
-        );
-        let dialog = SipDialog::new(&msg).expect("INVITE opens a dialog");
-        let container = export_with(&dialog, &clean_facts());
+        )?;
+        let dialog = SipDialog::new(&msg).ok_or("INVITE opens a dialog")?;
+        let container = export_with(&dialog, &clean_facts())?;
         let policy = crate::output::redact::RedactionPolicy::new(
             crate::output::redact::RedactionKey::from_secret(b"vcon-unmodeled-header-test"),
         );
         let redactor = policy.redactor();
-        let json =
-            sealed_json(&seal(container, Some(&redactor))).expect("a sealed container serializes");
+        let json = sealed_json(&seal(container, Some(&redactor)))?;
         for leaked in [
             "pbx.internal.example",
             "edge.internal.example",
@@ -5441,6 +5529,7 @@ mod tests {
             "the branch parameter must survive; it identifies the \
              transaction and carries no identity:\n{json}"
         );
+        Ok(())
     }
 
     /// No credential reaches the container, end to end.
@@ -5455,7 +5544,7 @@ mod tests {
     /// are really in the container until the filter takes them out. Empty
     /// `CREDENTIAL_HEADERS` and this fails, which is what it always claimed.
     #[test]
-    fn no_credential_survives_an_export() {
+    fn no_credential_survives_an_export() -> Result<(), TestError> {
         let challenged = message(
             "REGISTER sip:example.com SIP/2.0",
             &[
@@ -5469,7 +5558,7 @@ mod tests {
                  response=\"SECRETRESPONSE2\"",
                 "Content-Length: 0",
             ],
-        );
+        )?;
         let challenge = message(
             "SIP/2.0 401 Unauthorized",
             &[
@@ -5480,13 +5569,11 @@ mod tests {
                 "WWW-Authenticate: Digest realm=\"example.com\", nonce=\"NONCEVALUE3\"",
                 "Content-Length: 0",
             ],
-        );
-        let mut dialog = SipDialog::new(&challenged).expect("REGISTER opens a dialog");
+        )?;
+        let mut dialog = SipDialog::new(&challenged).ok_or("REGISTER opens a dialog")?;
         dialog.messages.push(challenge);
 
-        let json = export_with(&dialog, &clean_facts())
-            .to_json()
-            .expect("serializes");
+        let json = export_with(&dialog, &clean_facts())?.to_json()?;
 
         for secret in [
             "SECRETRESPONSE1",
@@ -5507,6 +5594,7 @@ mod tests {
                 "{header} must never appear in an exported vCon"
             );
         }
+        Ok(())
     }
 
     /// The filter itself: banned keys go, at every depth and in any case, and
@@ -5517,7 +5605,7 @@ mod tests {
     /// exported one because the projection upstream carries no header map, so
     /// an end-to-end test cannot reach the filter.
     #[test]
-    fn the_credential_filter_removes_banned_headers_at_every_depth() {
+    fn the_credential_filter_removes_banned_headers_at_every_depth() -> Result<(), TestError> {
         let mut value = serde_json::json!({
             "Authorization": "Digest response=\"SECRET\"",
             "call_id": "keep-me",
@@ -5531,7 +5619,7 @@ mod tests {
         });
         strip_credentials(&mut value);
 
-        let text = serde_json::to_string(&value).expect("serializes");
+        let text = serde_json::to_string(&value)?;
         assert!(
             !text.contains("SECRET"),
             "a credential survived the filter: {text}"
@@ -5549,31 +5637,33 @@ mod tests {
             value["messages"][0]["nested"].is_object(),
             "the filter removed a whole subtree instead of one key: {value}"
         );
+        Ok(())
     }
 
     /// The report names sipnab as an observer and carries the existing schema.
     #[test]
-    fn the_report_names_the_tool_as_an_observer() {
-        let dialog = dialog_with(&[response(486, "Busy Here")]);
-        let v = serde_json::to_value(export_with(&dialog, &clean_facts())).expect("serializes");
+    fn the_report_names_the_tool_as_an_observer() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(486, "Busy Here")?])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
         let analysis = &v["analysis"][0];
 
         assert_eq!(analysis["type"], "report");
         assert_eq!(analysis["vendor"], ANALYSIS_VENDOR);
         assert_eq!(analysis["schema"], ANALYSIS_SCHEMA);
         assert_eq!(analysis["dialog"], 0);
-        let product = analysis["product"].as_str().expect("a product string");
+        let product = analysis["product"].as_str().ok_or("a product string")?;
         assert!(
             product.contains("observer"),
             "an analysis attached to a conversation reads as coming from a \
              participant unless the product says otherwise: {product}"
         );
-        assert_eq!(body_of(analysis)["final_status_code"], 486);
+        assert_eq!(body_of(analysis)?["final_status_code"], 486);
         assert!(
-            body_of(analysis)["signaling_diagnosis"].is_object(),
+            body_of(analysis)?["signaling_diagnosis"].is_object(),
             "a 486 is a final failure the signaling diagnosis already \
              detects; the report must reuse it: {analysis}"
         );
+        Ok(())
     }
 
     /// The `schema` string names the version the JSON surface actually stamps.
@@ -5582,8 +5672,8 @@ mod tests {
     /// here, because a `schema` naming version 1 over bodies carrying version
     /// 2 sends a consumer to the wrong parser with no way to notice.
     #[test]
-    fn the_analysis_schema_names_the_version_the_json_surface_emits() {
-        let emitted = crate::output::json::message_to_json_value(&invite());
+    fn the_analysis_schema_names_the_version_the_json_surface_emits() -> Result<(), TestError> {
+        let emitted = crate::output::json::message_to_json_value(&invite()?);
         assert_eq!(
             emitted["schema_version"], DIAGNOSIS_SCHEMA_VERSION,
             "the vCon schema string and the JSON surface disagree about the \
@@ -5593,6 +5683,7 @@ mod tests {
             ANALYSIS_SCHEMA.ends_with(&format!("/{DIAGNOSIS_SCHEMA_VERSION}")),
             "{ANALYSIS_SCHEMA} does not name version {DIAGNOSIS_SCHEMA_VERSION}"
         );
+        Ok(())
     }
 
     /// **The test that justifies the feature.** Two runs whose completeness
@@ -5606,24 +5697,25 @@ mod tests {
     /// Mutation-proven: deleting the `messages_evicted` clause in
     /// [`completeness_note`] collapses the two and fails here.
     #[test]
-    fn the_completeness_carrier_discriminates_a_lossy_run_from_a_clean_one() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn the_completeness_carrier_discriminates_a_lossy_run_from_a_clean_one() -> Result<(), TestError>
+    {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
 
         let clean = clean_facts();
         let mut lossy = clean_facts();
         lossy.retention.messages_evicted = 7;
 
-        let clean_vcon = serde_json::to_value(export_with(&dialog, &clean)).expect("serializes");
-        let lossy_vcon = serde_json::to_value(export_with(&dialog, &lossy)).expect("serializes");
+        let clean_vcon = serde_json::to_value(export_with(&dialog, &clean)?)?;
+        let lossy_vcon = serde_json::to_value(export_with(&dialog, &lossy)?)?;
 
-        let note = |v: &serde_json::Value| -> String {
-            body_of(&v["attachments"][1])["note"]
+        let note = |v: &serde_json::Value| -> Result<String, TestError> {
+            Ok(body_of(&v["attachments"][1])?["note"]
                 .as_str()
-                .expect("the caveat is a string")
-                .to_string()
+                .ok_or("the caveat is a string")?
+                .to_string())
         };
-        let clean_note = note(&clean_vcon);
-        let lossy_note = note(&lossy_vcon);
+        let clean_note = note(&clean_vcon)?;
+        let lossy_note = note(&lossy_vcon)?;
 
         assert_ne!(
             clean_note, lossy_note,
@@ -5642,13 +5734,14 @@ mod tests {
         // The STRUCTURED half has to discriminate too — a consumer that reads
         // fields rather than prose must reach the same verdict.
         assert_eq!(
-            body_of(&lossy_vcon["attachments"][1])["messages_evicted"],
+            body_of(&lossy_vcon["attachments"][1])?["messages_evicted"],
             7
         );
         assert_eq!(
-            body_of(&clean_vcon["attachments"][1])["messages_evicted"],
+            body_of(&clean_vcon["attachments"][1])?["messages_evicted"],
             0
         );
+        Ok(())
     }
 
     /// Both surfaces carry the SAME caveat, byte for byte.
@@ -5658,15 +5751,15 @@ mod tests {
     /// be worse than one carrying no caveat at all: it would look
     /// authoritative while contradicting itself.
     #[test]
-    fn the_two_completeness_surfaces_carry_one_value() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn the_two_completeness_surfaces_carry_one_value() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let mut facts = clean_facts();
         facts.retention.messages_evicted = 3;
         facts.undecodable.frames = 11;
 
-        let v = serde_json::to_value(export_with(&dialog, &facts)).expect("serializes");
-        let from_attachment = body_of(&v["attachments"][1]);
-        let report = body_of(&v["analysis"][0]);
+        let v = serde_json::to_value(export_with(&dialog, &facts)?)?;
+        let from_attachment = body_of(&v["attachments"][1])?;
+        let report = body_of(&v["analysis"][0])?;
         let from_report = &report["capture_completeness"];
 
         assert_eq!(
@@ -5680,6 +5773,7 @@ mod tests {
                 .is_some_and(|n| n.contains("11") && n.contains('3')),
             "the shared caveat lost one of the two losses it was built from: {from_attachment}"
         );
+        Ok(())
     }
 
     /// "Nobody looked" and "looked and found nothing" are different answers.
@@ -5688,11 +5782,11 @@ mod tests {
     /// as a clean one, which is the same defect `--analyze` refuses when it
     /// derives `complete` from the finding list rather than tracking a flag.
     #[test]
-    fn an_absent_analysis_is_not_a_clean_bill() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn an_absent_analysis_is_not_a_clean_bill() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let facts = clean_facts();
 
-        let unchecked = export_with(&dialog, &facts);
+        let unchecked = export_with(&dialog, &facts)?;
         let checked = export_dialog_at(
             &dialog,
             &ExportContext {
@@ -5702,45 +5796,46 @@ mod tests {
                 analysis: Some(&CaptureAnalysis::default()),
                 media: &[],
             },
-            exported_at(),
+            exported_at()?,
         );
 
-        let note = |v: &Vcon| -> String {
-            body_of(&serde_json::to_value(v).expect("serializes")["attachments"][1])["note"]
-                .as_str()
-                .expect("a caveat")
-                .to_string()
+        let note = |v: &Vcon| -> Result<String, TestError> {
+            Ok(
+                body_of(&serde_json::to_value(v)?["attachments"][1])?["note"]
+                    .as_str()
+                    .ok_or("a caveat")?
+                    .to_string(),
+            )
         };
         assert_ne!(
-            note(&unchecked),
-            note(&checked),
+            note(&unchecked)?,
+            note(&checked)?,
             "an export with no capture analysis said the same thing as one \
              whose analysis found nothing"
         );
 
-        let unchecked_body =
-            body_of(&serde_json::to_value(&unchecked).expect("serializes")["attachments"][1]);
+        let unchecked_body = body_of(&serde_json::to_value(&unchecked)?["attachments"][1])?;
         assert!(
             unchecked_body.get("blind_spots").is_none(),
             "no analysis was supplied, so an empty list would claim one ran: \
              {unchecked_body}"
         );
-        let checked_body =
-            body_of(&serde_json::to_value(&checked).expect("serializes")["attachments"][1]);
+        let checked_body = body_of(&serde_json::to_value(&checked)?["attachments"][1])?;
         assert_eq!(
             checked_body["blind_spots"],
             serde_json::json!([]),
             "an analysis that ranked nothing must say so with an empty list, \
              not by omitting the field: {checked_body}"
         );
+        Ok(())
     }
 
     /// A ranked blind spot reaches both the prose and the structured list.
     #[test]
-    fn a_ranked_blind_spot_reaches_the_carrier() {
+    fn a_ranked_blind_spot_reaches_the_carrier() -> Result<(), TestError> {
         use crate::analysis::{Finding, FindingKind};
 
-        let dialog = dialog_with(&[response(200, "OK")]);
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let facts = clean_facts();
         let analysis = CaptureAnalysis {
             frames_read: 120,
@@ -5764,21 +5859,21 @@ mod tests {
                 analysis: Some(&analysis),
                 media: &[],
             },
-            exported_at(),
-        ))
-        .expect("serializes");
+            exported_at()?,
+        ))?;
 
-        let body = body_of(&v["attachments"][1]);
+        let body = body_of(&v["attachments"][1])?;
         assert_eq!(body["blind_spots"][0]["occurrences"], 49);
         assert_eq!(
             body["blind_spots"][0]["kind"],
             FindingKind::UndecodableFrames.meta().id
         );
-        let note = body["note"].as_str().expect("a caveat");
+        let note = body["note"].as_str().ok_or("a caveat")?;
         assert!(
             note.contains("INCOMPLETE") && note.contains("49"),
             "a ranked blind spot must reach the prose surface too: {note}"
         );
+        Ok(())
     }
 
     /// One capture addressed two ways is one capture.
@@ -5797,13 +5892,10 @@ mod tests {
     /// a container that leaves the building. The uuid is a digest, so the
     /// normalized form never appears anywhere.
     #[test]
-    fn one_capture_addressed_two_ways_mints_one_uuid() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn one_capture_addressed_two_ways_mints_one_uuid() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let rel = "tests/pcap-samples/sip-rtp-g711.pcap";
-        let abs = std::path::absolute(rel)
-            .expect("cwd is readable")
-            .to_string_lossy()
-            .into_owned();
+        let abs = std::path::absolute(rel)?.to_string_lossy().into_owned();
         assert_ne!(rel, abs, "the fixture must actually test two spellings");
 
         assert_eq!(
@@ -5831,13 +5923,14 @@ mod tests {
                 "{not_a_path} must be stable"
             );
         }
+        Ok(())
     }
 
     /// The uuid is a well-formed UUIDv8 and is stable for one dialog out of
     /// one capture.
     #[test]
-    fn the_uuid_is_a_stable_uuid_v8() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn the_uuid_is_a_stable_uuid_v8() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let id = dialog_uuid(&dialog, "fixture.pcap");
 
         assert_eq!(id.len(), 36, "canonical 8-4-4-4-12 form: {id}");
@@ -5870,16 +5963,17 @@ mod tests {
              identifier, or a consumer deduplicating on uuid accumulates \
              copies of one conversation"
         );
+        Ok(())
     }
 
     /// The uuid separates dialogs, separates captures, and follows the
     /// dialog's clock rather than the export's.
     #[test]
-    fn the_uuid_separates_dialogs_captures_and_clocks() {
-        let dialog = dialog_with(&[response(200, "OK")]);
+    fn the_uuid_separates_dialogs_captures_and_clocks() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
         let base = dialog_uuid(&dialog, "fixture.pcap");
 
-        let mut other_capture = dialog_with(&[response(200, "OK")]);
+        let mut other_capture = dialog_with(&[response(200, "OK")?])?;
         assert_ne!(
             base,
             dialog_uuid(&other_capture, "other.pcap"),
@@ -5896,8 +5990,8 @@ mod tests {
 
         // The timestamp half: same Call-ID, same capture, different dialog
         // clock. Without it the 48-bit prefix would be dead weight.
-        let mut later = dialog_with(&[response(200, "OK")]);
-        later.created_at = ts() + chrono::TimeDelta::seconds(90);
+        let mut later = dialog_with(&[response(200, "OK")?])?;
+        later.created_at = ts()? + chrono::TimeDelta::seconds(90);
         assert_ne!(
             base,
             dialog_uuid(&later, "fixture.pcap"),
@@ -5915,7 +6009,7 @@ mod tests {
                 analysis: None,
                 media: &[],
             },
-            exported_at(),
+            exported_at()?,
         );
         let second = export_dialog_at(
             &dialog,
@@ -5926,19 +6020,20 @@ mod tests {
                 analysis: None,
                 media: &[],
             },
-            exported_at() + chrono::TimeDelta::days(400),
+            exported_at()? + chrono::TimeDelta::days(400),
         );
         assert_eq!(first.uuid, second.uuid);
         assert_ne!(
             first.created_at, second.created_at,
             "the export clock must still move, or this proves nothing"
         );
+        Ok(())
     }
 
     /// A dialog whose headers named no host gets no URI rather than a
     /// fabricated one.
     #[test]
-    fn a_party_with_no_observed_host_carries_no_uri() {
+    fn a_party_with_no_observed_host_carries_no_uri() -> Result<(), TestError> {
         assert_eq!(sip_uri(Some("alice"), None), None);
         assert_eq!(
             sip_uri(Some("alice"), Some("example.com")).as_deref(),
@@ -5949,18 +6044,18 @@ mod tests {
             Some("sip:example.com"),
             "a host with no user is still a routable URI and is kept"
         );
+        Ok(())
     }
 
     /// The whole container round-trips through `serde_json` as an object.
     #[test]
-    fn the_container_serializes_to_parseable_json() {
-        let dialog = dialog_with(&[response(200, "OK")]);
-        let json = export_with(&dialog, &clean_facts())
-            .to_json()
-            .expect("serializes");
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    fn the_container_serializes_to_parseable_json() -> Result<(), TestError> {
+        let dialog = dialog_with(&[response(200, "OK")?])?;
+        let json = export_with(&dialog, &clean_facts())?.to_json()?;
+        let parsed: serde_json::Value = serde_json::from_str(&json)?;
         assert!(parsed.is_object());
         assert_eq!(parsed["analysis"].as_array().map(Vec::len), Some(1));
+        Ok(())
     }
 
     // ── The redaction boundary ──────────────────────────────────────────
@@ -5971,7 +6066,7 @@ mod tests {
     /// test below asserts over the whole serialized container, so a field that
     /// nothing redacts fails the test wherever it happens to be emitted. A
     /// per-field test would only ever cover the fields somebody remembered.
-    fn identifying_dialog() -> SipDialog {
+    fn identifying_dialog() -> Result<SipDialog, TestError> {
         let headers: &[&str] = &[
             "From: \"Alice Kowalski\" <sip:+15551234567@pbx.internal.example>;tag=t1",
             "To: \"Bob Vance\" <sip:+15559876543@carrier.internal.example>",
@@ -6002,15 +6097,14 @@ mod tests {
                 headers,
                 body,
             ),
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("fixture parses");
-        SipDialog::new(&invite).expect("INVITE opens a dialog")
+        )?;
+        Ok(SipDialog::new(&invite).ok_or("INVITE opens a dialog")?)
     }
 
     /// Every value the container must not contain once redaction is on.
@@ -6040,15 +6134,15 @@ mod tests {
     ];
 
     /// A redacted container, and the policy that produced it.
-    fn redacted_container() -> String {
-        let dialog = identifying_dialog();
+    fn redacted_container() -> Result<String, TestError> {
+        let dialog = identifying_dialog()?;
         let facts = clean_facts();
-        let container = export_with(&dialog, &facts);
+        let container = export_with(&dialog, &facts)?;
         let policy = crate::output::redact::RedactionPolicy::new(
             crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
         );
         let redactor = policy.redactor();
-        sealed_json(&seal(container, Some(&redactor))).expect("a sealed container serializes")
+        Ok(sealed_json(&seal(container, Some(&redactor)))?)
     }
 
     /// **The leak test.** Not one value on the inventory survives redaction.
@@ -6059,14 +6153,15 @@ mod tests {
     /// field carries an identity out through a path nobody considered — which
     /// is the failure mode a privacy feature actually has.
     #[test]
-    fn nothing_on_the_inventory_survives_redaction() {
-        let json = redacted_container();
+    fn nothing_on_the_inventory_survives_redaction() -> Result<(), TestError> {
+        let json = redacted_container()?;
         for value in MUST_NOT_LEAK {
             assert!(
                 !json.contains(value),
                 "'{value}' survived redaction in:\n{json}"
             );
         }
+        Ok(())
     }
 
     /// The same values ARE present without redaction.
@@ -6076,12 +6171,10 @@ mod tests {
     /// while proving nothing at all. This is the guard that makes the guard
     /// mean something.
     #[test]
-    fn the_leak_test_is_testing_something() {
-        let dialog = identifying_dialog();
+    fn the_leak_test_is_testing_something() -> Result<(), TestError> {
+        let dialog = identifying_dialog()?;
         let facts = clean_facts();
-        let json = export_with(&dialog, &facts)
-            .to_json()
-            .expect("an unredacted container serializes");
+        let json = export_with(&dialog, &facts)?.to_json()?;
         // The two digest values are the exception, and they are absent for a
         // reason that predates redaction: `strip_credentials` already removes
         // the whole `Authorization` row from the trace. Everything else on the
@@ -6096,6 +6189,7 @@ mod tests {
                 "the fixture never emitted '{value}', so redacting it proves nothing"
             );
         }
+        Ok(())
     }
 
     /// Correlation survives: one identity, one token, everywhere it appears.
@@ -6105,13 +6199,13 @@ mod tests {
     /// same caller in this fixture, and an agent asked "is this the same
     /// subscriber" has to still be able to answer yes.
     #[test]
-    fn one_identity_reaches_the_container_as_one_token() {
-        let json = redacted_container();
-        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    fn one_identity_reaches_the_container_as_one_token() -> Result<(), TestError> {
+        let json = redacted_container()?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
         let token = value["parties"][0]["tel"]
             .as_str()
             .or_else(|| value["parties"][0]["sip"].as_str())
-            .unwrap_or_else(|| panic!("the caller party must carry a URI: {json}"))
+            .ok_or_else(|| format!("the caller party must carry a URI: {json}"))?
             .to_string();
         let user = token
             .rsplit_once('@')
@@ -6124,6 +6218,7 @@ mod tests {
             "the caller's token appears {hits} time(s); correlation across From, Contact and \
              P-Asserted-Identity is the reason this is not masking:\n{json}"
         );
+        Ok(())
     }
 
     /// The container says, in the format's own vocabulary, that it was
@@ -6134,16 +6229,16 @@ mod tests {
     /// vCon consumer already looks for "content was removed", so
     /// pseudonymization goes there rather than inventing a second place.
     #[test]
-    fn a_redacted_container_declares_itself() {
-        let json = redacted_container();
-        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    fn a_redacted_container_declares_itself() -> Result<(), TestError> {
+        let json = redacted_container()?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(value["redacted"]["type"], CONTENT_PSEUDONYMIZED, "{json}");
 
         let caveat = value["attachments"]
             .as_array()
             .and_then(|a| a.iter().find(|x| x["purpose"] == COMPLETENESS_PURPOSE))
-            .unwrap_or_else(|| panic!("the completeness caveat must be present: {json}"));
-        let body = body_of(caveat);
+            .ok_or_else(|| format!("the completeness caveat must be present: {json}"))?;
+        let body = body_of(caveat)?;
         assert_eq!(body["redaction"]["enabled"], true, "{body}");
         assert_eq!(body["redaction"]["key_mode"], "supplied", "{body}");
         assert!(
@@ -6152,6 +6247,7 @@ mod tests {
                 .is_some_and(|c| c.iter().any(|v| v == "credential")),
             "{body}"
         );
+        Ok(())
     }
 
     /// A withheld container keeps its own marker.
@@ -6160,8 +6256,8 @@ mod tests {
     /// survived to pseudonymize. Overwriting it would understate what the deny
     /// rule did.
     #[test]
-    fn a_withheld_container_keeps_its_stronger_marker() {
-        let dialog = identifying_dialog();
+    fn a_withheld_container_keeps_its_stronger_marker() -> Result<(), TestError> {
+        let dialog = identifying_dialog()?;
         let facts = clean_facts();
         let container = export_withheld_dialog_at(
             &dialog,
@@ -6173,17 +6269,18 @@ mod tests {
                 media: &[],
             },
             "X-No-Record",
-            exported_at(),
+            exported_at()?,
         );
         let policy = crate::output::redact::RedactionPolicy::new(
             crate::output::redact::RedactionKey::from_secret(b"vcon-leak-test"),
         );
-        let json = sealed_json(&seal(container, Some(&policy.redactor()))).expect("serializes");
-        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        let json = sealed_json(&seal(container, Some(&policy.redactor())))?;
+        let value: serde_json::Value = serde_json::from_str(&json)?;
         assert_eq!(value["redacted"]["type"], CONTENT_WITHHELD, "{json}");
         for leak in MUST_NOT_LEAK {
             assert!(!json.contains(leak), "'{leak}' survived: {json}");
         }
+        Ok(())
     }
 
     /// An unsealed export is byte-identical to a sealed pass-through.
@@ -6193,12 +6290,13 @@ mod tests {
     /// quietly reshaped the output for every run would be paid for by every
     /// consumer, redacting or not.
     #[test]
-    fn pass_through_changes_nothing() {
-        let dialog = identifying_dialog();
+    fn pass_through_changes_nothing() -> Result<(), TestError> {
+        let dialog = identifying_dialog()?;
         let facts = clean_facts();
-        let direct = export_with(&dialog, &facts).to_json().expect("serializes");
-        let sealed = sealed_json(&seal(export_with(&dialog, &facts), None)).expect("serializes");
+        let direct = export_with(&dialog, &facts)?.to_json()?;
+        let sealed = sealed_json(&seal(export_with(&dialog, &facts)?, None))?;
         assert_eq!(direct, sealed);
+        Ok(())
     }
 
     /// A PASSporT is deleted, not carried through redaction.
@@ -6210,7 +6308,7 @@ mod tests {
     /// verify is worse than an absent one, because a consumer that checks it
     /// reports a forgery where there was none.
     #[test]
-    fn a_passport_does_not_survive_redaction() {
+    fn a_passport_does_not_survive_redaction() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
         // The payload decodes to {"dest":{"tn":["15559876543"]},...}.
         let token = "eyJhbGciOiJFUzI1NiJ9.\
@@ -6232,6 +6330,7 @@ mod tests {
             party.stir.is_none(),
             "a PASSporT carries the numbers it attests, in the clear"
         );
+        Ok(())
     }
 
     /// The capturing host's own name does not survive redaction.
@@ -6243,16 +6342,17 @@ mod tests {
     /// identifier dutifully tokenized, and the operator's capture host named in
     /// a sentence beside them.
     #[test]
-    fn the_capture_host_does_not_survive_in_prose() {
+    fn the_capture_host_does_not_survive_in_prose() -> Result<(), TestError> {
         let node = crate::provenance::node_name();
         if node.is_empty() {
-            return;
+            return Ok(());
         }
-        let json = redacted_container();
+        let json = redacted_container()?;
         assert!(
             !json.contains(node),
             "the capture host '{node}' survived redaction in:\n{json}"
         );
+        Ok(())
     }
 
     /// Inline audio is refused rather than pseudonymized.
@@ -6262,7 +6362,7 @@ mod tests {
     /// then inlined the conversation would be the most complete privacy
     /// failure this module could ship.
     #[test]
-    fn redaction_refuses_inline_audio() {
+    fn redaction_refuses_inline_audio() -> Result<(), TestError> {
         use crate::output::redact::{Redact as _, RedactionKey, RedactionPolicy};
         let mut object = Dialog::bare("call-1".to_string());
         object.kind = Some(RECORDING_TYPE);
@@ -6284,5 +6384,6 @@ mod tests {
             Some(4.5),
             "the clock stays: the export still has to say a recording existed"
         );
+        Ok(())
     }
 }
