@@ -1209,18 +1209,25 @@ mod tests {
     use crate::privilege::current_uid;
     use crate::privilege::permission_refusal;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A password for a test: runtime material, never a literal, so no
     /// scanner reads a hard-coded key into these tests.
-    fn pw(label: &str) -> ArchivePassword {
-        ArchivePassword::from_bytes(crate::test_material::key_str(label).as_bytes()).expect("valid")
+    fn pw(label: &str) -> Result<ArchivePassword, TestError> {
+        Ok(
+            ArchivePassword::from_bytes(crate::test_material::key_str(label).as_bytes())
+                .map_err(|e| format!("valid: {e:?}"))?,
+        )
     }
 
     #[test]
-    fn debug_prints_redacted_and_nothing_else() {
-        let p = pw("debug");
+    fn debug_prints_redacted_and_nothing_else() -> Result<(), TestError> {
+        let p = pw("debug")?;
         let shown = format!("{p:?} {:?}", vec![p.clone()]);
         assert_eq!(shown, "[REDACTED] [[REDACTED]]");
         assert!(!shown.contains(crate::test_material::key_str("debug")));
+        Ok(())
     }
 
     #[test]
@@ -1234,16 +1241,18 @@ mod tests {
     }
 
     #[test]
-    fn a_file_holds_one_candidate_per_line_spaces_kept() {
-        let got = split_candidates(b" lead\ntrail \r\n\nthird").expect("split");
+    fn a_file_holds_one_candidate_per_line_spaces_kept() -> Result<(), TestError> {
+        let got =
+            split_candidates(b" lead\ntrail \r\n\nthird").map_err(|e| format!("split: {e:?}"))?;
         let bytes: Vec<&[u8]> = got.iter().map(ArchivePassword::expose).collect();
         assert_eq!(bytes, vec![&b" lead"[..], b"trail ", b"third"]);
+        Ok(())
     }
 
     #[test]
-    fn a_password_over_the_limit_is_refused_whole() {
+    fn a_password_over_the_limit_is_refused_whole() -> Result<(), TestError> {
         let long = vec![b'x'; MAX_PASSWORD_BYTES + 1];
-        let err = ArchivePassword::from_bytes(&long).expect_err("too long");
+        let err = ArchivePassword::from_bytes(&long).err().ok_or("too long")?;
         assert_eq!(
             err,
             PasswordRefusal::TooLong {
@@ -1253,17 +1262,20 @@ mod tests {
         assert!(ArchivePassword::from_bytes(&long[..MAX_PASSWORD_BYTES]).is_ok());
         let mut file = b"short\n".to_vec();
         file.extend_from_slice(&long);
-        let err = split_candidates(&file).expect_err("line 2 too long");
+        let err = split_candidates(&file).err().ok_or("line 2 too long")?;
         assert!(err.starts_with("line 2:"), "{err}");
-        let err = read_first_line(&mut &long[..], "stdin").expect_err("too long");
+        let err = read_first_line(&mut &long[..], "stdin")
+            .err()
+            .ok_or("too long")?;
         assert!(err.contains("4096-byte limit"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn the_permission_rule_is_openssh_s() {
+    fn the_permission_rule_is_openssh_s() -> Result<(), TestError> {
         let me = 1000;
         // Own file, any group or other bit: refused, naming the mode.
-        let why = permission_refusal(me, me, 0o100_644, true).expect("own 0644 refused");
+        let why = permission_refusal(me, me, 0o100_644, true).ok_or("own 0644 refused")?;
         assert!(
             why.contains("mode 0644") && why.contains("chmod 600"),
             "{why}"
@@ -1277,60 +1289,72 @@ mod tests {
         assert_eq!(permission_refusal(0, me, 0o100_644, true), None);
         // A pipe or FIFO: accepted whatever its mode.
         assert_eq!(permission_refusal(me, me, 0o010_644, false), None);
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn an_own_world_readable_file_is_refused_and_a_private_one_read() {
+    fn an_own_world_readable_file_is_refused_and_a_private_one_read() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tmp");
+        let dir = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let path = dir.path().join("pw");
         std::fs::write(
             &path,
             format!("{}\n", crate::test_material::key_str("file")),
         )
-        .expect("w");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("chmod");
-        let err = read_password_file(&path, "--archive-password-file").expect_err("0644");
+        .map_err(|e| format!("w: {e:?}"))?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let err = read_password_file(&path, "--archive-password-file")
+            .err()
+            .ok_or("0644")?;
         assert!(err.contains("mode 0644"), "{err}");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
-        let got = read_password_file(&path, "--archive-password-file").expect("0600");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("chmod: {e:?}"))?;
+        let got = read_password_file(&path, "--archive-password-file")
+            .map_err(|e| format!("0600: {e:?}"))?;
         assert_eq!(got.len(), 1);
         assert_eq!(
             got[0].expose(),
             crate::test_material::key_str("file").as_bytes()
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_fifo_is_read_whatever_its_mode() {
-        let dir = tempfile::tempdir().expect("tmp");
+    fn a_fifo_is_read_whatever_its_mode() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let path = dir.path().join("fifo");
-        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).expect("cstr");
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|e| format!("cstr: {e:?}"))?;
         // SAFETY: `c` is a valid NUL-terminated path; mkfifo reads nothing else.
         let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o644) };
         assert_eq!(rc, 0, "mkfifo");
         let writer_path = path.clone();
         let secret = crate::test_material::key_str("fifo");
-        let writer = std::thread::spawn(move || {
-            std::fs::write(&writer_path, format!("{secret}\n")).expect("write fifo");
+        let writer = std::thread::spawn(move || -> Result<(), String> {
+            std::fs::write(&writer_path, format!("{secret}\n"))
+                .map_err(|e| format!("write fifo: {e:?}"))?;
+            Ok(())
         });
-        let got = read_password_file(&path, "--archive-password-file").expect("fifo read");
-        writer.join().expect("writer");
+        let got = read_password_file(&path, "--archive-password-file")
+            .map_err(|e| format!("fifo read: {e:?}"))?;
+        writer.join().map_err(|e| format!("writer: {e:?}"))??;
         assert_eq!(got[0].expose(), secret.as_bytes());
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_file_another_user_owns_is_not_refused_for_its_mode() {
+    fn a_file_another_user_owns_is_not_refused_for_its_mode() -> Result<(), TestError> {
         use std::os::unix::fs::MetadataExt;
         // A root-owned world-readable file stands in for a Kubernetes secret
         // mount; it is present on every Unix this runs on.
         let path = Path::new("/etc/passwd");
-        let meta = std::fs::metadata(path).expect("stat");
+        let meta = std::fs::metadata(path).map_err(|e| format!("stat: {e:?}"))?;
         if meta.uid() == current_uid() {
-            return; // Running as root: the case cannot be built here.
+            return Ok(()); // Running as root: the case cannot be built here.
         }
         assert!(
             meta.mode() & 0o044 != 0,
@@ -1340,74 +1364,89 @@ mod tests {
         if let Err(e) = read_password_file(path, "--archive-password-file") {
             assert!(!e.contains("chmod 600"), "{e}");
         }
+        Ok(())
     }
 
     #[test]
-    fn a_command_line_splits_like_a_shell_without_one() {
+    fn a_command_line_splits_like_a_shell_without_one() -> Result<(), TestError> {
         assert_eq!(
-            split_command(r#"pass show 'pcaps/lab one' "x\"y" a\ b"#).expect("split"),
+            split_command(r#"pass show 'pcaps/lab one' "x\"y" a\ b"#)
+                .map_err(|e| format!("split: {e:?}"))?,
             vec!["pass", "show", "pcaps/lab one", "x\"y", "a b"]
         );
         assert!(split_command("  ").is_err());
         assert!(split_command("echo 'open").is_err());
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_command_supplies_its_first_line() {
+    fn a_command_supplies_its_first_line() -> Result<(), TestError> {
         let secret = crate::test_material::key_str("command");
         let cmd = format!("printf '%s\\nsecond\\n' '{secret}'");
-        let got = run_password_command(&cmd, Duration::from_secs(10), true).expect("runs");
+        let got = run_password_command(&cmd, Duration::from_secs(10), true)
+            .map_err(|e| format!("runs: {e:?}"))?;
         assert_eq!(got.expose(), secret.as_bytes());
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_failing_command_is_an_error_without_its_output() {
+    fn a_failing_command_is_an_error_without_its_output() -> Result<(), TestError> {
         let secret = crate::test_material::key_str("failing");
         let cmd = format!("sh -c 'echo {secret}; exit 3'");
-        let err = run_password_command(&cmd, Duration::from_secs(10), true).expect_err("fails");
+        let err = run_password_command(&cmd, Duration::from_secs(10), true)
+            .err()
+            .ok_or("fails")?;
         assert!(err.contains("'sh' failed"), "{err}");
         assert!(
             !err.contains(secret),
             "the output must not be in the message: {err}"
         );
+        Ok(())
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_command_is_bounded_in_time_and_in_output() {
+    fn a_command_is_bounded_in_time_and_in_output() -> Result<(), TestError> {
         let started = std::time::Instant::now();
         let err = run_password_command("sleep 30", Duration::from_millis(300), true)
-            .expect_err("times out");
+            .err()
+            .ok_or("times out")?;
         assert!(err.contains("did not finish"), "{err}");
         assert!(started.elapsed() < Duration::from_secs(10));
-        let err = run_password_command("yes", Duration::from_secs(10), true).expect_err("too much");
+        let err = run_password_command("yes", Duration::from_secs(10), true)
+            .err()
+            .ok_or("too much")?;
         assert!(err.contains("more than"), "{err}");
+        Ok(())
     }
 
     #[test]
-    fn sources_are_gathered_in_preference_order() {
-        let dir = tempfile::tempdir().expect("tmp");
+    fn sources_are_gathered_in_preference_order() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let file = dir.path().join("pw");
         std::fs::write(
             &file,
             format!("{}\n", crate::test_material::key_str("s-file")),
         )
-        .expect("w");
+        .map_err(|e| format!("w: {e:?}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).expect("m");
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))
+                .map_err(|e| format!("m: {e:?}"))?;
         }
         let creds = dir.path().join("creds");
-        std::fs::create_dir(&creds).expect("mkdir");
+        std::fs::create_dir(&creds).map_err(|e| format!("mkdir: {e:?}"))?;
         let cred = creds.join(CREDENTIAL_NAME);
-        std::fs::write(&cred, crate::test_material::key_str("s-cred")).expect("w");
+        std::fs::write(&cred, crate::test_material::key_str("s-cred"))
+            .map_err(|e| format!("w: {e:?}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&cred, std::fs::Permissions::from_mode(0o400)).expect("m");
+            std::fs::set_permissions(&cred, std::fs::Permissions::from_mode(0o400))
+                .map_err(|e| format!("m: {e:?}"))?;
         }
         let cfg = SourceConfig {
             file: Some(file),
@@ -1422,7 +1461,7 @@ mod tests {
             command_timeout: Some(Duration::from_secs(10)),
         };
         let stdin = format!("{}\nnot this\n", crate::test_material::key_str("s-stdin"));
-        let got = collect(&cfg, &mut stdin.as_bytes()).expect("collect");
+        let got = collect(&cfg, &mut stdin.as_bytes()).map_err(|e| format!("collect: {e:?}"))?;
         let sources: Vec<Source> = got.iter().map(|c| c.source).collect();
         assert_eq!(
             sources,
@@ -1444,27 +1483,34 @@ mod tests {
                 crate::test_material::key_str(label).as_bytes()
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn a_credentials_directory_without_the_credential_is_no_source() {
-        let dir = tempfile::tempdir().expect("tmp");
+    fn a_credentials_directory_without_the_credential_is_no_source() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cfg = SourceConfig {
             credentials_directory: Some(dir.path().to_path_buf()),
             ..SourceConfig::default()
         };
         assert!(!cfg.any());
-        assert!(collect(&cfg, &mut io::empty()).expect("collect").is_empty());
+        assert!(
+            collect(&cfg, &mut io::empty())
+                .map_err(|e| format!("collect: {e:?}"))?
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]
-    fn an_empty_environment_value_is_an_error() {
+    fn an_empty_environment_value_is_an_error() -> Result<(), TestError> {
         let cfg = SourceConfig {
             environment: Some(OsString::new()),
             ..SourceConfig::default()
         };
-        let err = collect(&cfg, &mut io::empty()).expect_err("empty");
+        let err = collect(&cfg, &mut io::empty()).err().ok_or("empty")?;
         assert!(err.contains(ENV_VAR), "{err}");
+        Ok(())
     }
 
     /// `ü`, composed and decomposed, built from code points so no password
@@ -1476,21 +1522,22 @@ mod tests {
     }
 
     #[test]
-    fn non_ascii_passwords_get_every_spelling_and_ascii_one() {
-        let ascii = pw("ascii");
+    fn non_ascii_passwords_get_every_spelling_and_ascii_one() -> Result<(), TestError> {
+        let ascii = pw("ascii")?;
         assert_eq!(variants(&ascii, Container::Zip, None).len(), 1);
 
-        let nfd = ArchivePassword::from_bytes(umlaut_word(false).as_bytes()).expect("valid");
+        let nfd = ArchivePassword::from_bytes(umlaut_word(false).as_bytes())
+            .map_err(|e| format!("valid: {e:?}"))?;
         let got = variants(&nfd, Container::Zip, None);
         let composed = umlaut_word(true);
         let mut cp437 = Vec::new();
         CodePage::Cp437
             .encode_into(&composed, &mut cp437)
-            .expect("encodable");
+            .ok_or("encodable")?;
         let mut cp1252 = Vec::new();
         CodePage::Cp1252
             .encode_into(&composed, &mut cp1252)
-            .expect("encodable");
+            .ok_or("encodable")?;
         let spellings: Vec<&[u8]> = got.iter().map(|v| v.as_slice()).collect();
         // Exact (NFD), NFC, then CP437 (which CP850 duplicates here), CP1252.
         assert_eq!(
@@ -1502,17 +1549,20 @@ mod tests {
                 &cp1252[..]
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn a_pinned_encoding_yields_exactly_one_spelling() {
-        let p = ArchivePassword::from_bytes(umlaut_word(true).as_bytes()).expect("valid");
+    fn a_pinned_encoding_yields_exactly_one_spelling() -> Result<(), TestError> {
+        let p = ArchivePassword::from_bytes(umlaut_word(true).as_bytes())
+            .map_err(|e| format!("valid: {e:?}"))?;
         let got = variants(&p, Container::Zip, Some(Encoding::Page(CodePage::Cp1252)));
         assert_eq!(got.len(), 1);
         assert!(got[0].contains(&0xfc));
         let got = variants(&p, Container::Zip, Some(Encoding::Utf8));
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].as_slice(), umlaut_word(true).as_bytes());
+        Ok(())
     }
 
     /// A lock that opens only for `want`.
@@ -1530,23 +1580,24 @@ mod tests {
         }
     }
 
-    fn candidate(label: &str) -> Candidate {
-        Candidate {
-            password: pw(label),
+    fn candidate(label: &str) -> Result<Candidate, TestError> {
+        Ok(Candidate {
+            password: pw(label)?,
             source: Source::File,
-        }
+        })
     }
 
     #[test]
-    fn every_spelling_of_one_password_is_one_attempt() {
+    fn every_spelling_of_one_password_is_one_attempt() -> Result<(), TestError> {
         let composed = umlaut_word(true);
         let mut cp437 = Vec::new();
         CodePage::Cp437
             .encode_into(&composed, &mut cp437)
-            .expect("enc");
+            .ok_or("enc")?;
         let tries = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut lock = lock_for(cp437, tries.clone());
-        let typed = ArchivePassword::from_bytes(composed.as_bytes()).expect("valid");
+        let typed = ArchivePassword::from_bytes(composed.as_bytes())
+            .map_err(|e| format!("valid: {e:?}"))?;
         let mut ring = Keyring::new(
             vec![Candidate {
                 password: typed,
@@ -1561,14 +1612,16 @@ mod tests {
         assert!(tries.get() > 1, "several spellings were tried");
         assert_eq!(ring.attempts(), 1, "but they were one attempt");
         assert_eq!(ring.wrong_attempts(), 0);
+        Ok(())
     }
 
     #[test]
-    fn the_second_candidate_opens_and_is_remembered_for_that_archive_only() {
-        let right = pw("right");
+    fn the_second_candidate_opens_and_is_remembered_for_that_archive_only() -> Result<(), TestError>
+    {
+        let right = pw("right")?;
         let tries = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut lock = lock_for(right.expose().to_vec(), tries.clone());
-        let mut ring = Keyring::new(vec![candidate("wrong"), candidate("right")], None);
+        let mut ring = Keyring::new(vec![candidate("wrong")?, candidate("right")?], None);
         assert!(matches!(
             ring.unlock("a.zip", "m1", Container::Zip, &mut lock),
             Unlock::Opened(())
@@ -1586,16 +1639,17 @@ mod tests {
             "remembered password tried first"
         );
         // Another archive is not offered a.zip's remembered password first.
-        let mut ring2 = Keyring::new(vec![candidate("wrong")], None);
+        let mut ring2 = Keyring::new(vec![candidate("wrong")?], None);
         ring2.remembered.insert("a.zip".into(), right.clone());
         assert!(matches!(
             ring2.unlock("b.zip", "m", Container::Zip, &mut lock),
             Unlock::WrongPassword
         ));
+        Ok(())
     }
 
     #[test]
-    fn no_password_and_wrong_password_are_told_apart() {
+    fn no_password_and_wrong_password_are_told_apart() -> Result<(), TestError> {
         let tries = std::rc::Rc::new(std::cell::Cell::new(0));
         let mut lock = lock_for(b"x".to_vec(), tries);
         let mut none = Keyring::default();
@@ -1603,12 +1657,13 @@ mod tests {
             none.unlock("a.zip", "m", Container::Zip, &mut lock),
             Unlock::NoPassword
         ));
-        let mut wrong = Keyring::new(vec![candidate("nope")], None);
+        let mut wrong = Keyring::new(vec![candidate("nope")?], None);
         assert!(matches!(
             wrong.unlock("a.zip", "m", Container::Zip, &mut lock),
             Unlock::WrongPassword
         ));
         assert_eq!(wrong.wrong_attempts(), 1);
+        Ok(())
     }
 
     /// Answers from a script, and records what it was asked.
@@ -1628,13 +1683,15 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_gets_three_attempts_per_archive_then_gives_up() {
+    fn a_prompt_gets_three_attempts_per_archive_then_gives_up() -> Result<(), TestError> {
         let tries = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut lock = lock_for(pw("never").expose().to_vec(), tries);
+        let mut lock = lock_for(pw("never")?.expose().to_vec(), tries);
         let asked = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
         let mut ring = Keyring::default();
         ring.set_prompter(Some(Box::new(Scripted {
-            answers: (0..5).map(|i| Some(pw(&format!("guess{i}")))).collect(),
+            answers: (0..5)
+                .map(|i| pw(&format!("guess{i}")).map(Some))
+                .collect::<Result<_, _>>()?,
             asked: asked.clone(),
         })));
         assert!(matches!(
@@ -1656,6 +1713,7 @@ mod tests {
             vec![(1, false), (2, true), (3, true)]
         );
         assert!(asked.iter().all(|r| r.of == PROMPT_ATTEMPTS));
+        Ok(())
     }
 
     #[test]
@@ -1689,17 +1747,18 @@ mod tests {
     /// two TUI loads, or two REST requests, cannot hand each other their
     /// passwords or their prompters.
     #[test]
-    fn a_thread_keyring_is_used_on_its_thread_only() {
-        let mine = Keyring::new(vec![candidate("thread-mine")], None);
-        let (seen, back) = with_thread_keyring(mine, || {
+    fn a_thread_keyring_is_used_on_its_thread_only() -> Result<(), TestError> {
+        let mine = Keyring::new(vec![candidate("thread-mine")?], None);
+        let (seen, back) = with_thread_keyring(mine, || -> Result<_, String> {
             let here = keyring_in_use(|k| k.map(|k| k.candidates().len()));
             let elsewhere = std::thread::spawn(|| {
                 keyring_in_use(|k| k.map(|k| k.candidates().len()).unwrap_or(0))
             })
             .join()
-            .expect("thread");
-            (here, elsewhere)
+            .map_err(|e| format!("thread: {e:?}"))?;
+            Ok((here, elsewhere))
         });
+        let seen = seen?;
         assert_eq!(seen.0, Some(1), "the walk on this thread sees it");
         assert_ne!(seen.1, 1, "another thread does not");
         assert_eq!(back.candidates().len(), 1, "it comes back to the caller");
@@ -1707,6 +1766,7 @@ mod tests {
             keyring_in_use(|k| k.map(|k| k.candidates().len())) != Some(1),
             "and is gone from the thread afterwards"
         );
+        Ok(())
     }
 
     #[test]

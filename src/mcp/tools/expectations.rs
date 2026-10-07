@@ -1366,6 +1366,9 @@ mod tests {
     use parking_lot::RwLock;
     use std::sync::Arc;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed timestamp, so no fixture here depends on the clock.
     fn ts() -> chrono::DateTime<chrono::Utc> {
         chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 15, 12, 0, 0)
@@ -1374,9 +1377,9 @@ mod tests {
     }
 
     /// Parse `raw` as SIP between two localhost endpoints.
-    fn parse_at(raw: &[u8]) -> crate::sip::SipMessage {
+    fn parse_at(raw: &[u8]) -> Result<crate::sip::SipMessage, TestError> {
         let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             raw,
             ts(),
             local,
@@ -1385,7 +1388,7 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("fixture parses as SIP")
+        .map_err(|e| format!("fixture parses as SIP: {e:?}"))?)
     }
 
     /// An SDP offer distinctive enough that its presence in a scenario is not
@@ -1396,7 +1399,7 @@ mod tests {
                               a=rtpmap:96 SPEEX/16000\r\n";
 
     /// An INVITE carrying SDP, a User-Agent and one extension header.
-    fn invite_with_sdp(call_id: &str, extra: &[&str]) -> crate::sip::SipMessage {
+    fn invite_with_sdp(call_id: &str, extra: &[&str]) -> Result<crate::sip::SipMessage, TestError> {
         let mut headers: Vec<String> = vec![
             "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bKcaptured".to_string(),
             "From: Alice <sip:alice@example.com>;tag=capturedtag".to_string(),
@@ -1410,16 +1413,20 @@ mod tests {
         ];
         headers.extend(extra.iter().map(|h| (*h).to_string()));
         let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
-        parse_at(&crate::test_utils::build_sip_message(
+        Ok(parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com;user=phone SIP/2.0",
             &refs,
             PINNED_SDP.as_bytes(),
-        ))
+        ))?)
     }
 
     /// The matching final response.
-    fn response(call_id: &str, code: u16, reason: &str) -> crate::sip::SipMessage {
-        parse_at(&crate::test_utils::build_sip_message(
+    fn response(
+        call_id: &str,
+        code: u16,
+        reason: &str,
+    ) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_at(&crate::test_utils::build_sip_message(
             &format!("SIP/2.0 {code} {reason}"),
             &[
                 "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bKcaptured",
@@ -1431,7 +1438,7 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        ))
+        ))?)
     }
 
     /// A server over empty stores.
@@ -1443,18 +1450,22 @@ mod tests {
     }
 
     /// A server holding one call that ended in `code`.
-    fn server_with_call(call_id: &str, code: u16, extra_headers: &[&str]) -> SipnabMcp {
+    fn server_with_call(
+        call_id: &str,
+        code: u16,
+        extra_headers: &[&str],
+    ) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(64, false);
-        ds.process_message(invite_with_sdp(call_id, extra_headers));
-        ds.process_message(response(call_id, code, "Not Acceptable Here"));
-        SipnabMcp::new(
+        ds.process_message(invite_with_sdp(call_id, extra_headers)?);
+        ds.process_message(response(call_id, code, "Not Acceptable Here")?);
+        Ok(SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
             Arc::new(RwLock::new(StreamStore::new(64))),
-        )
+        ))
     }
 
     /// The payload block of a result, skipping the untrusted-content note.
-    fn payload(result: &CallToolResult) -> serde_json::Value {
+    fn payload(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -1462,8 +1473,8 @@ mod tests {
             .filter_map(rmcp::model::ContentBlock::as_text)
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the note");
-        serde_json::from_str(&text).expect("payload is JSON")
+            .ok_or("a payload block that is not the note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("payload is JSON: {e:?}"))?)
     }
 
     /// The JSON-RPC code of a refusal.
@@ -1487,18 +1498,20 @@ mod tests {
     /// A call naming no rules is refused rather than reporting a verdict on
     /// nothing.
     #[tokio::test]
-    async fn evaluate_expectations_refuses_a_call_with_no_rules() {
+    async fn evaluate_expectations_refuses_a_call_with_no_rules() -> Result<(), TestError> {
         let err = empty_server()
             .evaluate_expectations(Parameters(EvaluateExpectationsParams::default()))
             .await
-            .expect_err("no rules must be refused");
+            .err()
+            .ok_or("no rules must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     /// Two suites in one call are refused, because the answer could not say
     /// which one it judged.
     #[tokio::test]
-    async fn evaluate_expectations_refuses_two_rule_sources_at_once() {
+    async fn evaluate_expectations_refuses_two_rule_sources_at_once() -> Result<(), TestError> {
         let err = empty_server()
             .evaluate_expectations(Parameters(EvaluateExpectationsParams {
                 rules: Some(vec![ExpectRule {
@@ -1514,15 +1527,18 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect_err("both sources must be refused");
+            .err()
+            .ok_or("both sources must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     /// The checked-in file's own text is a rule source, and it produces the
     /// same verdict an inline rule would.
     #[tokio::test]
-    async fn evaluate_expectations_reads_a_rule_file_verbatim_and_fails_a_violation() {
-        let server = server_with_call("gate@x", 488, &[]);
+    async fn evaluate_expectations_reads_a_rule_file_verbatim_and_fails_a_violation()
+    -> Result<(), TestError> {
+        let server = server_with_call("gate@x", 488, &[])?;
         let v = payload(
             &server
                 .evaluate_expectations(Parameters(EvaluateExpectationsParams {
@@ -1539,8 +1555,8 @@ mod tests {
                     suppression_file: None,
                 }))
                 .await
-                .expect("the suite evaluates"),
-        );
+                .map_err(|e| format!("the suite evaluates: {e:?}"))?,
+        )?;
         assert_eq!(v["verdict"], "fail", "{v}");
         assert_eq!(v["exit_code"], 1);
         assert_eq!(v["results"][0]["observed"], 1.0);
@@ -1549,12 +1565,13 @@ mod tests {
             v["capture_identity"].is_object(),
             "the verdict must name the capture it judged: {v}"
         );
+        Ok(())
     }
 
     /// A misspelled metric is refused by name rather than silently evaluating
     /// to a verdict.
     #[tokio::test]
-    async fn evaluate_expectations_refuses_an_unknown_metric() {
+    async fn evaluate_expectations_refuses_an_unknown_metric() -> Result<(), TestError> {
         let err = empty_server()
             .evaluate_expectations(Parameters(EvaluateExpectationsParams {
                 rules: Some(vec![ExpectRule {
@@ -1570,28 +1587,34 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect_err("an unknown metric must be refused");
+            .err()
+            .ok_or("an unknown metric must be refused")?;
         let msg = message_of(err);
         assert!(msg.contains("acd") && msg.contains("lint_errors"), "{msg}");
+        Ok(())
     }
 
     // ── generate_repro ──────────────────────────────────────────────
 
     /// Run `generate_repro` and return its payload.
-    async fn repro(server: &SipnabMcp, params: GenerateReproParams) -> serde_json::Value {
-        payload(
+    async fn repro(
+        server: &SipnabMcp,
+        params: GenerateReproParams,
+    ) -> Result<serde_json::Value, TestError> {
+        Ok(payload(
             &server
                 .generate_repro(Parameters(params))
                 .await
-                .expect("scenario builds"),
-        )
+                .map_err(|e| format!("scenario builds: {e:?}"))?,
+        )?)
     }
 
     /// Nothing pinned means nothing of the capture's own detail is carried, and
     /// the answer says the artifact encodes no theory.
     #[tokio::test]
-    async fn an_unpinned_scenario_carries_a_generic_offer_and_says_it_tests_nothing() {
-        let server = server_with_call("repro@x", 488, &[]);
+    async fn an_unpinned_scenario_carries_a_generic_offer_and_says_it_tests_nothing()
+    -> Result<(), TestError> {
+        let server = server_with_call("repro@x", 488, &[])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -1599,7 +1622,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(
             !xml.contains("SPEEX/16000"),
@@ -1620,13 +1643,14 @@ mod tests {
             v["hypothesis"]["varied"],
             serde_json::json!(["branch", "call_id", "tags"])
         );
+        Ok(())
     }
 
     /// Pinning is what pulls the capture's own detail in, and the hypothesis
     /// block reports exactly what was held fixed.
     #[tokio::test]
-    async fn pinning_carries_the_captured_detail_into_the_scenario() {
-        let server = server_with_call("repro@x", 488, &[]);
+    async fn pinning_carries_the_captured_detail_into_the_scenario() -> Result<(), TestError> {
+        let server = server_with_call("repro@x", 488, &[])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -1641,7 +1665,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("a=rtpmap:96 SPEEX/16000"), "{xml}");
         assert!(xml.contains("User-Agent: CapturedUA/9.9"), "{xml}");
@@ -1652,12 +1676,13 @@ mod tests {
         // replay into a retransmission of the captured call.
         assert!(xml.contains("Call-ID: [call_id]"), "{xml}");
         assert!(xml.contains("branch=[branch]"), "{xml}");
+        Ok(())
     }
 
     /// The recv sequence asserts the outcome the capture actually held.
     #[tokio::test]
-    async fn the_scenario_asserts_the_response_the_capture_held() {
-        let server = server_with_call("repro@x", 488, &[]);
+    async fn the_scenario_asserts_the_response_the_capture_held() -> Result<(), TestError> {
+        let server = server_with_call("repro@x", 488, &[])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -1665,7 +1690,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("<recv response=\"488\"/>"), "{xml}");
         assert_eq!(v["asserted"]["final"], 488);
@@ -1677,7 +1702,7 @@ mod tests {
             "a call that never answered has nothing to tear down: {xml}"
         );
 
-        let answered = server_with_call("ok@x", 200, &[]);
+        let answered = server_with_call("ok@x", 200, &[])?;
         let v = repro(
             &answered,
             GenerateReproParams {
@@ -1685,17 +1710,19 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("<recv response=\"200\"/>"), "{xml}");
         assert!(xml.contains("BYE "), "an answered call is torn down: {xml}");
+        Ok(())
     }
 
     /// An answered call's ACK reuses the INVITE's CSeq number and its BYE
     /// takes the next one, as RFC 3261 requires of a new in-dialog request.
     #[tokio::test]
-    async fn an_answered_scenario_numbers_its_ack_and_bye_after_the_invite() {
-        let answered = server_with_call("seq@x", 200, &[]);
+    async fn an_answered_scenario_numbers_its_ack_and_bye_after_the_invite() -> Result<(), TestError>
+    {
+        let answered = server_with_call("seq@x", 200, &[])?;
         let v = repro(
             &answered,
             GenerateReproParams {
@@ -1703,11 +1730,12 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("CSeq: 1 INVITE"), "{xml}");
         assert!(xml.contains("CSeq: 1 ACK"), "{xml}");
         assert!(xml.contains("CSeq: 2 BYE"), "{xml}");
+        Ok(())
     }
 
     /// A pinned body travels with the Content-Type that described it.
@@ -1715,7 +1743,7 @@ mod tests {
     /// Pinning names BYTES, and a body announced under the wrong label is a
     /// message the far end rejects for a reason that is not the hypothesis.
     #[tokio::test]
-    async fn a_pinned_body_keeps_the_content_type_that_described_it() {
+    async fn a_pinned_body_keeps_the_content_type_that_described_it() -> Result<(), TestError> {
         let mut ds = DialogStore::new(64, false);
         ds.process_message(parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -1729,8 +1757,8 @@ mod tests {
                 "Content-Length: 4",
             ],
             b"body",
-        )));
-        ds.process_message(response("mixed@x", 415, "Unsupported Media Type"));
+        ))?);
+        ds.process_message(response("mixed@x", 415, "Unsupported Media Type")?);
         let server = SipnabMcp::new(
             Arc::new(RwLock::new(ds)),
             Arc::new(RwLock::new(StreamStore::new(64))),
@@ -1743,7 +1771,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(
             xml.contains("Content-Type: multipart/mixed;boundary=uniqueBoundary"),
@@ -1753,14 +1781,16 @@ mod tests {
             !xml.contains("Content-Type: application/sdp"),
             "the captured label replaces the default, not joins it: {xml}"
         );
+        Ok(())
     }
 
     /// A header value carrying CR/LF cannot forge a header in the artifact.
     #[tokio::test]
-    async fn a_crlf_in_a_captured_header_cannot_forge_a_header_in_the_scenario() {
+    async fn a_crlf_in_a_captured_header_cannot_forge_a_header_in_the_scenario()
+    -> Result<(), TestError> {
         // The parser keeps the value on one line, so the injection is staged
         // through a value the sender could still write: a lone CR.
-        let server = server_with_call("inject@x", 488, &["X-Evil: a\rRoute: <sip:attacker>"]);
+        let server = server_with_call("inject@x", 488, &["X-Evil: a\rRoute: <sip:attacker>"])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -1769,7 +1799,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(
             !xml.contains('\r'),
@@ -1779,12 +1809,14 @@ mod tests {
             xml.contains("X-Evil: aRoute: <sip:attacker>"),
             "the value stays on its own header line: {xml}"
         );
+        Ok(())
     }
 
     /// A `]]>` in captured text cannot close the CDATA section early.
     #[tokio::test]
-    async fn a_cdata_terminator_in_captured_text_is_split_rather_than_emitted() {
-        let server = server_with_call("cdata@x", 488, &["X-Payload: ]]><evil/>"]);
+    async fn a_cdata_terminator_in_captured_text_is_split_rather_than_emitted()
+    -> Result<(), TestError> {
+        let server = server_with_call("cdata@x", 488, &["X-Payload: ]]><evil/>"])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -1793,7 +1825,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(
             xml.contains("]]]]><![CDATA[>"),
@@ -1803,13 +1835,14 @@ mod tests {
             !xml.contains("]]><evil/>"),
             "the section must not close early: {xml}"
         );
+        Ok(())
     }
 
     /// An aspect named in both pin and vary is refused: they are opposite
     /// instructions and picking one silently would invent a hypothesis.
     #[tokio::test]
-    async fn an_aspect_in_both_pin_and_vary_is_refused() {
-        let err = server_with_call("repro@x", 488, &[])
+    async fn an_aspect_in_both_pin_and_vary_is_refused() -> Result<(), TestError> {
+        let err = server_with_call("repro@x", 488, &[])?
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "repro@x".to_string(),
                 pin: Some(vec!["call_id".to_string()]),
@@ -1817,60 +1850,68 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("a contradiction must be refused");
+            .err()
+            .ok_or("a contradiction must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     /// An aspect SIPp cannot regenerate is refused from `vary`, naming the ones
     /// it can.
     #[tokio::test]
-    async fn an_aspect_with_no_generator_is_refused_from_vary() {
-        let err = server_with_call("repro@x", 488, &[])
+    async fn an_aspect_with_no_generator_is_refused_from_vary() -> Result<(), TestError> {
+        let err = server_with_call("repro@x", 488, &[])?
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "repro@x".to_string(),
                 vary: Some(vec!["sdp".to_string()]),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unvariable aspect must be refused");
+            .err()
+            .ok_or("an unvariable aspect must be refused")?;
         let msg = message_of(err);
         assert!(
             msg.contains("cannot be varied") && msg.contains("call_id"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// An aspect outside the vocabulary is refused by name.
     #[tokio::test]
-    async fn an_unknown_aspect_is_refused_by_name() {
-        let err = server_with_call("repro@x", 488, &[])
+    async fn an_unknown_aspect_is_refused_by_name() -> Result<(), TestError> {
+        let err = server_with_call("repro@x", 488, &[])?
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "repro@x".to_string(),
                 pin: Some(vec!["contact".to_string()]),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unknown aspect must be refused");
+            .err()
+            .ok_or("an unknown aspect must be refused")?;
         let msg = message_of(err);
         assert!(
             msg.contains("contact") && msg.contains("request_uri"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// Only `sipp` is generated, and anything else is refused rather than
     /// silently producing a SIPp file under another name.
     #[tokio::test]
-    async fn an_unknown_repro_format_is_refused() {
-        let err = server_with_call("repro@x", 488, &[])
+    async fn an_unknown_repro_format_is_refused() -> Result<(), TestError> {
+        let err = server_with_call("repro@x", 488, &[])?
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "repro@x".to_string(),
                 format: Some("pjsua".to_string()),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unknown format must be refused");
+            .err()
+            .ok_or("an unknown format must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     // ── generate_wireshark_filter ───────────────────────────────────
@@ -1878,9 +1919,9 @@ mod tests {
     /// The Call-ID is escaped for a display-filter string literal, and the
     /// tshark line survives a Call-ID containing a shell metacharacter.
     #[tokio::test]
-    async fn a_wireshark_filter_escapes_the_call_id_it_quotes() {
+    async fn a_wireshark_filter_escapes_the_call_id_it_quotes() -> Result<(), TestError> {
         let call_id = "a\"b\\c'd@host";
-        let server = server_with_call(call_id, 488, &[]);
+        let server = server_with_call(call_id, 488, &[])?;
         let v = payload(
             &server
                 .generate_wireshark_filter(Parameters(GenerateWiresharkFilterParams {
@@ -1888,8 +1929,8 @@ mod tests {
                     include_media: None,
                 }))
                 .await
-                .expect("filter builds"),
-        );
+                .map_err(|e| format!("filter builds: {e:?}"))?,
+        )?;
         assert_eq!(
             v["display_filter"], "sip.Call-ID == \"a\\\"b\\\\c'd@host\"",
             "{v}"
@@ -1900,36 +1941,41 @@ mod tests {
             "the single quote must be closed and reopened, not left to end the \
              shell word: {v}"
         );
+        Ok(())
     }
 
     /// A control character in a Call-ID is refused: a display filter has no
     /// escape for one, and a filter that quietly selects the wrong packets is
     /// worse than none.
     #[tokio::test]
-    async fn a_control_character_in_a_call_id_is_refused() {
+    async fn a_control_character_in_a_call_id_is_refused() -> Result<(), TestError> {
         let call_id = "bad\u{7}id@host";
-        let err = server_with_call(call_id, 488, &[])
+        let err = server_with_call(call_id, 488, &[])?
             .generate_wireshark_filter(Parameters(GenerateWiresharkFilterParams {
                 call_id: call_id.to_string(),
                 include_media: None,
             }))
             .await
-            .expect_err("a control character must be refused");
+            .err()
+            .ok_or("a control character must be refused")?;
         assert!(message_of(err).contains("U+0007"));
+        Ok(())
     }
 
     /// An unknown Call-ID errors rather than returning a filter that selects
     /// nothing.
     #[tokio::test]
-    async fn a_wireshark_filter_for_an_unknown_call_errors() {
+    async fn a_wireshark_filter_for_an_unknown_call_errors() -> Result<(), TestError> {
         let err = empty_server()
             .generate_wireshark_filter(Parameters(GenerateWiresharkFilterParams {
                 call_id: "nobody@nowhere".to_string(),
                 include_media: None,
             }))
             .await
-            .expect_err("an unknown call must be refused");
+            .err()
+            .ok_or("an unknown call must be refused")?;
         assert_eq!(code_of(err), -32602);
+        Ok(())
     }
 
     // ── generate_fail2ban_rule ──────────────────────────────────────
@@ -1937,19 +1983,21 @@ mod tests {
     /// With no detector armed there are no findings, and the refusal says that
     /// rather than emitting a rule about nothing.
     #[tokio::test]
-    async fn a_fail2ban_rule_without_a_detector_is_refused() {
+    async fn a_fail2ban_rule_without_a_detector_is_refused() -> Result<(), TestError> {
         let err = empty_server()
             .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams {
                 finding_id: "scanner@192.0.2.1@2026-01-01T00:00:00+00:00".to_string(),
             }))
             .await
-            .expect_err("no engine must be refused");
+            .err()
+            .ok_or("no engine must be refused")?;
         let msg = message_of(err);
         assert!(msg.contains("--kill-scanner"), "{msg}");
+        Ok(())
     }
 
     /// A server holding one scanner finding, and that finding's id.
-    fn server_with_finding() -> (SipnabMcp, String) {
+    fn server_with_finding() -> Result<(SipnabMcp, String), TestError> {
         let mut engine = crate::security::alerting::AlertEngine::new(vec![], None);
         engine.fire(
             "scanner",
@@ -1959,28 +2007,28 @@ mod tests {
         );
         let id = {
             let findings = engine.iter_findings(&[], None, usize::MAX);
-            let f = findings.first().expect("the fire was recorded");
+            let f = findings.first().ok_or("the fire was recorded")?;
             finding_id(f)
         };
         let server = empty_server()
             .with_alert_engine(Arc::new(RwLock::new(engine)))
             .with_armed_detections(["scanner"]);
-        (server, id)
+        Ok((server, id))
     }
 
     /// The generated failregex matches the line sipnab actually writes, for the
     /// rule the finding names.
     #[tokio::test]
-    async fn a_fail2ban_rule_matches_the_alert_line_sipnab_writes() {
-        let (server, id) = server_with_finding();
+    async fn a_fail2ban_rule_matches_the_alert_line_sipnab_writes() -> Result<(), TestError> {
+        let (server, id) = server_with_finding()?;
         let v = payload(
             &server
                 .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams {
                     finding_id: id.clone(),
                 }))
                 .await
-                .expect("the rule builds"),
-        );
+                .map_err(|e| format!("the rule builds: {e:?}"))?,
+        )?;
         let conf = v["filter_conf"].as_str().unwrap_or_default();
         assert!(
             conf.contains("failregex = ^.*\\[ALERT\\] scanner src=<HOST> .*$"),
@@ -2002,24 +2050,27 @@ mod tests {
                 .is_some_and(|s| s.contains("not figures sipnab measured")))),
             "the conventional defaults must not read as measurements: {v}"
         );
+        Ok(())
     }
 
     /// An id this server does not hold is refused, and the refusal offers the
     /// ids it does hold.
     #[tokio::test]
-    async fn an_unknown_finding_id_lists_the_ones_that_exist() {
-        let (server, id) = server_with_finding();
+    async fn an_unknown_finding_id_lists_the_ones_that_exist() -> Result<(), TestError> {
+        let (server, id) = server_with_finding()?;
         let err = server
             .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams {
                 finding_id: "scanner@10.0.0.1@2020-01-01T00:00:00+00:00".to_string(),
             }))
             .await
-            .expect_err("an unknown id must be refused");
+            .err()
+            .ok_or("an unknown id must be refused")?;
         let msg = message_of(err);
         assert!(
             msg.contains(&id),
             "the refusal must name what is available: {msg}"
         );
+        Ok(())
     }
 
     // ── helpers ─────────────────────────────────────────────────────
@@ -2052,8 +2103,8 @@ mod tests {
     }
 
     /// A bare INVITE: no User-Agent, no body, and a To URI with no user part.
-    fn bare_invite(call_id: &str) -> crate::sip::SipMessage {
-        parse_at(&crate::test_utils::build_sip_message(
+    fn bare_invite(call_id: &str) -> Result<crate::sip::SipMessage, TestError> {
+        Ok(parse_at(&crate::test_utils::build_sip_message(
             "INVITE sip:example.com SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bKbare",
@@ -2064,7 +2115,7 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        ))
+        ))?)
     }
 
     fn caveats_of(v: &serde_json::Value) -> Vec<String> {
@@ -2081,7 +2132,7 @@ mod tests {
     /// A rule file that does not parse is refused and says so, rather than
     /// judging the capture against the rules that happened to survive.
     #[tokio::test]
-    async fn a_rule_file_that_does_not_parse_is_refused() {
+    async fn a_rule_file_that_does_not_parse_is_refused() -> Result<(), TestError> {
         let err = empty_server()
             .evaluate_expectations(Parameters(EvaluateExpectationsParams {
                 rules: None,
@@ -2089,18 +2140,21 @@ mod tests {
                 suppression_file: None,
             }))
             .await
-            .expect_err("an unparseable suite must be refused");
+            .err()
+            .ok_or("an unparseable suite must be refused")?;
         let msg = message_of(err.clone());
         assert_eq!(code_of(err), -32602);
         assert!(msg.contains("rules_toml does not parse"), "{msg}");
+        Ok(())
     }
 
     /// Pinning the identity copies the captured Call-ID, tag and branch, and
     /// an empty `vary` is reported as varying nothing -- the scenario is then a
     /// retransmission of the captured call, which is what was asked for.
     #[tokio::test]
-    async fn pinning_the_identity_copies_the_captured_call_id_tag_and_branch() {
-        let server = server_with_call("ident@x", 488, &[]);
+    async fn pinning_the_identity_copies_the_captured_call_id_tag_and_branch()
+    -> Result<(), TestError> {
+        let server = server_with_call("ident@x", 488, &[])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -2114,7 +2168,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("Call-ID: ident@x\n"), "{xml}");
         assert!(xml.contains(";tag=capturedtag\n"), "{xml}");
@@ -2131,13 +2185,15 @@ mod tests {
                 "a pinned aspect is not also generated: {generated:?}"
             );
         }
+        Ok(())
     }
 
     /// An identity aspect neither pinned nor varied is reported as GENERATED,
     /// so the hypothesis block accounts for every aspect of the request.
     #[tokio::test]
-    async fn an_identity_neither_pinned_nor_varied_is_reported_as_generated() {
-        let server = server_with_call("gen@x", 488, &[]);
+    async fn an_identity_neither_pinned_nor_varied_is_reported_as_generated()
+    -> Result<(), TestError> {
+        let server = server_with_call("gen@x", 488, &[])?;
         let v = repro(
             &server,
             GenerateReproParams {
@@ -2147,7 +2203,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let generated = v["hypothesis"]["generated"]
             .as_array()
             .cloned()
@@ -2160,16 +2216,18 @@ mod tests {
         }
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("Call-ID: [call_id]"), "{xml}");
+        Ok(())
     }
 
     /// A pinned aspect the capture does not hold is a caveat, never an invented
     /// value: no User-Agent is sent, and an empty body becomes the generic
     /// offer with the substitution reported.
     #[tokio::test]
-    async fn a_pinned_aspect_the_capture_lacks_is_a_caveat_not_an_invention() {
+    async fn a_pinned_aspect_the_capture_lacks_is_a_caveat_not_an_invention()
+    -> Result<(), TestError> {
         let call = "bare@x";
         let server =
-            server_with_messages(vec![bare_invite(call), response(call, 486, "Busy Here")]);
+            server_with_messages(vec![bare_invite(call)?, response(call, 486, "Busy Here")?]);
         let v = repro(
             &server,
             GenerateReproParams {
@@ -2178,7 +2236,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(!xml.contains("User-Agent:"), "no header is invented: {xml}");
         assert!(
@@ -2206,12 +2264,13 @@ mod tests {
             xml.contains("INVITE sip:[remote_ip]:[remote_port] SIP/2.0"),
             "a To URI with no user part addresses the remote host alone: {xml}"
         );
+        Ok(())
     }
 
     /// A pinned body that is not UTF-8 is refused rather than mangled into
     /// text the far end never received.
     #[tokio::test]
-    async fn a_pinned_body_that_is_not_utf8_is_refused() {
+    async fn a_pinned_body_that_is_not_utf8_is_refused() -> Result<(), TestError> {
         let call = "binary@x";
         let body: &[u8] = &[0xff, 0xfe, 0x00, 0x80, b'v', b'=', b'0'];
         let invite = parse_at(&crate::test_utils::build_sip_message(
@@ -2226,7 +2285,7 @@ mod tests {
                 &format!("Content-Length: {}", body.len()),
             ],
             body,
-        ));
+        ))?;
         let err = server_with_messages(vec![invite])
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: call.to_string(),
@@ -2234,28 +2293,31 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("a non-UTF-8 body cannot be embedded as text");
+            .err()
+            .ok_or("a non-UTF-8 body cannot be embedded as text")?;
         let msg = message_of(err.clone());
         assert_eq!(code_of(err), -32602);
         assert!(
             msg.contains("not valid UTF-8") && msg.contains(call),
             "{msg}"
         );
+        Ok(())
     }
 
     /// A call with no final response is replayed without asserting an outcome:
     /// the scenario sends, waits, and sends no ACK for a response it never saw.
     #[tokio::test]
-    async fn a_call_with_no_final_response_waits_instead_of_asserting_an_outcome() {
+    async fn a_call_with_no_final_response_waits_instead_of_asserting_an_outcome()
+    -> Result<(), TestError> {
         let call = "pending@x";
         let v = repro(
-            &server_with_messages(vec![invite_with_sdp(call, &[])]),
+            &server_with_messages(vec![invite_with_sdp(call, &[])?]),
             GenerateReproParams {
                 call_id: call.to_string(),
                 ..Default::default()
             },
         )
-        .await;
+        .await?;
         assert!(v["asserted"]["final"].is_null(), "{v}");
         let xml = v["scenario"].as_str().unwrap_or_default();
         assert!(xml.contains("<pause milliseconds=\"4000\"/>"), "{xml}");
@@ -2269,53 +2331,59 @@ mod tests {
                 .any(|c| c.contains("holds no final response")),
             "{v}"
         );
+        Ok(())
     }
 
     /// A call the store holds only responses for has nothing to replay.
     #[tokio::test]
-    async fn a_call_holding_only_responses_has_nothing_to_replay() {
+    async fn a_call_holding_only_responses_has_nothing_to_replay() -> Result<(), TestError> {
         let call = "midway@x";
-        let err = server_with_messages(vec![response(call, 200, "OK")])
+        let err = server_with_messages(vec![response(call, 200, "OK")?])
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: call.to_string(),
                 ..Default::default()
             }))
             .await
-            .expect_err("no request means nothing to replay");
+            .err()
+            .ok_or("no request means nothing to replay")?;
         let msg = message_of(err.clone());
         assert_eq!(code_of(err), -32602);
         assert!(msg.contains("holds no request"), "{msg}");
+        Ok(())
     }
 
     /// An unknown Call-ID is refused by name.
     #[tokio::test]
-    async fn a_repro_for_an_unknown_call_is_refused_by_name() {
+    async fn a_repro_for_an_unknown_call_is_refused_by_name() -> Result<(), TestError> {
         let err = empty_server()
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "nobody@x".to_string(),
                 ..Default::default()
             }))
             .await
-            .expect_err("an unknown call must be refused");
+            .err()
+            .ok_or("an unknown call must be refused")?;
         let msg = message_of(err.clone());
         assert_eq!(code_of(err), -32602);
         assert!(msg.contains("nobody@x"), "{msg}");
+        Ok(())
     }
 
     /// `filename` writes the scenario it returns, inside the file root, and a
     /// name already taken is refused rather than written over.
     #[tokio::test]
-    async fn a_named_scenario_is_written_once_and_never_over_an_existing_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let server = server_with_call("file@x", 488, &[]).with_file_root(dir.path());
+    async fn a_named_scenario_is_written_once_and_never_over_an_existing_file()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let server = server_with_call("file@x", 488, &[])?.with_file_root(dir.path());
         let params = GenerateReproParams {
             call_id: "file@x".to_string(),
             filename: Some("repro.xml".to_string()),
             ..Default::default()
         };
-        let v = repro(&server, params.clone()).await;
-        let written =
-            std::fs::read_to_string(dir.path().join("repro.xml")).expect("the scenario is written");
+        let v = repro(&server, params.clone()).await?;
+        let written = std::fs::read_to_string(dir.path().join("repro.xml"))
+            .map_err(|e| format!("the scenario is written: {e:?}"))?;
         assert_eq!(
             written,
             v["scenario"].as_str().unwrap_or_default(),
@@ -2329,7 +2397,8 @@ mod tests {
         let err = server
             .generate_repro(Parameters(params))
             .await
-            .expect_err("an existing file must not be written over");
+            .err()
+            .ok_or("an existing file must not be written over")?;
         assert_eq!(code_of(err.clone()), -32602);
         assert!(message_of(err).contains("already exists"));
         assert_eq!(
@@ -2339,28 +2408,31 @@ mod tests {
             Some(written.as_str()),
             "the refused write left the first file untouched"
         );
+        Ok(())
     }
 
     /// Without a file root, asking for a file is refused rather than the file
     /// being silently skipped.
     #[tokio::test]
-    async fn a_named_scenario_without_a_file_root_is_refused() {
-        let err = server_with_call("nofile@x", 488, &[])
+    async fn a_named_scenario_without_a_file_root_is_refused() -> Result<(), TestError> {
+        let err = server_with_call("nofile@x", 488, &[])?
             .generate_repro(Parameters(GenerateReproParams {
                 call_id: "nofile@x".to_string(),
                 filename: Some("repro.xml".to_string()),
                 ..Default::default()
             }))
             .await
-            .expect_err("no root means no file");
+            .err()
+            .ok_or("no root means no file")?;
         assert_eq!(code_of(err.clone()), -32602);
         assert!(message_of(err).contains("--mcp-file-root"));
+        Ok(())
     }
 
     /// A server holding one call with two RTP streams sharing one SSRC.
-    fn server_with_media(call_id: &str) -> SipnabMcp {
+    fn server_with_media(call_id: &str) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(64, false);
-        ds.process_message(invite_with_sdp(call_id, &[]));
+        ds.process_message(invite_with_sdp(call_id, &[])?);
         let mut ss = StreamStore::new(64);
         let local = std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 7));
         let far = std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 9));
@@ -2405,14 +2477,18 @@ mod tests {
             2,
             "both streams are linked"
         );
-        SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)))
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(ss)),
+        ))
     }
 
     /// A call's media joins the filter once per SSRC, with the note about
     /// decoding RTP; asking for signaling only leaves the media out entirely.
     #[tokio::test]
-    async fn a_calls_media_joins_the_filter_once_per_ssrc_unless_left_out() {
-        let server = server_with_media("media@x");
+    async fn a_calls_media_joins_the_filter_once_per_ssrc_unless_left_out() -> Result<(), TestError>
+    {
+        let server = server_with_media("media@x")?;
         let with = payload(
             &server
                 .generate_wireshark_filter(Parameters(GenerateWiresharkFilterParams {
@@ -2420,8 +2496,8 @@ mod tests {
                     include_media: None,
                 }))
                 .await
-                .expect("a held call has a filter"),
-        );
+                .map_err(|e| format!("a held call has a filter: {e:?}"))?,
+        )?;
         let filter = with["display_filter"].as_str().unwrap_or_default();
         assert_eq!(
             filter, "sip.Call-ID == \"media@x\" || rtp.ssrc == 0x0000abcd",
@@ -2442,8 +2518,8 @@ mod tests {
                     include_media: Some(false),
                 }))
                 .await
-                .expect("a held call has a filter"),
-        );
+                .map_err(|e| format!("a held call has a filter: {e:?}"))?,
+        )?;
         assert_eq!(without["display_filter"], "sip.Call-ID == \"media@x\"");
         assert_eq!(without["streams_included"], 0);
         assert_eq!(
@@ -2451,12 +2527,13 @@ mod tests {
             serde_json::json!([]),
             "leaving media out on request is not 'no RTP stream is attributed'"
         );
+        Ok(())
     }
 
     /// An armed detector that has recorded nothing is offered as holding none,
     /// rather than an empty list that reads like a formatting fault.
     #[tokio::test]
-    async fn an_unknown_finding_on_a_server_holding_none_says_none() {
+    async fn an_unknown_finding_on_a_server_holding_none_says_none() -> Result<(), TestError> {
         let server = empty_server()
             .with_alert_engine(Arc::new(RwLock::new(
                 crate::security::alerting::AlertEngine::new(vec![], None),
@@ -2467,55 +2544,63 @@ mod tests {
                 finding_id: "scanner@198.51.100.1@2026-06-15T12:00:00+00:00".to_string(),
             }))
             .await
-            .expect_err("no finding matches");
+            .err()
+            .ok_or("no finding matches")?;
         let msg = message_of(err);
         assert!(msg.ends_with("This server holds: none"), "{msg}");
+        Ok(())
     }
 
     /// A server whose one finding was fired under `rule` from `src`.
-    fn server_with_one_finding(rule: &str, src: std::net::IpAddr) -> (SipnabMcp, String) {
+    fn server_with_one_finding(
+        rule: &str,
+        src: std::net::IpAddr,
+    ) -> Result<(SipnabMcp, String), TestError> {
         let mut engine = crate::security::alerting::AlertEngine::new(vec![], None);
         engine.fire(rule, src, "detail", ts());
         let id = {
             let findings = engine.iter_findings(&[], None, usize::MAX);
-            finding_id(findings.first().expect("the fire was recorded"))
+            finding_id(findings.first().ok_or("the fire was recorded")?)
         };
         let server = empty_server()
             .with_alert_engine(Arc::new(RwLock::new(engine)))
             .with_armed_detections([rule]);
-        (server, id)
+        Ok((server, id))
     }
 
     /// A rule name that is not a bare identifier is refused: written into a
     /// failregex as itself, it would be a regular expression nobody wrote.
     #[tokio::test]
-    async fn a_rule_name_that_is_not_a_bare_identifier_is_never_written_into_a_regex() {
+    async fn a_rule_name_that_is_not_a_bare_identifier_is_never_written_into_a_regex()
+    -> Result<(), TestError> {
         let src = std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 66));
-        let (server, id) = server_with_one_finding("scan.*", src);
+        let (server, id) = server_with_one_finding("scan.*", src)?;
         let err = server
             .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams { finding_id: id }))
             .await
-            .expect_err("a regex metacharacter must not reach a failregex");
+            .err()
+            .ok_or("a regex metacharacter must not reach a failregex")?;
         let msg = message_of(err.clone());
         assert_eq!(code_of(err), -32603);
         assert!(
             msg.contains("scan.*") && msg.contains("not a bare identifier"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// A finding from a loopback address carries the caveat that banning it
     /// bans this host from itself.
     #[tokio::test]
-    async fn a_loopback_finding_warns_that_the_jail_would_ban_this_host() {
+    async fn a_loopback_finding_warns_that_the_jail_would_ban_this_host() -> Result<(), TestError> {
         let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        let (server, id) = server_with_one_finding("scanner", loopback);
+        let (server, id) = server_with_one_finding("scanner", loopback)?;
         let v = payload(
             &server
                 .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams { finding_id: id }))
                 .await
-                .expect("the rule builds"),
-        );
+                .map_err(|e| format!("the rule builds: {e:?}"))?,
+        )?;
         assert!(
             caveats_of(&v)
                 .iter()
@@ -2524,16 +2609,17 @@ mod tests {
         );
 
         let routable = std::net::IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 66));
-        let (server, id) = server_with_one_finding("scanner", routable);
+        let (server, id) = server_with_one_finding("scanner", routable)?;
         let v = payload(
             &server
                 .generate_fail2ban_rule(Parameters(GenerateFail2banRuleParams { finding_id: id }))
                 .await
-                .expect("the rule builds"),
-        );
+                .map_err(|e| format!("the rule builds: {e:?}"))?,
+        )?;
         assert!(
             !caveats_of(&v).iter().any(|c| c.contains("loopback")),
             "a routable source carries no loopback caveat: {v}"
         );
+        Ok(())
     }
 }

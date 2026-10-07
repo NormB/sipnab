@@ -1487,13 +1487,21 @@ mod tests {
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed capture timestamp used across the diagnosis tests.
-    fn ts() -> DateTime<chrono::Utc> {
-        DateTime::from_timestamp(1_700_000_000, 0).expect("valid")
+    fn ts() -> Result<DateTime<chrono::Utc>, TestError> {
+        Ok(DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?)
     }
 
     /// Build a 10-packet PCMU stream between the given endpoints.
-    fn make_stream(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16) -> RtpStream {
+    fn make_stream(
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+    ) -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc: 0x12345678,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src_ip)), src_port),
@@ -1511,7 +1519,7 @@ mod tests {
             ssrc: 0x12345678,
             payload_offset: 12,
         };
-        let mut stream = RtpStream::new(key, &hdr, ts());
+        let mut stream = RtpStream::new(key, &hdr, ts()?);
         // Simulate some packets
         for i in 1..10u16 {
             let h = RtpHeader {
@@ -1519,9 +1527,9 @@ mod tests {
                 timestamp: i as u32 * 160,
                 ..hdr.clone()
             };
-            stream.update(&h, ts(), 160);
+            stream.update(&h, ts()?, 160);
         }
-        stream
+        Ok(stream)
     }
 
     /// Build a minimal single-audio-media SDP session with the given
@@ -1606,9 +1614,13 @@ mod tests {
     ///
     /// Two SDP bodies, one in the request and one in the response — the shape
     /// [`MediaContext::for_dialog`] reads as a completed offer/answer.
-    fn answered_dialog_with_sdp(direction: &str, addr: &str, port: u16) -> SipDialog {
+    fn answered_dialog_with_sdp(
+        direction: &str,
+        addr: &str,
+        port: u16,
+    ) -> Result<SipDialog, TestError> {
         let body = sdp_text(direction, addr, port);
-        answered_dialog_with_bodies(&body, &body)
+        Ok(answered_dialog_with_bodies(&body, &body)?)
     }
 
     /// An answered INVITE whose offer advertises one receive endpoint and
@@ -1620,21 +1632,21 @@ mod tests {
         caller_port: u16,
         callee: &str,
         callee_port: u16,
-    ) -> SipDialog {
-        answered_dialog_with_bodies(
+    ) -> Result<SipDialog, TestError> {
+        Ok(answered_dialog_with_bodies(
             &sdp_text("sendrecv", caller, caller_port),
             &sdp_text("sendrecv", callee, callee_port),
-        )
+        )?)
     }
 
     /// An answered INVITE carrying `offer` in the request and `answer` in the
     /// response.
-    fn answered_dialog_with_bodies(offer: &str, answer: &str) -> SipDialog {
+    fn answered_dialog_with_bodies(offer: &str, answer: &str) -> Result<SipDialog, TestError> {
         use crate::net::TransportProto;
         use crate::sip::parser::parse_sip;
         use crate::test_utils::build_sip_message;
 
-        let build = |first: &str, to: &str, body: &str| {
+        let build = |first: &str, to: &str, body: &str| -> Result<_, TestError> {
             let raw = build_sip_message(
                 first,
                 &[
@@ -1648,50 +1660,52 @@ mod tests {
                 ],
                 body.as_bytes(),
             );
-            parse_sip(
+            Ok(parse_sip(
                 &raw,
-                ts(),
+                ts()?,
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                 IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                 5060,
                 5060,
                 TransportProto::Udp,
             )
-            .expect("fixture should parse")
+            .map_err(|e| format!("fixture should parse: {e:?}"))?)
         };
 
         let invite = build(
             "INVITE sip:b@example.net SIP/2.0",
             "To: <sip:b@example.net>",
             offer,
-        );
-        let ok = build("SIP/2.0 200 OK", "To: <sip:b@example.net>;tag=bbb", answer);
-        let mut dialog = SipDialog::new(&invite).expect("dialog from INVITE");
+        )?;
+        let ok = build("SIP/2.0 200 OK", "To: <sip:b@example.net>;tag=bbb", answer)?;
+        let mut dialog = SipDialog::new(&invite).ok_or("dialog from INVITE")?;
         dialog.messages.push(ok);
-        dialog
+        Ok(dialog)
     }
 
     /// Two streams in opposite directions are not flagged as one-way audio.
     #[test]
-    fn bidirectional_streams_no_one_way() {
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
-        let s2 = make_stream([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000);
+    fn bidirectional_streams_no_one_way() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
+        let s2 = make_stream([10, 0, 0, 2], [10, 0, 0, 1], 30000, 20000)?;
         let streams: Vec<&RtpStream> = vec![&s1, &s2];
 
         let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(!diag.one_way_audio);
         assert!(diag.hints.is_empty() || !diag.hints.iter().any(|h| h.contains("only")));
+        Ok(())
     }
 
     /// A single-direction stream is flagged as one-way audio.
     #[test]
-    fn unidirectional_streams_flags_one_way() {
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+    fn unidirectional_streams_flags_one_way() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(diag.one_way_audio);
         assert!(diag.hints.iter().any(|h| h.contains("only")));
+        Ok(())
     }
 
     /// Every hint joined, for the port assertions below.
@@ -1706,8 +1720,8 @@ mod tests {
     /// that stops at addresses stops exactly where the operator's next action
     /// begins.
     #[test]
-    fn one_way_hint_names_both_ports_of_the_flow() {
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+    fn one_way_hint_names_both_ports_of_the_flow() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &MediaContext::default());
@@ -1716,6 +1730,7 @@ mod tests {
             "the hint must name both ports of the flow it describes: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// The one-way hint carries the stream's SSRC.
@@ -1724,8 +1739,8 @@ mod tests {
     /// SSRC; without it the reader cannot tell which of several streams the
     /// hint is about.
     #[test]
-    fn one_way_hint_carries_the_ssrc_of_the_flow() {
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+    fn one_way_hint_carries_the_ssrc_of_the_flow() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &MediaContext::default());
@@ -1734,6 +1749,7 @@ mod tests {
             "the hint must name the SSRC that identifies this stream: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// The sending side's advertised receive port is compared against the port
@@ -1745,11 +1761,12 @@ mod tests {
     /// cause of one-way audio, and invisible in a hint that prints one port
     /// per side.
     #[test]
-    fn one_way_hint_compares_the_advertised_receive_port_with_the_source_port() {
-        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+    fn one_way_hint_compares_the_advertised_receive_port_with_the_source_port()
+    -> Result<(), TestError> {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         // Sends from 41002 while its SDP advertised 16384: not symmetric.
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &ctx);
@@ -1775,6 +1792,7 @@ mod tests {
              which is where the missing pinhole is: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// A side that sends from the port it advertised gets no port comparison.
@@ -1783,10 +1801,10 @@ mod tests {
     /// sends from 16384" on every healthy leg is noise that buries the case
     /// where the two disagree.
     #[test]
-    fn symmetric_rtp_draws_no_advertised_versus_actual_comparison() {
-        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+    fn symmetric_rtp_draws_no_advertised_versus_actual_comparison() -> Result<(), TestError> {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 16386);
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &ctx);
@@ -1795,6 +1813,7 @@ mod tests {
             "both ports match what was advertised; there is nothing to compare: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// RTP arriving at a port the answer never advertised is stated too.
@@ -1802,11 +1821,12 @@ mod tests {
     /// The mirror of the source-port case: media aimed at a port the far end
     /// never asked for cannot be received, however healthy the sender looks.
     #[test]
-    fn one_way_hint_names_a_destination_port_the_answer_never_advertised() {
-        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+    fn one_way_hint_names_a_destination_port_the_answer_never_advertised() -> Result<(), TestError>
+    {
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         // Sent to 9999; the answer advertised 16386.
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 9999);
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 16384, 9999)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &ctx);
@@ -1821,6 +1841,7 @@ mod tests {
             "the hint must name the port the media is actually aimed at: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// A port that was never advertised is never invented.
@@ -1828,8 +1849,8 @@ mod tests {
     /// With no SDP in hand there is no advertised port to compare against, and
     /// a hint that named one would be a fabricated value dressed as evidence.
     #[test]
-    fn no_advertised_port_means_no_comparison_is_claimed() {
-        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386);
+    fn no_advertised_port_means_no_comparison_is_claimed() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 2, 15], [10, 0, 2, 20], 41002, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &MediaContext::default());
@@ -1838,6 +1859,7 @@ mod tests {
             "no SDP was supplied, so no advertised port is knowable: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// A declined `m=` line and a non-RTP transport advertise no RTP receive
@@ -1877,15 +1899,15 @@ mod tests {
     /// two independently-correct implementations of the same test are exactly
     /// how `DH1` describes the surfaces drifting apart.
     #[test]
-    fn the_per_stream_origin_and_the_dialog_verdict_cannot_disagree() {
-        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386);
+    fn the_per_stream_origin_and_the_dialog_verdict_cannot_disagree() -> Result<(), TestError> {
+        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386)?;
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
 
         // A rewritten source: no SDP advertised 198.51.100.7.
-        let rewritten = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        let rewritten = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386)?;
         // An advertised source, on a port nobody advertised. The port is NOT
         // the test, so this must not read as rewritten.
-        let odd_port = make_stream([192, 168, 1, 100], [203, 0, 113, 9], 59999, 16386);
+        let odd_port = make_stream([192, 168, 1, 100], [203, 0, 113, 9], 59999, 16386)?;
 
         assert_eq!(
             media_origin(rewritten.key.src.ip(), &ctx),
@@ -1906,19 +1928,21 @@ mod tests {
             !diagnose_media(&only_advertised, &ctx).nat_mismatch,
             "the verdict disagreed with media_origin on the same stream"
         );
+        Ok(())
     }
 
     /// A dialog that advertised nothing is UNKNOWABLE, not clean. The column
     /// renders that distinction, so the enum has to carry it.
     #[test]
-    fn a_dialog_that_advertised_nothing_is_not_reported_as_matching() {
+    fn a_dialog_that_advertised_nothing_is_not_reported_as_matching() -> Result<(), TestError> {
         let ctx = MediaContext::default();
-        let s = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        let s = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386)?;
         assert_eq!(
             media_origin(s.key.src.ip(), &ctx),
             MediaOrigin::Unadvertised
         );
         assert_eq!(advertised_media_label(&ctx), None);
+        Ok(())
     }
 
     /// The NAT hint carries the ports its boolean verdict rests on.
@@ -1927,11 +1951,11 @@ mod tests {
     /// are the evidence for it. A boolean an operator cannot check against the
     /// SDP is one they have to take on trust.
     #[test]
-    fn nat_hint_names_the_ports_behind_the_verdict() {
-        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386);
+    fn nat_hint_names_the_ports_behind_the_verdict() -> Result<(), TestError> {
+        let dialog = two_party_dialog("192.168.1.100", 16384, "203.0.113.9", 16386)?;
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         // The caller's RTP leaves a public address no SDP ever advertised.
-        let s1 = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386);
+        let s1 = make_stream([198, 51, 100, 7], [203, 0, 113, 9], 41002, 16386)?;
         let streams: Vec<&RtpStream> = vec![&s1];
 
         let diag = diagnose_media(&streams, &ctx);
@@ -1944,7 +1968,7 @@ mod tests {
             .hints
             .iter()
             .find(|h| h.contains("no SDP in this dialog advertised"))
-            .unwrap_or_else(|| panic!("no NAT hint among {:?}", diag.hints));
+            .ok_or_else(|| format!("no NAT hint among {:?}", diag.hints))?;
         assert!(
             nat.contains("198.51.100.7:41002"),
             "the NAT hint must name the source endpoint it saw: {nat}"
@@ -1957,6 +1981,7 @@ mod tests {
             nat.contains("192.168.1.100:16384"),
             "the NAT hint must name the endpoint the SDP advertised instead: {nat}"
         );
+        Ok(())
     }
 
     /// The no-media hint names the receive endpoints nothing arrived at.
@@ -1965,9 +1990,9 @@ mod tests {
     /// advertised endpoints are the whole of the evidence — and they are the
     /// firewall rule the operator has to go and check.
     #[test]
-    fn no_media_hint_names_the_advertised_receive_endpoints() {
+    fn no_media_hint_names_the_advertised_receive_endpoints() -> Result<(), TestError> {
         let streams: Vec<&RtpStream> = vec![];
-        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386);
+        let dialog = two_party_dialog("10.0.2.15", 16384, "10.0.2.20", 16386)?;
 
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         let diag = diagnose_media(&streams, &ctx);
@@ -1978,14 +2003,15 @@ mod tests {
             "the hint must name the advertised receive endpoints: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// An SDP `c=` address that differs from the observed RTP source flags
     /// a NAT mismatch and records both addresses.
     #[test]
-    fn sdp_address_differs_from_actual_flags_nat() {
+    fn sdp_address_differs_from_actual_flags_nat() -> Result<(), TestError> {
         // SDP says 192.168.1.100, but actual RTP source is 10.0.0.1
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("192.168.1.100", 20000);
 
@@ -1997,12 +2023,13 @@ mod tests {
         assert_eq!(diag.sdp_media.as_deref(), Some("192.168.1.100"));
         assert_eq!(diag.actual_media.as_deref(), Some("10.0.0.1"));
         assert!(diag.hints.iter().any(|h| h.contains("NAT")));
+        Ok(())
     }
 
     /// When the SDP address matches the RTP source, no NAT mismatch is flagged.
     #[test]
-    fn sdp_address_matches_no_nat_flag() {
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+    fn sdp_address_matches_no_nat_flag() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("10.0.0.1", 20000);
 
@@ -2011,6 +2038,7 @@ mod tests {
             &MediaContext::from_session(&sdp, CaptureMedia::Observed),
         );
         assert!(!diag.nat_mismatch);
+        Ok(())
     }
 
     /// An answered call that negotiated media it then never carried flags
@@ -2021,35 +2049,37 @@ mod tests {
     /// follow — so it needs the dialog, and a caller holding only a session
     /// cannot accidentally assert it.
     #[test]
-    fn answered_negotiation_with_no_rtp_flags_no_media() {
+    fn answered_negotiation_with_no_rtp_flags_no_media() -> Result<(), TestError> {
         let streams: Vec<&RtpStream> = vec![];
-        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000);
+        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000)?;
 
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         let diag = diagnose_media(&streams, &ctx);
         assert!(diag.no_media, "hints were {:?}", diag.hints);
         assert!(diag.hints.iter().any(|h| h.contains("no RTP was observed")));
+        Ok(())
     }
 
     /// The same call on a capture that recorded no RTP at all does not flag
     /// `no_media`: the capture cannot answer the question it is being asked.
     #[test]
-    fn no_media_is_withheld_when_the_capture_recorded_no_rtp() {
+    fn no_media_is_withheld_when_the_capture_recorded_no_rtp() -> Result<(), TestError> {
         let streams: Vec<&RtpStream> = vec![];
-        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000);
+        let dialog = answered_dialog_with_sdp("sendrecv", "10.0.0.1", 20000)?;
 
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Absent);
         let diag = diagnose_media(&streams, &ctx);
         assert!(!diag.no_media);
         assert!(diag.hints.is_empty());
+        Ok(())
     }
 
     /// A call whose media was negotiated `a=inactive` throughout carries no
     /// RTP by agreement, so it is not a media failure.
     #[test]
-    fn held_call_does_not_flag_no_media() {
+    fn held_call_does_not_flag_no_media() -> Result<(), TestError> {
         let streams: Vec<&RtpStream> = vec![];
-        let dialog = answered_dialog_with_sdp("inactive", "10.0.0.1", 20000);
+        let dialog = answered_dialog_with_sdp("inactive", "10.0.0.1", 20000)?;
 
         let ctx = MediaContext::for_dialog(&dialog, CaptureMedia::Observed);
         assert!(
@@ -2057,6 +2087,7 @@ mod tests {
             "inactive media is not expected to flow"
         );
         assert!(!diagnose_media(&streams, &ctx).no_media);
+        Ok(())
     }
 
     /// A bare SDP session with no dialog behind it can never assert
@@ -2088,9 +2119,9 @@ mod tests {
     /// A high comfort-noise ratio suppresses the one-way-audio flag and adds a
     /// comfort-noise hint instead.
     #[test]
-    fn comfort_noise_suppresses_one_way_audio() {
+    fn comfort_noise_suppresses_one_way_audio() -> Result<(), TestError> {
         // Create a unidirectional stream with high CN ratio (>30%)
-        let mut s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+        let mut s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         // packet_count is 10 (initial + 9 updates), set cn_frames > 30%
         s1.cn_frames = 5; // 5/10 = 50% CN
         let streams: Vec<&RtpStream> = vec![&s1];
@@ -2106,13 +2137,14 @@ mod tests {
             "hints should mention comfort noise: {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// One-way audio plus a NAT mismatch produces the combined "wrong address"
     /// hint.
     #[test]
-    fn one_way_plus_nat_gives_combined_hint() {
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+    fn one_way_plus_nat_gives_combined_hint() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = make_sdp("192.168.1.100", 20000);
 
@@ -2123,6 +2155,7 @@ mod tests {
         assert!(diag.one_way_audio);
         assert!(diag.nat_mismatch);
         assert!(diag.hints.iter().any(|h| h.contains("wrong address")));
+        Ok(())
     }
 
     // ── Phase 8.7 — asymmetry tests ─────────────────────────────────
@@ -2158,7 +2191,7 @@ mod tests {
 
     /// Build a stream with explicit codec / payload type / timestamp progression
     /// so the asymmetry tests can assemble realistic-looking pairs.
-    fn make_stream_with_pt(spec: StreamSpec) -> RtpStream {
+    fn make_stream_with_pt(spec: StreamSpec) -> Result<RtpStream, TestError> {
         let StreamSpec {
             src_ip,
             dst_ip,
@@ -2186,7 +2219,7 @@ mod tests {
             ssrc: key.ssrc,
             payload_offset: 12,
         };
-        let first_seen = ts() + chrono::Duration::seconds(first_seen_offset_secs);
+        let first_seen = ts()? + chrono::Duration::seconds(first_seen_offset_secs);
         let mut s = RtpStream::new(key, &header, first_seen);
         s.codec = Some(codec.to_string());
         s.clock_rate = clock_rate;
@@ -2194,12 +2227,12 @@ mod tests {
         // Inferred ptime depends on (last_seen - first_seen) / (packet_count-1)
         let span_ms = ptime_ms as i64 * (packet_count as i64 - 1).max(1);
         s.last_seen = first_seen + chrono::Duration::milliseconds(span_ms);
-        s
+        Ok(s)
     }
 
     /// Build a dialog from an INVITE whose `answered_at` is `secs_after_epoch`
     /// seconds after the fixed test timestamp.
-    fn make_dialog_with_answer(secs_after_epoch: i64) -> SipDialog {
+    fn make_dialog_with_answer(secs_after_epoch: i64) -> Result<SipDialog, TestError> {
         use crate::sip::SipMessage;
         use crate::sip::message::SipHeader;
         use crate::sip::method::SipMethod;
@@ -2212,7 +2245,7 @@ mod tests {
         };
         let invite = SipMessage {
             frame: None,
-            timestamp: ts(),
+            timestamp: ts()?,
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 5060,
@@ -2236,157 +2269,167 @@ mod tests {
             input_origin: None,
             is_retransmission: false,
         };
-        let mut d = SipDialog::new(&invite).expect("dialog from INVITE");
-        d.timing.invite_sent = Some(ts());
-        d.timing.answered_at = Some(ts() + chrono::Duration::seconds(secs_after_epoch));
-        d
+        let mut d = SipDialog::new(&invite).ok_or("dialog from INVITE")?;
+        d.timing.invite_sent = Some(ts()?);
+        d.timing.answered_at = Some(ts()? + chrono::Duration::seconds(secs_after_epoch));
+        Ok(d)
     }
 
     /// Legs using different codecs (PCMU vs G729) set `codec_asymmetry`.
     #[test]
-    fn codec_asymmetry_detected_when_legs_differ() {
+    fn codec_asymmetry_detected_when_legs_differ() -> Result<(), TestError> {
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             pt: 18,
             codec: "G729",
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
-        let asym = diag.codec_asymmetry.expect("codec asymmetry should be set");
+        let asym = diag
+            .codec_asymmetry
+            .ok_or("codec asymmetry should be set")?;
         assert_eq!(asym.a_codec, "PCMU");
         assert_eq!(asym.b_codec, "G729");
+        Ok(())
     }
 
     /// Matching codecs on both legs leave `codec_asymmetry` unset.
     #[test]
-    fn codec_asymmetry_negative_when_legs_match() {
+    fn codec_asymmetry_negative_when_legs_match() -> Result<(), TestError> {
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.codec_asymmetry.is_none());
+        Ok(())
     }
 
     /// Same codec but different payload types sets `payload_type_asymmetry`.
     #[test]
-    fn payload_type_asymmetry_detected_when_codec_matches_pt_differs() {
+    fn payload_type_asymmetry_detected_when_codec_matches_pt_differs() -> Result<(), TestError> {
         // Both legs use PCMA codec but different PTs (one static 8, one dyn 96)
         let a = make_stream_with_pt(StreamSpec {
             pt: 8,
             codec: "PCMA",
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             pt: 96,
             codec: "PCMA",
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let asym = diag
             .payload_type_asymmetry
-            .expect("PT asymmetry should be set");
+            .ok_or("PT asymmetry should be set")?;
         assert_eq!((asym.a_pt, asym.b_pt), (8, 96));
+        Ok(())
     }
 
     /// When codecs already differ, the PT-asymmetry field is left unset (the
     /// codec asymmetry already covers it).
     #[test]
-    fn payload_type_asymmetry_skipped_when_codec_differs() {
+    fn payload_type_asymmetry_skipped_when_codec_differs() -> Result<(), TestError> {
         // Codec already differs — payload-type field should NOT be set, since
         // the codec asymmetry message already covers it.
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             pt: 8,
             codec: "PCMA",
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.codec_asymmetry.is_some());
         assert!(diag.payload_type_asymmetry.is_none());
+        Ok(())
     }
 
     /// Inferred ptimes of 20 ms vs 30 ms set `ptime_asymmetry`.
     #[test]
-    fn ptime_asymmetry_detected_20_vs_30() {
+    fn ptime_asymmetry_detected_20_vs_30() -> Result<(), TestError> {
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             ptime_ms: 30,
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
-        let asym = diag.ptime_asymmetry.expect("ptime asymmetry should be set");
+        let asym = diag
+            .ptime_asymmetry
+            .ok_or("ptime asymmetry should be set")?;
         assert_eq!(asym.a_ptime_ms, 20);
         assert_eq!(asym.b_ptime_ms, 30);
+        Ok(())
     }
 
     /// Equal ptimes on both legs leave `ptime_asymmetry` unset.
     #[test]
-    fn ptime_asymmetry_negative_when_legs_match() {
+    fn ptime_asymmetry_negative_when_legs_match() -> Result<(), TestError> {
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.ptime_asymmetry.is_none());
+        Ok(())
     }
 
     /// A 30s-vs-25s duration gap (above both thresholds) sets
     /// `duration_asymmetry`.
     #[test]
-    fn duration_asymmetry_detected_when_above_thresholds() {
+    fn duration_asymmetry_detected_when_above_thresholds() -> Result<(), TestError> {
         // A leg: 30s, B leg: 25s → 5s delta, ~17% pct delta. Above 5%/2s default.
         let mut a = make_stream_with_pt(StreamSpec {
             packet_count: 1500,
             ..StreamSpec::default()
-        });
+        })?;
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
         let mut b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             packet_count: 1250,
             ..StreamSpec::default()
-        });
+        })?;
         b.last_seen = b.first_seen + chrono::Duration::seconds(25);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
@@ -2394,51 +2437,53 @@ mod tests {
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         let dur = diag
             .duration_asymmetry
-            .expect("duration asymmetry should be set");
+            .ok_or("duration asymmetry should be set")?;
         assert!((dur.a_duration_sec - 30.0).abs() < 0.01);
         assert!((dur.b_duration_sec - 25.0).abs() < 0.01);
         assert!((dur.delta_sec - 5.0).abs() < 0.01);
+        Ok(())
     }
 
     /// A sub-2-second duration gap stays below the minimum delta and is not
     /// flagged.
     #[test]
-    fn duration_asymmetry_negative_below_minimum_delta() {
+    fn duration_asymmetry_negative_below_minimum_delta() -> Result<(), TestError> {
         // 30s vs 29.5s — delta 0.5s, below 2.0s minimum.
         let mut a = make_stream_with_pt(StreamSpec {
             packet_count: 1500,
             ..StreamSpec::default()
-        });
+        })?;
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
         let mut b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             packet_count: 1475,
             ..StreamSpec::default()
-        });
+        })?;
         b.last_seen = b.first_seen + chrono::Duration::milliseconds(29_500);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
         assert!(diag.duration_asymmetry.is_none());
+        Ok(())
     }
 
     /// RTP starting well after the 200 OK sets `late_media` with the delay.
     #[test]
-    fn late_media_detected_when_rtp_starts_after_threshold() {
+    fn late_media_detected_when_rtp_starts_after_threshold() -> Result<(), TestError> {
         // 200 OK at +0s; RTP starts at +1.5s → 1500 ms delay > 500 ms default
-        let dialog = make_dialog_with_answer(0);
+        let dialog = make_dialog_with_answer(0)?;
         let a = make_stream_with_pt(StreamSpec {
             first_seen_offset_secs: 2,
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             first_seen_offset_secs: 2,
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2448,23 +2493,24 @@ mod tests {
             &streams,
             &AsymmetryThresholds::default(),
         );
-        let lm = diag.late_media.expect("late_media should be set");
+        let lm = diag.late_media.ok_or("late_media should be set")?;
         assert!(lm.delay_after_200_ok_ms >= 1_500);
+        Ok(())
     }
 
     /// RTP starting promptly after the 200 OK leaves `late_media` unset.
     #[test]
-    fn late_media_negative_when_rtp_starts_quickly() {
-        let dialog = make_dialog_with_answer(0);
+    fn late_media_negative_when_rtp_starts_quickly() -> Result<(), TestError> {
+        let dialog = make_dialog_with_answer(0)?;
         // RTP at 0s = same as 200 OK; well below 500ms threshold.
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let b = make_stream_with_pt(StreamSpec {
             src_ip: [10, 0, 0, 2],
             dst_ip: [10, 0, 0, 1],
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2475,6 +2521,7 @@ mod tests {
             &AsymmetryThresholds::default(),
         );
         assert!(diag.late_media.is_none());
+        Ok(())
     }
 
     /// A multi-media offer advertises one address per `m=` line, and RTP
@@ -2485,8 +2532,8 @@ mod tests {
     /// from. Judging each `m=` line separately called that a NAT fault. The
     /// dialog advertised the address, so it is not one.
     #[test]
-    fn rtp_from_any_advertised_media_is_not_a_nat_mismatch() {
-        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+    fn rtp_from_any_advertised_media_is_not_a_nat_mismatch() -> Result<(), TestError> {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = audio_video_sdp("10.0.0.1", "192.168.1.100");
 
@@ -2499,15 +2546,16 @@ mod tests {
             "10.0.0.1 was advertised by the video m= line; hints were {:?}",
             diag.hints
         );
+        Ok(())
     }
 
     /// When the source matches none of several advertised addresses, the
     /// report names an advertised address that is not the far end — the one
     /// this leg should have used — rather than whichever `m=` line came last.
     #[test]
-    fn nat_mismatch_names_the_address_this_leg_should_have_used() {
+    fn nat_mismatch_names_the_address_this_leg_should_have_used() -> Result<(), TestError> {
         // Source 198.51.100.7 is advertised nowhere; the far end is 10.0.0.1.
-        let s1 = make_stream([198, 51, 100, 7], [10, 0, 0, 1], 20000, 30000);
+        let s1 = make_stream([198, 51, 100, 7], [10, 0, 0, 1], 20000, 30000)?;
         let streams: Vec<&RtpStream> = vec![&s1];
         let sdp = audio_video_sdp("10.0.0.1", "192.168.1.100");
 
@@ -2523,31 +2571,33 @@ mod tests {
             "the far end is 10.0.0.1, so the address this leg should have used \
              is the other advertised one"
         );
+        Ok(())
     }
 
     /// Inferred ptime must not be inflated by packet loss: lost packets still
     /// occupy their packetization slots, so the wall-clock span must be
     /// divided by all intervals (received + lost), not just received − 1.
     #[test]
-    fn inferred_ptime_not_inflated_by_loss() {
+    fn inferred_ptime_not_inflated_by_loss() -> Result<(), TestError> {
         // 100 frames of 20 ms were transmitted (99 intervals → 1980 ms span),
         // but half were lost in transit; only 50 packets arrived.
         let mut s = make_stream_with_pt(StreamSpec {
             packet_count: 50,
             ..StreamSpec::default()
-        });
+        })?;
         s.last_seen = s.first_seen + chrono::Duration::milliseconds(99 * 20);
         s.lost_packets = 50;
         // Naive span/(received − 1) = 1980/49 ≈ 40 ms; loss-aware = 20 ms.
         assert_eq!(s.inferred_ptime_ms(), Some(20));
+        Ok(())
     }
 
     /// With only one stream, no asymmetry fields are computed.
     #[test]
-    fn asymmetry_skipped_with_single_stream() {
+    fn asymmetry_skipped_with_single_stream() -> Result<(), TestError> {
         let a = make_stream_with_pt(StreamSpec {
             ..StreamSpec::default()
-        });
+        })?;
         let streams: Vec<&RtpStream> = vec![&a];
 
         let mut diag = diagnose_media(&streams, &MediaContext::default());
@@ -2557,6 +2607,7 @@ mod tests {
         assert!(diag.payload_type_asymmetry.is_none());
         assert!(diag.duration_asymmetry.is_none());
         assert!(diag.late_media.is_none());
+        Ok(())
     }
 }
 
@@ -2570,6 +2621,9 @@ mod stun_sdp_mismatch_tests {
     use super::*;
     use crate::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The transaction ID the fixtures share. Its value is arbitrary; what
     /// matters is that a request and its response carry the same one.
     const TXID: [u8; 12] = [
@@ -2579,7 +2633,10 @@ mod stun_sdp_mismatch_tests {
     /// Build a STUN message on the wire and parse it back, so these tests
     /// exercise the same decoder the pipeline does rather than a struct
     /// literal that could drift from it.
-    fn wire(msg_type: u16, attrs: &[(u16, Vec<u8>)]) -> crate::stun::StunMessage {
+    fn wire(
+        msg_type: u16,
+        attrs: &[(u16, Vec<u8>)],
+    ) -> Result<crate::stun::StunMessage, TestError> {
         let mut body = Vec::new();
         for (t, v) in attrs {
             body.extend_from_slice(&t.to_be_bytes());
@@ -2595,7 +2652,7 @@ mod stun_sdp_mismatch_tests {
         m.extend_from_slice(&crate::stun::MAGIC_COOKIE.to_be_bytes());
         m.extend_from_slice(&TXID);
         m.extend_from_slice(&body);
-        crate::stun::parse(&m).expect("the fixture must be well-formed STUN")
+        Ok(crate::stun::parse(&m).ok_or("the fixture must be well-formed STUN")?)
     }
 
     /// An XOR'd IPv4 address attribute value.
@@ -2609,36 +2666,43 @@ mod stun_sdp_mismatch_tests {
         v
     }
 
-    fn stun_request() -> crate::stun::StunMessage {
-        wire(0x0001, &[(0x8022, b"traversal-2.1.0 45".to_vec())])
+    fn stun_request() -> Result<crate::stun::StunMessage, TestError> {
+        Ok(wire(0x0001, &[(0x8022, b"traversal-2.1.0 45".to_vec())])?)
     }
 
-    fn stun_success(ip: [u8; 4], port: u16) -> crate::stun::StunMessage {
-        wire(0x0101, &[(0x0020, xor_v4(ip, port))])
+    fn stun_success(ip: [u8; 4], port: u16) -> Result<crate::stun::StunMessage, TestError> {
+        Ok(wire(0x0101, &[(0x0020, xor_v4(ip, port))])?)
     }
 
-    fn allocate_request() -> crate::stun::StunMessage {
-        wire(0x0003, &[(0x0019, vec![17, 0, 0, 0])])
+    fn allocate_request() -> Result<crate::stun::StunMessage, TestError> {
+        Ok(wire(0x0003, &[(0x0019, vec![17, 0, 0, 0])])?)
     }
 
-    fn allocate_success(ip: [u8; 4], port: u16) -> crate::stun::StunMessage {
-        wire(
+    fn allocate_success(ip: [u8; 4], port: u16) -> Result<crate::stun::StunMessage, TestError> {
+        Ok(wire(
             0x0103,
             &[
                 (0x0016, xor_v4(ip, port)),
                 (0x000D, 600u32.to_be_bytes().to_vec()),
             ],
-        )
+        )?)
     }
 
     /// Record one STUN packet against the global store.
-    fn record(msg: &crate::stun::StunMessage, src: &str, dst: &str, ms: i64) {
+    fn record(
+        msg: &crate::stun::StunMessage,
+        src: &str,
+        dst: &str,
+        ms: i64,
+    ) -> Result<(), TestError> {
         crate::stun::note_message(
             msg,
-            src.parse().expect("valid source"),
-            dst.parse().expect("valid destination"),
-            chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid"),
+            src.parse().map_err(|e| format!("valid source: {e:?}"))?,
+            dst.parse()
+                .map_err(|e| format!("valid destination: {e:?}"))?,
+            chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms).ok_or("valid")?,
         );
+        Ok(())
     }
 
     fn sdp(addr: &str) -> SdpSession {
@@ -2690,26 +2754,26 @@ mod stun_sdp_mismatch_tests {
     /// none. The STUN evidence raises the flag anyway.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_unanswered_probe_explains_a_private_sdp_address() {
+    fn an_unanswered_probe_explains_a_private_sdp_address() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             500,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         let finding = diag
             .stun_sdp_mismatch
             .as_ref()
-            .expect("an unanswered probe against a private SDP address is the finding");
+            .ok_or("an unanswered probe against a private SDP address is the finding")?;
         assert_eq!(finding.reason, StunSdpMismatchReason::Unanswered);
         assert_eq!(finding.client, "192.168.10.50:5060");
         assert_eq!(finding.server, "198.51.100.20:3478");
@@ -2728,6 +2792,7 @@ mod stun_sdp_mismatch_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// STUN answered with a routable address and the SDP advertised the LAN
@@ -2735,26 +2800,26 @@ mod stun_sdp_mismatch_tests {
     /// end was told, the other is what it should have been told.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_mapped_address_disagreeing_with_the_sdp_is_reported() {
+    fn a_mapped_address_disagreeing_with_the_sdp_is_reported() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
         record(
-            &stun_success([203, 0, 113, 5], 12262),
+            &stun_success([203, 0, 113, 5], 12262)?,
             "198.51.100.20:3478",
             "192.168.10.50:5060",
             7,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         let finding = diag
             .stun_sdp_mismatch
             .as_ref()
-            .expect("a known public address against a private SDP address is the finding");
+            .ok_or("a known public address against a private SDP address is the finding")?;
         assert_eq!(finding.reason, StunSdpMismatchReason::Ignored);
         assert_eq!(finding.mapped_address.as_deref(), Some("203.0.113.5:12262"));
         assert!(diag.private_media_address);
@@ -2766,6 +2831,7 @@ mod stun_sdp_mismatch_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// The relay case, and the reason XOR-RELAYED-ADDRESS is decoded at all:
@@ -2774,26 +2840,26 @@ mod stun_sdp_mismatch_tests {
     /// caught by the same finding rather than by a second, parallel one.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_relayed_address_the_sdp_ignored_is_the_same_finding() {
+    fn a_relayed_address_the_sdp_ignored_is_the_same_finding() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &allocate_request(),
+            &allocate_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
         record(
-            &allocate_success([198, 51, 100, 77], 49160),
+            &allocate_success([198, 51, 100, 77], 49160)?,
             "198.51.100.20:3478",
             "192.168.10.50:5060",
             12,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         let finding = diag
             .stun_sdp_mismatch
             .as_ref()
-            .expect("an allocated relay against a private SDP address is the finding");
+            .ok_or("an allocated relay against a private SDP address is the finding")?;
         assert_eq!(finding.reason, StunSdpMismatchReason::RelayIgnored);
         assert_eq!(
             finding.relayed_address.as_deref(),
@@ -2807,6 +2873,7 @@ mod stun_sdp_mismatch_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// The false-positive guard. STUN reported the address the SDP then
@@ -2815,20 +2882,20 @@ mod stun_sdp_mismatch_tests {
     /// which is what would make a finding here worthless.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_mapped_address_matching_the_sdp_reports_nothing() {
+    fn a_mapped_address_matching_the_sdp_reports_nothing() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
         record(
-            &stun_success([192, 168, 10, 50], 16384),
+            &stun_success([192, 168, 10, 50], 16384)?,
             "198.51.100.20:3478",
             "192.168.10.50:5060",
             7,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         assert!(
@@ -2838,6 +2905,7 @@ mod stun_sdp_mismatch_tests {
         );
         assert!(!diag.private_media_address);
         crate::stun::reset();
+        Ok(())
     }
 
     /// A client that advertised the address its RELAY allocated is doing
@@ -2846,20 +2914,20 @@ mod stun_sdp_mismatch_tests {
     /// finding worthless on any capture holding TURN.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn advertising_the_relayed_address_is_not_a_finding() {
+    fn advertising_the_relayed_address_is_not_a_finding() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &allocate_request(),
+            &allocate_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
         record(
-            &allocate_success([192, 168, 10, 50], 49160),
+            &allocate_success([192, 168, 10, 50], 49160)?,
             "198.51.100.20:3478",
             "192.168.10.50:5060",
             12,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         assert!(
@@ -2868,39 +2936,47 @@ mod stun_sdp_mismatch_tests {
             diag.stun_sdp_mismatch
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// A client that advertised a ROUTABLE address has nothing to answer for,
     /// whatever became of its probe.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn an_unanswered_probe_from_a_public_address_reports_nothing() {
+    fn an_unanswered_probe_from_a_public_address_reports_nothing() -> Result<(), TestError> {
         crate::stun::reset();
-        record(&stun_request(), "203.0.113.5:5060", "198.51.100.20:3478", 0);
+        record(
+            &stun_request()?,
+            "203.0.113.5:5060",
+            "198.51.100.20:3478",
+            0,
+        )?;
 
         let diag = diagnose_media(&[], &advertising("203.0.113.5"));
         assert!(diag.stun_sdp_mismatch.is_none());
         assert!(diag.hints.is_empty(), "{:?}", diag.hints);
         crate::stun::reset();
+        Ok(())
     }
 
     /// A probe from some OTHER host says nothing about this dialog: the join
     /// key is the client's own address, not "some STUN failed somewhere".
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_probe_from_a_different_host_is_not_attributed_to_this_dialog() {
+    fn a_probe_from_a_different_host_is_not_attributed_to_this_dialog() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.99:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         assert!(diag.stun_sdp_mismatch.is_none());
         assert!(diag.hints.is_empty(), "{:?}", diag.hints);
         crate::stun::reset();
+        Ok(())
     }
 
     /// Silence from a STUN server ON the LAN proves nothing about whether this
@@ -2909,14 +2985,14 @@ mod stun_sdp_mismatch_tests {
     /// deliberately stays quiet about, and the STUN half must not undo that.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn silence_from_a_lan_stun_server_raises_nothing_on_its_own() {
+    fn silence_from_a_lan_stun_server_raises_nothing_on_its_own() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "192.168.10.1:3478",
             0,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         assert!(
@@ -2926,6 +3002,7 @@ mod stun_sdp_mismatch_tests {
         );
         assert!(diag.stun_sdp_mismatch.is_none());
         crate::stun::reset();
+        Ok(())
     }
 
     /// A capture with no STUN in it must diagnose exactly as it did before
@@ -2945,17 +3022,20 @@ mod stun_sdp_mismatch_tests {
     /// would cost the one case below its only warning.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn stun_evidence_from_during_the_call_carries_no_caveat() {
+    fn stun_evidence_from_during_the_call_carries_no_caveat() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising_at("192.168.10.50", 3_000));
-        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .ok_or("the finding stands")?;
         assert_eq!(finding.observed_offset_secs, Some(-3));
         assert!(
             !diag.hints.iter().any(|h| h.contains("not during it")),
@@ -2963,6 +3043,7 @@ mod stun_sdp_mismatch_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// The merged-capture case. The switch-side pcap and the phone-side pcap
@@ -2972,50 +3053,58 @@ mod stun_sdp_mismatch_tests {
     /// it as though the probe were seen during setup overstates it.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn stun_evidence_from_long_before_the_call_is_disclosed_as_such() {
+    fn stun_evidence_from_long_before_the_call_is_disclosed_as_such() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
 
         // Dialog starts 40 minutes BEFORE the probe.
         let diag = diagnose_media(&[], &advertising_at("192.168.10.50", -2_400_000));
-        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .ok_or("the finding stands")?;
         assert_eq!(finding.observed_offset_secs, Some(2_400));
         let hint = diag
             .hints
             .iter()
             .find(|h| h.contains("not during it"))
-            .unwrap_or_else(|| panic!("the caveat must appear: {:?}", diag.hints));
+            .ok_or_else(|| format!("the caveat must appear: {:?}", diag.hints))?;
         assert!(hint.contains("40 minute(s) after"), "{hint}");
         assert!(
             hint.contains("IP address alone"),
             "the caveat must name how the correlation was made: {hint}"
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// Without a dialog there is no point to measure from, and the report says
     /// nothing rather than measuring from a guess.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn no_dialog_time_means_no_offset_and_no_caveat() {
+    fn no_dialog_time_means_no_offset_and_no_caveat() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
-        let finding = diag.stun_sdp_mismatch.as_ref().expect("the finding stands");
+        let finding = diag
+            .stun_sdp_mismatch
+            .as_ref()
+            .ok_or("the finding stands")?;
         assert_eq!(finding.observed_offset_secs, None);
         assert!(!diag.hints.iter().any(|h| h.contains("not during it")));
         crate::stun::reset();
+        Ok(())
     }
 
     /// One condition, one hint. The corroborated wording REPLACES the
@@ -3023,14 +3112,14 @@ mod stun_sdp_mismatch_tests {
     /// about one address read as two problems.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn the_corroborated_hint_replaces_the_uncorroborated_one() {
+    fn the_corroborated_hint_replaces_the_uncorroborated_one() -> Result<(), TestError> {
         crate::stun::reset();
         record(
-            &stun_request(),
+            &stun_request()?,
             "192.168.10.50:5060",
             "198.51.100.20:3478",
             0,
-        );
+        )?;
 
         let diag = diagnose_media(&[], &advertising("192.168.10.50"));
         assert_eq!(
@@ -3045,6 +3134,7 @@ mod stun_sdp_mismatch_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 }
 
@@ -3061,24 +3151,31 @@ mod media_relay_tests {
     use chrono::DateTime;
     use std::net::SocketAddr;
 
-    fn ts(ms: i64) -> DateTime<chrono::Utc> {
-        DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid timestamp")
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn ts(ms: i64) -> Result<DateTime<chrono::Utc>, TestError> {
+        Ok(DateTime::from_timestamp_millis(1_700_000_000_000 + ms).ok_or("valid timestamp")?)
     }
 
-    fn client() -> SocketAddr {
-        "192.0.2.10:50000".parse().expect("valid addr")
+    fn client() -> Result<SocketAddr, TestError> {
+        Ok("192.0.2.10:50000"
+            .parse()
+            .map_err(|e| format!("valid addr: {e:?}"))?)
     }
-    fn server() -> SocketAddr {
-        "198.51.100.20:3478".parse().expect("valid addr")
+    fn server() -> Result<SocketAddr, TestError> {
+        Ok("198.51.100.20:3478"
+            .parse()
+            .map_err(|e| format!("valid addr: {e:?}"))?)
     }
 
     /// One relayed stream, addressed exactly as the pipeline files it: between
     /// the phone and the RELAY, because that is where the packets were seen.
-    fn relayed_stream(ssrc: u32) -> RtpStream {
+    fn relayed_stream(ssrc: u32) -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc,
-            src: client(),
-            dst: server(),
+            src: client()?,
+            dst: server()?,
         };
         let hdr = RtpHeader {
             version: 2,
@@ -3092,22 +3189,22 @@ mod media_relay_tests {
             ssrc,
             payload_offset: 12,
         };
-        RtpStream::new(key, &hdr, ts(30_000))
+        Ok(RtpStream::new(key, &hdr, ts(30_000)?))
     }
 
     /// An Allocate that succeeded with a 60-second lifetime, then relayed
     /// media on channel `0x4001` at `at_ms`.
-    fn relay_carrying(ssrc: u32, at_ms: i64) {
+    fn relay_carrying(ssrc: u32, at_ms: i64) -> Result<(), TestError> {
         let alloc_req: Vec<u8> = vec![
             0x00, 0x03, 0x00, 0x00, // Allocate Request
             0x21, 0x12, 0xa4, 0x42, // magic cookie
             0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1, 0xc1,
         ];
         crate::stun::note_message(
-            &crate::stun::parse(&alloc_req).expect("parses"),
-            client(),
-            server(),
-            ts(0),
+            &crate::stun::parse(&alloc_req).ok_or("parses")?,
+            client()?,
+            server()?,
+            ts(0)?,
         );
         let alloc_ok: Vec<u8> = vec![
             0x01, 0x03, 0x00, 0x14, // Allocate success, 20 bytes of attributes
@@ -3121,29 +3218,30 @@ mod media_relay_tests {
             0x00, 0x00, 0x00, 0x3c, // 60 seconds
         ];
         crate::stun::note_message(
-            &crate::stun::parse(&alloc_ok).expect("parses"),
-            server(),
-            client(),
-            ts(10),
+            &crate::stun::parse(&alloc_ok).ok_or("parses")?,
+            server()?,
+            client()?,
+            ts(10)?,
         );
         // A ChannelData frame on 0x4001 wrapping a 12-byte RTP header.
         let mut frame: Vec<u8> = vec![0x40, 0x01, 0x00, 0x0c, 0x80, 0x00, 0x00, 0x01];
         frame.extend_from_slice(&160u32.to_be_bytes());
         frame.extend_from_slice(&ssrc.to_be_bytes());
-        crate::stun::note_channel_data(client(), server(), &frame, ts(at_ms));
+        crate::stun::note_channel_data(client()?, server()?, &frame, ts(at_ms)?);
+        Ok(())
     }
 
     /// The attribution reaching the diagnosis: a relayed call must be able to
     /// say which relay its audio crossed, which it previously could not.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_relayed_dialog_names_the_relay_its_media_crossed() {
+    fn a_relayed_dialog_names_the_relay_its_media_crossed() -> Result<(), TestError> {
         crate::stun::reset();
-        relay_carrying(0x1122_3344, 30_000);
-        let stream = relayed_stream(0x1122_3344);
+        relay_carrying(0x1122_3344, 30_000)?;
+        let stream = relayed_stream(0x1122_3344)?;
         let streams = vec![&stream];
         let diag = diagnose_media(&streams, &MediaContext::default());
-        let relay = diag.media_relay.expect("the relay must be named");
+        let relay = diag.media_relay.ok_or("the relay must be named")?;
         assert_eq!(
             relay.relayed_address.map(|a| a.to_string()).as_deref(),
             Some("198.51.100.77:49160")
@@ -3159,16 +3257,17 @@ mod media_relay_tests {
             diag.hints
         );
         crate::stun::reset();
+        Ok(())
     }
 
     /// And when the allocation lapsed under the call, the dialog says so —
     /// which is the capture-level finding narrowed to THIS call's audio.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_lapsed_relay_is_stated_on_the_call_it_cut_off() {
+    fn a_lapsed_relay_is_stated_on_the_call_it_cut_off() -> Result<(), TestError> {
         crate::stun::reset();
-        relay_carrying(0x1122_3344, 90_000);
-        let stream = relayed_stream(0x1122_3344);
+        relay_carrying(0x1122_3344, 90_000)?;
+        let stream = relayed_stream(0x1122_3344)?;
         let streams = vec![&stream];
         let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(diag.media_relay.as_ref().is_some_and(|r| r.lapsed));
@@ -3176,10 +3275,11 @@ mod media_relay_tests {
             .hints
             .iter()
             .find(|h| h.contains("TURN relay"))
-            .unwrap_or_else(|| panic!("the lapse must be stated: {:?}", diag.hints));
+            .ok_or_else(|| format!("the lapse must be stated: {:?}", diag.hints))?;
         assert!(hint.contains("198.51.100.77:49160"), "{hint}");
         assert!(hint.contains("0x4001"), "{hint}");
         crate::stun::reset();
+        Ok(())
     }
 
     /// A capture with no relay in it must gain nothing at all. The quiet-run
@@ -3187,12 +3287,13 @@ mod media_relay_tests {
     /// asked for.
     #[test]
     #[serial_test::serial(stun_store)]
-    fn a_dialog_with_no_relay_gains_no_relay_field() {
+    fn a_dialog_with_no_relay_gains_no_relay_field() -> Result<(), TestError> {
         crate::stun::reset();
-        let stream = relayed_stream(0x1122_3344);
+        let stream = relayed_stream(0x1122_3344)?;
         let streams = vec![&stream];
         let diag = diagnose_media(&streams, &MediaContext::default());
         assert!(diag.media_relay.is_none());
         crate::stun::reset();
+        Ok(())
     }
 }

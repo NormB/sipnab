@@ -499,6 +499,9 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     const STATUS: &str = include_str!("../../../tests/fixtures/tfps-status-golden.json");
     const BANNED: &str = include_str!("../../../tests/fixtures/tfps-banned-golden.jsonl");
     const DROPPED: &str = include_str!("../../../tests/fixtures/tfps-dropped-golden.jsonl");
@@ -507,8 +510,8 @@ mod tests {
     const LABELS: &str = include_str!("../../../tests/fixtures/tfps-labels-golden.jsonl");
 
     /// Line `n` (1-based) of a JSON Lines fixture.
-    fn line(text: &str, n: usize) -> &str {
-        text.lines().nth(n - 1).expect("the fixture has that line")
+    fn line(text: &str, n: usize) -> Result<&str, TestError> {
+        Ok(text.lines().nth(n - 1).ok_or("the fixture has that line")?)
     }
 
     /// A directory holding a fake `tfps_ctl`, or nothing.
@@ -518,34 +521,38 @@ mod tests {
 
     impl Fake {
         /// A `tfps_ctl` running `body` under `/bin/sh`.
-        fn with_body(body: &str) -> Self {
-            let dir = tempfile::tempdir().expect("tempdir");
+        fn with_body(body: &str) -> Result<Self, TestError> {
+            let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
             let path = dir.path().join("tfps_ctl");
-            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write");
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-            Self { dir }
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n"))
+                .map_err(|e| format!("write: {e:?}"))?;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| format!("chmod: {e:?}"))?;
+            Ok(Self { dir })
         }
 
         /// A `tfps_ctl` that prints `text`.
-        fn echoing(text: &str) -> Self {
-            Self::with_body(&format!("cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"))
+        fn echoing(text: &str) -> Result<Self, TestError> {
+            Ok(Self::with_body(&format!(
+                "cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"
+            ))?)
         }
 
         /// A `tfps_ctl` that prints `text`, records its argv, and exits 0.
-        fn recording(text: &str) -> Self {
-            Self::with_body(&format!(
+        fn recording(text: &str) -> Result<Self, TestError> {
+            Ok(Self::with_body(&format!(
                 "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\n\
                  cat <<'SIPNAB_FIXTURE'\n{text}\nSIPNAB_FIXTURE"
-            ))
+            ))?)
         }
 
         /// The argv the recording fake was last handed, one per line.
-        fn argv(&self) -> Vec<String> {
-            std::fs::read_to_string(self.dir.path().join("argv"))
-                .expect("argv recorded")
+        fn argv(&self) -> Result<Vec<String>, TestError> {
+            Ok(std::fs::read_to_string(self.dir.path().join("argv"))
+                .map_err(|e| format!("argv recorded: {e:?}"))?
                 .lines()
                 .map(str::to_string)
-                .collect()
+                .collect())
         }
 
         /// A server whose locator names this fake outright, with no action
@@ -559,9 +566,9 @@ mod tests {
 
         /// The same server with TFPS actions enabled for MCP, as
         /// `--allow-action tfps:mcp` does, journaled beside the fake.
-        fn acting_server(&self) -> SipnabMcp {
+        fn acting_server(&self) -> Result<SipnabMcp, TestError> {
             let locator = TfpsLocator::new(Some(self.dir.path().join("tfps_ctl")), None);
-            self.server().with_actions(acting(&self.dir, &locator))
+            Ok(self.server().with_actions(acting(&self.dir, &locator)?))
         }
 
         /// Whether the fake was run at all.
@@ -578,34 +585,42 @@ mod tests {
     /// TFPS actions enabled for MCP, through a service that asks `locator`
     /// and journals into a fresh directory under `dir`. The address cooldown
     /// is a millisecond, so a test can ban and then unban one address.
-    fn acting(dir: &tempfile::TempDir, locator: &TfpsLocator) -> crate::security::actions::Actions {
+    fn acting(
+        dir: &tempfile::TempDir,
+        locator: &TfpsLocator,
+    ) -> Result<crate::security::actions::Actions, TestError> {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let limits =
             crate::security::actions::ActionLimits::new(10, 5, std::time::Duration::from_millis(1))
-                .expect("valid limits");
+                .map_err(|e| format!("valid limits: {e:?}"))?;
         let (service, _) = crate::security::actions::ActionService::start(
-            policy("tfps:mcp"),
+            policy("tfps:mcp")?,
             limits,
             &dir.path().join(format!("journal-for-server-{n}")),
             Arc::new(crate::security::actions::TfpsCtl::new(locator.clone())),
             1_756_900_000,
             std::time::Instant::now(),
         )
-        .expect("a journal in a fresh directory");
-        crate::security::actions::Actions::with_service(policy("tfps:mcp"), Arc::new(service))
+        .map_err(|e| format!("a journal in a fresh directory: {e:?}"))?;
+        Ok(crate::security::actions::Actions::with_service(
+            policy("tfps:mcp")?,
+            Arc::new(service),
+        ))
     }
 
     /// The JSON body of an error result: sipnab's refusal of an action.
-    fn refusal(result: &CallToolResult) -> serde_json::Value {
+    fn refusal(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         assert_eq!(result.is_error, Some(true), "{result:?}");
-        payload(result)
+        Ok(payload(result)?)
     }
 
     /// The policy one `--allow-action` value enables.
-    fn policy(flag: &str) -> crate::security::actions::ActionPolicy {
-        crate::security::actions::ActionPolicy::from_settings(&[flag.to_string()], &[])
-            .expect("a valid --allow-action value")
+    fn policy(flag: &str) -> Result<crate::security::actions::ActionPolicy, TestError> {
+        Ok(
+            crate::security::actions::ActionPolicy::from_settings(&[flag.to_string()], &[])
+                .map_err(|e| format!("a valid --allow-action value: {e:?}"))?,
+        )
     }
 
     /// A server with empty stores.
@@ -617,34 +632,34 @@ mod tests {
     }
 
     /// A server on a machine with no TFPS: the search path is an empty dir.
-    fn absent() -> (SipnabMcp, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn absent() -> Result<(SipnabMcp, tempfile::TempDir), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let locator = TfpsLocator::new(None, None).with_search_path(dir.path().as_os_str());
-        (stock().with_tfps(locator), dir)
+        Ok((stock().with_tfps(locator), dir))
     }
 
     /// The JSON payload of a successful result.
-    fn payload(result: &CallToolResult) -> serde_json::Value {
+    fn payload(result: &CallToolResult) -> Result<serde_json::Value, TestError> {
         let text = result.content[0]
             .as_text()
             .map(|t| t.text.clone())
-            .expect("first block is text");
-        serde_json::from_str(&text).expect("payload is JSON")
+            .ok_or("first block is text")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("payload is JSON: {e:?}"))?)
     }
 
     // ── the absent peer: an answer, on every tool ─────────────────────
 
     #[tokio::test]
-    async fn every_tool_answers_installed_false_on_a_bare_machine() {
+    async fn every_tool_answers_installed_false_on_a_bare_machine() -> Result<(), TestError> {
         // Actions enabled, so ban and unban reach the service; with nothing
         // enabled they refuse first, which
         // `by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs` covers.
-        let (srv, dir) = absent();
+        let (srv, dir) = absent()?;
         let locator = TfpsLocator::new(None, None).with_search_path(dir.path().as_os_str());
-        let srv = srv.with_actions(acting(&dir, &locator));
-        let expect_absent = |r: CallToolResult| {
+        let srv = srv.with_actions(acting(&dir, &locator)?);
+        let expect_absent = |r: CallToolResult| -> Result<(), TestError> {
             assert_eq!(r.is_error, Some(false), "a result, not an error: {r:?}");
-            let p = payload(&r);
+            let p = payload(&r)?;
             assert_eq!(
                 p,
                 serde_json::json!({
@@ -653,15 +668,28 @@ mod tests {
                 }),
                 "installed:false carries the reason and nothing else"
             );
+            Ok(())
         };
-        expect_absent(srv.tfps_status().await.expect("status"));
-        expect_absent(srv.tfps_banned().await.expect("banned"));
-        expect_absent(srv.tfps_dropped().await.expect("dropped"));
+        expect_absent(
+            srv.tfps_status()
+                .await
+                .map_err(|e| format!("status: {e:?}"))?,
+        )?;
+        expect_absent(
+            srv.tfps_banned()
+                .await
+                .map_err(|e| format!("banned: {e:?}"))?,
+        )?;
+        expect_absent(
+            srv.tfps_dropped()
+                .await
+                .map_err(|e| format!("dropped: {e:?}"))?,
+        )?;
         expect_absent(
             srv.tfps_labels(Parameters(TfpsLabelsParams { limit: None }))
                 .await
-                .expect("labels"),
-        );
+                .map_err(|e| format!("labels: {e:?}"))?,
+        )?;
         // An action is not a read: it was asked for and could not run, so it
         // is a refusal naming what is missing, not an `installed: false`.
         let ban = refusal(
@@ -673,8 +701,8 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect("ban"),
-        );
+            .map_err(|e| format!("ban: {e:?}"))?,
+        )?;
         assert_eq!(ban["refusal"], "tfps", "{ban}");
         assert!(
             ban["error"]
@@ -691,17 +719,25 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect("unban"),
-        );
+            .map_err(|e| format!("unban: {e:?}"))?,
+        )?;
         assert_eq!(unban["refusal"], "not_owned", "{unban}");
+        Ok(())
     }
 
     // ── the present peer: each contract shape reaches the caller ──────
 
     #[tokio::test]
-    async fn status_reports_what_the_peer_said_and_which_executable_answered() {
-        let fake = Fake::recording(STATUS);
-        let p = payload(&fake.server().tfps_status().await.expect("status"));
+    async fn status_reports_what_the_peer_said_and_which_executable_answered()
+    -> Result<(), TestError> {
+        let fake = Fake::recording(STATUS)?;
+        let p = payload(
+            &fake
+                .server()
+                .tfps_status()
+                .await
+                .map_err(|e| format!("status: {e:?}"))?,
+        )?;
         assert_eq!(p["installed"], true);
         assert_eq!(
             p["tfps_ctl"],
@@ -710,14 +746,19 @@ mod tests {
         assert_eq!(p["status"]["enforcement"], "active");
         assert_eq!(p["status"]["blocked_now"], 3);
         assert_eq!(p["status"]["version"], "0.2.1");
-        assert_eq!(fake.argv(), ["status", "--json"]);
+        assert_eq!(fake.argv()?, ["status", "--json"]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn banned_rows_arrive_paged_with_the_senders_text_fenced() {
-        let fake = Fake::echoing(BANNED);
-        let r = fake.server().tfps_banned().await.expect("banned");
-        let p = payload(&r);
+    async fn banned_rows_arrive_paged_with_the_senders_text_fenced() -> Result<(), TestError> {
+        let fake = Fake::echoing(BANNED)?;
+        let r = fake
+            .server()
+            .tfps_banned()
+            .await
+            .map_err(|e| format!("banned: {e:?}"))?;
+        let p = payload(&r)?;
         assert_eq!(p["installed"], true);
         assert_eq!(p["total"], 3);
         assert_eq!(p["returned"], 3);
@@ -727,7 +768,7 @@ mod tests {
             "addresses stay verbatim"
         );
         assert_eq!(p["rows"][0]["reason"], "user-agent");
-        let detail = p["rows"][0]["detail"].as_str().expect("detail");
+        let detail = p["rows"][0]["detail"].as_str().ok_or("detail")?;
         assert_eq!(
             detail,
             crate::mcp::shape::fence_field("pplsip"),
@@ -743,18 +784,26 @@ mod tests {
             2,
             "the provenance note follows the payload: {r:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn dropped_rows_fence_the_last_request_line() {
-        let fake = Fake::echoing(DROPPED);
-        let p = payload(&fake.server().tfps_dropped().await.expect("dropped"));
+    async fn dropped_rows_fence_the_last_request_line() -> Result<(), TestError> {
+        let fake = Fake::echoing(DROPPED)?;
+        let p = payload(
+            &fake
+                .server()
+                .tfps_dropped()
+                .await
+                .map_err(|e| format!("dropped: {e:?}"))?,
+        )?;
         assert_eq!(p["rows"][0]["dropped"], 30);
         assert_eq!(
             p["rows"][0]["last_request"],
             crate::mcp::shape::fence_field("OPTIONS sip:100@198.51.100.1 SIP/2.0")
         );
         assert_eq!(p["rows"][1]["last_request"], serde_json::Value::Null);
+        Ok(())
     }
 
     /// `limit` reaches TFPS as `--limit N` when a page holds it; absent,
@@ -762,22 +811,22 @@ mod tests {
     /// ([`crate::security::tfps::labels_request`]). Proved on the wire: the
     /// fake records its argv.
     #[tokio::test]
-    async fn labels_ask_tfps_for_no_more_than_a_page() {
-        let fake = Fake::recording(LABELS);
+    async fn labels_ask_tfps_for_no_more_than_a_page() -> Result<(), TestError> {
+        let fake = Fake::recording(LABELS)?;
         let p = payload(
             &fake
                 .server()
                 .with_row_cap(1000)
                 .tfps_labels(Parameters(TfpsLabelsParams { limit: Some(250) }))
                 .await
-                .expect("labels"),
-        );
+                .map_err(|e| format!("labels: {e:?}"))?,
+        )?;
         assert_eq!(p["total"], 3);
         assert_eq!(
             p["rows"][0]["detail"],
             crate::mcp::shape::fence_field("sipvicious")
         );
-        assert_eq!(fake.argv(), ["log", "--json", "--limit", "250"]);
+        assert_eq!(fake.argv()?, ["log", "--json", "--limit", "250"]);
 
         for limit in [None, Some(0), Some(5000)] {
             let _ = fake
@@ -785,35 +834,37 @@ mod tests {
                 .with_row_cap(1000)
                 .tfps_labels(Parameters(TfpsLabelsParams { limit }))
                 .await
-                .expect("labels");
+                .map_err(|e| format!("labels: {e:?}"))?;
             assert_eq!(
-                fake.argv(),
+                fake.argv()?,
                 ["log", "--json", "--limit", "1001"],
                 "{limit:?} asks for one page and one row more"
             );
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_list_is_bounded_by_the_row_cap() {
-        let fake = Fake::echoing(LABELS);
+    async fn a_list_is_bounded_by_the_row_cap() -> Result<(), TestError> {
+        let fake = Fake::echoing(LABELS)?;
         let srv = fake.server().with_row_cap(2);
         let p = payload(
             &srv.tfps_labels(Parameters(TfpsLabelsParams { limit: None }))
                 .await
-                .expect("labels"),
-        );
+                .map_err(|e| format!("labels: {e:?}"))?,
+        )?;
         assert_eq!(p["total"], 3);
         assert_eq!(p["returned"], 2);
         assert_eq!(p["truncated"], true);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn ban_relays_the_operators_request_and_reports_what_tfps_did() {
-        let fake = Fake::recording(line(BAN, 1));
+    async fn ban_relays_the_operators_request_and_reports_what_tfps_did() -> Result<(), TestError> {
+        let fake = Fake::recording(line(BAN, 1)?)?;
         let p = payload(
             &fake
-                .acting_server()
+                .acting_server()?
                 .tfps_ban(
                     Parameters(TfpsBanParams {
                         ip: "198.51.100.20".into(),
@@ -822,30 +873,31 @@ mod tests {
                     stdio(),
                 )
                 .await
-                .expect("ban"),
-        );
+                .map_err(|e| format!("ban: {e:?}"))?,
+        )?;
         assert_eq!(p["applied"], true, "{p}");
         assert!(
             p["id"].as_str().is_some_and(|id| id.starts_with("a-")),
             "the answer names the action's journal id: {p}"
         );
         assert_eq!(
-            fake.argv(),
+            fake.argv()?,
             ["ban", "--json", "198.51.100.20", "--ttl", "86400"]
         );
+        Ok(())
     }
 
     /// TFPS signals a refusal with exit 1 and the same structured line. That
     /// is TFPS's answer, reported as given -- not turned into an error, which
     /// would hide the reason it gave.
     #[tokio::test]
-    async fn a_refused_ban_is_reported_not_raised() {
+    async fn a_refused_ban_is_reported_not_raised() -> Result<(), TestError> {
         let fake = Fake::with_body(&format!(
             "cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE\necho 'error: 1 of 1 refused' >&2\nexit 1",
-            line(BAN, 3)
-        ));
+            line(BAN, 3)?
+        ))?;
         let r = fake
-            .acting_server()
+            .acting_server()?
             .tfps_ban(
                 Parameters(TfpsBanParams {
                     ip: "192.0.2.1".into(),
@@ -854,14 +906,15 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect("a refusal is a result");
-        let p = payload(&r);
+            .map_err(|e| format!("a refusal is a result: {e:?}"))?;
+        let p = payload(&r)?;
         assert_eq!(p["applied"], false);
         assert_eq!(p["refused"], "local");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn unban_sends_the_agreed_argv() {
+    async fn unban_sends_the_agreed_argv() -> Result<(), TestError> {
         // sipnab lifts only its own bans, so this server bans first.
         let fake = Fake::with_body(&format!(
             "printf '%s\\n' \"$@\" > \"$(dirname \"$0\")/argv\"\n\
@@ -869,10 +922,10 @@ mod tests {
              ban) echo '{}';;\n\
              unban) echo '{}';;\n\
              esac",
-            line(BAN, 1),
-            line(UNBAN, 1)
-        ));
-        let srv = fake.acting_server();
+            line(BAN, 1)?,
+            line(UNBAN, 1)?
+        ))?;
+        let srv = fake.acting_server()?;
         let ban = payload(
             &srv.tfps_ban(
                 Parameters(TfpsBanParams {
@@ -882,8 +935,8 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect("ban"),
-        );
+            .map_err(|e| format!("ban: {e:?}"))?,
+        )?;
         assert_eq!(ban["applied"], true, "{ban}");
         // Past the address cooldown, which is a millisecond here.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -895,10 +948,11 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect("unban"),
-        );
+            .map_err(|e| format!("unban: {e:?}"))?,
+        )?;
         assert_eq!(p["applied"], true, "{p}");
-        assert_eq!(fake.argv(), ["unban", "--json", "198.51.100.20"]);
+        assert_eq!(fake.argv()?, ["unban", "--json", "198.51.100.20"]);
+        Ok(())
     }
 
     // ── actions are off unless enabled ────────────────────────────────
@@ -906,8 +960,8 @@ mod tests {
     /// sipnab changes no external system by default. Norm, 2026-09-28:
     /// "Default is secure, sipnab doesn't update external systems."
     #[tokio::test]
-    async fn by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs() {
-        let fake = Fake::recording(line(BAN, 1));
+    async fn by_default_ban_and_unban_refuse_and_tfps_ctl_never_runs() -> Result<(), TestError> {
+        let fake = Fake::recording(line(BAN, 1)?)?;
         let ban = fake
             .server()
             .tfps_ban(
@@ -918,7 +972,8 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect_err("no action is enabled");
+            .err()
+            .ok_or("no action is enabled")?;
         let unban = fake
             .server()
             .tfps_unban(
@@ -928,7 +983,8 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect_err("no action is enabled");
+            .err()
+            .ok_or("no action is enabled")?;
         for err in [ban, unban] {
             assert!(
                 err.message.contains("--allow-action tfps:mcp")
@@ -938,15 +994,16 @@ mod tests {
             );
         }
         assert!(!fake.ran(), "a refused action reached tfps_ctl");
+        Ok(())
     }
 
     /// Enabled for REST only, the MCP door stays shut.
     #[tokio::test]
-    async fn enabled_for_rest_only_the_mcp_tools_still_refuse() {
-        let fake = Fake::recording(line(BAN, 1));
+    async fn enabled_for_rest_only_the_mcp_tools_still_refuse() -> Result<(), TestError> {
+        let fake = Fake::recording(line(BAN, 1)?)?;
         let err = fake
             .server()
-            .with_actions(policy("tfps:rest"))
+            .with_actions(policy("tfps:rest")?)
             .tfps_ban(
                 Parameters(TfpsBanParams {
                     ip: "198.51.100.20".into(),
@@ -955,28 +1012,31 @@ mod tests {
                 stdio(),
             )
             .await
-            .expect_err("enabled for REST, not MCP");
+            .err()
+            .ok_or("enabled for REST, not MCP")?;
         assert!(
             err.message.contains("--allow-action tfps:mcp"),
             "{}",
             err.message
         );
         assert!(!fake.ran(), "a refused action reached tfps_ctl");
+        Ok(())
     }
 
     // ── refusals and failures ─────────────────────────────────────────
 
     #[tokio::test]
-    async fn an_address_that_is_not_one_is_refused_before_the_peer_is_asked() {
+    async fn an_address_that_is_not_one_is_refused_before_the_peer_is_asked()
+    -> Result<(), TestError> {
         // The fake would record any call; nothing must reach it.
         let fake = Fake::with_body(&format!(
             "touch \"$(dirname \"$0\")/called\"\n\
              cat <<'SIPNAB_FIXTURE'\n{}\nSIPNAB_FIXTURE",
-            line(BAN, 1)
-        ));
+            line(BAN, 1)?
+        ))?;
         for bad in ["not-an-ip", "", "-x", "198.51.100.20; rm -rf /"] {
             let err = fake
-                .acting_server()
+                .acting_server()?
                 .tfps_ban(
                     Parameters(TfpsBanParams {
                         ip: bad.into(),
@@ -985,25 +1045,28 @@ mod tests {
                     stdio(),
                 )
                 .await
-                .expect_err("not an address");
+                .err()
+                .ok_or("not an address")?;
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{bad:?}");
             let err = fake
-                .acting_server()
+                .acting_server()?
                 .tfps_unban(Parameters(TfpsUnbanParams { ip: bad.into() }), stdio())
                 .await
-                .expect_err("not an address");
+                .err()
+                .ok_or("not an address")?;
             assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{bad:?}");
         }
         assert!(
             !fake.dir.path().join("called").exists(),
             "the peer was asked with something that is not an address"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() {
-        let fake = Fake::with_body("echo 'tfps.db: database is locked' >&2; exit 3");
-        let err = fake.server().tfps_status().await.expect_err("exit 3");
+    async fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() -> Result<(), TestError> {
+        let fake = Fake::with_body("echo 'tfps.db: database is locked' >&2; exit 3")?;
+        let err = fake.server().tfps_status().await.err().ok_or("exit 3")?;
         assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert!(
             err.message.contains("tfps.db: database is locked"),
@@ -1011,38 +1074,41 @@ mod tests {
             err.message
         );
         assert!(err.message.contains("status 3"), "{}", err.message);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn output_off_the_contract_is_an_error() {
-        let fake = Fake::echoing("<html>not json</html>");
+    async fn output_off_the_contract_is_an_error() -> Result<(), TestError> {
+        let fake = Fake::echoing("<html>not json</html>")?;
         let err = fake
             .server()
             .tfps_banned()
             .await
-            .expect_err("not the contract");
+            .err()
+            .ok_or("not the contract")?;
         assert_eq!(err.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert!(err.message.contains("cannot read"), "{}", err.message);
+        Ok(())
     }
 
     // ── the promises the annotations make ─────────────────────────────
 
     #[test]
-    fn the_read_tools_are_read_only_and_the_two_actions_are_not() {
+    fn the_read_tools_are_read_only_and_the_two_actions_are_not() -> Result<(), TestError> {
         let router = SipnabMcp::tfps_router();
         for name in ["tfps_status", "tfps_banned", "tfps_dropped", "tfps_labels"] {
             let tool = router
                 .get(name)
-                .unwrap_or_else(|| panic!("{name} registered"));
-            let a = tool.annotations.as_ref().expect("annotated");
+                .ok_or_else(|| format!("{name} registered"))?;
+            let a = tool.annotations.as_ref().ok_or("annotated")?;
             assert_eq!(a.read_only_hint, Some(true), "{name}");
             assert_eq!(a.open_world_hint, Some(false), "{name}");
         }
         for name in ["tfps_ban", "tfps_unban"] {
             let tool = router
                 .get(name)
-                .unwrap_or_else(|| panic!("{name} registered"));
-            let a = tool.annotations.as_ref().expect("annotated");
+                .ok_or_else(|| format!("{name} registered"))?;
+            let a = tool.annotations.as_ref().ok_or("annotated")?;
             assert_eq!(
                 a.read_only_hint,
                 Some(false),
@@ -1055,17 +1121,18 @@ mod tests {
             );
             assert_eq!(a.idempotent_hint, Some(true), "{name}");
         }
-        let ban = router.get("tfps_ban").expect("registered");
+        let ban = router.get("tfps_ban").ok_or("registered")?;
         assert_eq!(
             ban.annotations.as_ref().and_then(|a| a.destructive_hint),
             Some(true),
             "a ban cuts a source off; a host should confirm it"
         );
-        let unban = router.get("tfps_unban").expect("registered");
+        let unban = router.get("tfps_unban").ok_or("registered")?;
         assert_eq!(
             unban.annotations.as_ref().and_then(|a| a.destructive_hint),
             Some(false),
             "a release restores; it destroys nothing"
         );
+        Ok(())
     }
 }

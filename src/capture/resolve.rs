@@ -321,6 +321,9 @@ mod archive_member_tests {
     use crate::capture::packet::{FrameOrigin, FrameRef, FrameSource};
     use std::io::Write;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A classic pcap holding one record per frame, each stamped a second on.
     fn pcap_of(link_type: u32, frames: &[&[u8]]) -> Vec<u8> {
         let mut f = Vec::new();
@@ -339,10 +342,10 @@ mod archive_member_tests {
         f
     }
 
-    fn gzip(data: &[u8]) -> Vec<u8> {
+    fn gzip(data: &[u8]) -> Result<Vec<u8>, TestError> {
         let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        enc.write_all(data).expect("gzip");
-        enc.finish().expect("gzip")
+        enc.write_all(data).map_err(|e| format!("gzip: {e:?}"))?;
+        Ok(enc.finish().map_err(|e| format!("gzip: {e:?}"))?)
     }
 
     fn pointer(source: &str, ordinal: u64) -> FrameRef {
@@ -361,65 +364,75 @@ mod archive_member_tests {
     /// A pointer whose source is `<archive>/<member>` resolves to that frame
     /// of that member, through a gzip layer and a nested archive alike.
     #[test]
-    fn a_pointer_into_an_archive_member_resolves() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_pointer_into_an_archive_member_resolves() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_of(1, &[b"a-zero", b"a-one"]);
         let b = pcap_of(1, &[b"b-zero", b"b-one", b"b-two"]);
-        let inner = build(&[Spec::file("b.pcap.gz", &gzip(&b))]);
+        let inner = build(&[Spec::file("b.pcap.gz", &gzip(&b)?)]);
         let outer = build(&[Spec::file("dir/a.pcap", &a), Spec::file("in.tar", &inner)]);
         let path = tmp.path().join("set.tgz");
-        std::fs::write(&path, gzip(&outer)).expect("write");
+        std::fs::write(&path, gzip(&outer)?).map_err(|e| format!("write: {e:?}"))?;
         let root = path.display().to_string();
 
-        let got = resolve(&pointer(&format!("{root}/dir/a.pcap"), 1)).expect("resolves");
+        let got = resolve(&pointer(&format!("{root}/dir/a.pcap"), 1))
+            .map_err(|e| format!("resolves: {e:?}"))?;
         assert_eq!(got, Resolution::Unverified(b"a-one".to_vec()));
-        let got = resolve(&pointer(&format!("{root}/in.tar/b.pcap.gz"), 2)).expect("nested");
+        let got = resolve(&pointer(&format!("{root}/in.tar/b.pcap.gz"), 2))
+            .map_err(|e| format!("nested: {e:?}"))?;
         assert_eq!(got.bytes(), b"b-two");
+        Ok(())
     }
 
     /// The link type comes back with the bytes, from the member itself: a
     /// pointer into an archive has no file of its own to reopen for it.
     #[test]
-    fn the_members_link_type_comes_back_with_the_frame() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn the_members_link_type_comes_back_with_the_frame() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let cooked = pcap_of(113, &[b"sll-frame"]);
         let path = tmp.path().join("c.tar");
-        std::fs::write(&path, build(&[Spec::file("c.pcap", &cooked)])).expect("write");
+        std::fs::write(&path, build(&[Spec::file("c.pcap", &cooked)]))
+            .map_err(|e| format!("write: {e:?}"))?;
         let (res, link_type) =
             resolve_with_link_type(&pointer(&format!("{}/c.pcap", path.display()), 0))
-                .expect("resolves");
+                .map_err(|e| format!("resolves: {e:?}"))?;
         assert_eq!(res.bytes(), b"sll-frame");
         assert_eq!(link_type, 113);
+        Ok(())
     }
 
     /// A label naming no member is refused with the archive and the name, not
     /// "file not found": the archive is right there.
     #[test]
-    fn a_label_naming_no_member_is_refused_by_name() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_label_naming_no_member_is_refused_by_name() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let path = tmp.path().join("s.tar");
         std::fs::write(
             &path,
             build(&[Spec::file("real.pcap", &pcap_of(1, &[b"x"]))]),
         )
-        .expect("write");
+        .map_err(|e| format!("write: {e:?}"))?;
         let err = resolve(&pointer(&format!("{}/missing.pcap", path.display()), 0))
-            .expect_err("no such member");
+            .err()
+            .ok_or("no such member")?;
         let msg = err.to_string();
         assert!(
             matches!(err, ResolveError::Unreadable { .. }) && msg.contains("no member"),
             "{msg}"
         );
+        Ok(())
     }
 
     /// A member holding fewer frames than the ordinal is `NoSuchFrame`, the
     /// same answer a short file gives.
     #[test]
-    fn an_ordinal_past_a_members_end_is_no_such_frame() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn an_ordinal_past_a_members_end_is_no_such_frame() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let path = tmp.path().join("s.tar");
-        std::fs::write(&path, build(&[Spec::file("m.pcap", &pcap_of(1, &[b"x"]))])).expect("write");
-        let err = resolve(&pointer(&format!("{}/m.pcap", path.display()), 5)).expect_err("short");
+        std::fs::write(&path, build(&[Spec::file("m.pcap", &pcap_of(1, &[b"x"]))]))
+            .map_err(|e| format!("write: {e:?}"))?;
+        let err = resolve(&pointer(&format!("{}/m.pcap", path.display()), 5))
+            .err()
+            .ok_or("short")?;
         assert!(
             matches!(
                 err,
@@ -430,6 +443,7 @@ mod archive_member_tests {
             ),
             "{err}"
         );
+        Ok(())
     }
 }
 
@@ -438,30 +452,37 @@ mod uprobe_origin_tests {
     use super::*;
     use crate::capture::packet::{FrameOrigin, FrameRef, FrameSource};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A pointer minted for plaintext lifted out of a process must survive
     /// being written down, because a pointer is only useful once it has left
     /// the process.
     #[test]
-    fn a_uprobe_pointer_round_trips_through_its_text_form() {
+    fn a_uprobe_pointer_round_trips_through_its_text_form() -> Result<(), TestError> {
         let minted = FrameRef::uprobe("opensips", 1234, 7);
         let text = minted.to_string();
         assert_eq!(text, "uprobe:opensips/1234#7");
 
-        let parsed = parse_pointer(&text).expect("a minted pointer must parse");
+        let parsed =
+            parse_pointer(&text).map_err(|e| format!("a minted pointer must parse: {e:?}"))?;
         assert_eq!(parsed.origin.ordinal, 7);
         assert!(
             matches!(parsed.source_kind(), FrameSource::Uprobe { .. }),
             "the kind has to survive the text form, or a resolver cannot tell \
              this apart from a capture file that happens to be named oddly"
         );
+        Ok(())
     }
 
     /// The whole point of the type: following it must refuse, and the refusal
     /// must say the bytes were never on the wire — not that a file is missing.
     #[test]
-    fn following_a_uprobe_pointer_refuses_and_says_why() {
+    fn following_a_uprobe_pointer_refuses_and_says_why() -> Result<(), TestError> {
         let pointer = FrameRef::uprobe("opensips", 1234, 7);
-        let err = resolve(&pointer).expect_err("there is no frame to resolve to");
+        let err = resolve(&pointer)
+            .err()
+            .ok_or("there is no frame to resolve to")?;
 
         let msg = err.to_string();
         assert!(
@@ -475,12 +496,13 @@ mod uprobe_origin_tests {
             "says the bytes were never a frame, rather than implying a lookup \
              failed: {msg}"
         );
+        Ok(())
     }
 
     /// A wire pointer must keep resolving exactly as before. This is the
     /// mutation guard: if the new branch swallowed everything, this fails.
     #[test]
-    fn a_wire_pointer_is_untouched_by_the_new_kind() {
+    fn a_wire_pointer_is_untouched_by_the_new_kind() -> Result<(), TestError> {
         let wire = FrameRef {
             // Whole frame.
             bytes: None,
@@ -493,11 +515,12 @@ mod uprobe_origin_tests {
             kind: FrameSource::Wire,
         };
         assert_eq!(wire.to_string(), "capture.pcap#3");
-        let err = resolve(&wire).expect_err("no such file here");
+        let err = resolve(&wire).err().ok_or("no such file here")?;
         assert!(
             matches!(err, ResolveError::Unreadable { .. }),
             "a wire pointer to a missing file is still Unreadable, not the \
              uprobe refusal"
         );
+        Ok(())
     }
 }
