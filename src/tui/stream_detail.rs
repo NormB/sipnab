@@ -1026,7 +1026,7 @@ mod tests {
     /// Every MOS band maps to its block glyph, including exact boundaries
     /// and below-minimum values.
     #[test]
-    fn mos_to_block_boundaries() {
+    fn mos_to_block_boundaries() -> Result<(), TestError> {
         // Top of scale: excellent MOS
         assert_eq!(mos_to_block(4.5), '\u{2588}'); // █
         assert_eq!(mos_to_block(4.3), '\u{2588}'); // █ (boundary)
@@ -1046,12 +1046,13 @@ mod tests {
         assert_eq!(mos_to_block(1.0), '\u{2581}'); // ▁
         // Below minimum
         assert_eq!(mos_to_block(0.5), '\u{2581}'); // ▁
+        Ok(())
     }
 
     /// Every jitter band maps to its block glyph, including exact
     /// boundaries and values far above the top band.
     #[test]
-    fn jitter_to_block_boundaries() {
+    fn jitter_to_block_boundaries() -> Result<(), TestError> {
         // Minimal jitter
         assert_eq!(jitter_to_block(0.0), '\u{2581}'); // ▁
         assert_eq!(jitter_to_block(4.9), '\u{2581}'); // ▁ (just under 5ms boundary)
@@ -1065,6 +1066,7 @@ mod tests {
         // Severe jitter
         assert_eq!(jitter_to_block(35.0), '\u{2588}'); // █ (boundary)
         assert_eq!(jitter_to_block(100.0), '\u{2588}'); // █ (well above max)
+        Ok(())
     }
 
     // ── Style helper threshold tests ─────────────────────────────────
@@ -1079,7 +1081,7 @@ mod tests {
     /// code and silent about the contradiction, so they now read the
     /// boundaries from the shared band set rather than restating numbers.
     #[test]
-    fn jitter_style_follows_the_shared_bands() {
+    fn jitter_style_follows_the_shared_bands() -> Result<(), TestError> {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
         assert_eq!(jitter_style(0.0, &theme, &b).fg, Some(theme.good));
@@ -1103,6 +1105,7 @@ mod tests {
             jitter_style(b.jitter_bad_ms * 3.0, &theme, &b).fg,
             Some(theme.bad)
         );
+        Ok(())
     }
 
     /// The same stream gets the same verdict here as in the stream list.
@@ -1110,7 +1113,7 @@ mod tests {
     /// The contradiction this pins is the reported one: a value that one pane
     /// called healthy and another called a warning, in the same session.
     #[test]
-    fn this_view_agrees_with_the_stream_list() {
+    fn this_view_agrees_with_the_stream_list() -> Result<(), TestError> {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
         for jitter in [0.0, 25.0, 29.9, 30.0, 49.9, 50.0, 100.0] {
@@ -1129,11 +1132,12 @@ mod tests {
                 "{loss}% loss: detail view and stream list disagree again"
             );
         }
+        Ok(())
     }
 
     /// `loss_style` colors at the SHARED boundaries.
     #[test]
-    fn loss_style_follows_the_shared_bands() {
+    fn loss_style_follows_the_shared_bands() -> Result<(), TestError> {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
         assert_eq!(loss_style(0.0, &theme, &b).fg, Some(theme.good));
@@ -1147,12 +1151,13 @@ mod tests {
         );
         assert_eq!(loss_style(b.loss_bad_pct, &theme, &b).fg, Some(theme.bad));
         assert_eq!(loss_style(90.0, &theme, &b).fg, Some(theme.bad));
+        Ok(())
     }
 
     /// A section header carries the bold accented title span followed by
     /// a border-colored rule span.
     #[test]
-    fn section_header_has_title_and_accent() {
+    fn section_header_has_title_and_accent() -> Result<(), TestError> {
         let theme = Theme::default();
         let line = section_header("Quality", &theme);
         // First span carries the bolded, accented title text.
@@ -1169,6 +1174,7 @@ mod tests {
         // Trailing rule uses the border color.
         let rule = &line.spans[1];
         assert_eq!(rule.style.fg, Some(theme.border));
+        Ok(())
     }
 
     // ── render_stream_detail integration tests ───────────────────────
@@ -1229,9 +1235,13 @@ mod tests {
     /// Build a store holding one PCMU stream, then inject RTCP-reported
     /// jitter/loss so the render path exercises the chosen style branch.
     /// Returns the store and the key of the inserted stream.
-    fn store_with_stream(ssrc: u32, jitter: u32, lost: i32) -> (StreamStore, StreamKey) {
+    fn store_with_stream(
+        ssrc: u32,
+        jitter: u32,
+        lost: i32,
+    ) -> Result<(StreamStore, StreamKey), TestError> {
         let mut store = StreamStore::new(16);
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         // A few packets so packet_count > 0 and a duration exists.
         store.process_rtp(&parsed(20000, 30000, t0), &rtp_header(ssrc, 1, 0), t0);
         store.process_rtp(
@@ -1264,50 +1274,52 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        (store, key)
+        Ok((store, key))
     }
 
     /// Render the stream detail for `key` into a 100x40 test terminal and
     /// return the buffer contents as one string.
-    fn render_to_string(store: &StreamStore, key: &StreamKey) -> String {
+    fn render_to_string(store: &StreamStore, key: &StreamKey) -> Result<String, TestError> {
         let theme = Theme::default();
         let backend = TestBackend::new(100, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_stream_detail(
-                    frame,
-                    area,
-                    key,
-                    store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_stream_detail(
+                frame,
+                area,
+                key,
+                store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
             out.push('\n');
         }
-        out
+        Ok(out)
     }
 
     /// A key absent from the store renders the "Stream no longer
     /// available." placeholder.
     #[test]
-    fn render_stream_detail_missing_key_shows_placeholder() {
+    fn render_stream_detail_missing_key_shows_placeholder() -> Result<(), TestError> {
         let theme = Theme::default();
         let store = StreamStore::new(4);
         // Key that was never inserted.
@@ -1317,44 +1329,47 @@ mod tests {
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2000),
         };
         let backend = TestBackend::new(60, 5);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_stream_detail(
-                    frame,
-                    area,
-                    &key,
-                    &store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_stream_detail(
+                frame,
+                area,
+                &key,
+                &store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
         for y in 0..area.height {
             for x in 0..area.width {
-                out.push_str(buf.cell((x, y)).unwrap().symbol());
+                out.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
         }
         assert!(out.contains("Stream no longer available."), "got: {out}");
+        Ok(())
     }
 
     /// Low jitter and no loss render the "Good" MOS label and all summary
     /// lines.
     #[test]
-    fn render_stream_detail_good_quality() {
+    fn render_stream_detail_good_quality() -> Result<(), TestError> {
         // Low jitter, no loss → "Good" MOS path, good-colored styles.
-        let (store, key) = store_with_stream(0x1111_1111, /*jitter*/ 0, /*lost*/ 0);
-        let out = render_to_string(&store, &key);
+        let (store, key) = store_with_stream(0x1111_1111, /*jitter*/ 0, /*lost*/ 0)?;
+        let out = render_to_string(&store, &key)?;
         assert!(out.contains("RTP stream detail"), "header missing: {out}");
         assert!(out.contains("SSRC: 0x11111111"), "ssrc missing: {out}");
         assert!(out.contains("PCMU"), "codec missing: {out}");
@@ -1365,15 +1380,16 @@ mod tests {
         assert!(out.contains("(Good)"), "expected Good MOS label: {out}");
         // No loss → "Orphaned" flag line present, lost pkts 0.
         assert!(out.contains("Orphaned:"), "flags line missing: {out}");
+        Ok(())
     }
 
     /// Moderate jitter with some loss renders the warning-band styles and
     /// the lost-packets line.
     #[test]
-    fn render_stream_detail_warn_quality() {
+    fn render_stream_detail_warn_quality() -> Result<(), TestError> {
         // Moderate jitter (30ms) and some loss → warning-band styles.
-        let (store, key) = store_with_stream(0x2222_2222, /*jitter*/ 30, /*lost*/ 1);
-        let out = render_to_string(&store, &key);
+        let (store, key) = store_with_stream(0x2222_2222, /*jitter*/ 30, /*lost*/ 1)?;
+        let out = render_to_string(&store, &key)?;
         assert!(out.contains("RTP stream detail"));
         assert!(out.contains("MOS:"));
         // Lost packets > 0 surfaces the burst/gap analysis section.
@@ -1381,19 +1397,20 @@ mod tests {
             out.contains("Lost packets:"),
             "lost packets line missing: {out}"
         );
+        Ok(())
     }
 
     /// High jitter with a real RTP sequence gap (loss) renders the
     /// bad-band styles and reaches the burst/gap section.
     #[test]
-    fn render_stream_detail_bad_quality() {
+    fn render_stream_detail_bad_quality() -> Result<(), TestError> {
         // High jitter (80ms) and heavy loss → bad-band styles and low MOS.
         // Loss is produced via a real RTP sequence gap so lost_packets > 0
         // (and the burst/gap section becomes reachable), then jitter is
         // overridden authoritatively via RTCP.
         let mut store = StreamStore::new(16);
         let ssrc = 0x3333_3333u32;
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         store.process_rtp(&parsed(20000, 30000, t0), &rtp_header(ssrc, 1, 0), t0);
         // Jump the sequence number forward to manufacture a loss gap.
         store.process_rtp(
@@ -1419,7 +1436,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let out = render_to_string(&store, &key);
+        let out = render_to_string(&store, &key)?;
         assert!(out.contains("RTP stream detail"));
         assert!(out.contains("MOS:"));
         assert!(out.contains("Loss:"));
@@ -1432,15 +1449,17 @@ mod tests {
             "a stream that lost packets gets the burst/gap section: {out}"
         );
         let _ = Color::Reset; // keep Color import used regardless of assertions
+        Ok(())
     }
 
     /// A stream with no loss has no burst/gap section to show.
     #[test]
-    fn a_stream_without_loss_has_no_burst_gap_section() {
-        let (store, key) = store_with_stream(0x3434_3434, 0, 0);
-        let out = render_to_string(&store, &key);
+    fn a_stream_without_loss_has_no_burst_gap_section() -> Result<(), TestError> {
+        let (store, key) = store_with_stream(0x3434_3434, 0, 0)?;
+        let out = render_to_string(&store, &key)?;
         assert!(out.contains("RTP stream detail"));
         assert!(!out.contains("Burst/gap analysis"), "{out}");
+        Ok(())
     }
 
     /// Silence periods alone open the silence section, comfort-noise frames
@@ -1464,7 +1483,7 @@ mod tests {
         });
         let mut store = StreamStore::new(16);
         store.insert_for_test(stream);
-        let out = render_to_string(&store, &key);
+        let out = render_to_string(&store, &key)?;
         assert!(out.contains("Silence detection"), "{out}");
         assert!(out.contains("10-20"), "{out}");
         Ok(())
@@ -1473,7 +1492,7 @@ mod tests {
     /// The RTT cell marks a round trip derived from a sender-report echo,
     /// leaves an XR-reported one unmarked, and says `n/a` for none.
     #[test]
-    fn the_rtt_cell_marks_an_echo_derived_round_trip() {
+    fn the_rtt_cell_marks_an_echo_derived_round_trip() -> Result<(), TestError> {
         use crate::rtp::rtcp::RttSource;
         let theme = Theme::default();
         let bands = crate::rtp::bands::QualityBands::default();
@@ -1481,6 +1500,7 @@ mod tests {
         assert_eq!(text(Some((40.0, RttSource::SenderReportEcho))), "40ms~");
         assert_eq!(text(Some((40.0, RttSource::XrVoipMetrics))), "40ms");
         assert_eq!(text(None), "n/a");
+        Ok(())
     }
 
     /// Attach an XR VoIP Metrics block reporting the far end's own figures to
@@ -1526,11 +1546,11 @@ mod tests {
     /// Before this the block was fully decoded and then dropped, so the one
     /// place an endpoint tells you what it measured showed nothing at all.
     #[test]
-    fn render_stream_detail_shows_far_end_xr_report() {
-        let (mut store, key) = store_with_stream(0x5151_5151, 5, 0);
+    fn render_stream_detail_shows_far_end_xr_report() -> Result<(), TestError> {
+        let (mut store, key) = store_with_stream(0x5151_5151, 5, 0)?;
         attach_xr(&mut store, 0x5151_5151, 15, 32);
 
-        let out = render_to_string(&store, &key);
+        let out = render_to_string(&store, &key)?;
         assert!(
             out.contains("Reported by far end"),
             "the XR section must appear: {out}"
@@ -1549,17 +1569,18 @@ mod tests {
             out.contains("Round-trip: 450ms"),
             "round-trip delay rendered: {out}"
         );
+        Ok(())
     }
 
     /// Fields the endpoint marked unavailable render as `n/a`, never as the
     /// sentinel. RFC 3611 reserves 127, so a raw render publishes an R factor
     /// of 127 on a 0-to-100 scale and a MOS of 12.7 on a 1-to-5 one.
     #[test]
-    fn render_stream_detail_xr_unavailable_fields_are_not_numbers() {
-        let (mut store, key) = store_with_stream(0x5252_5252, 5, 0);
+    fn render_stream_detail_xr_unavailable_fields_are_not_numbers() -> Result<(), TestError> {
+        let (mut store, key) = store_with_stream(0x5252_5252, 5, 0)?;
         attach_xr(&mut store, 0x5252_5252, 127, 127);
 
-        let out = render_to_string(&store, &key);
+        let out = render_to_string(&store, &key)?;
         assert!(
             out.contains("MOS-LQ: n/a"),
             "an unavailable MOS must not render as 12.7: {out}"
@@ -1572,18 +1593,20 @@ mod tests {
             !out.contains("12.7"),
             "the MOS sentinel must never reach the screen as a value: {out}"
         );
+        Ok(())
     }
 
     /// A stream with no XR renders no far-end section at all, rather than a
     /// row of zeroes that reads as an endpoint reporting perfect silence.
     #[test]
-    fn render_stream_detail_without_xr_omits_the_far_end_section() {
-        let (store, key) = store_with_stream(0x5353_5353, 5, 0);
-        let out = render_to_string(&store, &key);
+    fn render_stream_detail_without_xr_omits_the_far_end_section() -> Result<(), TestError> {
+        let (store, key) = store_with_stream(0x5353_5353, 5, 0)?;
+        let out = render_to_string(&store, &key)?;
         assert!(
             !out.contains("Reported by Far End"),
             "no XR means no far-end section: {out}"
         );
+        Ok(())
     }
 
     /// The far end's claimed MOS must not displace the MOS sipnab estimated.
@@ -1592,21 +1615,21 @@ mod tests {
     /// #61 rule at the render layer: an XR claiming MOS 1.5 on a clean stream
     /// leaves the estimated MOS where it was.
     #[test]
-    fn render_stream_detail_far_end_mos_does_not_replace_the_estimate() {
-        let (mut store, key) = store_with_stream(0x5454_5454, 5, 0);
-        let before = render_to_string(&store, &key);
+    fn render_stream_detail_far_end_mos_does_not_replace_the_estimate() -> Result<(), TestError> {
+        let (mut store, key) = store_with_stream(0x5454_5454, 5, 0)?;
+        let before = render_to_string(&store, &key)?;
         let estimated = before
             .lines()
             .find(|l| l.contains("  MOS: "))
-            .expect("estimated MOS line")
+            .ok_or("estimated MOS line")?
             .to_string();
 
         attach_xr(&mut store, 0x5454_5454, 15, 32);
-        let after = render_to_string(&store, &key);
+        let after = render_to_string(&store, &key)?;
         let still = after
             .lines()
             .find(|l| l.contains("  MOS: "))
-            .expect("estimated MOS line survives");
+            .ok_or("estimated MOS line survives")?;
 
         // The invariant this test was written for still holds, and is now
         // stated precisely. An endpoint's ASSERTED MOS (1.5 here) must never
@@ -1636,6 +1659,7 @@ mod tests {
             after.contains("MOS-LQ: 1.5"),
             "and the endpoint's claim is still shown, separately: {after}"
         );
+        Ok(())
     }
 
     /// The trend must refuse to band an interval it cannot score.
@@ -1645,7 +1669,7 @@ mod tests {
     /// of the same stream on the good/poor scale. One pane, two answers about
     /// one number, and the dishonest one is the one with more digits in it.
     #[test]
-    fn an_ungrounded_stream_gets_no_banded_interval_trend() {
+    fn an_ungrounded_stream_gets_no_banded_interval_trend() -> Result<(), TestError> {
         use crate::rtp::stream::{QualityInterval, RtpStream};
 
         let ssrc = 0x5151_5151u32;
@@ -1654,7 +1678,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         // Payload type 99 is a dynamic type this capture never saw an rtpmap
         // for, so the codec is unknown and no impairment value exists for it.
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 99), t0);
@@ -1675,25 +1699,23 @@ mod tests {
 
         let theme = Theme::default();
         let backend = TestBackend::new(110, 44);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render_stream_detail(
-                    frame,
-                    frame.area(),
-                    &key,
-                    &store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            render_stream_detail(
+                frame,
+                frame.area(),
+                &key,
+                &store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
 
         let buf = terminal.backend().buffer();
         let area = buf.area;
@@ -1701,7 +1723,11 @@ mod tests {
         for y in 0..area.height {
             let mut line = String::new();
             for x in 0..area.width {
-                line.push_str(buf.cell((x, y)).unwrap().symbol());
+                line.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
             rows.push(line);
         }
@@ -1709,7 +1735,7 @@ mod tests {
         let trend = rows
             .iter()
             .find(|l| l.contains("MOS Trend:"))
-            .expect("the trend row must still be drawn — a refusal is not an omission");
+            .ok_or("the trend row must still be drawn — a refusal is not an omission")?;
         assert!(
             trend.contains("not scorable"),
             "the trend annotation must say why there is no average: {trend}"
@@ -1731,6 +1757,7 @@ mod tests {
                  column rather than a number: {row}"
             );
         }
+        Ok(())
     }
 
     /// Owed, for a mutation that survived: banding every sparkline glyph
@@ -1741,8 +1768,8 @@ mod tests {
     /// beside a row of confident green blocks is not a refusal; it is a
     /// footnote under a chart nobody reads footnotes under.
     #[test]
-    fn the_ungrounded_trend_glyphs_carry_no_band_color() {
-        let (muted, others) = trend_glyph_colors(99, Theme::default().muted);
+    fn the_ungrounded_trend_glyphs_carry_no_band_color() -> Result<(), TestError> {
+        let (muted, others) = trend_glyph_colors(99, Theme::default().muted)?;
         assert!(
             muted > 0,
             "no sparkline glyphs were found at all; the probe is looking in the \
@@ -1755,6 +1782,7 @@ mod tests {
              color",
             muted + others
         );
+        Ok(())
     }
 
     /// Owed, same mutation, and the half that keeps the one above honest.
@@ -1763,13 +1791,14 @@ mod tests {
     /// EVERYTHING — which would be a different defect with the same green
     /// light. A grounded stream's glyphs must still be banded.
     #[test]
-    fn a_grounded_trend_still_carries_band_colors() {
-        let (muted, others) = trend_glyph_colors(0, Theme::default().muted);
+    fn a_grounded_trend_still_carries_band_colors() -> Result<(), TestError> {
+        let (muted, others) = trend_glyph_colors(0, Theme::default().muted)?;
         assert!(
             others > 0,
             "every one of the {muted} trend glyphs on a PCMU stream rendered \
              muted; the refusal has swallowed the ordinary case"
         );
+        Ok(())
     }
 
     /// Draw a stream on payload type `pt` with four flat intervals and report
@@ -1777,7 +1806,10 @@ mod tests {
     ///
     /// Shared by the pair above so they cannot drift into describing two
     /// different panes, which is how the mutation survived the first time.
-    fn trend_glyph_colors(pt: u8, muted: ratatui::style::Color) -> (usize, usize) {
+    fn trend_glyph_colors(
+        pt: u8,
+        muted: ratatui::style::Color,
+    ) -> Result<(usize, usize), TestError> {
         use crate::rtp::stream::{QualityInterval, RtpStream};
 
         let ssrc = 0x6262_6262u32;
@@ -1786,7 +1818,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, pt), t0);
         for i in 0..4u32 {
             stream.quality_intervals.push(QualityInterval {
@@ -1801,25 +1833,23 @@ mod tests {
 
         let theme = Theme::default();
         let backend = TestBackend::new(110, 44);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render_stream_detail(
-                    frame,
-                    frame.area(),
-                    &key,
-                    &store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            render_stream_detail(
+                frame,
+                frame.area(),
+                &key,
+                &store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
 
         let buf = terminal.backend().buffer();
         let area = buf.area;
@@ -1830,7 +1860,11 @@ mod tests {
         for y in 0..area.height {
             let mut line = String::new();
             for x in 0..area.width {
-                line.push_str(buf.cell((x, y)).unwrap().symbol());
+                line.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
             if !line.contains("MOS Trend:") {
                 continue;
@@ -1838,7 +1872,7 @@ mod tests {
             let mut in_muted = 0;
             let mut in_other = 0;
             for x in 0..area.width {
-                let cell = buf.cell((x, y)).unwrap();
+                let cell = buf.cell((x, y)).ok_or("the cell is inside the buffer")?;
                 if !matches!(cell.symbol().chars().next(), Some('\u{2581}'..='\u{2588}')) {
                     continue;
                 }
@@ -1848,9 +1882,9 @@ mod tests {
                     in_other += 1;
                 }
             }
-            return (in_muted, in_other);
+            return Ok((in_muted, in_other));
         }
-        panic!("the MOS trend row was not drawn");
+        return Err("the MOS trend row was not drawn".into());
     }
 
     /// Edge case: a long quality history must not emit one sparkline glyph per
@@ -1859,7 +1893,7 @@ mod tests {
     /// most recent, pane-width-bounded intervals keeps the full row (label +
     /// glyphs + average) inside the pane, so the average stays visible.
     #[test]
-    fn long_history_sparkline_stays_within_pane_width() {
+    fn long_history_sparkline_stays_within_pane_width() -> Result<(), TestError> {
         use crate::rtp::stream::{QualityInterval, RtpStream};
 
         let ssrc = 0x4444_4444u32;
@@ -1868,7 +1902,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
         // Far more intervals than any terminal is wide.
         for i in 0..500u32 {
@@ -1885,26 +1919,24 @@ mod tests {
         let width: u16 = 100;
         let theme = Theme::default();
         let backend = TestBackend::new(width, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_stream_detail(
-                    frame,
-                    area,
-                    &key,
-                    &store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_stream_detail(
+                frame,
+                area,
+                &key,
+                &store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
 
         let buf = terminal.backend().buffer();
         let area = buf.area;
@@ -1912,7 +1944,7 @@ mod tests {
             for y in 0..area.height {
                 let mut line = String::new();
                 for x in 0..area.width {
-                    line.push_str(buf.cell((x, y)).unwrap().symbol());
+                    line.push_str(buf.cell((x, y))?.symbol());
                 }
                 if pred(&line) {
                     return Some(line);
@@ -1924,7 +1956,7 @@ mod tests {
         // The MOS sparkline row keeps its trailing average visible — only
         // possible if the glyph run was bounded to the pane width.
         let mos_row =
-            find_row(&|l| l.contains("MOS Trend:")).expect("MOS trend sparkline row missing");
+            find_row(&|l| l.contains("MOS Trend:")).ok_or("MOS trend sparkline row missing")?;
         assert!(
             mos_row.contains("avg:"),
             "MOS trend average pushed off-pane by an unbounded sparkline: {mos_row:?}"
@@ -1932,8 +1964,9 @@ mod tests {
         // The jitter sparkline row carries the only "(avg: …ms)" annotation;
         // its presence proves the jitter average also stayed within the pane.
         let jitter_row = find_row(&|l| l.contains("avg:") && l.contains("ms)"))
-            .expect("jitter trend average pushed off-pane by an unbounded sparkline");
+            .ok_or("jitter trend average pushed off-pane by an unbounded sparkline")?;
         assert!(jitter_row.contains("avg:"));
+        Ok(())
     }
 
     /// The jitter sparkline gives a sample the same color the numbers do.
@@ -1946,7 +1979,7 @@ mod tests {
     /// Asserted on the rendered cells rather than on a helper, because the
     /// defect was never in a helper: it was a loop that never called one.
     #[test]
-    fn the_jitter_sparkline_colors_a_sample_the_way_the_summary_does() {
+    fn the_jitter_sparkline_colors_a_sample_the_way_the_summary_does() -> Result<(), TestError> {
         use crate::rtp::stream::{QualityInterval, RtpStream};
 
         let bands = crate::rtp::bands::QualityBands::default();
@@ -1966,7 +1999,7 @@ mod tests {
             src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
             dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).ok_or("a valid timestamp")?;
         let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
         for i in 0..6u32 {
             stream.quality_intervals.push(QualityInterval {
@@ -1982,26 +2015,24 @@ mod tests {
         let theme = Theme::default();
         let b = crate::rtp::bands::QualityBands::default();
         let backend = TestBackend::new(100, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_stream_detail(
-                    frame,
-                    area,
-                    &key,
-                    &store,
-                    0,
-                    &StreamDetailDisplay {
-                        declared_one_way_delay_ms: None,
-                        quality_bands: &crate::rtp::bands::QualityBands::default(),
-                        theme: &theme,
-                        resolver: &crate::names::NameResolver::new(),
-                        name_mode: crate::names::NameMode::Off,
-                    },
-                );
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(backend)?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_stream_detail(
+                frame,
+                area,
+                &key,
+                &store,
+                0,
+                &StreamDetailDisplay {
+                    declared_one_way_delay_ms: None,
+                    quality_bands: &crate::rtp::bands::QualityBands::default(),
+                    theme: &theme,
+                    resolver: &crate::names::NameResolver::new(),
+                    name_mode: crate::names::NameMode::Off,
+                },
+            );
+        })?;
 
         // The jitter trend row is the one labeled "Jitter:" whose average is
         // reported in ms; the MOS row above it carries block glyphs too.
@@ -2012,13 +2043,17 @@ mod tests {
         for y in 0..area.height {
             let mut row = String::new();
             for x in 0..area.width {
-                row.push_str(buf.cell((x, y)).unwrap().symbol());
+                row.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell is inside the buffer")?
+                        .symbol(),
+                );
             }
             if !(row.contains("Jitter:") && row.contains("ms)")) {
                 continue;
             }
             for x in 0..area.width {
-                let cell = buf.cell((x, y)).unwrap();
+                let cell = buf.cell((x, y)).ok_or("the cell is inside the buffer")?;
                 if cell.symbol() == glyph.to_string() {
                     glyph_colors.push(cell.fg);
                 }
@@ -2032,7 +2067,7 @@ mod tests {
         );
         let expected = jitter_style(sample_ms, &theme, &b)
             .fg
-            .expect("jitter_style always sets a foreground");
+            .ok_or("jitter_style always sets a foreground")?;
         for (i, got) in glyph_colors.iter().enumerate() {
             assert_eq!(
                 *got, expected,
@@ -2041,5 +2076,6 @@ mod tests {
                  on its own numbers again"
             );
         }
+        Ok(())
     }
 }

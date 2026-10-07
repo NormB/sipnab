@@ -347,55 +347,60 @@ pub fn event_id(tracefs: &std::path::Path, name: &str) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The kernel rejects an `attr.size` it does not know, so the list must be
     /// ordered newest first for the newest accepted size to win.
     #[test]
-    fn attr_sizes_are_offered_newest_first() {
+    fn attr_sizes_are_offered_newest_first() -> Result<(), TestError> {
         let mut sorted = ATTR_SIZES;
         sorted.sort_unstable_by(|a, b| b.cmp(a));
         assert_eq!(
             ATTR_SIZES, sorted,
             "a smaller size would win first otherwise"
         );
+        Ok(())
     }
 
     /// The struct is kernel ABI; a Rust-side layout change would misread every
     /// field after it.
     #[test]
-    fn the_attr_struct_is_at_least_as_large_as_the_sizes_offered() {
+    fn the_attr_struct_is_at_least_as_large_as_the_sizes_offered() -> Result<(), TestError> {
         assert!(
             std::mem::size_of::<PerfEventAttr>() >= ATTR_SIZES[0] as usize,
             "claiming a size larger than the struct would hand the kernel a \
              pointer to memory this does not own"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unreadable_or_unparsable_id_is_an_error_not_a_zero() {
-        let dir = tempfile::tempdir().unwrap();
+    fn an_unreadable_or_unparsable_id_is_an_error_not_a_zero() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         assert!(
             event_id(dir.path(), "absent").is_err(),
             "missing id is an error"
         );
 
         let d = dir.path().join("events/uprobes/bad");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("id"), "not-a-number").unwrap();
+        std::fs::create_dir_all(&d)?;
+        std::fs::write(d.join("id"), "not-a-number")?;
         assert!(
             event_id(dir.path(), "bad").is_err(),
             "event id 0 is a real, different tracepoint; defaulting to it would \
              read someone else's events"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_valid_id_is_read() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_valid_id_is_read() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let d = dir.path().join("events/uprobes/good");
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("id"), "1815\n").unwrap();
-        assert_eq!(event_id(dir.path(), "good").unwrap(), 1815);
+        std::fs::create_dir_all(&d)?;
+        std::fs::write(d.join("id"), "1815\n")?;
+        assert_eq!(event_id(dir.path(), "good")?, 1815);
+        Ok(())
     }
 
     // ── The ring walk, over a file standing in for the kernel ────────────
@@ -412,7 +417,7 @@ mod tests {
     /// The one thing the reader is for: the tracepoint's own bytes, and no
     /// more of the record than the kernel said they occupy.
     #[test]
-    fn a_sample_delivers_exactly_its_raw_payload() {
+    fn a_sample_delivers_exactly_its_raw_payload() -> Result<(), TestError> {
         let records = fake::sample(b"INVITE sip:b@x SIP/2.0");
         let (mut ring, _file) = fake::ring(1, 0, &records);
 
@@ -426,13 +431,14 @@ mod tests {
             "the fixture really does carry alignment padding past the payload, \
              so an equal length above proves the padding was cut"
         );
+        Ok(())
     }
 
     /// Consumed space is handed back: the kernel may not reuse what `data_tail`
     /// does not cover, so a reader that forgot to publish it would stall the
     /// ring once it filled.
     #[test]
-    fn draining_publishes_the_tail_up_to_the_head() {
+    fn draining_publishes_the_tail_up_to_the_head() -> Result<(), TestError> {
         let mut records = fake::sample(b"one");
         records.extend(fake::sample(b"two"));
         let (mut ring, _file) = fake::ring(1, 0, &records);
@@ -446,10 +452,11 @@ mod tests {
             "everything read must be released to the kernel"
         );
         assert_eq!(ring.tail(), ring.head());
+        Ok(())
     }
 
     #[test]
-    fn records_are_delivered_in_ring_order() {
+    fn records_are_delivered_in_ring_order() -> Result<(), TestError> {
         let mut records = Vec::new();
         for m in [&b"first"[..], b"second", b"third"] {
             records.extend(fake::sample(m));
@@ -462,21 +469,25 @@ mod tests {
             got,
             vec![b"first".to_vec(), b"second".to_vec(), b"third".to_vec()]
         );
+        Ok(())
     }
 
     /// An empty ring is the common case on a quiet trunk. It must deliver
     /// nothing and must not move the tail.
     #[test]
-    fn an_empty_ring_delivers_nothing() {
+    fn an_empty_ring_delivers_nothing() -> Result<(), TestError> {
         let (mut ring, _file) = fake::ring(1, 64, &[]);
-        assert_eq!(ring.drain(|_| panic!("nothing was written")), 0);
+        let mut delivered = 0usize;
+        assert_eq!(ring.drain(|_| delivered += 1), 0);
+        assert_eq!(delivered, 0, "nothing was written");
         assert_eq!(ring.tail(), 64, "no record, no movement");
+        Ok(())
     }
 
     /// `PERF_RECORD_LOST` is evidence that the capture has a hole in it. It is
     /// counted, summed across records, and never handed on as a payload.
     #[test]
-    fn a_lost_record_is_counted_and_never_delivered() {
+    fn a_lost_record_is_counted_and_never_delivered() -> Result<(), TestError> {
         let mut records = fake::lost(0xABCD, 7);
         records.extend(fake::sample(b"after the gap"));
         records.extend(fake::lost(0xABCD, 5));
@@ -492,12 +503,13 @@ mod tests {
             12,
             "the COUNT field is summed, not the id and not the record count"
         );
+        Ok(())
     }
 
     /// Record types this reader has no use for (mmap, comm, throttle, ...) are
     /// stepped over by their own size, or everything after them is lost.
     #[test]
-    fn an_unknown_record_type_is_stepped_over() {
+    fn an_unknown_record_type_is_stepped_over() -> Result<(), TestError> {
         let mut records = fake::record(99, &[0xEE; 8]);
         records.extend(fake::sample(b"still read"));
         let (mut ring, _file) = fake::ring(1, 0, &records);
@@ -506,13 +518,14 @@ mod tests {
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"still read".to_vec()]);
         assert_eq!(ring.tail(), records.len() as u64);
+        Ok(())
     }
 
     /// A header claiming fewer than its own eight bytes would never advance
     /// the walk, which would spin forever. It stops there instead, keeping
     /// everything before it and releasing nothing past it.
     #[test]
-    fn a_record_too_short_to_advance_stops_the_walk_where_it_stands() {
+    fn a_record_too_short_to_advance_stops_the_walk_where_it_stands() -> Result<(), TestError> {
         let mut records = fake::sample(b"kept");
         let stuck_at = records.len() as u64;
         records.extend(fake::header(PERF_RECORD_SAMPLE, 0));
@@ -529,12 +542,13 @@ mod tests {
             stuck_at,
             "the tail stops at the record it could not read"
         );
+        Ok(())
     }
 
     /// A raw length larger than the record that carries it is refused rather
     /// than read past: the bytes beyond belong to the next record.
     #[test]
-    fn a_raw_length_larger_than_its_record_is_not_delivered() {
+    fn a_raw_length_larger_than_its_record_is_not_delivered() -> Result<(), TestError> {
         let mut lying = fake::sample(b"abcd");
         lying[8..12].copy_from_slice(&1000u32.to_le_bytes());
         let mut records = lying;
@@ -549,13 +563,14 @@ mod tests {
             "only the honest record arrives, and the walk carries on past the \
              lying one by its header size"
         );
+        Ok(())
     }
 
     /// The kernel writes a record across the end of the data area when that is
     /// where the head happens to be. Reading it must stitch the two halves, not
     /// return the bytes that happen to sit past the end of the mapping.
     #[test]
-    fn a_record_that_wraps_the_end_of_the_ring_is_reassembled() {
+    fn a_record_that_wraps_the_end_of_the_ring_is_reassembled() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
         let payload = b"INVITE sip:wrapped@x SIP/2.0 -- long enough to straddle";
         let records = fake::sample(payload);
@@ -568,13 +583,14 @@ mod tests {
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![payload.to_vec()]);
+        Ok(())
     }
 
     /// Positions are absolute and grow forever; only their low bits address
     /// the data area. A reader that indexed with the raw position would read
     /// outside the mapping after the first lap.
     #[test]
-    fn positions_past_the_first_lap_address_the_same_ring() {
+    fn positions_past_the_first_lap_address_the_same_ring() -> Result<(), TestError> {
         let data_size = fake::page() as u64;
         let records = fake::sample(b"third lap");
         let (mut ring, _file) = fake::ring(1, 3 * data_size + 40, &records);
@@ -583,23 +599,28 @@ mod tests {
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"third lap".to_vec()]);
         assert_eq!(ring.tail(), 3 * data_size + 40 + records.len() as u64);
+        Ok(())
     }
 
     /// The descriptor handed out for polling is the ring's own, not a copy or
     /// a stand-in: polling anything else would never wake.
     #[test]
-    fn the_polling_descriptor_is_the_rings_own() {
+    fn the_polling_descriptor_is_the_rings_own() -> Result<(), TestError> {
         let (ring, _file) = fake::ring(2, 0, &[]);
         let dup = ring
             .as_fd()
             .try_clone_to_owned()
-            .expect("a live descriptor duplicates");
-        let len = std::fs::File::from(dup).metadata().expect("fstat").len();
+            .map_err(|e| format!("a live descriptor duplicates: {e:?}"))?;
+        let len = std::fs::File::from(dup)
+            .metadata()
+            .map_err(|e| format!("fstat: {e:?}"))?
+            .len();
         assert_eq!(
             len as usize,
             fake::page() * 3,
             "the file the ring was mapped from: one metadata page, two data"
         );
+        Ok(())
     }
 
     /// The kernel sizes the data area in pages and requires a power of two.
@@ -616,7 +637,7 @@ mod tests {
     /// A sample whose header claims no room for its own length field carries
     /// no payload. It is stepped over, not read as a zero-length payload.
     #[test]
-    fn a_sample_too_short_to_carry_its_length_is_stepped_over() {
+    fn a_sample_too_short_to_carry_its_length_is_stepped_over() -> Result<(), TestError> {
         let mut records = fake::header(PERF_RECORD_SAMPLE, 8);
         records.extend(fake::sample(b"after"));
         let (mut ring, _file) = fake::ring(1, 0, &records);
@@ -624,22 +645,24 @@ mod tests {
         let mut got = Vec::new();
         assert_eq!(ring.drain(|raw| got.push(raw.to_vec())), 1);
         assert_eq!(got, vec![b"after".to_vec()]);
+        Ok(())
     }
 
     /// A mapping the kernel refuses is reported with its errno rather than
     /// handed back as a ring over memory that is not there. A read-only file
     /// cannot be mapped shared and writable, so the kernel refuses with EACCES.
     #[test]
-    fn a_mapping_the_kernel_refuses_is_reported() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_mapping_the_kernel_refuses_is_reported() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("ring");
-        std::fs::write(&path, vec![0u8; fake::page() * 2]).unwrap();
-        let read_only = std::fs::File::open(&path).unwrap();
+        std::fs::write(&path, vec![0u8; fake::page() * 2])?;
+        let read_only = std::fs::File::open(&path)?;
         let err = match PerfRing::map(OwnedFd::from(read_only), 1) {
-            Ok(_) => panic!("a read-only descriptor cannot back a writable shared map"),
+            Ok(_) => return Err("a read-only descriptor cannot back a writable shared map".into()),
             Err(e) => e,
         };
         assert_eq!(err.raw_os_error(), Some(libc::EACCES), "{err}");
+        Ok(())
     }
 
     /// An open the kernel refuses is reported as the syscall's OWN error, not
@@ -652,9 +675,10 @@ mod tests {
     /// (EINVAL/ENOENT). Nothing is opened, so nothing is captured. The
     /// SUCCESS arm of `open` is the part no unprivileged test can reach.
     #[test]
-    fn an_event_id_no_tracepoint_carries_is_refused_with_the_kernels_own_error() {
+    fn an_event_id_no_tracepoint_carries_is_refused_with_the_kernels_own_error()
+    -> Result<(), TestError> {
         let err = match PerfRing::open(u64::MAX, 0, 1) {
-            Ok(_) => panic!("no tracepoint has id u64::MAX"),
+            Ok(_) => return Err("no tracepoint has id u64::MAX".into()),
             Err(e) => e,
         };
         assert!(
@@ -665,6 +689,7 @@ mod tests {
             !err.to_string().contains("no attr size was attempted"),
             "{err}"
         );
+        Ok(())
     }
 }
 
