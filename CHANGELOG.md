@@ -59,6 +59,11 @@ entry that carries them.
   page capability row to be covered, the hero description to match, the tool
   and write counts, the filter DSL size and the `unsafe` count to agree, and
   no released version to be called unreleased.
+- **No `large_enum_variant` or `type_complexity` suppression remains
+  either.** `PacketAction::Sip` boxes its parsed message, so the enum every
+  classified packet returns is 120 bytes instead of 336 (`packet_action_stays_small`
+  pins it), at one allocation per SIP message; a test helper's four-value
+  tuple is a named struct. The gate refuses both lints.
 
 ## [0.5.204] - 2026-10-06
 

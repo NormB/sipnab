@@ -644,7 +644,7 @@ fn load_one_capture(
         ) {
             crate::pipeline::PacketAction::None => {}
             crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-                dialog_store.write().process_message(msg);
+                dialog_store.write().process_message(*msg);
                 totals.sip += 1;
                 if !sdp_links.is_empty() {
                     let mut ss = stream_store.write();

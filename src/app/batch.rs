@@ -4700,7 +4700,7 @@ fn process_parsed_packet(
                     .and_then(|id| dialog_store.get(id))
                     .map(|d| d.state().clone());
 
-                dialog_store.process_message(sip_msg.clone());
+                dialog_store.process_message((*sip_msg).clone());
 
                 // Apply --tag to the dialog
                 if let Some(ref tag_label) = cli.dialog_args.tag
