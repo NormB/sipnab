@@ -845,6 +845,7 @@ pub(crate) fn resample_linear<T: LinearResampleSample>(
 /// Unit tests for mono and stereo WAV export from RTP streams.
 #[cfg(test)]
 mod tests {
+    type TestError = Box<dyn std::error::Error>;
     /// A frame the decoder rejects must be counted, not only logged.
     ///
     /// The skip was recorded with `debug!`, which is off by default, while the
@@ -854,14 +855,14 @@ mod tests {
     /// increment still compiles and `decode_failure_clause`'s own test still
     /// passes: that test is handed a number rather than measuring one.
     #[test]
-    fn opus_frames_the_decoder_rejects_are_counted() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn opus_frames_the_decoder_rejects_are_counted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("opus.wav");
 
         // Two frames of bytes that are not valid Opus. If the decoder ever
         // learns to accept them the assertion below fails loudly rather than
         // passing vacuously, which is the outcome to prefer.
-        let stream = make_stream(Some("opus"), vec![(0, vec![0xFF; 8]), (960, vec![0xFE; 8])]);
+        let stream = make_stream(Some("opus"), vec![(0, vec![0xFF; 8]), (960, vec![0xFE; 8])])?;
 
         match export_stream_to_wav(&stream, &path) {
             Ok(summary) => assert!(
@@ -878,6 +879,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The artefact must name its mechanism, in the FILE.
@@ -890,14 +892,14 @@ mod tests {
     /// Asserted by reading the bytes back, not by inspecting the string that
     /// was passed in: what matters is that it reached the disk.
     #[test]
-    fn an_exported_wav_names_its_mechanism_in_the_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_exported_wav_names_its_mechanism_in_the_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("provenance.wav");
 
-        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        export_stream_to_wav(&stream, &path).expect("export");
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        export_stream_to_wav(&stream, &path).map_err(|e| format!("export: {e:?}"))?;
 
-        let bytes = std::fs::read(&path).expect("read back");
+        let bytes = std::fs::read(&path).map_err(|e| format!("read back: {e:?}"))?;
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.contains("sipnab-capture"),
@@ -913,20 +915,21 @@ mod tests {
             text.contains("No omissions recorded"),
             "a complete export must say so; absence of a warning is not a claim"
         );
+        Ok(())
     }
 
     /// A partial file says so INSIDE itself, not only in the summary.
     #[test]
-    fn a_partial_export_records_its_partialness_in_the_file() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_partial_export_records_its_partialness_in_the_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("partial.wav");
 
-        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let mut stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
         // The ring wrapped: frames existed that this file does not hold.
         stream.payload_frames_dropped = 4200;
 
-        export_stream_to_wav(&stream, &path).expect("export");
-        let bytes = std::fs::read(&path).expect("read back");
+        export_stream_to_wav(&stream, &path).map_err(|e| format!("export: {e:?}"))?;
+        let bytes = std::fs::read(&path).map_err(|e| format!("read back: {e:?}"))?;
         let text = String::from_utf8_lossy(&bytes);
 
         assert!(
@@ -941,6 +944,7 @@ mod tests {
             !text.contains("No omissions recorded"),
             "a partial file must not also claim completeness"
         );
+        Ok(())
     }
 
     /// A fixed-offset reader must still read the audio correctly.
@@ -955,14 +959,14 @@ mod tests {
     /// So the note goes after the samples, and this asserts the property that
     /// buys: the first 44 bytes are what they always were.
     #[test]
-    fn the_provenance_chunk_does_not_corrupt_the_audio() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_provenance_chunk_does_not_corrupt_the_audio() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("intact.wav");
 
-        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        export_stream_to_wav(&stream, &path).expect("export");
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        export_stream_to_wav(&stream, &path).map_err(|e| format!("export: {e:?}"))?;
 
-        let bytes = std::fs::read(&path).expect("read back");
+        let bytes = std::fs::read(&path).map_err(|e| format!("read back: {e:?}"))?;
         assert_eq!(&bytes[0..4], b"RIFF", "not a RIFF file");
         assert_eq!(&bytes[8..12], b"WAVE", "not a WAVE file");
 
@@ -977,7 +981,11 @@ mod tests {
             b"data",
             "data must stay at offset 36; moving it is what broke wav_header"
         );
-        let data_size = u32::from_le_bytes(bytes[40..44].try_into().expect("size")) as usize;
+        let data_size = u32::from_le_bytes(
+            bytes[40..44]
+                .try_into()
+                .map_err(|e| format!("size: {e:?}"))?,
+        ) as usize;
         assert_eq!(
             data_size,
             160 * 2,
@@ -990,7 +998,9 @@ mod tests {
             bytes.len() > 44 + data_size,
             "the note should follow the samples, not replace them"
         );
-        let riff_size = u32::from_le_bytes(bytes[4..8].try_into().expect("size")) as usize;
+        let riff_size =
+            u32::from_le_bytes(bytes[4..8].try_into().map_err(|e| format!("size: {e:?}"))?)
+                as usize;
         assert_eq!(
             riff_size + 8,
             bytes.len(),
@@ -1000,6 +1010,7 @@ mod tests {
             String::from_utf8_lossy(&bytes[44 + data_size..]).contains("sipnab-capture"),
             "the note must be there, after the audio"
         );
+        Ok(())
     }
 
     /// The stereo path must actually CALL the omission clause.
@@ -1009,42 +1020,46 @@ mod tests {
     /// string still compiles and still passes it. This one exports three
     /// streams for real and reads the summary.
     #[test]
-    fn a_three_stream_call_reports_the_stream_it_could_not_carry() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_three_stream_call_reports_the_stream_it_could_not_carry() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("three.wav");
 
         // Three distinct SOURCES. Sharing one SSRC made this a three-record
         // view of one source, which now exports mono and omits two -- the
         // summary would say "2 of 3" and the test would be measuring the
         // fixture rather than the two-channel limit it exists for.
-        let a = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0A0A_0A0A);
-        let b = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0B0B_0B0B);
-        let c = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0C0C_0C0C);
+        let a = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0A0A_0A0A)?;
+        let b = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0B0B_0B0B)?;
+        let c = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0C0C_0C0C)?;
 
-        let summary = export_dialog_to_wav(&[&a, &b, &c], &path).expect("export");
+        let summary =
+            export_dialog_to_wav(&[&a, &b, &c], &path).map_err(|e| format!("export: {e:?}"))?;
         assert!(
             summary.contains("1 of 3"),
             "a WAV carries two channels; the third stream is missing and the \
              summary must say which:\n{summary}"
         );
+        Ok(())
     }
 
     /// A stream dropped for its codec is named in the summary, not filtered
     /// out in silence.
     #[test]
-    fn an_undecodable_stream_is_named_in_the_summary() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_undecodable_stream_is_named_in_the_summary() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("mixed.wav");
 
-        let good = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let bad = make_stream(Some("G729"), vec![(0, vec![0x00; 10])]);
+        let good = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let bad = make_stream(Some("G729"), vec![(0, vec![0x00; 10])])?;
 
-        let summary = export_dialog_to_wav(&[&good, &bad], &path).expect("export");
+        let summary =
+            export_dialog_to_wav(&[&good, &bad], &path).map_err(|e| format!("export: {e:?}"))?;
         assert!(
             summary.contains("G729"),
             "the undecodable stream was filtered out silently, so the file \
              looks complete:\n{summary}"
         );
+        Ok(())
     }
 
     /// A file holding one direction must say the other was never seen.
@@ -1054,19 +1069,19 @@ mod tests {
     /// is byte-identical to a deliberate single-stream export, so "we only saw
     /// one side" and "you asked for one side" read the same.
     #[test]
-    fn a_file_with_one_direction_says_the_other_was_not_seen() {
+    fn a_file_with_one_direction_says_the_other_was_not_seen() -> Result<(), TestError> {
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        fn directed(src: [u8; 4], dst: [u8; 4]) -> RtpStream {
-            let mut s = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        fn directed(src: [u8; 4], dst: [u8; 4]) -> Result<RtpStream, TestError> {
+            let mut s = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
             s.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(src)), 20000);
             s.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::from(dst)), 30000);
-            s
+            Ok(s)
         }
 
         // Both ways: nothing to report.
-        let there = directed([10, 0, 0, 1], [10, 0, 0, 2]);
-        let back = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        let there = directed([10, 0, 0, 1], [10, 0, 0, 2])?;
+        let back = directed([10, 0, 0, 2], [10, 0, 0, 1])?;
         assert_eq!(
             direction_clause(&[&there, &back]),
             "",
@@ -1087,7 +1102,7 @@ mod tests {
         );
 
         // Ports differ per direction in real SDP; pairing must survive that.
-        let mut back_odd_port = directed([10, 0, 0, 2], [10, 0, 0, 1]);
+        let mut back_odd_port = directed([10, 0, 0, 2], [10, 0, 0, 1])?;
         back_odd_port.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 41234);
         assert_eq!(
             direction_clause(&[&there, &back_odd_port]),
@@ -1095,6 +1110,7 @@ mod tests {
             "each direction negotiates its own port; pairing by socket would \
              report almost every real call as one-directional"
         );
+        Ok(())
     }
 
     /// The dialog export must actually CALL the direction clause.
@@ -1106,22 +1122,23 @@ mod tests {
     /// exporting real streams and reading the summary rather than testing the
     /// formatter and assuming the rest.
     #[test]
-    fn a_one_directional_dialog_export_reports_it() {
+    fn a_one_directional_dialog_export_reports_it() -> Result<(), TestError> {
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("oneway.wav");
 
         // Two streams, both A -> B: media was only ever seen going one way.
-        let mut a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let mut a = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
         a.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000);
         a.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000);
-        let mut b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let mut b = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
         b.key.ssrc = 0x9999_0000;
         b.key.src = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20002);
         b.key.dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30002);
 
-        let summary = export_dialog_to_wav(&[&a, &b], &path).expect("export");
+        let summary =
+            export_dialog_to_wav(&[&a, &b], &path).map_err(|e| format!("export: {e:?}"))?;
         assert!(
             summary.contains("only ONE direction"),
             "a dialog whose media was only seen one way exported without \
@@ -1129,11 +1146,12 @@ mod tests {
         );
 
         // And it reaches the FILE, which is what RE7 asks for.
-        let bytes = std::fs::read(&path).expect("read back");
+        let bytes = std::fs::read(&path).map_err(|e| format!("read back: {e:?}"))?;
         assert!(
             String::from_utf8_lossy(&bytes).contains("only ONE direction"),
             "the note inside the file must carry it too, not just the summary"
         );
+        Ok(())
     }
 
     /// Every mechanism the enum offers must have something that produces it.
@@ -1142,7 +1160,7 @@ mod tests {
     /// second. An enum arm no code path produces reads as a capability the
     /// tool has. `rtpengine-spool` returns when RE5 gives it a producer.
     #[test]
-    fn every_mechanism_is_reachable() {
+    fn every_mechanism_is_reachable() -> Result<(), TestError> {
         assert_eq!(AudioMechanism::SipnabCapture.id(), "sipnab-capture");
         // Exhaustive by construction: adding a variant without a producer
         // fails to compile here until it is listed, which is the reminder.
@@ -1152,6 +1170,7 @@ mod tests {
             1,
             "a new mechanism needs a producer and a test that exports through it"
         );
+        Ok(())
     }
 
     /// A file that carries fewer streams than the call must say so.
@@ -1162,7 +1181,7 @@ mod tests {
     /// The omission is invisible exactly when it matters: a conference or a
     /// transfer is the call somebody exports to find out what happened.
     #[test]
-    fn an_export_that_leaves_streams_out_says_so() {
+    fn an_export_that_leaves_streams_out_says_so() -> Result<(), TestError> {
         assert_eq!(
             omitted_clause(2, 2, &[]),
             "",
@@ -1187,12 +1206,13 @@ mod tests {
             codec.contains("G729"),
             "a stream dropped for its codec must name the codec:\n{codec}"
         );
+        Ok(())
     }
 
     /// Frames that failed to decode are missing from the audio, and the frame
     /// count in the summary counts what was CAPTURED.
     #[test]
-    fn frames_that_failed_to_decode_are_named() {
+    fn frames_that_failed_to_decode_are_named() -> Result<(), TestError> {
         assert_eq!(
             decode_failure_clause(0),
             "",
@@ -1209,6 +1229,7 @@ mod tests {
             "the summary's frame count describes what was captured, and the \
              clause has to say so or the two numbers silently disagree:\n{failed}"
         );
+        Ok(())
     }
 
     /// "The call was silent" and "this run did not keep it" must never read as
@@ -1224,13 +1245,13 @@ mod tests {
     /// for months because only one of the two functions that decode
     /// `payload_buffer` was migrated. This test spans both.
     #[test]
-    fn a_run_that_kept_nothing_never_reads_as_a_silent_call() {
+    fn a_run_that_kept_nothing_never_reads_as_a_silent_call() -> Result<(), TestError> {
         // Retention empty, codec decodable: a statement about the RUN.
-        let kept_nothing = make_stream(Some("PCMU"), vec![]);
+        let kept_nothing = make_stream(Some("PCMU"), vec![])?;
         let run_msg = nothing_to_decode(&[&kept_nothing]);
 
         // Nothing sipnab can decode: a statement about the TRAFFIC's codecs.
-        let undecodable = make_stream(Some("G729"), vec![]);
+        let undecodable = make_stream(Some("G729"), vec![])?;
         let codec_msg = nothing_to_decode(&[&undecodable]);
 
         assert_ne!(
@@ -1266,11 +1287,12 @@ mod tests {
             codec_msg.contains("G729"),
             "the undecodable-codec message must name what it found:\n{codec_msg}"
         );
+        Ok(())
     }
 
     /// A wrapped ring must say so, or the duration reads as the call's length.
     #[test]
-    fn a_wrapped_ring_is_named_in_the_summary() {
+    fn a_wrapped_ring_is_named_in_the_summary() -> Result<(), TestError> {
         assert_eq!(wrap_clause(0), "", "an intact buffer adds no clause");
 
         let wrapped = wrap_clause(4200);
@@ -1287,6 +1309,7 @@ mod tests {
             "which END was kept decides whether the file answers the question \
              being asked of it:\n{wrapped}"
         );
+        Ok(())
     }
 
     use super::*;
@@ -1297,8 +1320,11 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     /// Build a stream with the given codec label and captured payload frames.
-    fn make_stream(codec: Option<&str>, payloads: Vec<(u32, Vec<u8>)>) -> RtpStream {
-        make_stream_ssrc(codec, payloads, 0x1234_5678)
+    fn make_stream(
+        codec: Option<&str>,
+        payloads: Vec<(u32, Vec<u8>)>,
+    ) -> Result<RtpStream, TestError> {
+        Ok(make_stream_ssrc(codec, payloads, 0x1234_5678)?)
     }
 
     /// A stream from a named source.
@@ -1311,7 +1337,7 @@ mod tests {
         codec: Option<&str>,
         payloads: Vec<(u32, Vec<u8>)>,
         ssrc: u32,
-    ) -> RtpStream {
+    ) -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1329,93 +1355,105 @@ mod tests {
             ssrc,
             payload_offset: 12,
         };
-        let ts = DateTime::from_timestamp(1_700_000_000, 0).expect("valid");
+        let ts = DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid")?;
         let mut stream = RtpStream::new(key, &hdr, ts);
         if let Some(c) = codec {
             stream.codec = Some(c.to_string());
         }
         stream.payload_buffer = VecDeque::from(payloads);
-        stream
+        Ok(stream)
     }
 
     /// A single PCMU stream exports to a mono mu-law WAV file.
     #[test]
-    fn export_mono_pcmu() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_mono_pcmu() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.wav");
 
         // 160 bytes of mu-law silence (0xFF)
-        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let result = export_stream_to_wav(&stream, &path).unwrap();
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let result = export_stream_to_wav(&stream, &path)?;
 
         assert!(result.contains("mu-law"));
         assert!(result.contains("1 frames"));
         assert!(path.exists());
+        Ok(())
     }
 
     /// Exporting an unsupported codec (G729) returns an error.
     #[test]
-    fn export_rejects_unsupported_codec() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_rejects_unsupported_codec() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.wav");
 
-        let stream = make_stream(Some("G729"), vec![(0, vec![0; 10])]);
+        let stream = make_stream(Some("G729"), vec![(0, vec![0; 10])])?;
         let result = export_stream_to_wav(&stream, &path);
 
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .err()
+                .ok_or("expected an error, got Ok")?
                 .to_string()
                 .contains("Unsupported codec")
         );
+        Ok(())
     }
 
     /// Exporting a stream with no captured payload returns an error.
     #[test]
-    fn export_rejects_empty_buffer() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_rejects_empty_buffer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("test.wav");
 
-        let stream = make_stream(Some("PCMU"), vec![]);
+        let stream = make_stream(Some("PCMU"), vec![])?;
         let result = export_stream_to_wav(&stream, &path);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No audio payload"));
+        assert!(
+            result
+                .err()
+                .ok_or("expected an error, got Ok")?
+                .to_string()
+                .contains("No audio payload")
+        );
+        Ok(())
     }
 
     /// A dialog with one exportable stream falls back to mono export.
     #[test]
-    fn export_dialog_mono_fallback() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_mono_fallback() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("dialog.wav");
 
-        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let result = export_dialog_to_wav(&[&stream], &path).unwrap();
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let result = export_dialog_to_wav(&[&stream], &path)?;
 
         assert!(result.contains("mu-law"));
+        Ok(())
     }
 
     /// Two exportable streams export to an interleaved stereo WAV.
     #[test]
-    fn export_dialog_stereo() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_stereo() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("stereo.wav");
 
         // Two SOURCES, not two records of one. This test passed with a single
         // SSRC used twice, which is the shape a relay emits and the reason
         // "first two exportable streams" looked correct for so long.
-        let s1 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x1111_1111);
-        let s2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x2222_2222);
-        let result = export_dialog_to_wav(&[&s1, &s2], &path).unwrap();
+        let s1 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x1111_1111)?;
+        let s2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x2222_2222)?;
+        let result = export_dialog_to_wav(&[&s1, &s2], &path)?;
 
         assert!(result.contains("stereo"));
         assert!(path.exists());
 
         // Verify it's actually a stereo file
-        let data = std::fs::read(&path).unwrap();
-        let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
+        let data = std::fs::read(&path)?;
+        let channels = u16::from_le_bytes(data[22..24].try_into()?);
         assert_eq!(channels, 2);
+        Ok(())
     }
 
     /// Two records of ONE source export mono, never fake stereo.
@@ -1427,22 +1465,23 @@ mod tests {
     /// conversation and carries one side of it, which is worse than mono
     /// because a reader has no way to tell.
     #[test]
-    fn two_records_of_one_source_export_mono_not_fake_stereo() {
-        let dir = tempfile::tempdir().unwrap();
+    fn two_records_of_one_source_export_mono_not_fake_stereo() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("dup.wav");
 
         // Same SSRC: the same audio seen twice at a relay.
-        let ingress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let egress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        export_dialog_to_wav(&[&ingress, &egress], &path).unwrap();
+        let ingress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let egress = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        export_dialog_to_wav(&[&ingress, &egress], &path)?;
 
-        let data = std::fs::read(&path).unwrap();
-        let channels = u16::from_le_bytes(data[22..24].try_into().unwrap());
+        let data = std::fs::read(&path)?;
+        let channels = u16::from_le_bytes(data[22..24].try_into()?);
         assert_eq!(
             channels, 1,
             "one source must export mono; a stereo file here would carry the \
              same leg on both channels and read as a two-party recording"
         );
+        Ok(())
     }
 
     /// Stereo selects two DISTINCT sources, not the first two records.
@@ -1451,23 +1490,23 @@ mod tests {
     /// before either record of the other. A selector that takes the first two
     /// picks the duplicate pair and never sees the second party at all.
     #[test]
-    fn stereo_selects_two_distinct_sources_not_the_first_two() {
-        let dir = tempfile::tempdir().unwrap();
+    fn stereo_selects_two_distinct_sources_not_the_first_two() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("pair.wav");
 
-        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
-        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
+        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
 
-        let audio = decode_dialog_audio(&[&a_in, &a_out, &b_in, &b_out]).unwrap();
+        let audio = decode_dialog_audio(&[&a_in, &a_out, &b_in, &b_out])?;
         assert_eq!(
             audio.channels, 2,
             "two distinct sources are present, so the export is stereo"
         );
 
-        export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path).unwrap();
-        let data = std::fs::read(&path).unwrap();
+        export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path)?;
+        let data = std::fs::read(&path)?;
         // Find the `data` chunk. Reading from a fixed offset 44 is what the
         // first draft did, and these files carry a provenance note chunk
         // before the samples -- so it compared NOTE TEXT, found it varied, and
@@ -1475,13 +1514,13 @@ mod tests {
         let tag = data
             .windows(4)
             .position(|w| w == b"data")
-            .expect("a WAV has a data chunk");
+            .ok_or("a WAV has a data chunk")?;
         // The chunk's DECLARED size, not everything to EOF. These files carry
         // the provenance note in a chunk AFTER the samples, so a slice running
         // to the end compares note text as if it were audio -- it varies, the
         // test passes, and the two identical channels it exists to catch go
         // straight through.
-        let size = u32::from_le_bytes(data[tag + 4..tag + 8].try_into().unwrap()) as usize;
+        let size = u32::from_le_bytes(data[tag + 4..tag + 8].try_into()?) as usize;
         let start = tag + 8;
         let body = &data[start..start + size];
         let mut differs = false;
@@ -1498,6 +1537,7 @@ mod tests {
             "the two channels are identical, so the same leg was selected \
              twice and the far end is absent from the recording"
         );
+        Ok(())
     }
 
     /// A codec drop is named even when the COUNT shows nothing missing.
@@ -1507,7 +1547,7 @@ mod tests {
     /// the file then read as complete. `omitted_clause(1, 1, &["G729"])` is the
     /// shape: nothing missing by the numbers, a whole codec dropped in fact.
     #[test]
-    fn a_codec_drop_is_named_even_when_the_count_balances() {
+    fn a_codec_drop_is_named_even_when_the_count_balances() -> Result<(), TestError> {
         let clause = omitted_clause(1, 1, &["G729"]);
         assert!(
             !clause.is_empty(),
@@ -1518,6 +1558,7 @@ mod tests {
             clause.contains("G729"),
             "and the codec must be named: {clause}"
         );
+        Ok(())
     }
 
     /// A clean export still says nothing.
@@ -1525,11 +1566,12 @@ mod tests {
     /// The other half: loosening the guard above must not make every complete
     /// file carry a PARTIAL caveat, which would train a reader to ignore it.
     #[test]
-    fn a_complete_export_carries_no_partial_clause() {
+    fn a_complete_export_carries_no_partial_clause() -> Result<(), TestError> {
         assert!(
             omitted_clause(2, 2, &[]).is_empty(),
             "nothing was dropped and no codec was skipped, so there is no caveat"
         );
+        Ok(())
     }
 
     /// The omitted count is of SOURCES, not of stream records.
@@ -1539,21 +1581,23 @@ mod tests {
     /// when two sources existed and both were carried -- a caveat describing
     /// loss that did not happen is as misleading as one that hides loss.
     #[test]
-    fn the_omitted_count_is_of_sources_not_records() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_omitted_count_is_of_sources_not_records() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("relay.wav");
 
-        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
-        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+        let a_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let a_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let b_in = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
+        let b_out = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
 
-        let summary = export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path).expect("export");
+        let summary = export_dialog_to_wav(&[&a_in, &a_out, &b_in, &b_out], &path)
+            .map_err(|e| format!("export: {e:?}"))?;
         assert!(
             !summary.contains(" of 4"),
             "both sources were carried, so nothing was omitted; a count over \
              the four RECORDS invents a loss that did not happen:\n{summary}"
         );
+        Ok(())
     }
 
     /// Selection keeps the FIRST record of each source, in arrival order.
@@ -1564,12 +1608,13 @@ mod tests {
     /// depending on the choice. First-seen is the one the rest of the pipeline
     /// already assumes.
     #[test]
-    fn selection_keeps_the_first_record_of_each_source() {
-        let first = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let second = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xAAAA_AAAA);
-        let other = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0xBBBB_BBBB);
+    fn selection_keeps_the_first_record_of_each_source() -> Result<(), TestError> {
+        let first = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let second = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xAAAA_AAAA)?;
+        let other = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0xBBBB_BBBB)?;
 
-        let audio = decode_dialog_audio(&[&first, &second, &other]).expect("decode");
+        let audio = decode_dialog_audio(&[&first, &second, &other])
+            .map_err(|e| format!("decode: {e:?}"))?;
         assert_eq!(
             audio.channels, 2,
             "two sources are present regardless of how many records each has"
@@ -1580,6 +1625,7 @@ mod tests {
             "the second source must reach a channel: {}",
             audio.summary_head
         );
+        Ok(())
     }
 
     /// A source whose records are interleaved with another's still yields two
@@ -1590,23 +1636,24 @@ mod tests {
     /// one source are adjacent, would drop the second party on real traffic
     /// while passing every grouped fixture.
     #[test]
-    fn interleaved_records_still_find_both_sources() {
-        let a1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let b1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
-        let a2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA);
-        let b2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB);
+    fn interleaved_records_still_find_both_sources() -> Result<(), TestError> {
+        let a1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let b1 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
+        let a2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0xAAAA_AAAA)?;
+        let b2 = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0xBBBB_BBBB)?;
 
         for order in [
             [&a1, &b1, &a2, &b2],
             [&b1, &a1, &b2, &a2],
             [&a1, &a2, &b1, &b2],
         ] {
-            let audio = decode_dialog_audio(&order).expect("decode");
+            let audio = decode_dialog_audio(&order).map_err(|e| format!("decode: {e:?}"))?;
             assert_eq!(
                 audio.channels, 2,
                 "two sources are present in every ordering; this one lost one"
             );
         }
+        Ok(())
     }
 
     /// Three sources still carry two and report the third.
@@ -1615,42 +1662,45 @@ mod tests {
     /// deduplicating first and then truncating are different from truncating
     /// first, and only the first order can see a third source at all.
     #[test]
-    fn three_sources_carry_two_and_name_the_third() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn three_sources_carry_two_and_name_the_third() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("three_src.wav");
 
-        let a = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101);
-        let a_dup = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101);
-        let b = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0x0202_0202);
-        let c = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0x0303_0303);
+        let a = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101)?;
+        let a_dup = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0xD5; 160])], 0x0101_0101)?;
+        let b = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x2A; 160])], 0x0202_0202)?;
+        let c = make_stream_ssrc(Some("PCMA"), vec![(0, vec![0x55; 160])], 0x0303_0303)?;
 
-        let summary = export_dialog_to_wav(&[&a, &a_dup, &b, &c], &path).expect("export");
+        let summary = export_dialog_to_wav(&[&a, &a_dup, &b, &c], &path)
+            .map_err(|e| format!("export: {e:?}"))?;
         assert!(
             summary.contains("1 of 3"),
             "three sources, two channels: exactly one source is omitted and \
              the summary must say so:\n{summary}"
         );
+        Ok(())
     }
 
     /// Unsupported-codec streams are filtered out before stereo/mono selection.
     #[test]
-    fn export_dialog_filters_unsupported_codecs() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_filters_unsupported_codecs() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("mixed.wav");
 
-        let g711 = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
-        let g729 = make_stream(Some("G729"), vec![(0, vec![0; 10])]);
-        let result = export_dialog_to_wav(&[&g711, &g729], &path).unwrap();
+        let g711 = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let g729 = make_stream(Some("G729"), vec![(0, vec![0; 10])])?;
+        let result = export_dialog_to_wav(&[&g711, &g729], &path)?;
 
         // Should fall back to mono since only one decodable stream
         assert!(result.contains("mu-law"));
+        Ok(())
     }
 
     /// `is_exportable_codec` must accept Opus case-insensitively, consistent
     /// with `is_opus_codec` and the decoder — a mixed-case `OpUs` label decodes
     /// but the exact-case filter used to drop it from export.
     #[test]
-    fn is_exportable_codec_accepts_mixed_case_opus() {
+    fn is_exportable_codec_accepts_mixed_case_opus() -> Result<(), TestError> {
         // Canonical spellings still exportable.
         assert!(is_exportable_codec(Some("opus")));
         assert!(is_exportable_codec(Some("OPUS")));
@@ -1669,38 +1719,41 @@ mod tests {
         assert!(is_exportable_codec(Some("PCMA")));
         assert!(!is_exportable_codec(Some("G729")));
         assert!(!is_exportable_codec(None));
+        Ok(())
     }
 
     /// A mixed-case `OpUs` stream is not filtered out of dialog export: paired
     /// with a G.711 stream it participates in stereo selection rather than
     /// being silently dropped to a mono fallback.
     #[test]
-    fn export_dialog_keeps_mixed_case_opus_stream() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_keeps_mixed_case_opus_stream() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("mixed_case_opus.wav");
 
         // Opus payloads here are undecodable garbage (skipped frame-by-frame),
         // but the point is codec-name filtering, not audio content: the OpUs
         // stream must survive is_exportable_codec so stereo is selected.
-        let g711 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0D0D_0D0D);
-        let opus = make_stream_ssrc(Some("OpUs"), vec![(0, vec![0xFF; 8])], 0x0E0E_0E0E);
-        let result = export_dialog_to_wav(&[&g711, &opus], &path).unwrap();
+        let g711 = make_stream_ssrc(Some("PCMU"), vec![(0, vec![0xFF; 160])], 0x0D0D_0D0D)?;
+        let opus = make_stream_ssrc(Some("OpUs"), vec![(0, vec![0xFF; 8])], 0x0E0E_0E0E)?;
+        let result = export_dialog_to_wav(&[&g711, &opus], &path)?;
 
         assert!(
             result.contains("stereo"),
             "mixed-case Opus must count as exportable (stereo), got: {result}"
         );
         assert!(path.exists());
+        Ok(())
     }
 
     /// Exporting an empty stream list returns an error.
     #[test]
-    fn export_dialog_empty_streams_errors() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_empty_streams_errors() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("empty.wav");
 
         let result = export_dialog_to_wav(&[], &path);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A call whose media sipnab measured but whose payload it never retained
@@ -1714,18 +1767,19 @@ mod tests {
     /// support, and one an agent will repeat to an operator. The error has to
     /// say what was observed and that the payload was not kept.
     #[test]
-    fn export_dialog_unretained_payload_does_not_deny_the_media() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_unretained_payload_does_not_deny_the_media() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("unretained.wav");
 
         // Two PCMU streams, thousands of packets measured, nothing retained.
-        let mut a = make_stream(Some("PCMU"), vec![]);
+        let mut a = make_stream(Some("PCMU"), vec![])?;
         a.packet_count = 1200;
-        let mut b = make_stream(Some("PCMU"), vec![]);
+        let mut b = make_stream(Some("PCMU"), vec![])?;
         b.packet_count = 1198;
 
         let err = export_dialog_to_wav(&[&a, &b], &path)
-            .expect_err("nothing to decode, so the export must fail");
+            .err()
+            .ok_or("nothing to decode, so the export must fail")?;
         let msg = err.to_string();
 
         assert!(
@@ -1741,20 +1795,23 @@ mod tests {
             "the old wording asserts the call had no audio: {msg}"
         );
         assert!(!path.exists(), "no file may be left behind: {msg}");
+        Ok(())
     }
 
     /// A call carrying only codecs sipnab cannot decode names them, rather
     /// than reporting the same "no captured data" as an unretained buffer —
     /// the two are different facts and lead to different next steps.
     #[test]
-    fn export_dialog_undecodable_codecs_are_named() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_dialog_undecodable_codecs_are_named() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("g729.wav");
 
-        let mut s = make_stream(Some("G729"), vec![(0, vec![0; 10])]);
+        let mut s = make_stream(Some("G729"), vec![(0, vec![0; 10])])?;
         s.packet_count = 500;
 
-        let err = export_dialog_to_wav(&[&s], &path).expect_err("G729 is not decodable");
+        let err = export_dialog_to_wav(&[&s], &path)
+            .err()
+            .ok_or("G729 is not decodable")?;
         let msg = err.to_string();
         assert!(
             msg.contains("G729"),
@@ -1764,19 +1821,22 @@ mod tests {
             msg.contains("PCMU"),
             "the error must name what IS supported: {msg}"
         );
+        Ok(())
     }
 
     /// The single-stream export says the same thing: packets measured, payload
     /// not retained.
     #[test]
-    fn export_stream_unretained_payload_does_not_deny_the_media() {
-        let dir = tempfile::tempdir().unwrap();
+    fn export_stream_unretained_payload_does_not_deny_the_media() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("one.wav");
 
-        let mut s = make_stream(Some("PCMA"), vec![]);
+        let mut s = make_stream(Some("PCMA"), vec![])?;
         s.packet_count = 4242;
 
-        let err = export_stream_to_wav(&s, &path).expect_err("nothing to decode");
+        let err = export_stream_to_wav(&s, &path)
+            .err()
+            .ok_or("nothing to decode")?;
         let msg = err.to_string();
         assert!(
             msg.contains("4242") && msg.contains("PCMA"),
@@ -1786,5 +1846,6 @@ mod tests {
             msg.contains("retain") || msg.contains("retention"),
             "the error must say the payload was not retained: {msg}"
         );
+        Ok(())
     }
 }

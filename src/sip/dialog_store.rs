@@ -2123,6 +2123,7 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
+    type TestError = Box<dyn std::error::Error>;
 
     /// Fixed 127.0.0.1 address used as both source and destination of
     /// every test message.
@@ -2132,8 +2133,12 @@ mod tests {
 
     /// Fixed base timestamp (2024-06-15 12:00:00 UTC) so tests are
     /// deterministic.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
@@ -2155,9 +2160,11 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
-        parse_sip(&msg.raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
-            .expect("re-parse on another leg")
+    ) -> Result<SipMessage, TestError> {
+        Ok(
+            parse_sip(&msg.raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("re-parse on another leg: {e:?}"))?,
+        )
     }
 
     // Multi-core (--cores): each worker reconstructs the calls sharded to it; the
@@ -2166,12 +2173,12 @@ mod tests {
     /// Merging two stores unions distinct Call-IDs; a same-Call-ID collision
     /// concatenates both fragments' messages in timestamp order.
     #[test]
-    fn merge_unions_dialogs_and_concatenates_colliding_message_lists() {
-        let t0 = base_ts();
+    fn merge_unions_dialogs_and_concatenates_colliding_message_lists() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let mut a = DialogStore::new(1000, true);
-        a.process_message(make_invite_msg("call-a@h", t0));
+        a.process_message(make_invite_msg("call-a@h", t0)?);
         let mut b = DialogStore::new(1000, true);
-        b.process_message(make_invite_msg("call-b@h", t0));
+        b.process_message(make_invite_msg("call-b@h", t0)?);
         a.merge(b);
         assert_eq!(a.len(), 2, "distinct Call-IDs unioned");
         assert!(a.get("call-a@h").is_some() && a.get("call-b@h").is_some());
@@ -2179,11 +2186,11 @@ mod tests {
         // Collision: the other fragment's messages are ADDED, not weighed
         // against the base's and thrown away.
         let mut c = DialogStore::new(1000, true);
-        c.process_message(make_200_ok("call-a@h", t0 + TimeDelta::seconds(1)));
-        c.process_message(make_bye_msg("call-a@h", t0 + TimeDelta::seconds(2)));
+        c.process_message(make_200_ok("call-a@h", t0 + TimeDelta::seconds(1))?);
+        c.process_message(make_bye_msg("call-a@h", t0 + TimeDelta::seconds(2))?);
         a.merge(c);
         assert_eq!(a.len(), 2, "collision is not double-counted");
-        let d = a.get("call-a@h").expect("collided dialog");
+        let d = a.get("call-a@h").ok_or("collided dialog")?;
         assert_eq!(
             d.messages.len(),
             3,
@@ -2195,6 +2202,7 @@ mod tests {
             ts.windows(2).all(|w| w[0] <= w[1]),
             "merged messages are ordered by capture timestamp: {ts:?}"
         );
+        Ok(())
     }
 
     /// A proxied call is sharded across workers by host pair, and the merge
@@ -2207,32 +2215,33 @@ mod tests {
     /// signaling was discarded — on a 100 MB carrier capture that halved the
     /// message count of 1173 of 2311 dialogs, with the Call-ID set unchanged.
     #[test]
-    fn merge_reconstructs_a_proxied_call_from_both_legs() {
-        let (t0, t1) = (base_ts(), base_ts() + TimeDelta::seconds(1));
+    fn merge_reconstructs_a_proxied_call_from_both_legs() -> Result<(), TestError> {
+        let (t0, t1) = (base_ts()?, base_ts()? + TimeDelta::seconds(1));
         let (uac, proxy, uas) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101), ip(10, 33, 6, 102));
 
         // Leg 1 (uac ↔ proxy): the INVITE and its 200 OK as the capture saw
         // them on the access side.
-        let invite = make_invite_msg("proxied@h", t0);
-        let ok = make_200_ok("proxied@h", t1);
+        let invite = make_invite_msg("proxied@h", t0)?;
+        let ok = make_200_ok("proxied@h", t1)?;
         let mut near = DialogStore::new(1000, true);
-        near.process_message(observed_on_leg(&invite, uac, proxy, t0));
-        near.process_message(observed_on_leg(&ok, proxy, uac, t1));
+        near.process_message(observed_on_leg(&invite, uac, proxy, t0)?);
+        near.process_message(observed_on_leg(&ok, proxy, uac, t1)?);
 
         // Leg 2 (proxy ↔ uas): the same two messages forwarded — a different
         // host pair, so a different worker.
         let mut far = DialogStore::new(1000, true);
-        far.process_message(observed_on_leg(&invite, proxy, uas, t0));
-        far.process_message(observed_on_leg(&ok, uas, proxy, t1));
+        far.process_message(observed_on_leg(&invite, proxy, uas, t0)?);
+        far.process_message(observed_on_leg(&ok, uas, proxy, t1)?);
 
         near.merge(far);
         assert_eq!(near.len(), 1, "one Call-ID, one dialog");
         assert_eq!(
-            near.get("proxied@h").expect("dialog").messages.len(),
+            near.get("proxied@h").ok_or("dialog")?.messages.len(),
             4,
             "all four captured observations survive: a proxy leg's copy of a \
              message is a distinct observation, not a duplicate to discard"
         );
+        Ok(())
     }
 
     /// The same captured observation appearing in both fragments is folded to
@@ -2245,33 +2254,34 @@ mod tests {
     /// copies in `merge_reconstructs_a_proxied_call_from_both_legs` survive
     /// while a byte-for-byte re-merge of the same store adds nothing.
     #[test]
-    fn merge_folds_an_identical_observation_but_keeps_a_proxy_copy() {
-        let t0 = base_ts();
+    fn merge_folds_an_identical_observation_but_keeps_a_proxy_copy() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let (uac, proxy) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101));
-        let invite = make_invite_msg("dup@h", t0);
+        let invite = make_invite_msg("dup@h", t0)?;
 
         let mut a = DialogStore::new(1000, true);
-        a.process_message(observed_on_leg(&invite, uac, proxy, t0));
+        a.process_message(observed_on_leg(&invite, uac, proxy, t0)?);
 
         // Same bytes, same timestamp, same 5-tuple: the same observation.
         let mut same = DialogStore::new(1000, true);
-        same.process_message(observed_on_leg(&invite, uac, proxy, t0));
+        same.process_message(observed_on_leg(&invite, uac, proxy, t0)?);
         a.merge(same);
         assert_eq!(
-            a.get("dup@h").expect("dialog").messages.len(),
+            a.get("dup@h").ok_or("dialog")?.messages.len(),
             1,
             "an identical observation is not stored twice"
         );
 
         // Same bytes and timestamp, different host pair: a second observation.
         let mut other_leg = DialogStore::new(1000, true);
-        other_leg.process_message(observed_on_leg(&invite, proxy, ip(10, 33, 6, 102), t0));
+        other_leg.process_message(observed_on_leg(&invite, proxy, ip(10, 33, 6, 102), t0)?);
         a.merge(other_leg);
         assert_eq!(
-            a.get("dup@h").expect("dialog").messages.len(),
+            a.get("dup@h").ok_or("dialog")?.messages.len(),
             2,
             "the same message seen on another leg is a distinct observation"
         );
+        Ok(())
     }
 
     /// The merged dialog's STATE is recomputed over the merged message list,
@@ -2283,40 +2293,40 @@ mod tests {
     /// Measured on the carrier capture: 20 of 2311 dialogs reported the wrong
     /// state for exactly this reason.
     #[test]
-    fn merge_recomputes_state_over_the_merged_messages() {
-        let t0 = base_ts();
+    fn merge_recomputes_state_over_the_merged_messages() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let (uac, proxy, uas) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101), ip(10, 33, 6, 102));
 
         // Base leg: INVITE + two retransmissions. Three messages, still Trying.
-        let invite = make_invite_msg("state@h", t0);
+        let invite = make_invite_msg("state@h", t0)?;
         let mut near = DialogStore::new(1000, true);
         for i in 0..3 {
             let ts = t0 + TimeDelta::milliseconds(i * 10);
-            near.process_message(observed_on_leg(&invite, uac, proxy, ts));
+            near.process_message(observed_on_leg(&invite, uac, proxy, ts)?);
         }
         assert_eq!(
-            near.get("state@h").expect("dialog").state(),
+            near.get("state@h").ok_or("dialog")?.state(),
             &DialogState::Trying
         );
-        assert_eq!(near.get("state@h").expect("dialog").messages.len(), 3);
+        assert_eq!(near.get("state@h").ok_or("dialog")?.messages.len(), 3);
 
         // Other leg: the answer and the hang-up. Fewer messages, later start.
         let mut far = DialogStore::new(1000, true);
         far.process_message(observed_on_leg(
-            &make_200_ok("state@h", t0),
+            &make_200_ok("state@h", t0)?,
             uas,
             proxy,
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
         far.process_message(observed_on_leg(
-            &make_bye_msg("state@h", t0),
+            &make_bye_msg("state@h", t0)?,
             uac,
             proxy,
             t0 + TimeDelta::seconds(2),
-        ));
+        )?);
 
         near.merge(far);
-        let d = near.get("state@h").expect("dialog");
+        let d = near.get("state@h").ok_or("dialog")?;
         assert_eq!(d.messages.len(), 5, "every leg's messages are kept");
         assert_eq!(
             d.state(),
@@ -2324,6 +2334,7 @@ mod tests {
             "the state machine is re-run over the merged messages, so the \
              answer and BYE the other worker saw take effect"
         );
+        Ok(())
     }
 
     /// `merge` must respect the store's capacity, in both disposal modes.
@@ -2333,15 +2344,15 @@ mod tests {
     /// silently permitted up to N × the cap. The limit an operator sets to
     /// bound memory must not be multiplied by the core count.
     #[test]
-    fn merge_enforces_capacity_in_both_disposal_modes() {
-        let t0 = base_ts();
+    fn merge_enforces_capacity_in_both_disposal_modes() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         // Drop-oldest (the default): the cap holds and the newest survive.
         let mut rotating = DialogStore::new(2, true);
-        rotating.process_message(make_invite_msg("keep-1", t0));
-        rotating.process_message(make_invite_msg("keep-2", t0));
+        rotating.process_message(make_invite_msg("keep-1", t0)?);
+        rotating.process_message(make_invite_msg("keep-2", t0)?);
         let mut incoming = DialogStore::new(2, true);
-        incoming.process_message(make_invite_msg("new-1", t0));
-        incoming.process_message(make_invite_msg("new-2", t0));
+        incoming.process_message(make_invite_msg("new-1", t0)?);
+        incoming.process_message(make_invite_msg("new-2", t0)?);
         rotating.merge(incoming);
         assert!(
             rotating.len() <= 2,
@@ -2355,10 +2366,10 @@ mod tests {
 
         // Reject-newest (--no-rotate): the merged-in Call-ID is refused.
         let mut fixed = DialogStore::new(2, false);
-        fixed.process_message(make_invite_msg("first-1", t0));
-        fixed.process_message(make_invite_msg("first-2", t0));
+        fixed.process_message(make_invite_msg("first-1", t0)?);
+        fixed.process_message(make_invite_msg("first-2", t0)?);
         let mut late = DialogStore::new(2, false);
-        late.process_message(make_invite_msg("late-1", t0));
+        late.process_message(make_invite_msg("late-1", t0)?);
         fixed.merge(late);
         assert_eq!(fixed.len(), 2, "a full no-rotate store stays at capacity");
         assert!(
@@ -2370,6 +2381,7 @@ mod tests {
             1,
             "the rejected merge insert is counted"
         );
+        Ok(())
     }
 
     /// The DEFAULT disposal path — drop-oldest rotation — counts what it
@@ -2381,11 +2393,11 @@ mod tests {
     /// nothing. `evict_oldest` drains a batch of `max_dialogs / 100` (at least
     /// one), so the count is of dialogs actually discarded, not of inserts.
     #[test]
-    fn drop_oldest_evictions_are_counted_separately_from_rejections() {
-        let t0 = base_ts();
+    fn drop_oldest_evictions_are_counted_separately_from_rejections() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let mut store = DialogStore::new(3, true);
         for i in 0..3 {
-            store.process_message(make_invite_msg(&format!("rot-{i}"), t0));
+            store.process_message(make_invite_msg(&format!("rot-{i}"), t0)?);
         }
         assert_eq!(
             store.total_capacity_dialogs_evicted(),
@@ -2394,7 +2406,7 @@ mod tests {
         );
 
         for i in 3..6 {
-            store.process_message(make_invite_msg(&format!("rot-{i}"), t0));
+            store.process_message(make_invite_msg(&format!("rot-{i}"), t0)?);
         }
         assert!(store.len() <= 3, "the cap is a hard upper bound");
         assert_eq!(
@@ -2410,8 +2422,8 @@ mod tests {
 
         // The counter accumulates across a merge, like its siblings.
         let mut other = DialogStore::new(1, true);
-        other.process_message(make_invite_msg("o-1", t0));
-        other.process_message(make_invite_msg("o-2", t0));
+        other.process_message(make_invite_msg("o-1", t0)?);
+        other.process_message(make_invite_msg("o-2", t0)?);
         assert_eq!(other.total_capacity_dialogs_evicted(), 1);
         let before = store.total_capacity_dialogs_evicted();
         store.merge(other);
@@ -2419,6 +2431,7 @@ mod tests {
             store.total_capacity_dialogs_evicted() > before,
             "merge folds in the other store's eviction count"
         );
+        Ok(())
     }
 
     /// A same-Call-ID merge collision unions the losing reconstruction's
@@ -2426,32 +2439,44 @@ mod tests {
     /// retransmit counts summed, timing milestones taken as the earliest
     /// observation, `created_at` earliest / `updated_at` latest.
     #[test]
-    fn merge_unions_collision_state_not_just_messages() {
-        let t0 = base_ts();
+    fn merge_unions_collision_state_not_just_messages() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
         let t5 = t0 + TimeDelta::seconds(5);
         let t6 = t0 + TimeDelta::seconds(6);
 
         // Winner: more messages (INVITE + 3 retransmissions), no answer/BYE.
         let mut a = DialogStore::new(1000, true);
-        a.process_message(make_invite_msg("call-x@h", t0));
-        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
-        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
-        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
-        assert_eq!(a.get("call-x@h").unwrap().timing.total_retransmits(), 3);
+        a.process_message(make_invite_msg("call-x@h", t0)?);
+        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
+        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
+        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
+        assert_eq!(
+            a.get("call-x@h")
+                .ok_or("call-x@h is in the store")?
+                .timing
+                .total_retransmits(),
+            3
+        );
 
         // Loser: fewer messages but distinct state — later INVITE start, one
         // retransmit, an answer and a BYE the winner never saw.
         let mut b = DialogStore::new(1000, true);
-        b.process_message(make_invite_msg("call-x@h", t1));
-        b.process_message(make_invite_msg("call-x@h", t1)); // retransmit
-        b.process_message(make_200_ok("call-x@h", t5));
-        b.process_message(make_bye_msg("call-x@h", t6));
-        assert_eq!(b.get("call-x@h").unwrap().timing.total_retransmits(), 1);
+        b.process_message(make_invite_msg("call-x@h", t1)?);
+        b.process_message(make_invite_msg("call-x@h", t1)?); // retransmit
+        b.process_message(make_200_ok("call-x@h", t5)?);
+        b.process_message(make_bye_msg("call-x@h", t6)?);
+        assert_eq!(
+            b.get("call-x@h")
+                .ok_or("call-x@h is in the store")?
+                .timing
+                .total_retransmits(),
+            1
+        );
 
         a.merge(b);
         assert_eq!(a.len(), 1, "same Call-ID stays a single dialog");
-        let d = a.get("call-x@h").unwrap();
+        let d = a.get("call-x@h").ok_or("call-x@h is in the store")?;
 
         // Retransmit counts are summed across both reconstructions.
         assert_eq!(
@@ -2487,10 +2512,11 @@ mod tests {
             d.seen_cseq.iter().any(|k| k.starts_with("r200")),
             "loser's 200-OK seen-CSeq identity unioned in"
         );
+        Ok(())
     }
 
     /// Build and parse a minimal INVITE (CSeq 1) for `call_id` at `ts`.
-    fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -2502,7 +2528,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -2511,27 +2537,28 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE")
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// A message for an EXISTING dialog must be processed even when the
     /// store is at capacity — capacity only gates NEW dialogs. Guards the
     /// lookup-before-capacity-check ordering in process_message.
     #[test]
-    fn existing_dialog_updated_at_capacity() {
+    fn existing_dialog_updated_at_capacity() -> Result<(), TestError> {
         let mut store = DialogStore::new(2, false);
-        store.process_message(make_invite_msg("at-cap-1", base_ts()));
-        store.process_message(make_invite_msg("at-cap-2", base_ts()));
+        store.process_message(make_invite_msg("at-cap-1", base_ts()?)?);
+        store.process_message(make_invite_msg("at-cap-2", base_ts()?)?);
         assert_eq!(store.len(), 2);
 
         // Store is full; an update to dialog 1 must still land.
-        store.process_message(make_200_ok("at-cap-1", base_ts()));
-        let d = store.get("at-cap-1").expect("dialog must exist");
+        store.process_message(make_200_ok("at-cap-1", base_ts()?)?);
+        let d = store.get("at-cap-1").ok_or("dialog must exist")?;
         assert_eq!(
             d.messages.len(),
             2,
             "200 OK for an existing dialog must be stored even at capacity"
         );
+        Ok(())
     }
 
     /// In no-rotate mode, new Call-IDs arriving at capacity are dropped;
@@ -2539,16 +2566,16 @@ mod tests {
     /// Updates to existing dialogs are not drops, and the counter is
     /// accumulated across a merge.
     #[test]
-    fn capacity_drops_counted_in_no_rotate_mode() {
+    fn capacity_drops_counted_in_no_rotate_mode() -> Result<(), TestError> {
         let mut store = DialogStore::new(2, false);
-        store.process_message(make_invite_msg("cap-1", base_ts()));
-        store.process_message(make_invite_msg("cap-2", base_ts()));
+        store.process_message(make_invite_msg("cap-1", base_ts()?)?);
+        store.process_message(make_invite_msg("cap-2", base_ts()?)?);
         assert_eq!(store.len(), 2);
         assert_eq!(store.total_capacity_dialogs_dropped(), 0);
 
         // New Call-IDs at capacity are dropped and counted.
-        store.process_message(make_invite_msg("cap-3", base_ts()));
-        store.process_message(make_invite_msg("cap-4", base_ts()));
+        store.process_message(make_invite_msg("cap-3", base_ts()?)?);
+        store.process_message(make_invite_msg("cap-4", base_ts()?)?);
         assert_eq!(store.len(), 2, "no-rotate store stays at cap");
         assert_eq!(
             store.total_capacity_dialogs_dropped(),
@@ -2557,15 +2584,15 @@ mod tests {
         );
 
         // Updates to existing dialogs are not capacity drops.
-        store.process_message(make_200_ok("cap-1", base_ts()));
+        store.process_message(make_200_ok("cap-1", base_ts()?)?);
         assert_eq!(store.total_capacity_dialogs_dropped(), 2);
 
         // Merge accumulates the counter, mirroring idle-eviction plumbing —
         // and enforces the cap itself, so the surviving Call-ID it tries to
         // bring in is rejected by the full store and counted as well.
         let mut other = DialogStore::new(1, false);
-        other.process_message(make_invite_msg("m-1", base_ts()));
-        other.process_message(make_invite_msg("m-2", base_ts())); // dropped
+        other.process_message(make_invite_msg("m-1", base_ts()?)?);
+        other.process_message(make_invite_msg("m-2", base_ts()?)?); // dropped
         assert_eq!(other.total_capacity_dialogs_dropped(), 1);
         store.merge(other);
         assert_eq!(store.len(), 2, "merge respects the capacity of its target");
@@ -2575,14 +2602,15 @@ mod tests {
             "merge folds in the other store's capacity-drop count (2 + 1) and \
              counts the Call-ID its own capacity check rejected (+1)"
         );
+        Ok(())
     }
 
     // ── compact_idle: long-run memory bound for idle dialogs ─────────
 
     /// Build a dialog with `n` stored messages by feeding distinct CSeqs.
-    fn store_with_messages(call_id: &str, n: usize) -> DialogStore {
+    fn store_with_messages(call_id: &str, n: usize) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(100, false);
-        store.process_message(make_invite_msg(call_id, base_ts()));
+        store.process_message(make_invite_msg(call_id, base_ts()?)?);
         for i in 2..=n {
             let raw = build_sip(
                 "INVITE sip:bob@example.com SIP/2.0",
@@ -2597,23 +2625,23 @@ mod tests {
             );
             let msg = parse_sip(
                 &raw,
-                base_ts(),
+                base_ts()?,
                 localhost(),
                 localhost(),
                 5060,
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse");
+            .map_err(|e| format!("should parse: {e:?}"))?;
             store.process_message(msg);
         }
-        store
+        Ok(store)
     }
 
     /// A timestamp just past the idle-compaction window after `base_ts`,
     /// so any dialog last updated at `base_ts` counts as idle.
-    fn idle_now() -> DateTime<Utc> {
-        base_ts() + idle_compact_after() + TimeDelta::seconds(1)
+    fn idle_now() -> Result<DateTime<Utc>, TestError> {
+        Ok(base_ts()? + idle_compact_after() + TimeDelta::seconds(1))
     }
 
     /// An idle dialog over the keep limit is compacted to
@@ -2626,16 +2654,23 @@ mod tests {
     /// `Some(11)`: that was "keep the last N" stated as a contract, and it is
     /// the contract that cost answered calls their `200 OK`.
     #[test]
-    fn compact_idle_truncates_idle_dialog_to_keep_limit() {
+    fn compact_idle_truncates_idle_dialog_to_keep_limit() -> Result<(), TestError> {
         let n = keep_messages_per_idle_dialog() + 10;
-        let mut store = store_with_messages("idle-1", n);
-        assert_eq!(store.get("idle-1").unwrap().messages.len(), n);
+        let mut store = store_with_messages("idle-1", n)?;
+        assert_eq!(
+            store
+                .get("idle-1")
+                .ok_or("idle-1 is in the store")?
+                .messages
+                .len(),
+            n
+        );
 
-        let stats = store.compact_idle(idle_now());
+        let stats = store.compact_idle(idle_now()?);
         assert_eq!(stats.dialogs_compacted, 1);
         assert_eq!(stats.messages_evicted, 10);
 
-        let d = store.get("idle-1").unwrap();
+        let d = store.get("idle-1").ok_or("idle-1 is in the store")?;
         assert_eq!(d.messages.len(), keep_messages_per_idle_dialog());
         assert_eq!(
             d.messages[0].cseq().map(|(seq, _)| seq),
@@ -2648,46 +2683,68 @@ mod tests {
             "the middle is what gets compacted"
         );
         assert_eq!(
-            d.messages.last().unwrap().cseq().map(|(seq, _)| seq),
+            d.messages
+                .last()
+                .ok_or("a last element")?
+                .cseq()
+                .map(|(seq, _)| seq),
             Some(n as u32)
         );
+        Ok(())
     }
 
     /// A dialog updated within the idle window is not compacted at all.
     #[test]
-    fn compact_idle_leaves_active_dialogs_alone() {
+    fn compact_idle_leaves_active_dialogs_alone() -> Result<(), TestError> {
         let n = keep_messages_per_idle_dialog() + 10;
-        let mut store = store_with_messages("active-1", n);
+        let mut store = store_with_messages("active-1", n)?;
         // "now" is within the idle window — dialog is still active.
-        let stats = store.compact_idle(base_ts() + TimeDelta::seconds(30));
+        let stats = store.compact_idle(base_ts()? + TimeDelta::seconds(30));
         assert_eq!(stats.dialogs_compacted, 0);
         assert_eq!(stats.messages_evicted, 0);
-        assert_eq!(store.get("active-1").unwrap().messages.len(), n);
+        assert_eq!(
+            store
+                .get("active-1")
+                .ok_or("active-1 is in the store")?
+                .messages
+                .len(),
+            n
+        );
+        Ok(())
     }
 
     /// A second compaction sweep over an already-compacted dialog is a
     /// no-op (stats stay zero).
     #[test]
-    fn compact_idle_is_idempotent() {
-        let mut store = store_with_messages("idle-2", keep_messages_per_idle_dialog() + 5);
-        let first = store.compact_idle(idle_now());
+    fn compact_idle_is_idempotent() -> Result<(), TestError> {
+        let mut store = store_with_messages("idle-2", keep_messages_per_idle_dialog() + 5)?;
+        let first = store.compact_idle(idle_now()?);
         assert_eq!(first.messages_evicted, 5);
-        let second = store.compact_idle(idle_now());
+        let second = store.compact_idle(idle_now()?);
         assert_eq!(second.dialogs_compacted, 0, "second pass must be a no-op");
         assert_eq!(second.messages_evicted, 0);
+        Ok(())
     }
 
     /// An idle dialog already under the keep limit evicts nothing and is
     /// not counted as compacted.
     #[test]
-    fn compact_idle_skips_small_idle_dialogs() {
+    fn compact_idle_skips_small_idle_dialogs() -> Result<(), TestError> {
         // Idle but already under the keep limit: nothing to evict, and it
         // must not be counted as compacted.
-        let mut store = store_with_messages("small-idle", 3);
-        let stats = store.compact_idle(idle_now());
+        let mut store = store_with_messages("small-idle", 3)?;
+        let stats = store.compact_idle(idle_now()?);
         assert_eq!(stats.dialogs_compacted, 0);
         assert_eq!(stats.messages_evicted, 0);
-        assert_eq!(store.get("small-idle").unwrap().messages.len(), 3);
+        assert_eq!(
+            store
+                .get("small-idle")
+                .ok_or("small-idle is in the store")?
+                .messages
+                .len(),
+            3
+        );
+        Ok(())
     }
 
     /// Retransmission detection must survive message compaction: the old
@@ -2696,19 +2753,20 @@ mod tests {
     /// (wrong flag, state churn, memory regrowth). Detection is keyed on
     /// a per-dialog seen-CSeq set, independent of message retention.
     #[test]
-    fn retransmission_detected_after_compaction() {
+    fn retransmission_detected_after_compaction() -> Result<(), TestError> {
         let n = keep_messages_per_idle_dialog() + 10;
-        let mut store = store_with_messages("retx-c", n);
-        store.compact_idle(idle_now());
+        let mut store = store_with_messages("retx-c", n)?;
+        store.compact_idle(idle_now()?);
         // CSeq 1 (the initial INVITE) was compacted away; retransmit it.
-        let retx = make_invite_msg("retx-c", idle_now());
+        let retx = make_invite_msg("retx-c", idle_now()?)?;
         store.process_message(retx);
-        let d = store.get("retx-c").unwrap();
-        let last = d.messages.last().unwrap();
+        let d = store.get("retx-c").ok_or("retx-c is in the store")?;
+        let last = d.messages.last().ok_or("a last element")?;
         assert!(
             last.is_retransmission,
             "retransmission of a compacted-away message must still be flagged"
         );
+        Ok(())
     }
 
     /// A dialog at its per-dialog message cap that keeps receiving
@@ -2716,20 +2774,24 @@ mod tests {
     /// must advance `updated_at`, or compact_idle would wrongly treat a
     /// retransmission-flooded dialog as idle and compact it.
     #[test]
-    fn capped_retransmission_flood_still_counts_as_active() {
+    fn capped_retransmission_flood_still_counts_as_active() -> Result<(), TestError> {
         let cap = DEFAULT_MAX_MESSAGES_PER_DIALOG;
-        let mut store = store_with_messages("retx-cap", cap);
+        let mut store = store_with_messages("retx-cap", cap)?;
         assert_eq!(
-            store.get("retx-cap").unwrap().messages.len(),
+            store
+                .get("retx-cap")
+                .ok_or("retx-cap is in the store")?
+                .messages
+                .len(),
             cap,
             "dialog must start at the message cap"
         );
 
         // Retransmit the initial INVITE at the idle cutoff; at the cap
         // the message itself is dropped, but it is still traffic.
-        let retx_ts = base_ts() + idle_compact_after();
-        store.process_message(make_invite_msg("retx-cap", retx_ts));
-        let d = store.get("retx-cap").unwrap();
+        let retx_ts = base_ts()? + idle_compact_after();
+        store.process_message(make_invite_msg("retx-cap", retx_ts)?);
+        let d = store.get("retx-cap").ok_or("retx-cap is in the store")?;
         assert_eq!(d.messages.len(), cap, "capped retransmission is not stored");
         assert_eq!(
             d.updated_at, retx_ts,
@@ -2738,22 +2800,31 @@ mod tests {
 
         // One second past the ORIGINAL traffic's idle cutoff: the dialog
         // saw a retransmission 1s ago, so it must not be compacted.
-        let stats = store.compact_idle(idle_now());
+        let stats = store.compact_idle(idle_now()?);
         assert_eq!(
             stats.dialogs_compacted, 0,
             "retransmission-flooded dialog is not idle"
         );
-        assert_eq!(store.get("retx-cap").unwrap().messages.len(), cap);
+        assert_eq!(
+            store
+                .get("retx-cap")
+                .ok_or("retx-cap is in the store")?
+                .messages
+                .len(),
+            cap
+        );
+        Ok(())
     }
 
     /// Evictions from compaction sweeps accumulate into the lifetime
     /// `total_idle_messages_evicted` counter.
     #[test]
-    fn compact_idle_accumulates_lifetime_counter() {
-        let mut store = store_with_messages("idle-3", keep_messages_per_idle_dialog() + 4);
+    fn compact_idle_accumulates_lifetime_counter() -> Result<(), TestError> {
+        let mut store = store_with_messages("idle-3", keep_messages_per_idle_dialog() + 4)?;
         assert_eq!(store.total_idle_messages_evicted(), 0);
-        store.compact_idle(idle_now());
+        store.compact_idle(idle_now()?);
         assert_eq!(store.total_idle_messages_evicted(), 4);
+        Ok(())
     }
 
     // ── compact_idle: the outcome survives ───────────────────────────
@@ -2762,16 +2833,20 @@ mod tests {
     /// message, so a fixture whose messages are spaced realistically still
     /// counts as idle. `idle_now` is measured from `base_ts` and would
     /// silently fail to make a spread-out fixture idle at all.
-    fn idle_after(store: &DialogStore, call_id: &str) -> DateTime<Utc> {
-        store.get(call_id).expect("dialog exists").updated_at
+    fn idle_after(store: &DialogStore, call_id: &str) -> Result<DateTime<Utc>, TestError> {
+        Ok(store.get(call_id).ok_or("dialog exists")?.updated_at
             + idle_compact_after()
-            + TimeDelta::seconds(1)
+            + TimeDelta::seconds(1))
     }
 
     /// An in-dialog request (`OPTIONS`, CSeq `cseq`) for `call_id` at `ts` —
     /// the mid-call filler that pushes an answered call past the keep limit
     /// without carrying any outcome of its own.
-    fn make_in_dialog_filler(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+    fn make_in_dialog_filler(
+        call_id: &str,
+        cseq: u32,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "OPTIONS sip:bob@example.com SIP/2.0",
             &[
@@ -2783,7 +2858,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -2792,11 +2867,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse OPTIONS")
+        .map_err(|e| format!("should parse OPTIONS: {e:?}"))?)
     }
 
     /// A `CANCEL` of the initial `INVITE` (CSeq 1) for `call_id` at `ts`.
-    fn make_cancel_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_cancel_msg(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "CANCEL sip:bob@example.com SIP/2.0",
             &[
@@ -2808,7 +2883,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -2817,7 +2892,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse CANCEL")
+        .map_err(|e| format!("should parse CANCEL: {e:?}"))?)
     }
 
     /// An arbitrary response for `call_id` carrying `cseq` (e.g. `"1 INVITE"`).
@@ -2827,7 +2902,7 @@ mod tests {
         phrase: &str,
         cseq: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             &format!("SIP/2.0 {code} {phrase}"),
             &[
@@ -2839,7 +2914,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -2848,29 +2923,29 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse response")
+        .map_err(|e| format!("should parse response: {e:?}"))?)
     }
 
     /// A call that was offered, answered, filled with `filler` mid-dialog
     /// requests, then hung up — the ordinary shape of a long call, and the
     /// one where "keep the last N" throws away the answer.
-    fn store_with_answered_call(call_id: &str, filler: u32) -> DialogStore {
+    fn store_with_answered_call(call_id: &str, filler: u32) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg(call_id, t0));
-        store.process_message(make_200_ok(call_id, t0 + TimeDelta::seconds(1)));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg(call_id, t0)?);
+        store.process_message(make_200_ok(call_id, t0 + TimeDelta::seconds(1))?);
         for i in 0..filler {
             store.process_message(make_in_dialog_filler(
                 call_id,
                 10 + i,
                 t0 + TimeDelta::seconds(2 + i64::from(i)),
-            ));
+            )?);
         }
         store.process_message(make_bye_msg(
             call_id,
             t0 + TimeDelta::seconds(2 + i64::from(filler)),
-        ));
-        store
+        )?);
+        Ok(store)
     }
 
     /// The defect: the `200 OK` arrives second, so "keep the last N" evicts it
@@ -2879,56 +2954,68 @@ mod tests {
     /// itself a diagnosis sipnab emits (`NoFinalResponse`, Timer C), so
     /// compaction manufactures the appearance of a specific fault.
     #[test]
-    fn compact_idle_keeps_the_final_response() {
-        let mut store = store_with_answered_call("answered-1", 40);
+    fn compact_idle_keeps_the_final_response() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-1", 40)?;
         assert_eq!(
-            store.get("answered-1").unwrap().final_status_code(),
+            store
+                .get("answered-1")
+                .ok_or("answered-1 is in the store")?
+                .final_status_code(),
             Some(200),
             "precondition: the call answered"
         );
 
-        let now = idle_after(&store, "answered-1");
+        let now = idle_after(&store, "answered-1")?;
         let stats = store.compact_idle(now);
         assert!(stats.messages_evicted > 0, "the dialog is over the limit");
 
-        let d = store.get("answered-1").unwrap();
+        let d = store
+            .get("answered-1")
+            .ok_or("answered-1 is in the store")?;
         assert_eq!(
             d.final_status_code(),
             Some(200),
             "a call that completed normally must not read as having no final response \
              after compaction"
         );
+        Ok(())
     }
 
     /// The request that opened the dialog is the other end of the ladder that
     /// position-based eviction always takes first.
     #[test]
-    fn compact_idle_keeps_the_opening_request() {
-        let mut store = store_with_answered_call("answered-2", 40);
-        let now = idle_after(&store, "answered-2");
+    fn compact_idle_keeps_the_opening_request() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-2", 40)?;
+        let now = idle_after(&store, "answered-2")?;
         store.compact_idle(now);
-        let d = store.get("answered-2").unwrap();
+        let d = store
+            .get("answered-2")
+            .ok_or("answered-2 is in the store")?;
         assert!(
             d.messages
                 .iter()
                 .any(|m| m.is_request && m.method == Some(SipMethod::Invite)),
             "the INVITE the call was made with must survive"
         );
+        Ok(())
     }
 
     /// A `BYE` says the call was torn down deliberately.
     #[test]
-    fn compact_idle_keeps_the_teardown() {
-        let mut store = store_with_answered_call("answered-3", 40);
-        let now = idle_after(&store, "answered-3");
+    fn compact_idle_keeps_the_teardown() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-3", 40)?;
+        let now = idle_after(&store, "answered-3")?;
         store.compact_idle(now);
-        let d = store.get("answered-3").unwrap();
+        let d = store
+            .get("answered-3")
+            .ok_or("answered-3 is in the store")?;
         assert!(
             d.messages
                 .iter()
                 .any(|m| m.is_request && m.method == Some(SipMethod::Bye)),
             "the BYE must survive"
         );
+        Ok(())
     }
 
     /// A `CANCEL`ed call that then goes quiet: the `CANCEL` and the `487` both
@@ -2936,30 +3023,30 @@ mod tests {
     /// case they cannot survive by being recent, so this is the test that
     /// tells retention-by-meaning from retention-by-position.
     #[test]
-    fn compact_idle_keeps_a_canceled_calls_outcome() {
+    fn compact_idle_keeps_a_canceled_calls_outcome() -> Result<(), TestError> {
         let call_id = "canceled-1";
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg(call_id, t0));
-        store.process_message(make_cancel_msg(call_id, t0 + TimeDelta::seconds(1)));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg(call_id, t0)?);
+        store.process_message(make_cancel_msg(call_id, t0 + TimeDelta::seconds(1))?);
         store.process_message(make_response(
             call_id,
             487,
             "Request Terminated",
             "1 INVITE",
             t0 + TimeDelta::seconds(2),
-        ));
+        )?);
         for i in 0..40 {
             store.process_message(make_in_dialog_filler(
                 call_id,
                 10 + i,
                 t0 + TimeDelta::seconds(3 + i64::from(i)),
-            ));
+            )?);
         }
 
-        let now = idle_after(&store, call_id);
+        let now = idle_after(&store, call_id)?;
         store.compact_idle(now);
-        let d = store.get(call_id).unwrap();
+        let d = store.get(call_id).ok_or("the entry is in the store")?;
         assert_eq!(
             d.final_status_code(),
             Some(487),
@@ -2971,75 +3058,93 @@ mod tests {
                 .any(|m| m.is_request && m.method == Some(SipMethod::Cancel)),
             "the CANCEL must survive"
         );
+        Ok(())
     }
 
     /// A call that FAILED must keep its failure: the `486` sits early in the
     /// ladder exactly as a `200` does.
     #[test]
-    fn compact_idle_keeps_a_failure_code() {
+    fn compact_idle_keeps_a_failure_code() -> Result<(), TestError> {
         let call_id = "busy-1";
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg(call_id, t0));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg(call_id, t0)?);
         store.process_message(make_response(
             call_id,
             486,
             "Busy Here",
             "1 INVITE",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
         for i in 0..40 {
             store.process_message(make_in_dialog_filler(
                 call_id,
                 10 + i,
                 t0 + TimeDelta::seconds(2 + i64::from(i)),
-            ));
+            )?);
         }
-        let now = idle_after(&store, call_id);
+        let now = idle_after(&store, call_id)?;
         store.compact_idle(now);
-        assert_eq!(store.get(call_id).unwrap().final_status_code(), Some(486));
+        assert_eq!(
+            store
+                .get(call_id)
+                .ok_or("the entry is in the store")?
+                .final_status_code(),
+            Some(486)
+        );
+        Ok(())
     }
 
     /// Compaction is a memory bound, so retention must not exceed it: the
     /// surviving set is still capped at `keep_messages_per_idle_dialog`.
     #[test]
-    fn compact_idle_still_bounds_the_message_count() {
-        let mut store = store_with_answered_call("answered-4", 200);
-        let now = idle_after(&store, "answered-4");
+    fn compact_idle_still_bounds_the_message_count() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-4", 200)?;
+        let now = idle_after(&store, "answered-4")?;
         store.compact_idle(now);
         assert!(
-            store.get("answered-4").unwrap().messages.len() <= keep_messages_per_idle_dialog(),
+            store
+                .get("answered-4")
+                .ok_or("answered-4 is in the store")?
+                .messages
+                .len()
+                <= keep_messages_per_idle_dialog(),
             "compaction must still bound memory"
         );
+        Ok(())
     }
 
     /// Messages are kept in capture order whatever the retention rule: an
     /// evidence index is only readable if the ladder still runs forwards.
     #[test]
-    fn compact_idle_preserves_capture_order() {
-        let mut store = store_with_answered_call("answered-5", 60);
-        let now = idle_after(&store, "answered-5");
+    fn compact_idle_preserves_capture_order() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-5", 60)?;
+        let now = idle_after(&store, "answered-5")?;
         store.compact_idle(now);
-        let d = store.get("answered-5").unwrap();
+        let d = store
+            .get("answered-5")
+            .ok_or("answered-5 is in the store")?;
         let ts: Vec<_> = d.messages.iter().map(|m| m.timestamp).collect();
         assert!(
             ts.windows(2).all(|w| w[0] <= w[1]),
             "retained messages must stay in capture order"
         );
+        Ok(())
     }
 
     /// Selective retention must still be idempotent — a second sweep over an
     /// already-compacted dialog evicts nothing, or a long-running capture
     /// would re-count the same loss on every sweep.
     #[test]
-    fn compact_idle_selective_retention_is_idempotent() {
-        let mut store = store_with_answered_call("answered-6", 60);
-        let now = idle_after(&store, "answered-6");
+    fn compact_idle_selective_retention_is_idempotent() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-6", 60)?;
+        let now = idle_after(&store, "answered-6")?;
         let first = store.compact_idle(now);
         assert!(first.messages_evicted > 0);
         let second = store.compact_idle(now);
         assert_eq!(second.dialogs_compacted, 0, "second pass must be a no-op");
         assert_eq!(second.messages_evicted, 0);
+        Ok(())
     }
 
     /// A budget smaller than the anchor set is still a hard bound, and a
@@ -3047,12 +3152,12 @@ mod tests {
     /// `keep_messages_per_idle_dialog`, but both are reachable from the
     /// function signature.
     #[test]
-    fn retained_indices_honors_a_budget_below_the_anchor_count() {
-        let store = store_with_answered_call("degenerate-1", 40);
-        let d = store.get("degenerate-1").expect("dialog exists");
+    fn retained_indices_honors_a_budget_below_the_anchor_count() -> Result<(), TestError> {
+        let store = store_with_answered_call("degenerate-1", 40)?;
+        let d = store.get("degenerate-1").ok_or("dialog exists")?;
         for budget in [0usize, 1, 2, 3] {
             let keep = retained_indices(&d.messages, &d.method, budget)
-                .expect("the dialog is over every one of these budgets");
+                .ok_or("the dialog is over every one of these budgets")?;
             assert!(
                 keep.len() <= budget,
                 "budget {budget} exceeded: kept {}",
@@ -3063,16 +3168,19 @@ mod tests {
                 "indices must stay ascending: {keep:?}"
             );
         }
+        Ok(())
     }
 
     /// The most recent messages are still the tie-break for everything that
     /// carries no outcome: the newest filler survives and the oldest does not.
     #[test]
-    fn compact_idle_fills_the_remaining_budget_with_the_newest_messages() {
-        let mut store = store_with_answered_call("answered-7", 60);
-        let now = idle_after(&store, "answered-7");
+    fn compact_idle_fills_the_remaining_budget_with_the_newest_messages() -> Result<(), TestError> {
+        let mut store = store_with_answered_call("answered-7", 60)?;
+        let now = idle_after(&store, "answered-7")?;
         store.compact_idle(now);
-        let d = store.get("answered-7").unwrap();
+        let d = store
+            .get("answered-7")
+            .ok_or("answered-7 is in the store")?;
         let fillers: Vec<u32> = d
             .messages
             .iter()
@@ -3088,11 +3196,12 @@ mod tests {
             !fillers.contains(&10),
             "the oldest filler (CSeq 10) must not: {fillers:?}"
         );
+        Ok(())
     }
 
     /// Build and parse a 200 OK to the initial INVITE (CSeq 1) for
     /// `call_id` at `ts`.
-    fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -3104,7 +3213,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3113,11 +3222,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse 200 OK")
+        .map_err(|e| format!("should parse 200 OK: {e:?}"))?)
     }
 
     /// Build and parse an in-dialog BYE (CSeq 2) for `call_id` at `ts`.
-    fn make_bye_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_bye_msg(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "BYE sip:bob@example.com SIP/2.0",
             &[
@@ -3129,7 +3238,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3138,11 +3247,11 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse BYE")
+        .map_err(|e| format!("should parse BYE: {e:?}"))?)
     }
 
     /// Build and parse an RFC 6665 presence SUBSCRIBE for `call_id` at `ts`.
-    fn make_subscribe_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_subscribe_msg(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SUBSCRIBE sip:bob@example.com SIP/2.0",
             &[
@@ -3156,7 +3265,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3165,7 +3274,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse SUBSCRIBE")
+        .map_err(|e| format!("should parse SUBSCRIBE: {e:?}"))?)
     }
 
     /// Build and parse the 200 OK accepting that SUBSCRIBE.
@@ -3173,7 +3282,7 @@ mod tests {
     /// Separate from `make_200_ok`, whose CSeq names INVITE: a 200 OK whose
     /// CSeq method disagrees with the request it answers is not traffic any
     /// stack emits, and a fixture built from it would not be evidence.
-    fn make_subscribe_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_subscribe_200_ok(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -3187,7 +3296,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3196,45 +3305,47 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse SUBSCRIBE 200 OK")
+        .map_err(|e| format!("should parse SUBSCRIBE 200 OK: {e:?}"))?)
     }
 
     /// INVITE followed by 200 OK yields one dialog in the InCall state
     /// with both messages stored.
     #[test]
-    fn invite_and_200_creates_incall_dialog() {
+    fn invite_and_200_creates_incall_dialog() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
 
-        store.process_message(make_invite_msg("call-1@test", t0));
-        store.process_message(make_200_ok("call-1@test", t1));
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_200_ok("call-1@test", t1)?);
 
         assert_eq!(store.len(), 1);
-        let dialog = store.get("call-1@test").expect("dialog should exist");
+        let dialog = store.get("call-1@test").ok_or("dialog should exist")?;
         assert_eq!(*dialog.state(), DialogState::InCall);
         assert_eq!(dialog.messages.len(), 2);
+        Ok(())
     }
 
     /// With rotate enabled, inserting past capacity evicts the oldest
     /// dialog to make room for the new one.
     #[test]
-    fn max_dialogs_with_rotate_evicts_oldest() {
+    fn max_dialogs_with_rotate_evicts_oldest() -> Result<(), TestError> {
         let mut store = DialogStore::new(2, true);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("call-1@test", t0));
-        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1))?);
 
         assert_eq!(store.len(), 2);
 
         // Third dialog should evict "call-1@test"
-        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2)));
+        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2))?);
 
         assert_eq!(store.len(), 2);
         assert!(store.get("call-1@test").is_none());
         assert!(store.get("call-2@test").is_some());
         assert!(store.get("call-3@test").is_some());
+        Ok(())
     }
 
     /// At large caps, eviction is batched (cap/100 at a time) so cap
@@ -3242,10 +3353,10 @@ mod tests {
     /// O(n) shift per insert. After the 1001st insert into a 1000-cap
     /// store, a batch of 10 was evicted and the new dialog added.
     #[test]
-    fn large_cap_eviction_is_batched() {
+    fn large_cap_eviction_is_batched() -> Result<(), TestError> {
         let mut store = DialogStore::new(1000, true);
         for i in 0..1001 {
-            store.process_message(make_invite_msg(&format!("b-{i:04}@test"), base_ts()));
+            store.process_message(make_invite_msg(&format!("b-{i:04}@test"), base_ts()?)?);
             assert!(store.len() <= 1000, "cap is a hard upper bound");
         }
         assert_eq!(
@@ -3255,15 +3366,16 @@ mod tests {
         );
         assert!(store.get("b-0000@test").is_none(), "oldest evicted");
         assert!(store.get("b-1000@test").is_some(), "newest present");
+        Ok(())
     }
 
     /// Batch eviction must preserve insertion-order iteration — the TUI
     /// call list's default sort IS store iteration order.
     #[test]
-    fn batch_eviction_preserves_insertion_order() {
+    fn batch_eviction_preserves_insertion_order() -> Result<(), TestError> {
         let mut store = DialogStore::new(200, true);
         for i in 0..500 {
-            store.process_message(make_invite_msg(&format!("o-{i:04}@test"), base_ts()));
+            store.process_message(make_invite_msg(&format!("o-{i:04}@test"), base_ts()?)?);
         }
         let ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
         assert!(!ids.is_empty());
@@ -3273,24 +3385,26 @@ mod tests {
             ids, sorted,
             "iteration must remain in insertion order after batched evictions"
         );
-        assert_eq!(*ids.last().unwrap(), "o-0499@test");
+        assert_eq!(*ids.last().ok_or("a last element")?, "o-0499@test");
+        Ok(())
     }
 
     /// Without rotate, a new Call-ID arriving at capacity is silently
     /// dropped and existing dialogs are untouched.
     #[test]
-    fn max_dialogs_without_rotate_drops_new() {
+    fn max_dialogs_without_rotate_drops_new() -> Result<(), TestError> {
         let mut store = DialogStore::new(2, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("call-1@test", t0));
-        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("call-1@test", t0)?);
+        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1))?);
 
         // Third dialog should be dropped silently
-        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2)));
+        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2))?);
 
         assert_eq!(store.len(), 2);
         assert!(store.get("call-3@test").is_none());
+        Ok(())
     }
 
     /// Build and parse an OPTIONS request with an explicit CSeq number and
@@ -3300,7 +3414,7 @@ mod tests {
         cseq: u32,
         branch: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "OPTIONS sip:ping@example.com SIP/2.0",
             &[
@@ -3313,7 +3427,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3322,7 +3436,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse OPTIONS")
+        .map_err(|e| format!("should parse OPTIONS: {e:?}"))?)
     }
 
     /// Build and parse a 200 OK to OPTIONS with an explicit CSeq number
@@ -3332,7 +3446,7 @@ mod tests {
         cseq: u32,
         branch: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -3345,7 +3459,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3354,7 +3468,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse 200 OK")
+        .map_err(|e| format!("should parse 200 OK: {e:?}"))?)
     }
 
     // RFC 3261 §17: transaction identity is the top Via branch. OPTIONS
@@ -3363,9 +3477,9 @@ mod tests {
     /// OPTIONS keepalives reusing Call-ID + CSeq but with fresh Via
     /// branches are distinct transactions, not retransmissions.
     #[test]
-    fn same_cseq_new_branch_is_not_a_retransmission() {
+    fn same_cseq_new_branch_is_not_a_retransmission() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         for i in 0..3u32 {
             let ts = t0 + TimeDelta::seconds(30 * i64::from(i));
@@ -3374,10 +3488,10 @@ mod tests {
                 1,
                 &format!("z9hG4bK.ka{i}"),
                 ts,
-            ));
+            )?);
         }
 
-        let dialog = store.get("keepalive@test").expect("dialog should exist");
+        let dialog = store.get("keepalive@test").ok_or("dialog should exist")?;
         assert_eq!(dialog.messages.len(), 3, "all three keepalives stored");
         for (i, m) in dialog.messages.iter().enumerate() {
             assert!(
@@ -3386,56 +3500,63 @@ mod tests {
             );
         }
         assert_eq!(dialog.timing.total_retransmits(), 0);
+        Ok(())
     }
 
     /// A repeat of the same CSeq AND the same Via branch is flagged as a
     /// retransmission and counted in the timing stats.
     #[test]
-    fn same_cseq_same_branch_is_a_retransmission() {
+    fn same_cseq_same_branch_is_a_retransmission() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         store.process_message(make_options_with_branch(
             "retx-branch@test",
             1,
             "z9hG4bK.same",
             t0,
-        ));
+        )?);
         store.process_message(make_options_with_branch(
             "retx-branch@test",
             1,
             "z9hG4bK.same",
             t0 + TimeDelta::milliseconds(500),
-        ));
+        )?);
 
-        let dialog = store.get("retx-branch@test").expect("dialog should exist");
+        let dialog = store.get("retx-branch@test").ok_or("dialog should exist")?;
         assert_eq!(dialog.messages.len(), 2);
         assert!(!dialog.messages[0].is_retransmission);
         assert!(dialog.messages[1].is_retransmission);
         assert_eq!(dialog.timing.total_retransmits(), 1);
+        Ok(())
     }
 
     /// Responses are also keyed by branch: 200 OKs from distinct
     /// transactions are new, while a repeated 200 OK (same branch) is a
     /// retransmission.
     #[test]
-    fn response_retransmission_keyed_by_branch_too() {
+    fn response_retransmission_keyed_by_branch_too() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Two full keepalive transactions: each 200 OK carries its own branch.
         for i in 0..2u32 {
             let ts = t0 + TimeDelta::seconds(30 * i64::from(i));
             let branch = format!("z9hG4bK.tx{i}");
-            store.process_message(make_options_with_branch("resp-branch@test", 1, &branch, ts));
+            store.process_message(make_options_with_branch(
+                "resp-branch@test",
+                1,
+                &branch,
+                ts,
+            )?);
             store.process_message(make_options_200_with_branch(
                 "resp-branch@test",
                 1,
                 &branch,
                 ts + TimeDelta::milliseconds(20),
-            ));
+            )?);
         }
-        let dialog = store.get("resp-branch@test").expect("dialog should exist");
+        let dialog = store.get("resp-branch@test").ok_or("dialog should exist")?;
         assert_eq!(dialog.messages.len(), 4);
         assert!(
             dialog.messages.iter().all(|m| !m.is_retransmission),
@@ -3448,9 +3569,10 @@ mod tests {
             1,
             "z9hG4bK.tx1",
             t0 + TimeDelta::seconds(31),
-        ));
-        let dialog = store.get("resp-branch@test").expect("dialog should exist");
+        )?);
+        let dialog = store.get("resp-branch@test").ok_or("dialog should exist")?;
         assert!(dialog.messages[4].is_retransmission);
+        Ok(())
     }
 
     // Adversarial branch values: none of these may panic, and behavior must be
@@ -3459,23 +3581,23 @@ mod tests {
     /// Adversarial branch values (backslashes, quotes, spaces, empty) are
     /// handled deterministically without panicking.
     #[test]
-    fn adversarial_branch_values_are_handled() {
+    fn adversarial_branch_values_are_handled() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         for (cid, branch) in [
             ("adv-backslash@test", r"z9hG4bK.a\b\\c"),
             ("adv-quote@test", "z9hG4bK.'\"quoted"),
             ("adv-space@test", "z9hG4bK.with stuff"),
         ] {
-            store.process_message(make_options_with_branch(cid, 1, branch, t0));
+            store.process_message(make_options_with_branch(cid, 1, branch, t0)?);
             store.process_message(make_options_with_branch(
                 cid,
                 1,
                 branch,
                 t0 + TimeDelta::milliseconds(100),
-            ));
-            let dialog = store.get(cid).expect("dialog should exist");
+            )?);
+            let dialog = store.get(cid).ok_or("dialog should exist")?;
             assert!(
                 dialog.messages[1].is_retransmission,
                 "{cid}: identical odd branch must still detect retransmission"
@@ -3483,32 +3605,33 @@ mod tests {
         }
 
         // Empty branch value → fallback identity (same as no branch at all).
-        store.process_message(make_options_with_branch("adv-empty@test", 1, "", t0));
+        store.process_message(make_options_with_branch("adv-empty@test", 1, "", t0)?);
         store.process_message(make_options_with_branch(
             "adv-empty@test",
             1,
             "",
             t0 + TimeDelta::milliseconds(100),
-        ));
-        let dialog = store.get("adv-empty@test").expect("dialog should exist");
+        )?);
+        let dialog = store.get("adv-empty@test").ok_or("dialog should exist")?;
         assert!(dialog.messages[1].is_retransmission);
+        Ok(())
     }
 
     /// Retransmitted INVITEs are stored for ladder display but flagged,
     /// and only the repeats count as retransmissions.
     #[test]
-    fn retransmission_stored_with_flag() {
+    fn retransmission_stored_with_flag() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::milliseconds(500);
         let t2 = t0 + TimeDelta::milliseconds(1000);
 
         // Send INVITE three times (same CSeq)
-        store.process_message(make_invite_msg("retrans@test", t0));
-        store.process_message(make_invite_msg("retrans@test", t1));
-        store.process_message(make_invite_msg("retrans@test", t2));
+        store.process_message(make_invite_msg("retrans@test", t0)?);
+        store.process_message(make_invite_msg("retrans@test", t1)?);
+        store.process_message(make_invite_msg("retrans@test", t2)?);
 
-        let dialog = store.get("retrans@test").expect("dialog should exist");
+        let dialog = store.get("retrans@test").ok_or("dialog should exist")?;
         // All three INVITEs stored: original + 2 retransmissions
         assert_eq!(dialog.messages.len(), 3);
         // Retransmit count should be 2 (second and third are retransmissions)
@@ -3518,86 +3641,91 @@ mod tests {
         // Second and third ARE retransmissions
         assert!(dialog.messages[1].is_retransmission);
         assert!(dialog.messages[2].is_retransmission);
+        Ok(())
     }
 
     /// A retransmitted INVITE after the 200 OK does not regress the
     /// dialog state from InCall.
     #[test]
-    fn retransmissions_do_not_update_state() {
+    fn retransmissions_do_not_update_state() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
         let t2 = t0 + TimeDelta::seconds(2);
 
         // INVITE, then 200 OK, then retransmitted INVITE
-        store.process_message(make_invite_msg("state-test@test", t0));
-        store.process_message(make_200_ok("state-test@test", t1));
+        store.process_message(make_invite_msg("state-test@test", t0)?);
+        store.process_message(make_200_ok("state-test@test", t1)?);
 
-        let dialog = store.get("state-test@test").expect("dialog should exist");
+        let dialog = store.get("state-test@test").ok_or("dialog should exist")?;
         assert_eq!(*dialog.state(), DialogState::InCall);
 
         // Now process a retransmitted INVITE (same CSeq)
-        store.process_message(make_invite_msg("state-test@test", t2));
+        store.process_message(make_invite_msg("state-test@test", t2)?);
 
-        let dialog = store.get("state-test@test").expect("dialog should exist");
+        let dialog = store.get("state-test@test").ok_or("dialog should exist")?;
         // State should still be InCall — the retransmission should not change it
         assert_eq!(*dialog.state(), DialogState::InCall);
         // Should have 3 messages now (original INVITE + 200 OK + retransmitted INVITE)
         assert_eq!(dialog.messages.len(), 3);
         assert!(dialog.messages[2].is_retransmission);
+        Ok(())
     }
 
     /// Messages with distinct Call-IDs create independent dialogs.
     #[test]
-    fn multiple_dialogs_independent() {
+    fn multiple_dialogs_independent() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("call-a@test", t0));
-        store.process_message(make_invite_msg("call-b@test", t0));
-        store.process_message(make_invite_msg("call-c@test", t0));
+        store.process_message(make_invite_msg("call-a@test", t0)?);
+        store.process_message(make_invite_msg("call-b@test", t0)?);
+        store.process_message(make_invite_msg("call-c@test", t0)?);
 
         assert_eq!(store.len(), 3);
         assert!(store.get("call-a@test").is_some());
         assert!(store.get("call-b@test").is_some());
         assert!(store.get("call-c@test").is_some());
+        Ok(())
     }
 
     /// INVITE → 200 OK → BYE through the store ends in Completed with all
     /// three messages stored.
     #[test]
-    fn full_call_lifecycle() {
+    fn full_call_lifecycle() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("lifecycle@test", t0));
-        store.process_message(make_200_ok("lifecycle@test", t0 + TimeDelta::seconds(2)));
-        store.process_message(make_bye_msg("lifecycle@test", t0 + TimeDelta::seconds(60)));
+        store.process_message(make_invite_msg("lifecycle@test", t0)?);
+        store.process_message(make_200_ok("lifecycle@test", t0 + TimeDelta::seconds(2))?);
+        store.process_message(make_bye_msg("lifecycle@test", t0 + TimeDelta::seconds(60))?);
 
-        let dialog = store.get("lifecycle@test").expect("dialog should exist");
+        let dialog = store.get("lifecycle@test").ok_or("dialog should exist")?;
         assert_eq!(*dialog.state(), DialogState::Completed);
         assert_eq!(dialog.messages.len(), 3);
+        Ok(())
     }
 
     /// active_dialog_count counts only dialogs in an active state and drops as
     /// calls complete, while len keeps counting completed ones.
     #[test]
-    fn active_dialog_count_tracks_live_dialogs() {
+    fn active_dialog_count_tracks_live_dialogs() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Two active calls
-        store.process_message(make_invite_msg("active-1@test", t0));
-        store.process_message(make_invite_msg("active-2@test", t0));
+        store.process_message(make_invite_msg("active-1@test", t0)?);
+        store.process_message(make_invite_msg("active-2@test", t0)?);
 
         assert_eq!(store.active_dialog_count(), 2);
 
         // Complete one
-        store.process_message(make_200_ok("active-1@test", t0 + TimeDelta::seconds(1)));
-        store.process_message(make_bye_msg("active-1@test", t0 + TimeDelta::seconds(10)));
+        store.process_message(make_200_ok("active-1@test", t0 + TimeDelta::seconds(1))?);
+        store.process_message(make_bye_msg("active-1@test", t0 + TimeDelta::seconds(10))?);
 
         assert_eq!(store.active_dialog_count(), 1);
         assert_eq!(store.len(), 2);
+        Ok(())
     }
 
     /// The two gauges are different numbers on a store that holds dialogs in
@@ -3619,17 +3747,17 @@ mod tests {
     /// concurrency, which makes it useless for the alert its own docstring
     /// promises: "channels in use, a carrier's simultaneous-call limit".
     #[test]
-    fn a_call_whose_bye_was_never_seen_stops_counting_as_up() {
+    fn a_call_whose_bye_was_never_seen_stops_counting_as_up() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Answered long ago and never torn down — the accumulating case.
-        store.process_message(make_invite_msg("stale@test", t0));
-        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("stale@test", t0)?);
+        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1))?);
         // Answered just now.
         let recent = t0 + TimeDelta::hours(9);
-        store.process_message(make_invite_msg("fresh@test", recent));
-        store.process_message(make_200_ok("fresh@test", recent + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("fresh@test", recent)?);
+        store.process_message(make_200_ok("fresh@test", recent + TimeDelta::seconds(1))?);
 
         let now = recent + TimeDelta::seconds(2);
         assert_eq!(
@@ -3638,6 +3766,7 @@ mod tests {
             "only the recently-active call is up; the nine-hour-silent one is \
              an unobserved BYE, not a channel in use"
         );
+        Ok(())
     }
 
     /// The window is generous enough that a real call is not dropped early.
@@ -3646,11 +3775,11 @@ mod tests {
     /// is twice RFC 4028's default `Session-Expires` — any call using session
     /// timers refreshes well inside it.
     #[test]
-    fn a_call_inside_the_idle_window_is_still_counted() {
+    fn a_call_inside_the_idle_window_is_still_counted() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("quiet@test", t0));
-        store.process_message(make_200_ok("quiet@test", t0 + TimeDelta::seconds(1)));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("quiet@test", t0)?);
+        store.process_message(make_200_ok("quiet@test", t0 + TimeDelta::seconds(1))?);
 
         let just_inside = t0 + DEFAULT_ACTIVE_IDLE_WINDOW - TimeDelta::seconds(60);
         assert_eq!(
@@ -3664,41 +3793,43 @@ mod tests {
             0,
             "past the window it is no longer evidence of a channel in use"
         );
+        Ok(())
     }
 
     /// `active_dialog_count` has the identical flaw and the identical fix.
     #[test]
-    fn active_dialog_count_also_ages_out() {
+    fn active_dialog_count_also_ages_out() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("stale@test", t0));
-        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1)));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("stale@test", t0)?);
+        store.process_message(make_200_ok("stale@test", t0 + TimeDelta::seconds(1))?);
         let now = t0 + DEFAULT_ACTIVE_IDLE_WINDOW + TimeDelta::hours(1);
         assert_eq!(
             store.active_dialog_count_at(now),
             0,
             "a dialog nobody has touched in hours is not an active dialog"
         );
+        Ok(())
     }
 
     #[test]
-    fn active_call_count_excludes_setup_and_subscriptions() {
+    fn active_call_count_excludes_setup_and_subscriptions() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Answered: InCall. A call, and up.
-        store.process_message(make_invite_msg("answered@test", t0));
-        store.process_message(make_200_ok("answered@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("answered@test", t0)?);
+        store.process_message(make_200_ok("answered@test", t0 + TimeDelta::seconds(1))?);
 
         // Offered but never answered: Trying. A call, not up.
-        store.process_message(make_invite_msg("ringing@test", t0));
+        store.process_message(make_invite_msg("ringing@test", t0)?);
 
         // Presence: Active. Not a call at all, and it carries no media.
-        store.process_message(make_subscribe_msg("presence@test", t0));
+        store.process_message(make_subscribe_msg("presence@test", t0)?);
         store.process_message(make_subscribe_200_ok(
             "presence@test",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         assert_eq!(
             store.active_call_count(),
@@ -3719,12 +3850,13 @@ mod tests {
             store.active_call_count() <= store.active_dialog_count(),
             "InCall is a subset of the six active states"
         );
+        Ok(())
     }
 
     /// A message without a Call-ID header is silently dropped and creates
     /// no dialog.
     #[test]
-    fn message_without_call_id_is_dropped() {
+    fn message_without_call_id_is_dropped() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
 
         let raw = build_sip(
@@ -3738,69 +3870,73 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         store.process_message(msg);
         assert_eq!(store.len(), 0);
+        Ok(())
     }
 
     /// A freshly created store is empty with zero total and active counts.
     #[test]
-    fn is_empty_on_new_store() {
+    fn is_empty_on_new_store() -> Result<(), TestError> {
         let store = DialogStore::new(100, false);
         assert!(store.is_empty());
         assert_eq!(store.len(), 0);
         assert_eq!(store.active_dialog_count(), 0);
         assert_eq!(store.active_call_count(), 0);
+        Ok(())
     }
 
     /// iter yields every tracked dialog exactly once.
     #[test]
-    fn iter_returns_all_dialogs() {
+    fn iter_returns_all_dialogs() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("iter-1@test", t0));
-        store.process_message(make_invite_msg("iter-2@test", t0));
+        store.process_message(make_invite_msg("iter-1@test", t0)?);
+        store.process_message(make_invite_msg("iter-2@test", t0)?);
 
         let call_ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
         assert_eq!(call_ids.len(), 2);
         assert!(call_ids.contains(&"iter-1@test"));
         assert!(call_ids.contains(&"iter-2@test"));
+        Ok(())
     }
 
     /// Timing measurements (setup time here) are populated when messages
     /// flow through the store's processing path.
     #[test]
-    fn timing_populated_through_store() {
+    fn timing_populated_through_store() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::milliseconds(1500);
 
-        store.process_message(make_invite_msg("timed@test", t0));
-        store.process_message(make_200_ok("timed@test", t1));
+        store.process_message(make_invite_msg("timed@test", t0)?);
+        store.process_message(make_200_ok("timed@test", t1)?);
 
-        let dialog = store.get("timed@test").expect("dialog should exist");
+        let dialog = store.get("timed@test").ok_or("dialog should exist")?;
         assert_eq!(dialog.timing.setup_ms(), Some(1500));
+        Ok(())
     }
 
     /// Responses with the same CSeq but different status codes (100 then
     /// 180) are distinct messages, not retransmissions.
     #[test]
-    fn different_response_codes_not_retransmission() {
+    fn different_response_codes_not_retransmission() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::milliseconds(100);
         let t2 = t0 + TimeDelta::milliseconds(500);
 
-        store.process_message(make_invite_msg("multi-resp@test", t0));
+        store.process_message(make_invite_msg("multi-resp@test", t0)?);
 
         // 100 Trying
         let trying = {
@@ -3824,7 +3960,7 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse")
+            .map_err(|e| format!("should parse: {e:?}"))?
         };
         store.process_message(trying);
 
@@ -3850,18 +3986,23 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse")
+            .map_err(|e| format!("should parse: {e:?}"))?
         };
         store.process_message(ringing);
 
-        let dialog = store.get("multi-resp@test").expect("dialog should exist");
+        let dialog = store.get("multi-resp@test").ok_or("dialog should exist")?;
         assert_eq!(dialog.messages.len(), 3); // INVITE + 100 + 180
         assert_eq!(dialog.timing.total_retransmits(), 0);
+        Ok(())
     }
 
     /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
     /// Build an INVITE carrying an SDP body with the given `o=` line.
-    fn make_invite_with_origin(call_id: &str, origin: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_with_origin(
+        call_id: &str,
+        origin: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let sdp = format!(
             "v=0\r\no={origin}\r\ns=-\r\nc=IN IP4 198.51.100.7\r\nt=0 0\r\n\
              m=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
@@ -3879,7 +4020,7 @@ mod tests {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3888,51 +4029,52 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE")
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// A passthrough SBC rewrote the Call-ID and the Via branch but forwarded
     /// the SDP body untouched, so the RFC 8866 origin tuple still crosses.
     #[test]
-    fn the_sdp_origin_tuple_correlates_legs_a_passthrough_sbc_rewrote() {
+    fn the_sdp_origin_tuple_correlates_legs_a_passthrough_sbc_rewrote() -> Result<(), TestError> {
         const ORIGIN: &str = "alice 2890844526 2890842807 IN IP4 198.51.100.7";
         let ts = Utc::now();
         let mut store = DialogStore::new(100, false);
-        store.process_message(make_invite_with_origin("leg-a@access", ORIGIN, ts));
+        store.process_message(make_invite_with_origin("leg-a@access", ORIGIN, ts)?);
         // Same session, later sess-version — the SBC re-anchored nothing, but
         // a re-INVITE bumped the version. The tuple excludes it on purpose.
         store.process_message(make_invite_with_origin(
             "leg-b@core",
             "alice 2890844526 2890842999 IN IP4 198.51.100.7",
             ts,
-        ));
+        )?);
 
         let found = store.find_correlated_scored("leg-a@access");
         let hit = found
             .iter()
             .find(|r| r.reason == CorrelationReason::SdpOrigin)
-            .expect("the origin tuple must correlate the legs");
+            .ok_or("the origin tuple must correlate the legs")?;
         assert_eq!(hit.dialog.call_id, "leg-b@core");
         assert_eq!(hit.score, 90);
+        Ok(())
     }
 
     /// THE fabrication guard at store level: a shared `sess-id` from two
     /// different originators must NOT correlate. RFC 8866 recommends deriving
     /// it from a timestamp, so this collision is ordinary, not contrived.
     #[test]
-    fn a_shared_sess_id_from_different_originators_does_not_correlate() {
+    fn a_shared_sess_id_from_different_originators_does_not_correlate() -> Result<(), TestError> {
         let ts = Utc::now();
         let mut store = DialogStore::new(100, false);
         store.process_message(make_invite_with_origin(
             "call-1@access",
             "alice 2890844526 2890842807 IN IP4 198.51.100.7",
             ts,
-        ));
+        )?);
         store.process_message(make_invite_with_origin(
             "call-2@access",
             "bob 2890844526 2890842807 IN IP4 203.0.113.9",
             ts,
-        ));
+        )?);
         assert!(
             store
                 .find_correlated_scored("call-1@access")
@@ -3940,6 +4082,7 @@ mod tests {
                 .all(|r| r.reason != CorrelationReason::SdpOrigin),
             "same sess-id, different originator — the tuple must keep them apart"
         );
+        Ok(())
     }
 
     /// Build an INVITE carrying an RFC 7989 `Session-ID`.
@@ -3947,7 +4090,7 @@ mod tests {
         call_id: &str,
         session_id: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -3960,7 +4103,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -3969,14 +4112,15 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE")
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// The case the whole feature exists for: an SBC rewrote the Call-ID, so
     /// nothing else ties the legs together, and the two `Session-ID` values are
     /// DIFFERENT STRINGS because the halves swap perspective across a B2BUA.
     #[test]
-    fn session_id_correlates_two_legs_across_a_b2bua_that_rewrote_the_call_id() {
+    fn session_id_correlates_two_legs_across_a_b2bua_that_rewrote_the_call_id()
+    -> Result<(), TestError> {
         const A: &str = "ab30317f1a784dc48ff824d0d3715d86";
         const B: &str = "47755a9de7794ba387653f2099600ef2";
         let ts = Utc::now();
@@ -3985,12 +4129,12 @@ mod tests {
             "leg-a@access",
             &format!("{A};remote={B}"),
             ts,
-        ));
+        )?);
         store.process_message(make_invite_with_session_id(
             "leg-b@core",
             &format!("{B};remote={A}"),
             ts,
-        ));
+        )?);
 
         let found = store.find_correlated_scored("leg-a@access");
         assert_eq!(found.len(), 1, "the far leg must be found");
@@ -4001,35 +4145,37 @@ mod tests {
             CorrelationReason::SessionId,
             "and attributed to the standard, not to a timing guess"
         );
+        Ok(())
     }
 
     /// Mutation guard for the test above: unrelated sessions must NOT
     /// correlate, or `same_session_as` returning true would pass both.
     #[test]
-    fn different_session_ids_do_not_correlate() {
+    fn different_session_ids_do_not_correlate() -> Result<(), TestError> {
         let ts = Utc::now();
         let mut store = DialogStore::new(100, false);
         store.process_message(make_invite_with_session_id(
             "leg-a@access",
             "ab30317f1a784dc48ff824d0d3715d86;remote=47755a9de7794ba387653f2099600ef2",
             ts,
-        ));
+        )?);
         store.process_message(make_invite_with_session_id(
             "unrelated@core",
             "11111111111111111111111111111111;remote=22222222222222222222222222222222",
             ts,
-        ));
+        )?);
         assert!(
             store
                 .find_correlated_scored("leg-a@access")
                 .iter()
                 .all(|r| r.reason != CorrelationReason::SessionId)
         );
+        Ok(())
     }
 
     /// A shared `nil` half must not tie together every call still being set up.
     #[test]
-    fn a_shared_nil_half_does_not_correlate_unrelated_setups() {
+    fn a_shared_nil_half_does_not_correlate_unrelated_setups() -> Result<(), TestError> {
         const NIL: &str = "00000000000000000000000000000000";
         let ts = Utc::now();
         let mut store = DialogStore::new(100, false);
@@ -4037,12 +4183,12 @@ mod tests {
             "setup-1@access",
             &format!("ab30317f1a784dc48ff824d0d3715d86;remote={NIL}"),
             ts,
-        ));
+        )?);
         store.process_message(make_invite_with_session_id(
             "setup-2@access",
             &format!("47755a9de7794ba387653f2099600ef2;remote={NIL}"),
             ts,
-        ));
+        )?);
         assert!(
             store
                 .find_correlated_scored("setup-1@access")
@@ -4050,6 +4196,7 @@ mod tests {
                 .all(|r| r.reason != CorrelationReason::SessionId),
             "nil is absence; two calls both saying 'unknown' are not one call"
         );
+        Ok(())
     }
 
     // ── RFC 7315 P-Charging-Vector correlation ───────────────────────────
@@ -4089,7 +4236,7 @@ mod tests {
         src: IpAddr,
         dst: IpAddr,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let mut headers = vec![
             format!("Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK{call_id}"),
             "From: <sip:alice@example.com>;tag=t1".to_string(),
@@ -4101,31 +4248,33 @@ mod tests {
         headers.extend(vectors.iter().map(|v| format!("P-Charging-Vector: {v}")));
         let borrowed: Vec<&str> = headers.iter().map(String::as_str).collect();
         let raw = build_sip("INVITE sip:bob@example.net SIP/2.0", &borrowed, b"");
-        parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE with P-Charging-Vector")
+        Ok(
+            parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse INVITE with P-Charging-Vector: {e:?}"))?,
+        )
     }
 
     /// A store holding two isolated legs, `leg-a@access` and `leg-b@core`.
     ///
     /// The two are three seconds apart on disjoint endpoint pairs, so the
     /// timing heuristic cannot answer for the strategy under test.
-    fn isolated_pair(a_vectors: &[&str], b_vectors: &[&str]) -> DialogStore {
+    fn isolated_pair(a_vectors: &[&str], b_vectors: &[&str]) -> Result<DialogStore, TestError> {
         let mut store = DialogStore::new(100, false);
         store.process_message(make_isolated_invite(
             "leg-a@access",
             a_vectors,
             ip(192, 0, 2, 1),
             ip(192, 0, 2, 2),
-            base_ts(),
-        ));
+            base_ts()?,
+        )?);
         store.process_message(make_isolated_invite(
             "leg-b@core",
             b_vectors,
             ip(198, 51, 100, 1),
             ip(198, 51, 100, 2),
-            base_ts() + TimeDelta::seconds(3),
-        ));
-        store
+            base_ts()? + TimeDelta::seconds(3),
+        )?);
+        Ok(store)
     }
 
     /// The isolation itself, asserted rather than assumed: two legs carrying no
@@ -4135,20 +4284,21 @@ mod tests {
     /// because some other strategy was quietly answering, and nobody would
     /// know which. This is the fixture's own proof of denial.
     #[test]
-    fn the_isolated_pair_correlates_on_nothing_at_all() {
+    fn the_isolated_pair_correlates_on_nothing_at_all() -> Result<(), TestError> {
         assert!(
-            isolated_pair(&[], &[])
+            isolated_pair(&[], &[])?
                 .find_correlated_scored("leg-a@access")
                 .is_empty(),
             "the fixture must deny all seven strategies, or the icid tests below \
              prove nothing about the icid"
         );
+        Ok(())
     }
 
     /// The B2BUA case, in the parameter [RFC 7315 section 4.6.4.1](https://www.rfc-editor.org/rfc/rfc7315#section-4.6.4.1) provides for it: the
     /// new leg's `related-icid` names the original dialog's `icid-value`.
     #[test]
-    fn related_icid_correlates_the_leg_it_points_at() {
+    fn related_icid_correlates_the_leg_it_points_at() -> Result<(), TestError> {
         const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         const B_ICID: &str = "SBC1.example.net-1718452800-0002";
         let store = isolated_pair(
@@ -4156,7 +4306,7 @@ mod tests {
             &[&format!(
                 "icid-value={B_ICID};related-icid={A_ICID};related-icid-generated-at=192.0.2.1"
             )],
-        );
+        )?;
         let found = store.find_correlated_scored("leg-a@access");
         assert_eq!(found.len(), 1, "exactly one leg, from exactly one strategy");
         assert_eq!(found[0].dialog.call_id, "leg-b@core");
@@ -4165,20 +4315,21 @@ mod tests {
             CorrelationReason::ChargingVectorRelatedIcid
         );
         assert_eq!(found[0].score, 95);
+        Ok(())
     }
 
     /// The pointer is one-way, so the query must work from the leg that does
     /// NOT carry it. Asking from the far end is the ordinary case: an operator
     /// starts from whichever Call-ID the complaint named.
     #[test]
-    fn related_icid_correlates_in_both_query_directions() {
+    fn related_icid_correlates_in_both_query_directions() -> Result<(), TestError> {
         const A_ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         let store = isolated_pair(
             &[&format!("icid-value={A_ICID}")],
             &[&format!(
                 "icid-value=SBC1.example.net-1718452800-0002;related-icid={A_ICID}"
             )],
-        );
+        )?;
         let from_b = store.find_correlated_scored("leg-b@core");
         assert_eq!(from_b.len(), 1);
         assert_eq!(from_b[0].dialog.call_id, "leg-a@access");
@@ -4186,18 +4337,20 @@ mod tests {
             from_b[0].reason,
             CorrelationReason::ChargingVectorRelatedIcid
         );
+        Ok(())
     }
 
     /// Plain `icid-value` equality: an intermediary carried a per-dialog
     /// identifier onto a second dialog. A different claim from `related-icid`
     /// and a different score, which is why the two reasons are separate.
     #[test]
-    fn a_shared_icid_value_correlates_at_a_lower_score_than_related_icid() {
+    fn a_shared_icid_value_correlates_at_a_lower_score_than_related_icid() -> Result<(), TestError>
+    {
         const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         let store = isolated_pair(
             &[&format!("icid-value={ICID};icid-generated-at=192.0.2.1")],
             &[&format!("orig-ioi=home1.example.net;icid-value=\"{ICID}\"")],
-        );
+        )?;
         let found = store.find_correlated_scored("leg-a@access");
         assert_eq!(found.len(), 1, "exactly one leg, from exactly one strategy");
         assert_eq!(found[0].dialog.call_id, "leg-b@core");
@@ -4206,6 +4359,7 @@ mod tests {
             found[0].score, 85,
             "below sdp_origin's 90 and above via_branch's 80"
         );
+        Ok(())
     }
 
     /// THE negative control, and the one that catches the likeliest bug:
@@ -4216,30 +4370,32 @@ mod tests {
     /// isolated, so anything at all here is the charging-vector code answering
     /// when it should be silent.
     #[test]
-    fn icids_differing_by_one_character_correlate_on_nothing() {
+    fn icids_differing_by_one_character_correlate_on_nothing() -> Result<(), TestError> {
         let store = isolated_pair(
             &["icid-value=P-CSCF1.example.net-1718452800-0001"],
             &["icid-value=P-CSCF1.example.net-1718452800-0002"],
-        );
+        )?;
         assert!(
             store.find_correlated_scored("leg-a@access").is_empty(),
             "one character apart is a different identifier"
         );
+        Ok(())
     }
 
     /// The same control for `related-icid`: a pointer that names something
     /// else, off by one character, points at nothing here.
     #[test]
-    fn a_related_icid_off_by_one_character_correlates_on_nothing() {
+    fn a_related_icid_off_by_one_character_correlates_on_nothing() -> Result<(), TestError> {
         let store = isolated_pair(
             &["icid-value=P-CSCF1.example.net-1718452800-0001"],
             &["icid-value=SBC1.example.net-1718452800-0002;\
                related-icid=P-CSCF1.example.net-1718452800-0009"],
-        );
+        )?;
         assert!(
             store.find_correlated_scored("leg-a@access").is_empty(),
             "a related-icid naming a different dialog is not a link to this one"
         );
+        Ok(())
     }
 
     /// Parameter isolation: two legs whose `icid-value` differs but whose
@@ -4250,29 +4406,31 @@ mod tests {
     /// the generating address, would correlate every call that proxy touched.
     /// The address is also the one parameter that must never be surfaced.
     #[test]
-    fn a_shared_generating_address_does_not_correlate() {
+    fn a_shared_generating_address_does_not_correlate() -> Result<(), TestError> {
         let store = isolated_pair(
             &["icid-value=P-CSCF1.example.net-1718452800-0001;icid-generated-at=192.0.2.1"],
             &["icid-value=P-CSCF1.example.net-1718452800-0002;icid-generated-at=192.0.2.1"],
-        );
+        )?;
         assert!(
             store.find_correlated_scored("leg-a@access").is_empty(),
             "one proxy generated both; that is not one call"
         );
+        Ok(())
     }
 
     /// An `icid-value` that is present but empty is absence, and two legs
     /// emitting it must not be joined by it.
     #[test]
-    fn an_empty_icid_value_does_not_correlate() {
+    fn an_empty_icid_value_does_not_correlate() -> Result<(), TestError> {
         let store = isolated_pair(
             &["icid-value=;icid-generated-at=192.0.2.1"],
             &["icid-value=\"\";icid-generated-at=192.0.2.2"],
-        );
+        )?;
         assert!(
             store.find_correlated_scored("leg-a@access").is_empty(),
             "an empty charging identifier is not a charging identifier"
         );
+        Ok(())
     }
 
     /// End to end, through the store, of the attack the parser refuses: the
@@ -4281,23 +4439,24 @@ mod tests {
     /// track quotes — correlates these and reports `identifier_match: true`
     /// for text the far end chose.
     #[test]
-    fn a_decoy_icid_inside_another_parameter_does_not_correlate() {
+    fn a_decoy_icid_inside_another_parameter_does_not_correlate() -> Result<(), TestError> {
         const ICID: &str = "P-CSCF1.example.net-1718452800-0001";
         let store = isolated_pair(
             &[&format!("icid-value={ICID}")],
             &[&format!("orig-ioi=\"x;icid-value={ICID};y\"")],
-        );
+        )?;
         assert!(
             store.find_correlated_scored("leg-a@access").is_empty(),
             "the identifier is the parameter, not the text anywhere in the header"
         );
+        Ok(())
     }
 
     /// The header can arrive more than once — it has no comma-separated list
     /// form, so a second node that inserts its own inserts a whole header line.
     /// Every one of them is read.
     #[test]
-    fn a_repeated_charging_vector_header_is_read_in_full() {
+    fn a_repeated_charging_vector_header_is_read_in_full() -> Result<(), TestError> {
         const ICID: &str = "IBCF1.example.net-1718452800-0009";
         let store = isolated_pair(
             &[
@@ -4305,7 +4464,7 @@ mod tests {
                 &format!("icid-value={ICID}"),
             ],
             &[&format!("icid-value={ICID}")],
-        );
+        )?;
         let found = store.find_correlated_scored("leg-a@access");
         assert_eq!(found.len(), 1);
         assert_eq!(
@@ -4313,6 +4472,7 @@ mod tests {
             CorrelationReason::ChargingVectorIcid,
             "the second header carried the match and must not be ignored"
         );
+        Ok(())
     }
 
     /// A leg with NO `P-Charging-Vector` falls through to the strategies that
@@ -4322,8 +4482,9 @@ mod tests {
     /// and an instant, so the timing heuristic is available and the assertion
     /// is that it — and not a charging-vector strategy — is what answers.
     #[test]
-    fn a_leg_with_no_charging_vector_falls_through_to_the_other_strategies() {
-        let ts = base_ts();
+    fn a_leg_with_no_charging_vector_falls_through_to_the_other_strategies() -> Result<(), TestError>
+    {
+        let ts = base_ts()?;
         let mut store = DialogStore::new(100, false);
         store.process_message(make_isolated_invite(
             "leg-a@access",
@@ -4331,14 +4492,14 @@ mod tests {
             ip(192, 0, 2, 1),
             ip(192, 0, 2, 2),
             ts,
-        ));
+        )?);
         store.process_message(make_isolated_invite(
             "leg-b@core",
             &[],
             ip(192, 0, 2, 1),
             ip(192, 0, 2, 3),
             ts,
-        ));
+        )?);
         let found = store.find_correlated_scored("leg-a@access");
         assert_eq!(
             found
@@ -4350,9 +4511,14 @@ mod tests {
             "absence is not an identifier, and the leg must still be found by \
              the strategy that does apply"
         );
+        Ok(())
     }
 
-    fn make_invite_with_x_call_id(call_id: &str, x_call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_with_x_call_id(
+        call_id: &str,
+        x_call_id: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -4365,7 +4531,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -4374,7 +4540,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE with X-Call-ID")
+        .map_err(|e| format!("should parse INVITE with X-Call-ID: {e:?}"))?)
     }
 
     /// Build an INVITE carrying an arbitrary correlation header.
@@ -4383,7 +4549,7 @@ mod tests {
         header_name: &str,
         header_value: &str,
         ts: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -4396,7 +4562,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -4405,48 +4571,50 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE with custom header")
+        .map_err(|e| format!("should parse INVITE with custom header: {e:?}"))?)
     }
 
     /// A custom correlation header configured via with_xcid_headers
     /// (X-CID) correlates the B-leg that points back through it.
     #[test]
-    fn xcid_custom_header_correlates() {
+    fn xcid_custom_header_correlates() -> Result<(), TestError> {
         // With a custom correlation header configured, a B-leg pointing back via
         // that header (X-CID here, not X-Call-ID) must correlate.
         let mut store = DialogStore::new(100, false).with_xcid_headers(vec!["X-CID".to_string()]);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("a-leg@test", t0));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("a-leg@test", t0)?);
         store.process_message(make_invite_with_header(
             "b-leg@test",
             "X-CID",
             "a-leg@test",
             t0 + TimeDelta::seconds(30),
-        ));
+        )?);
         let correlated = store.find_correlated("a-leg@test");
         assert_eq!(correlated.len(), 1);
         assert_eq!(correlated[0].call_id, "b-leg@test");
+        Ok(())
     }
 
     /// A header outside the configured correlation list (X-CID where only
     /// X-Call-ID is configured) does not correlate.
     #[test]
-    fn xcid_header_not_in_configured_list_is_ignored() {
+    fn xcid_header_not_in_configured_list_is_ignored() -> Result<(), TestError> {
         // With X-Call-ID configured, a B-leg carrying only X-CID (30s
         // later, so the timing heuristic can't match) must NOT correlate.
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("a-leg@test", t0));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("a-leg@test", t0)?);
         store.process_message(make_invite_with_header(
             "b-leg@test",
             "X-CID",
             "a-leg@test",
             t0 + TimeDelta::seconds(30),
-        ));
+        )?);
         assert!(
             store.find_correlated("a-leg@test").is_empty(),
             "X-CID must not correlate when only X-Call-ID is configured"
         );
+        Ok(())
     }
 
     /// No correlation header is configured by default (RFC 6648).
@@ -4458,20 +4626,21 @@ mod tests {
     /// strategy 0 already reads. An operator whose estate stamps `X-Call-ID`
     /// says so in `[sip] xcid_headers`.
     #[test]
-    fn no_correlation_header_is_configured_by_default() {
+    fn no_correlation_header_is_configured_by_default() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("a-leg@test", t0));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("a-leg@test", t0)?);
         // 30 s apart, so the timing heuristic cannot match either.
         store.process_message(make_invite_with_x_call_id(
             "b-leg@test",
             "a-leg@test",
             t0 + TimeDelta::seconds(30),
-        ));
+        )?);
         assert!(
             store.find_correlated("a-leg@test").is_empty(),
             "X-Call-ID must not correlate unless the operator configured it"
         );
+        Ok(())
     }
 
     /// An empty override means no correlation header, not the old default.
@@ -4479,40 +4648,41 @@ mod tests {
     /// `with_xcid_headers(vec![])` used to be ignored, so a configuration that
     /// deliberately turned the header off got `["X-Call-ID"]` back.
     #[test]
-    fn with_xcid_headers_empty_clears_the_list() {
+    fn with_xcid_headers_empty_clears_the_list() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false)
             .with_xcid_headers(vec!["X-Call-ID".to_string()])
             .with_xcid_headers(vec![]);
-        let t0 = base_ts();
-        store.process_message(make_invite_msg("a-leg@test", t0));
+        let t0 = base_ts()?;
+        store.process_message(make_invite_msg("a-leg@test", t0)?);
         store.process_message(make_invite_with_x_call_id(
             "b-leg@test",
             "a-leg@test",
             t0 + TimeDelta::seconds(30),
-        ));
+        )?);
         assert!(
             store.find_correlated("a-leg@test").is_empty(),
             "an empty list must clear the headers, not restore a default"
         );
+        Ok(())
     }
 
     /// X-Call-ID correlation works in both directions: A-leg finds B-leg
     /// and B-leg finds A-leg.
     #[test]
-    fn find_correlated_via_x_call_id() {
+    fn find_correlated_via_x_call_id() -> Result<(), TestError> {
         let mut store =
             DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // A-leg: normal INVITE
-        store.process_message(make_invite_msg("a-leg@test", t0));
+        store.process_message(make_invite_msg("a-leg@test", t0)?);
 
         // B-leg: INVITE with X-Call-ID pointing to A-leg
         store.process_message(make_invite_with_x_call_id(
             "b-leg@test",
             "a-leg@test",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         // A-leg should find B-leg as correlated
         let correlated = store.find_correlated("a-leg@test");
@@ -4523,75 +4693,84 @@ mod tests {
         let correlated = store.find_correlated("b-leg@test");
         assert_eq!(correlated.len(), 1);
         assert_eq!(correlated[0].call_id, "a-leg@test");
+        Ok(())
     }
 
     /// Unrelated dialogs (no shared headers/branches, created more than
     /// 2 s apart) do not correlate.
     #[test]
-    fn find_correlated_returns_empty_for_unlinked() {
+    fn find_correlated_returns_empty_for_unlinked() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Use timestamps > 2s apart so the timing heuristic doesn't match
-        store.process_message(make_invite_msg("standalone@test", t0));
-        store.process_message(make_invite_msg("another@test", t0 + TimeDelta::seconds(5)));
+        store.process_message(make_invite_msg("standalone@test", t0)?);
+        store.process_message(make_invite_msg("another@test", t0 + TimeDelta::seconds(5))?);
 
         assert!(store.find_correlated("standalone@test").is_empty());
         assert!(store.find_correlated("another@test").is_empty());
+        Ok(())
     }
 
     /// find_correlated for a Call-ID not in the store returns empty.
     #[test]
-    fn find_correlated_unknown_call_id_returns_empty() {
+    fn find_correlated_unknown_call_id_returns_empty() -> Result<(), TestError> {
         let store = DialogStore::new(100, false);
         assert!(store.find_correlated("nonexistent@test").is_empty());
+        Ok(())
     }
 
     /// Legs whose X-Call-ID headers point at each other correlate without
     /// duplicate results.
     #[test]
-    fn find_correlated_bidirectional_x_call_id() {
+    fn find_correlated_bidirectional_x_call_id() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Both legs have X-Call-ID pointing to each other
-        store.process_message(make_invite_with_x_call_id("leg-1@test", "leg-2@test", t0));
+        store.process_message(make_invite_with_x_call_id("leg-1@test", "leg-2@test", t0)?);
         store.process_message(make_invite_with_x_call_id(
             "leg-2@test",
             "leg-1@test",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         let correlated = store.find_correlated("leg-1@test");
         assert_eq!(correlated.len(), 1);
         assert_eq!(correlated[0].call_id, "leg-2@test");
+        Ok(())
     }
 
     // ── Step 4: Scored correlation tests ────────────────────────────────
 
     /// An X-Call-ID match scores 100 with the XCallId reason.
     #[test]
-    fn scored_x_call_id_returns_100() {
+    fn scored_x_call_id_returns_100() -> Result<(), TestError> {
         let mut store =
             DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("scored-a@test", t0));
+        store.process_message(make_invite_msg("scored-a@test", t0)?);
         store.process_message(make_invite_with_x_call_id(
             "scored-b@test",
             "scored-a@test",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         let results = store.find_correlated_scored("scored-a@test");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].dialog.call_id, "scored-b@test");
         assert_eq!(results[0].score, 100);
         assert_eq!(results[0].reason, CorrelationReason::XCallId);
+        Ok(())
     }
 
     /// Build an INVITE with a Via header containing a specific branch parameter.
-    fn make_invite_with_via_branch(call_id: &str, branch: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn make_invite_with_via_branch(
+        call_id: &str,
+        branch: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -4604,7 +4783,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -4613,80 +4792,86 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE with Via branch")
+        .map_err(|e| format!("should parse INVITE with Via branch: {e:?}"))?)
     }
 
     /// A shared Via branch on the INVITEs scores 80 with the ViaBranch
     /// reason.
     #[test]
-    fn scored_via_branch_returns_80() {
+    fn scored_via_branch_returns_80() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         store.process_message(make_invite_with_via_branch(
             "via-a@test",
             "z9hG4bK-shared-branch",
             t0,
-        ));
+        )?);
         store.process_message(make_invite_with_via_branch(
             "via-b@test",
             "z9hG4bK-shared-branch",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         let results = store.find_correlated_scored("via-a@test");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].dialog.call_id, "via-b@test");
         assert_eq!(results[0].score, 80);
         assert_eq!(results[0].reason, CorrelationReason::ViaBranch);
+        Ok(())
     }
 
     /// Two INVITE dialogs sharing an endpoint IP and created within 2 s
     /// score 50 with the TimingHeuristic reason.
     #[test]
-    fn scored_timing_heuristic_returns_50() {
+    fn scored_timing_heuristic_returns_50() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Two INVITEs from same IP within 2 seconds, no other correlation signal
-        store.process_message(make_invite_msg("timing-a@test", t0));
-        store.process_message(make_invite_msg("timing-b@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("timing-a@test", t0)?);
+        store.process_message(make_invite_msg(
+            "timing-b@test",
+            t0 + TimeDelta::seconds(1),
+        )?);
 
         let results = store.find_correlated_scored("timing-a@test");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].dialog.call_id, "timing-b@test");
         assert_eq!(results[0].score, 50);
         assert_eq!(results[0].reason, CorrelationReason::TimingHeuristic);
+        Ok(())
     }
 
     /// The timing heuristic does not fire for dialogs created more than
     /// 2 s apart.
     #[test]
-    fn timing_heuristic_excluded_beyond_2s() {
+    fn timing_heuristic_excluded_beyond_2s() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
-        store.process_message(make_invite_msg("gap-a@test", t0));
-        store.process_message(make_invite_msg("gap-b@test", t0 + TimeDelta::seconds(3)));
+        store.process_message(make_invite_msg("gap-a@test", t0)?);
+        store.process_message(make_invite_msg("gap-b@test", t0 + TimeDelta::seconds(3))?);
 
         let results = store.find_correlated_scored("gap-a@test");
         assert!(results.is_empty());
+        Ok(())
     }
 
     /// A candidate matching several strategies is reported once with the
     /// highest score (X-Call-ID beats Via branch).
     #[test]
-    fn scored_dedup_highest_score_wins() {
+    fn scored_dedup_highest_score_wins() -> Result<(), TestError> {
         let mut store =
             DialogStore::new(100, false).with_xcid_headers(vec!["X-Call-ID".to_string()]);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // A-leg: INVITE with a Via branch
         store.process_message(make_invite_with_via_branch(
             "dedup-a@test",
             "z9hG4bK-shared",
             t0,
-        ));
+        )?);
 
         // B-leg: INVITE with X-Call-ID AND matching Via branch
         let raw = build_sip(
@@ -4711,7 +4896,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         store.process_message(msg);
 
         // X-Call-ID is checked first and wins (score=100), Via is skipped (dedup)
@@ -4719,6 +4904,7 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 100);
         assert_eq!(results[0].reason, CorrelationReason::XCallId);
+        Ok(())
     }
 
     // ── Eviction with max_dialogs=3 ──────────────────────────────────
@@ -4726,17 +4912,17 @@ mod tests {
     /// After eviction at a small cap, remaining dialogs stay reachable by
     /// key (immutably and mutably) and iteration order is preserved.
     #[test]
-    fn eviction_max3_rotate() {
+    fn eviction_max3_rotate() -> Result<(), TestError> {
         let mut store = DialogStore::new(3, true);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Add 4 dialogs — the first should be evicted
-        store.process_message(make_invite_msg("evict-1@test", t0));
-        store.process_message(make_invite_msg("evict-2@test", t0 + TimeDelta::seconds(1)));
-        store.process_message(make_invite_msg("evict-3@test", t0 + TimeDelta::seconds(2)));
+        store.process_message(make_invite_msg("evict-1@test", t0)?);
+        store.process_message(make_invite_msg("evict-2@test", t0 + TimeDelta::seconds(1))?);
+        store.process_message(make_invite_msg("evict-3@test", t0 + TimeDelta::seconds(2))?);
         assert_eq!(store.len(), 3);
 
-        store.process_message(make_invite_msg("evict-4@test", t0 + TimeDelta::seconds(3)));
+        store.process_message(make_invite_msg("evict-4@test", t0 + TimeDelta::seconds(3))?);
         assert_eq!(store.len(), 3);
 
         // First dialog evicted
@@ -4762,15 +4948,15 @@ mod tests {
         // Verify index correctness: get_mut also works (proves indices are correct)
         let d2 = store
             .get_mut("evict-2@test")
-            .expect("evict-2 should be mutable");
+            .ok_or("evict-2 should be mutable")?;
         assert_eq!(d2.call_id, "evict-2@test");
         let d3 = store
             .get_mut("evict-3@test")
-            .expect("evict-3 should be mutable");
+            .ok_or("evict-3 should be mutable")?;
         assert_eq!(d3.call_id, "evict-3@test");
         let d4 = store
             .get_mut("evict-4@test")
-            .expect("evict-4 should be mutable");
+            .ok_or("evict-4 should be mutable")?;
         assert_eq!(d4.call_id, "evict-4@test");
 
         // Verify iteration order: oldest-remaining first
@@ -4779,6 +4965,7 @@ mod tests {
             call_ids,
             vec!["evict-2@test", "evict-3@test", "evict-4@test"]
         );
+        Ok(())
     }
 
     // ── Message cap per dialog ─────────────────────────────────────────
@@ -4786,12 +4973,12 @@ mod tests {
     /// A dialog's message list stops growing at the per-dialog message
     /// cap even as further messages are processed.
     #[test]
-    fn message_cap_at_max_messages_per_dialog() {
+    fn message_cap_at_max_messages_per_dialog() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Create a dialog with the initial INVITE
-        store.process_message(make_invite_msg("capped@test", t0));
+        store.process_message(make_invite_msg("capped@test", t0)?);
 
         // Push 600 additional messages (200 OK with incrementing CSeq to avoid
         // retransmission detection). The first message is the INVITE (CSeq 1),
@@ -4817,16 +5004,17 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse");
+            .map_err(|e| format!("should parse: {e:?}"))?;
             store.process_message(msg);
         }
 
-        let dialog = store.get("capped@test").expect("dialog should exist");
+        let dialog = store.get("capped@test").ok_or("dialog should exist")?;
         assert_eq!(
             dialog.messages.len(),
             DEFAULT_MAX_MESSAGES_PER_DIALOG,
             "messages should be capped at {DEFAULT_MAX_MESSAGES_PER_DIALOG}"
         );
+        Ok(())
     }
 
     // ── Via branch HashSet correlation smoke test ───────────────────────
@@ -4834,28 +5022,28 @@ mod tests {
     /// Dialogs sharing a Via branch correlate (score 80); a dialog with a
     /// different branch created well apart does not.
     #[test]
-    fn via_branch_correlation_smoke_test() {
+    fn via_branch_correlation_smoke_test() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
 
         // Two dialogs sharing a Via branch
         store.process_message(make_invite_with_via_branch(
             "smoke-a@test",
             "z9hG4bK-smoke-branch",
             t0,
-        ));
+        )?);
         store.process_message(make_invite_with_via_branch(
             "smoke-b@test",
             "z9hG4bK-smoke-branch",
             t0 + TimeDelta::seconds(1),
-        ));
+        )?);
 
         // A third dialog with a DIFFERENT branch — should NOT correlate
         store.process_message(make_invite_with_via_branch(
             "smoke-c@test",
             "z9hG4bK-different-branch",
             t0 + TimeDelta::seconds(5), // >2s apart to avoid timing heuristic
-        ));
+        )?);
 
         // smoke-a should correlate with smoke-b (branch overlap) and smoke-b (timing),
         // but NOT with smoke-c
@@ -4874,8 +5062,12 @@ mod tests {
         let branch_result = results.iter().find(|r| r.dialog.call_id == "smoke-b@test");
         assert!(branch_result.is_some());
         // Score could be 80 (branch) — timing heuristic is also eligible but branch wins first
-        assert_eq!(branch_result.unwrap().score, 80);
-        assert_eq!(branch_result.unwrap().reason, CorrelationReason::ViaBranch);
+        assert_eq!(branch_result.ok_or("branch_result is Some")?.score, 80);
+        assert_eq!(
+            branch_result.ok_or("branch_result is Some")?.reason,
+            CorrelationReason::ViaBranch
+        );
+        Ok(())
     }
 
     // ── REFER transfer tracking tests ─────────────────────────────────
@@ -4883,17 +5075,17 @@ mod tests {
     /// A REFER during an established call moves the dialog to
     /// Transferring and stores the Refer-To target URI.
     #[test]
-    fn refer_stores_refer_to_header() {
+    fn refer_stores_refer_to_header() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
         let t2 = t0 + TimeDelta::seconds(2);
 
         // Establish call: INVITE -> 200 OK -> InCall
-        store.process_message(make_invite_msg("refer-track@test", t0));
-        store.process_message(make_200_ok("refer-track@test", t1));
+        store.process_message(make_invite_msg("refer-track@test", t0)?);
+        store.process_message(make_200_ok("refer-track@test", t1)?);
 
-        let dialog = store.get("refer-track@test").expect("dialog should exist");
+        let dialog = store.get("refer-track@test").ok_or("dialog should exist")?;
         assert_eq!(*dialog.state(), DialogState::InCall);
         assert!(
             dialog.refer_to.is_none(),
@@ -4923,36 +5115,37 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse REFER")
+            .map_err(|e| format!("should parse REFER: {e:?}"))?
         };
         store.process_message(refer);
 
-        let dialog = store.get("refer-track@test").expect("dialog should exist");
+        let dialog = store.get("refer-track@test").ok_or("dialog should exist")?;
         assert_eq!(*dialog.state(), DialogState::Transferring);
         assert!(
             dialog.refer_to.is_some(),
             "refer_to should be populated after REFER"
         );
-        let refer_to = dialog.refer_to.as_deref().unwrap();
+        let refer_to = dialog.refer_to.as_deref().ok_or("refer_to is set")?;
         assert!(
             refer_to.contains("sip:1003@example.com"),
             "refer_to should contain the target URI, got: {refer_to}"
         );
+        Ok(())
     }
 
     /// A REFER using the RFC 3515 compact `r:` form of Refer-To drives
     /// transfer tracking exactly like the long form.
     #[test]
-    fn refer_with_compact_r_header_tracks_transfer() {
+    fn refer_with_compact_r_header_tracks_transfer() -> Result<(), TestError> {
         // RFC 3515 registers `r` as the compact form of Refer-To; a REFER
         // using it must drive transfer tracking exactly like the long form.
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
         let t2 = t0 + TimeDelta::seconds(2);
 
-        store.process_message(make_invite_msg("refer-compact@test", t0));
-        store.process_message(make_200_ok("refer-compact@test", t1));
+        store.process_message(make_invite_msg("refer-compact@test", t0)?);
+        store.process_message(make_200_ok("refer-compact@test", t1)?);
 
         let refer = {
             let raw = build_sip(
@@ -4976,31 +5169,32 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse REFER")
+            .map_err(|e| format!("should parse REFER: {e:?}"))?
         };
         store.process_message(refer);
 
-        let dialog = store.get("refer-compact@test").expect("dialog exists");
+        let dialog = store.get("refer-compact@test").ok_or("dialog exists")?;
         assert_eq!(*dialog.state(), DialogState::Transferring);
         let refer_to = dialog
             .refer_to
             .as_deref()
-            .expect("compact r: must populate refer_to");
+            .ok_or("compact r: must populate refer_to")?;
         assert!(refer_to.contains("sip:1003@example.com"));
+        Ok(())
     }
 
     /// A REFER without a Refer-To header leaves the dialog's refer_to
     /// field as None.
     #[test]
-    fn refer_without_header_leaves_none() {
+    fn refer_without_header_leaves_none() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
         let t2 = t0 + TimeDelta::seconds(2);
 
         // Establish call
-        store.process_message(make_invite_msg("refer-none@test", t0));
-        store.process_message(make_200_ok("refer-none@test", t1));
+        store.process_message(make_invite_msg("refer-none@test", t0)?);
+        store.process_message(make_200_ok("refer-none@test", t1)?);
 
         // Send REFER without Refer-To header
         let refer = {
@@ -5024,22 +5218,28 @@ mod tests {
                 5060,
                 TransportProto::Udp,
             )
-            .expect("should parse REFER")
+            .map_err(|e| format!("should parse REFER: {e:?}"))?
         };
         store.process_message(refer);
 
-        let dialog = store.get("refer-none@test").expect("dialog should exist");
+        let dialog = store.get("refer-none@test").ok_or("dialog should exist")?;
         assert!(
             dialog.refer_to.is_none(),
             "refer_to should remain None when no Refer-To header present"
         );
+        Ok(())
     }
 
     /// Build a SIP message with a SIPREC multipart body.
     ///
     /// Shared by the tests below so each states only the thing it varies --
     /// which message carries the metadata, or what the metadata says.
-    fn siprec_msg(call_id: &str, cseq: u32, meta: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn siprec_msg(
+        call_id: &str,
+        cseq: u32,
+        meta: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let body = format!(
             "--b\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
              --b\r\nContent-Type: application/rs-metadata+xml\r\n\r\n{meta}\r\n--b--"
@@ -5056,7 +5256,7 @@ mod tests {
             ],
             body.as_bytes(),
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
             ts,
             localhost(),
@@ -5065,7 +5265,7 @@ mod tests {
             5060,
             TransportProto::Udp,
         )
-        .expect("SIPREC message parses")
+        .map_err(|e| format!("SIPREC message parses: {e:?}"))?)
     }
 
     /// Metadata on the message that CREATES the dialog is kept.
@@ -5075,12 +5275,12 @@ mod tests {
     /// the one the creating arm used to drop, leaving the field empty for the
     /// whole call.
     #[test]
-    fn siprec_on_the_dialog_creating_invite_is_kept() {
+    fn siprec_on_the_dialog_creating_invite_is_kept() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
         let meta = "<recording><datamode>complete</datamode>\
 <session session_id=\"first-message\"/></recording>";
-        store.process_message(siprec_msg("creating@test", 1, meta, base_ts()));
-        let d = store.get("creating@test").expect("dialog exists");
+        store.process_message(siprec_msg("creating@test", 1, meta, base_ts()?)?);
+        let d = store.get("creating@test").ok_or("dialog exists")?;
         assert_eq!(
             d.siprec_metadata
                 .as_ref()
@@ -5089,6 +5289,7 @@ mod tests {
             "the creating message's metadata must survive; it is where an SRC \
              puts it"
         );
+        Ok(())
     }
 
     /// A REFER on the creating message still records its target.
@@ -5098,7 +5299,7 @@ mod tests {
     /// already in and out of the one it was not: before the change, a capture
     /// whose first message was a REFER recorded no target either.
     #[test]
-    fn a_refer_on_the_creating_message_records_its_target() {
+    fn a_refer_on_the_creating_message_records_its_target() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
         let raw = build_sip(
             "REFER sip:bob@example.invalid SIP/2.0",
@@ -5114,21 +5315,22 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("REFER parses");
+        .map_err(|e| format!("REFER parses: {e:?}"))?;
         store.process_message(msg);
-        let d = store.get("refer-first@test").expect("dialog exists");
+        let d = store.get("refer-first@test").ok_or("dialog exists")?;
         assert_eq!(
             d.refer_to.as_deref(),
             Some("<sip:carol@example.invalid>"),
             "a REFER that opens a dialog names its target too"
         );
+        Ok(())
     }
 
     /// A second recording body replaces the first.
@@ -5137,22 +5339,22 @@ mod tests {
     /// stream is added. The dialog must hold the latest description, not the
     /// one it happened to see first.
     #[test]
-    fn a_later_siprec_body_replaces_an_earlier_one() {
+    fn a_later_siprec_body_replaces_an_earlier_one() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         store.process_message(siprec_msg(
             "replace@test",
             1,
             "<recording><session session_id=\"first\"/></recording>",
             t0,
-        ));
+        )?);
         store.process_message(siprec_msg(
             "replace@test",
             2,
             "<recording><session session_id=\"second\"/></recording>",
             t0 + TimeDelta::seconds(1),
-        ));
-        let d = store.get("replace@test").expect("dialog exists");
+        )?);
+        let d = store.get("replace@test").ok_or("dialog exists")?;
         assert_eq!(
             d.siprec_metadata
                 .as_ref()
@@ -5160,6 +5362,7 @@ mod tests {
             Some("second"),
             "the newest description of the recording wins"
         );
+        Ok(())
     }
 
     /// A multipart body that is not SIPREC leaves the field alone.
@@ -5169,7 +5372,7 @@ mod tests {
     /// had two parts would be a false positive on the one question this field
     /// answers.
     #[test]
-    fn a_multipart_body_that_is_not_siprec_leaves_the_field_empty() {
+    fn a_multipart_body_that_is_not_siprec_leaves_the_field_empty() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
         let body = b"--b\r\nContent-Type: application/sdp\r\n\r\nv=0\r\n\
 --b\r\nContent-Type: application/isup\r\n\r\n\x01\x02\r\n--b--";
@@ -5187,20 +5390,21 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            base_ts(),
+            base_ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("parses");
+        .map_err(|e| format!("parses: {e:?}"))?;
         store.process_message(msg);
-        let d = store.get("notsiprec@test").expect("dialog exists");
+        let d = store.get("notsiprec@test").ok_or("dialog exists")?;
         assert!(
             d.siprec_metadata.is_none(),
             "a multipart body with no rs-metadata part is not a recording"
         );
+        Ok(())
     }
 
     // ── SIPREC metadata parsing test ──────────────────────────────────
@@ -5208,15 +5412,15 @@ mod tests {
     /// SIPREC metadata inside a multipart/mixed body is parsed and stored
     /// on the dialog (session, participants, streams).
     #[test]
-    fn siprec_metadata_parsed_from_multipart() {
+    fn siprec_metadata_parsed_from_multipart() -> Result<(), TestError> {
         let mut store = DialogStore::new(100, false);
-        let t0 = base_ts();
+        let t0 = base_ts()?;
         let t1 = t0 + TimeDelta::seconds(1);
 
         // Create dialog with initial INVITE
-        store.process_message(make_invite_msg("siprec@test", t0));
+        store.process_message(make_invite_msg("siprec@test", t0)?);
 
-        let dialog = store.get("siprec@test").expect("dialog should exist");
+        let dialog = store.get("siprec@test").ok_or("dialog should exist")?;
         assert!(dialog.siprec_metadata.is_none(), "no SIPREC metadata yet");
 
         // Build a multipart/mixed message with SIPREC metadata
@@ -5261,38 +5465,42 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse SIPREC INVITE");
+        .map_err(|e| format!("should parse SIPREC INVITE: {e:?}"))?;
         store.process_message(msg);
 
-        let dialog = store.get("siprec@test").expect("dialog should exist");
+        let dialog = store.get("siprec@test").ok_or("dialog should exist")?;
         assert!(
             dialog.siprec_metadata.is_some(),
             "SIPREC metadata should be parsed and stored"
         );
-        let metadata = dialog.siprec_metadata.as_ref().unwrap();
+        let metadata = dialog
+            .siprec_metadata
+            .as_ref()
+            .ok_or("siprec_metadata is set")?;
         assert_eq!(metadata.session_id.as_deref(), Some("siprec-sess-001"));
         assert_eq!(metadata.participants.len(), 1);
         assert_eq!(metadata.participants[0].name.as_deref(), Some("Alice"));
         assert_eq!(metadata.streams.len(), 1);
         assert_eq!(metadata.streams[0].label.as_deref(), Some("audio"));
+        Ok(())
     }
     /// The generation counter is the cache-invalidation signal for the
     /// per-frame displayed-dialogs cache: EVERY mutation — new dialog,
     /// in-place message on an existing dialog, clear, retain — must bump
     /// it, or the TUI would render stale rows.
     #[test]
-    fn generation_bumps_on_every_mutation() {
-        let t0 = base_ts();
+    fn generation_bumps_on_every_mutation() -> Result<(), TestError> {
+        let t0 = base_ts()?;
         let mut store = DialogStore::new(10, false);
         let g0 = store.generation();
 
-        store.process_message(make_invite_msg("gen-1@test", t0));
+        store.process_message(make_invite_msg("gen-1@test", t0)?);
         let g1 = store.generation();
         assert!(g1 > g0, "new dialog must bump the generation");
 
         // An in-place update (no len() change) must bump too — this is the
         // case a len()-keyed cache would miss.
-        store.process_message(make_200_ok("gen-1@test", t0));
+        store.process_message(make_200_ok("gen-1@test", t0)?);
         let g2 = store.generation();
         assert!(g2 > g1, "in-place message must bump the generation");
 
@@ -5302,6 +5510,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
 
         store.clear();
         assert!(store.generation() > g3, "clear must bump the generation");
+        Ok(())
     }
     /// Opens are counted cumulatively, so a full store still reports a rate.
     ///
@@ -5310,10 +5519,10 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// from `len()` reads zero on exactly the busy server an operator is
     /// asking about. This counter only ever rises.
     #[test]
-    fn opens_are_counted_cumulatively_not_as_occupancy() {
+    fn opens_are_counted_cumulatively_not_as_occupancy() -> Result<(), TestError> {
         let mut store = DialogStore::new(2, true);
         for n in 0..6 {
-            store.process_message(make_invite_msg(&format!("open-{n}"), base_ts()));
+            store.process_message(make_invite_msg(&format!("open-{n}"), base_ts()?)?);
         }
         assert_eq!(store.len(), 2, "the cap holds occupancy down");
         assert_eq!(
@@ -5321,6 +5530,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             6,
             "but all six were opened, and the rate is built on this"
         );
+        Ok(())
     }
 
     /// Repeat messages for a dialog already held are not new opens.
@@ -5329,17 +5539,18 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// call's own 200 OK into a second "call opened", inflating the rate by
     /// whatever the message-per-dialog ratio happens to be.
     #[test]
-    fn a_further_message_for_a_held_dialog_is_not_a_new_open() {
+    fn a_further_message_for_a_held_dialog_is_not_a_new_open() -> Result<(), TestError> {
         let mut store = DialogStore::new(10, true);
-        store.process_message(make_invite_msg("repeat-1", base_ts()));
+        store.process_message(make_invite_msg("repeat-1", base_ts()?)?);
         assert_eq!(store.total_dialogs_opened(), 1);
-        store.process_message(make_200_ok("repeat-1", base_ts()));
-        store.process_message(make_bye_msg("repeat-1", base_ts()));
+        store.process_message(make_200_ok("repeat-1", base_ts()?)?);
+        store.process_message(make_bye_msg("repeat-1", base_ts()?)?);
         assert_eq!(
             store.total_dialogs_opened(),
             1,
             "one call, however many messages it carries"
         );
+        Ok(())
     }
 
     /// The per-method split is cumulative, so a method never vanishes.
@@ -5348,10 +5559,10 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// been evicted disappears from the breakdown entirely — so "OPTIONS fell
     /// from 98/s to 0/s" renders as no OPTIONS row rather than as the drop.
     #[test]
-    fn the_opened_split_keeps_a_method_whose_dialogs_have_all_gone() {
+    fn the_opened_split_keeps_a_method_whose_dialogs_have_all_gone() -> Result<(), TestError> {
         let mut store = DialogStore::new(1, true);
-        store.process_message(make_subscribe_msg("gone-sub", base_ts()));
-        store.process_message(make_invite_msg("stays-inv", base_ts()));
+        store.process_message(make_subscribe_msg("gone-sub", base_ts()?)?);
+        store.process_message(make_invite_msg("stays-inv", base_ts()?)?);
         assert_eq!(store.len(), 1, "rotation kept only the newest");
 
         let opened = store.dialogs_opened_by_method();
@@ -5374,6 +5585,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "the total is the sum of the split, not a second counter that can \
              drift from it"
         );
+        Ok(())
     }
 
     /// A merge carries the source's opens, and does not recount them.
@@ -5383,13 +5595,13 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// the merge, and counting nothing would lose every dialog the target's
     /// cap rejected.
     #[test]
-    fn a_merge_adds_the_sources_opens_exactly_once() {
+    fn a_merge_adds_the_sources_opens_exactly_once() -> Result<(), TestError> {
         let mut store = DialogStore::new(1, false);
-        store.process_message(make_invite_msg("t-1", base_ts()));
+        store.process_message(make_invite_msg("t-1", base_ts()?)?);
 
         let mut other = DialogStore::new(4, true);
-        other.process_message(make_invite_msg("s-1", base_ts()));
-        other.process_message(make_invite_msg("s-2", base_ts()));
+        other.process_message(make_invite_msg("s-1", base_ts()?)?);
+        other.process_message(make_invite_msg("s-2", base_ts()?)?);
         assert_eq!(other.total_dialogs_opened(), 2);
 
         store.merge(other);
@@ -5398,6 +5610,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             3,
             "one of its own plus the source's two, however many the cap kept"
         );
+        Ok(())
     }
 
     // ── tail_page (shared change-tracking pagination) ──────────────────
@@ -5405,62 +5618,65 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     /// Build a store of three dialogs updated at t0 < t1 < t2, out of insertion
     /// order, so a test that passes only when the rows are re-sorted by update
     /// time cannot pass on insertion order by accident.
-    fn store_of_three_updates() -> DialogStore {
-        let t0 = base_ts();
+    fn store_of_three_updates() -> Result<DialogStore, TestError> {
+        let t0 = base_ts()?;
         let mut store = DialogStore::new(1000, true);
         // Insert middle, then newest, then oldest.
-        store.process_message(make_invite_msg("mid@h", t0 + TimeDelta::seconds(1)));
-        store.process_message(make_invite_msg("new@h", t0 + TimeDelta::seconds(2)));
-        store.process_message(make_invite_msg("old@h", t0));
-        store
+        store.process_message(make_invite_msg("mid@h", t0 + TimeDelta::seconds(1))?);
+        store.process_message(make_invite_msg("new@h", t0 + TimeDelta::seconds(2))?);
+        store.process_message(make_invite_msg("old@h", t0)?);
+        Ok(store)
     }
 
     /// With no cursor, every dialog comes back oldest-update first and the
     /// next_cursor names the newest — the position a poller resumes from.
     #[test]
-    fn tail_page_orders_by_update_time_and_names_the_newest() {
-        let store = store_of_three_updates();
+    fn tail_page_orders_by_update_time_and_names_the_newest() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
         let (page, next) = store.tail_page(None, 10);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
         assert_eq!(ids, vec!["old@h", "mid@h", "new@h"], "oldest update first");
         assert_eq!(
             next,
             Some(crate::cursor::format_cursor(
-                base_ts() + TimeDelta::seconds(2),
+                base_ts()? + TimeDelta::seconds(2),
                 "new@h"
             )),
             "the cursor names the newest row, so the next poll resumes after it"
         );
+        Ok(())
     }
 
     /// A cursor at the middle row returns only what updated strictly after it,
     /// so a poll that already saw `old` and `mid` gets just `new`.
     #[test]
-    fn tail_page_resumes_strictly_after_the_cursor() {
-        let store = store_of_three_updates();
+    fn tail_page_resumes_strictly_after_the_cursor() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
         let cursor = crate::cursor::parse_cursor(&crate::cursor::format_cursor(
-            base_ts() + TimeDelta::seconds(1),
+            base_ts()? + TimeDelta::seconds(1),
             "mid@h",
         ))
-        .expect("cursor parses");
+        .map_err(|e| format!("cursor parses: {e:?}"))?;
         let (page, _next) = store.tail_page(Some(&cursor), 10);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
         assert_eq!(ids, vec!["new@h"], "only rows updated after the cursor");
+        Ok(())
     }
 
     /// The limit is applied AFTER the update-time sort, so next_cursor names the
     /// last row actually returned — never a newer row the page skipped. Trunc-
     /// ating before the sort would let the cursor jump past `mid` and `new`.
     #[test]
-    fn tail_page_truncates_after_sorting_not_before() {
-        let store = store_of_three_updates();
+    fn tail_page_truncates_after_sorting_not_before() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
         let (page, next) = store.tail_page(None, 1);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
         assert_eq!(ids, vec!["old@h"], "the single oldest-update row");
         assert_eq!(
             next,
-            Some(crate::cursor::format_cursor(base_ts(), "old@h")),
+            Some(crate::cursor::format_cursor(base_ts()?, "old@h")),
             "the cursor names the row returned, so the next page starts at mid"
         );
+        Ok(())
     }
 }

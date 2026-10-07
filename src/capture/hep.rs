@@ -4149,6 +4149,8 @@ impl HepSender {
 /// HMAC), bind policy, rate limiting, and the idle watch.
 #[cfg(test)]
 mod tests {
+    type TestError = Box<dyn std::error::Error>;
+
     /// A HEP v3 datagram whose declared total length is `total_len`, with no
     /// chunks after the header.
     fn hep3_with_total_len(total_len: u16) -> Vec<u8> {
@@ -4262,11 +4264,12 @@ mod tests {
 
     /// Every malformation is refused by a message that names it.
     #[test]
-    fn every_malformation_is_refused_by_a_message_that_names_it() {
+    fn every_malformation_is_refused_by_a_message_that_names_it() -> Result<(), TestError> {
         for (what, data, expected) in malformations() {
             let err = parse_hep(&data)
                 .map(|_| ())
-                .expect_err(&format!("{what} must be refused"));
+                .err()
+                .ok_or_else(|| format!("{what} must be refused"))?;
             let msg = err.to_string().to_ascii_lowercase();
             assert!(
                 msg.contains(&expected.to_ascii_lowercase()),
@@ -4274,6 +4277,7 @@ mod tests {
                  {expected:?}, got {msg:?}"
             );
         }
+        Ok(())
     }
 
     /// And no two malformations share a refusal.
@@ -4282,18 +4286,19 @@ mod tests {
     /// two different faults read the same, the message narrows nothing and an
     /// operator is back to guessing.
     #[test]
-    fn no_two_malformations_share_a_refusal() {
+    fn no_two_malformations_share_a_refusal() -> Result<(), TestError> {
         let mut seen: std::collections::BTreeMap<String, &'static str> =
             std::collections::BTreeMap::new();
         for (what, data, _) in malformations() {
             let Err(err) = parse_hep(&data).map(|_| ()) else {
-                panic!("{what} must be refused");
+                return Err(format!("{what} must be refused").into());
             };
             let msg = err.to_string();
             if let Some(first) = seen.insert(msg.clone(), what) {
-                panic!("{first} and {what} are refused identically: {msg}");
+                return Err(format!("{first} and {what} are refused identically: {msg}").into());
             }
         }
+        Ok(())
     }
 
     /// A bad length is never reported as a missing address, and a missing
@@ -4303,10 +4308,11 @@ mod tests {
     /// would pass over a reader that had simply stopped mentioning addresses
     /// at all.
     #[test]
-    fn a_bad_length_is_never_reported_as_a_missing_address() {
+    fn a_bad_length_is_never_reported_as_a_missing_address() -> Result<(), TestError> {
         let bad_length = parse_hep(&hep3_with_total_len(3))
             .map(|_| ())
-            .expect_err("refused");
+            .err()
+            .ok_or("refused")?;
         assert!(
             !bad_length
                 .to_string()
@@ -4321,7 +4327,8 @@ mod tests {
         no_src.extend_from_slice(&chunk(CHUNK_PAYLOAD, b"x"));
         let missing = parse_hep(&assemble_v3(&no_src))
             .map(|_| ())
-            .expect_err("refused");
+            .err()
+            .ok_or("refused")?;
         assert!(
             missing
                 .to_string()
@@ -4329,6 +4336,7 @@ mod tests {
                 .contains("source address"),
             "a genuinely missing source address must still say so: {missing}"
         );
+        Ok(())
     }
 
     /// A packet that supplies a field is never told the field is missing.
@@ -4338,7 +4346,7 @@ mod tests {
     /// later chunk — naming the address would be describing a fault the
     /// datagram does not have.
     #[test]
-    fn a_supplied_field_is_never_named_as_the_missing_one() {
+    fn a_supplied_field_is_never_named_as_the_missing_one() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         chunks.extend_from_slice(&chunk(CHUNK_SRC_IPV4, &[10, 0, 0, 1]));
         chunks.extend_from_slice(&chunk(CHUNK_DST_IPV4, &[10, 0, 0, 2]));
@@ -4350,7 +4358,8 @@ mod tests {
 
         let err = parse_hep(&assemble_v3(&chunks))
             .map(|_| ())
-            .expect_err("refused");
+            .err()
+            .ok_or("refused")?;
         let msg = err.to_string().to_ascii_lowercase();
         assert!(
             msg.contains("overflows"),
@@ -4360,6 +4369,7 @@ mod tests {
             !msg.contains("missing"),
             "this packet supplied both addresses; nothing is missing: {msg}"
         );
+        Ok(())
     }
 
     /// Every refusal is a sentence, not a word.
@@ -4368,10 +4378,10 @@ mod tests {
     /// verdicts an operator cannot act on, and a message that carries only one
     /// of them names nothing however precise the check behind it was.
     #[test]
-    fn every_refusal_says_more_than_that_something_was_wrong() {
+    fn every_refusal_says_more_than_that_something_was_wrong() -> Result<(), TestError> {
         for (what, data, _) in malformations() {
             let Err(err) = parse_hep(&data).map(|_| ()) else {
-                panic!("{what} must be refused");
+                return Err(format!("{what} must be refused").into());
             };
             let msg = err.to_string();
             assert!(
@@ -4384,6 +4394,7 @@ mod tests {
                 "{what}: {msg:?} is a verdict without a cause"
             );
         }
+        Ok(())
     }
 
     /// A total length shorter than the header it sits in is refused.
@@ -4402,16 +4413,18 @@ mod tests {
     /// a bad length was told its packets lacked a source address, which sends
     /// the reader to the sender's addressing instead of its length field.
     #[test]
-    fn a_total_length_shorter_than_the_header_is_refused() {
+    fn a_total_length_shorter_than_the_header_is_refused() -> Result<(), TestError> {
         for total_len in 0u16..HEP3_HEADER_LEN as u16 {
             let err = parse_hep(&hep3_with_total_len(total_len))
-                .expect_err(&format!("total_length {total_len} cannot be true"));
+                .err()
+                .ok_or_else(|| format!("total_length {total_len} cannot be true"))?;
             let msg = err.to_string();
             assert!(
                 msg.contains("total_length") || msg.contains("total length"),
                 "the refusal must name the field: {msg}"
             );
         }
+        Ok(())
     }
 
     /// And a header with no chunks at all is refused too.
@@ -4421,13 +4434,15 @@ mod tests {
     /// below it — it was already refused further down, and the cause it named
     /// was not the one an operator needs.
     #[test]
-    fn a_packet_carrying_no_chunks_is_refused() {
+    fn a_packet_carrying_no_chunks_is_refused() -> Result<(), TestError> {
         let err = parse_hep(&hep3_with_total_len(HEP3_HEADER_LEN as u16))
-            .expect_err("a chunkless HEP packet asserts nothing");
+            .err()
+            .ok_or("a chunkless HEP packet asserts nothing")?;
         assert!(
             err.to_string().contains("no chunks"),
             "the refusal must say what is missing: {err}"
         );
+        Ok(())
     }
 
     /// The writer's own output round-trips.
@@ -4436,10 +4451,10 @@ mod tests {
     /// than the writer would refuse this tree's own `--hep-send` output, and
     /// nothing else in the suite compares them.
     #[test]
-    fn the_writers_own_packet_still_parses() {
+    fn the_writers_own_packet_still_parses() -> Result<(), TestError> {
         let endpoint = HepEndpoint {
-            src_addr: "10.0.0.1".parse().expect("addr"),
-            dst_addr: "10.0.0.2".parse().expect("addr"),
+            src_addr: "10.0.0.1".parse().map_err(|e| format!("addr: {e:?}"))?,
+            dst_addr: "10.0.0.2".parse().map_err(|e| format!("addr: {e:?}"))?,
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
@@ -4452,11 +4467,13 @@ mod tests {
             None,
             b"OPTIONS sip:a@b SIP/2.0\r\n\r\n",
         );
-        let parsed = parse_hep(&bytes).expect("the writer's own packet must parse");
+        let parsed =
+            parse_hep(&bytes).map_err(|e| format!("the writer's own packet must parse: {e:?}"))?;
         assert!(
             !parsed.payload.is_empty(),
             "the payload survived the round trip"
         );
+        Ok(())
     }
 
     /// Trailing bytes after the declared length are still allowed.
@@ -4465,10 +4482,10 @@ mod tests {
     /// datagram may carry padding — and a rule that demanded equality would
     /// refuse those. This asserts the new floor did not become a ceiling.
     #[test]
-    fn bytes_after_the_declared_length_do_not_refuse_the_packet() {
+    fn bytes_after_the_declared_length_do_not_refuse_the_packet() -> Result<(), TestError> {
         let endpoint = HepEndpoint {
-            src_addr: "10.0.0.1".parse().expect("addr"),
-            dst_addr: "10.0.0.2".parse().expect("addr"),
+            src_addr: "10.0.0.1".parse().map_err(|e| format!("addr: {e:?}"))?,
+            dst_addr: "10.0.0.2".parse().map_err(|e| format!("addr: {e:?}"))?,
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
@@ -4486,6 +4503,7 @@ mod tests {
             parse_hep(&bytes).is_ok(),
             "padding after the declared length is legal and must stay so"
         );
+        Ok(())
     }
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -4515,17 +4533,18 @@ mod tests {
     fn accept_rebuilt_while_sending(
         listener: &std::net::TcpListener,
         mut send_one: impl FnMut(),
-    ) -> std::net::TcpStream {
+    ) -> Result<std::net::TcpStream, TestError> {
         listener
             .set_nonblocking(true)
-            .expect("poll rather than block");
+            .map_err(|e| format!("poll rather than block: {e:?}"))?;
         let deadline = Instant::now() + MUST_ARRIVE;
         loop {
             send_one();
             match listener.accept() {
                 Ok((sock, _)) => {
-                    sock.set_nonblocking(false).expect("back to blocking reads");
-                    return sock;
+                    sock.set_nonblocking(false)
+                        .map_err(|e| format!("back to blocking reads: {e:?}"))?;
+                    return Ok(sock);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(
@@ -4535,21 +4554,25 @@ mod tests {
                     );
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(e) => panic!("the rebuilt connection: accept failed: {e}"),
+                Err(e) => return Err(format!("the rebuilt connection: accept failed: {e}").into()),
             }
         }
     }
 
-    fn accept_within(listener: &std::net::TcpListener, what: &str) -> std::net::TcpStream {
+    fn accept_within(
+        listener: &std::net::TcpListener,
+        what: &str,
+    ) -> Result<std::net::TcpStream, TestError> {
         listener
             .set_nonblocking(true)
-            .expect("poll rather than block");
+            .map_err(|e| format!("poll rather than block: {e:?}"))?;
         let deadline = Instant::now() + MUST_ARRIVE;
         loop {
             match listener.accept() {
                 Ok((sock, _)) => {
-                    sock.set_nonblocking(false).expect("back to blocking reads");
-                    return sock;
+                    sock.set_nonblocking(false)
+                        .map_err(|e| format!("back to blocking reads: {e:?}"))?;
+                    return Ok(sock);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(
@@ -4558,7 +4581,7 @@ mod tests {
                     );
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                Err(e) => panic!("{what}: accept failed: {e}"),
+                Err(e) => return Err(format!("{what}: accept failed: {e}").into()),
             }
         }
     }
@@ -4566,29 +4589,34 @@ mod tests {
     /// Read `want` whole HEP v3 packets off a stream, framing them exactly as
     /// the listener does. Bounded by a read timeout so a mutation that stops
     /// the sender writing fails the test instead of hanging it.
-    fn read_framed(stream: &mut std::net::TcpStream, want: usize) -> Vec<Vec<u8>> {
+    fn read_framed(
+        stream: &mut std::net::TcpStream,
+        want: usize,
+    ) -> Result<Vec<Vec<u8>>, TestError> {
         use std::io::Read;
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
-            .expect("bound the read");
+            .map_err(|e| format!("bound the read: {e:?}"))?;
         let mut buf: Vec<u8> = Vec::new();
         let mut out: Vec<Vec<u8>> = Vec::new();
         let mut chunk = [0u8; 4096];
         while out.len() < want {
-            while let Some(total) = hep_stream_frame(&buf).expect("the stream frames") {
+            while let Some(total) =
+                hep_stream_frame(&buf).map_err(|e| format!("the stream frames: {e:?}"))?
+            {
                 out.push(buf[..total].to_vec());
                 buf.drain(..total);
                 if out.len() == want {
-                    return out;
+                    return Ok(out);
                 }
             }
             match stream.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                Err(e) => panic!("read: {e}"),
+                Err(e) => return Err(format!("read: {e}").into()),
             }
         }
-        out
+        Ok(out)
     }
 
     /// A TCP sender lays whole HEP v3 packets end to end, and every one of
@@ -4610,10 +4638,11 @@ mod tests {
     /// is to widen it or turn it off -- an allowlist that is wrong in the
     /// strict direction still ends in a weaker configuration.
     #[test]
-    fn an_ipv4_allowlist_admits_the_mapped_form_a_dual_stack_socket_reports() {
-        let range = CidrRange::parse("10.0.0.0/8").expect("cidr parses");
-        let plain: IpAddr = "10.0.0.40".parse().unwrap();
-        let mapped: IpAddr = "::ffff:10.0.0.40".parse().unwrap();
+    fn an_ipv4_allowlist_admits_the_mapped_form_a_dual_stack_socket_reports()
+    -> Result<(), TestError> {
+        let range = CidrRange::parse("10.0.0.0/8").map_err(|e| format!("cidr parses: {e:?}"))?;
+        let plain: IpAddr = "10.0.0.40".parse()?;
+        let mapped: IpAddr = "::ffff:10.0.0.40".parse()?;
 
         assert!(range.contains(plain), "the plain form matches");
         assert!(
@@ -4622,6 +4651,7 @@ mod tests {
              same host this way, and the operator named the host, not the \
              socket family"
         );
+        Ok(())
     }
 
     /// A mapped address outside the range is still outside it.
@@ -4629,16 +4659,17 @@ mod tests {
     /// The paired half of the test above: admitting the mapped form must not
     /// admit mapped addresses generally.
     #[test]
-    fn a_mapped_address_outside_the_range_is_still_refused() {
-        let range = CidrRange::parse("10.0.0.0/8").expect("cidr parses");
+    fn a_mapped_address_outside_the_range_is_still_refused() -> Result<(), TestError> {
+        let range = CidrRange::parse("10.0.0.0/8").map_err(|e| format!("cidr parses: {e:?}"))?;
         assert!(
-            !range.contains("::ffff:192.0.2.5".parse::<IpAddr>().unwrap()),
+            !range.contains("::ffff:192.0.2.5".parse::<IpAddr>()?),
             "192.0.2.5 is not in 10.0.0.0/8 in either form"
         );
         assert!(
-            !range.contains("2001:db8::1".parse::<IpAddr>().unwrap()),
+            !range.contains("2001:db8::1".parse::<IpAddr>()?),
             "and a genuine IPv6 address is not in an IPv4 range"
         );
+        Ok(())
     }
 
     /// The mask a range is built with is the mask it matches with.
@@ -4649,10 +4680,10 @@ mod tests {
     /// length rather than a sample, because the disagreement would be at one
     /// boundary and a sample is how a boundary gets missed.
     #[test]
-    fn every_ipv4_prefix_length_matches_its_own_network_address() {
+    fn every_ipv4_prefix_length_matches_its_own_network_address() -> Result<(), TestError> {
         for prefix in 0u8..=32 {
             let range = CidrRange::parse(&format!("10.20.30.40/{prefix}"))
-                .unwrap_or_else(|e| panic!("/{prefix} parses: {e}"));
+                .map_err(|e| format!("/{prefix} parses: {e}"))?;
             // The network address of the range must be inside the range: if
             // the two mask computations disagree, this is where it shows.
             let net_v4 = range.network_addr();
@@ -4663,26 +4694,32 @@ mod tests {
                  it disagree"
             );
         }
+        Ok(())
     }
 
     /// Every IPv6 prefix length matches its own network address, too.
     #[test]
-    fn every_ipv6_prefix_length_matches_its_own_network_address() {
+    fn every_ipv6_prefix_length_matches_its_own_network_address() -> Result<(), TestError> {
         for prefix in 0u8..=128 {
             let range = CidrRange::parse(&format!("2001:db8:1234:5678::1/{prefix}"))
-                .unwrap_or_else(|e| panic!("/{prefix} parses: {e}"));
+                .map_err(|e| format!("/{prefix} parses: {e}"))?;
             let net_v6 = range.network_addr();
             assert!(
                 range.contains(net_v6),
                 "/{prefix}: the network address {net_v6} is not inside its own range"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn a_tcp_sender_lays_whole_packets_end_to_end() {
-        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
-        let dest = collector.local_addr().expect("collector addr").to_string();
+    fn a_tcp_sender_lays_whole_packets_end_to_end() -> Result<(), TestError> {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind collector: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?
+            .to_string();
 
         let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &dest);
         let sender = HepSender::for_destination(
@@ -4693,7 +4730,9 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("a TCP collector that is listening must accept the connection");
+        .map_err(|e| {
+            format!("a TCP collector that is listening must accept the connection: {e:?}")
+        })?;
 
         let bodies: [&[u8]; 3] = [
             b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
@@ -4710,17 +4749,19 @@ mod tests {
         for body in bodies {
             sender
                 .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
-                .expect("send over TCP");
+                .map_err(|e| format!("send over TCP: {e:?}"))?;
         }
 
-        let mut conn = accept_within(&collector, "the TCP sender");
-        let frames = read_framed(&mut conn, bodies.len());
+        let mut conn = accept_within(&collector, "the TCP sender")?;
+        let frames = read_framed(&mut conn, bodies.len())?;
         assert_eq!(frames.len(), bodies.len(), "every packet must arrive");
         for (frame, body) in frames.iter().zip(bodies) {
-            let pkt = parse_hep(frame).expect("each frame is a whole HEP v3 packet");
+            let pkt = parse_hep(frame)
+                .map_err(|e| format!("each frame is a whole HEP v3 packet: {e:?}"))?;
             assert_eq!(pkt.payload, body, "the payload crosses verbatim");
             assert_eq!(pkt.capture_id, Some(7));
         }
+        Ok(())
     }
 
     /// A collector that restarts gets the feed back on the next packet.
@@ -4731,9 +4772,13 @@ mod tests {
     /// One reconnect per packet, never a loop: a collector that is simply down
     /// must not turn the forwarding path into a spin.
     #[test]
-    fn a_tcp_sender_reconnects_after_the_collector_drops_the_connection() {
-        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
-        let dest = collector.local_addr().expect("collector addr").to_string();
+    fn a_tcp_sender_reconnects_after_the_collector_drops_the_connection() -> Result<(), TestError> {
+        let collector = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind collector: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?
+            .to_string();
         let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &dest);
         let sender = HepSender::for_destination(
             &destination,
@@ -4743,7 +4788,7 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("connect");
+        .map_err(|e| format!("connect: {e:?}"))?;
 
         let endpoint = HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
@@ -4754,10 +4799,10 @@ mod tests {
         };
         sender
             .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, b"first")
-            .expect("first packet");
-        let mut first = accept_within(&collector, "the first connection");
+            .map_err(|e| format!("first packet: {e:?}"))?;
+        let mut first = accept_within(&collector, "the first connection")?;
         assert_eq!(
-            read_framed(&mut first, 1).len(),
+            read_framed(&mut first, 1)?.len(),
             1,
             "the first packet arrives on the first connection"
         );
@@ -4778,17 +4823,21 @@ mod tests {
         // fails.
         let mut second = accept_rebuilt_while_sending(&collector, || {
             let _ = sender.send_payload(&endpoint, Utc::now(), HepProtocol::Sip, b"after");
-        });
-        let frames = read_framed(&mut second, 1);
+        })?;
+        let frames = read_framed(&mut second, 1)?;
         assert_eq!(
             frames.len(),
             1,
             "a packet must cross the rebuilt connection"
         );
         assert!(
-            parse_hep(&frames[0]).expect("parse").payload != b"first",
+            parse_hep(&frames[0])
+                .map_err(|e| format!("parse: {e:?}"))?
+                .payload
+                != b"first",
             "the rebuilt connection carries a LATER packet, not a replay"
         );
+        Ok(())
     }
 
     // ── Export counters: what the sending side can say about itself ──────
@@ -4828,10 +4877,13 @@ mod tests {
     /// the number in between: a refused connection must be this sender's
     /// own collector refusing, not a race.
     #[test]
-    fn a_refused_reconnect_counts_as_a_connect_failure() {
+    fn a_refused_reconnect_counts_as_a_connect_failure() -> Result<(), TestError> {
         use crate::capture::hep_export::ExportFailure;
-        let collector = std::net::TcpListener::bind("127.0.0.1:0").expect("bind collector");
-        let addr = collector.local_addr().expect("collector addr");
+        let collector = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind collector: {e:?}"))?;
+        let addr = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?;
         let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, &addr.to_string());
         let sender = HepSender::for_destination(
             &destination,
@@ -4840,16 +4892,18 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("connect");
-        send_one(&sender).expect("the first packet crosses the live connection");
-        drop(accept_within(&collector, "the first connection"));
+        .map_err(|e| format!("connect: {e:?}"))?;
+        send_one(&sender)
+            .map_err(|e| format!("the first packet crosses the live connection: {e:?}"))?;
+        drop(accept_within(&collector, "the first connection")?);
         drop(collector);
 
         let hold = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
-            .expect("socket");
-        hold.set_reuse_address(true).expect("reuse");
+            .map_err(|e| format!("socket: {e:?}"))?;
+        hold.set_reuse_address(true)
+            .map_err(|e| format!("reuse: {e:?}"))?;
         hold.bind(&addr.into())
-            .expect("hold the port, not listening");
+            .map_err(|e| format!("hold the port, not listening: {e:?}"))?;
 
         let counters = sender.counters();
         assert!(
@@ -4864,6 +4918,7 @@ mod tests {
             0,
             "a plain TCP exporter never fails a handshake: {snap:?}"
         );
+        Ok(())
     }
 
     /// **A collector the sender no longer trusts counts as a `tls_handshake`
@@ -4875,24 +4930,28 @@ mod tests {
     /// The TCP connection succeeds and the handshake does not, and that is
     /// what the count must say rather than "connect".
     #[test]
-    fn a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure() {
+    fn a_collector_the_sender_no_longer_trusts_counts_as_a_tls_handshake_failure()
+    -> Result<(), TestError> {
         use crate::capture::hep_export::ExportFailure;
-        let trusted = tempfile::tempdir().expect("tempdir");
-        let (ca, cert, key) = test_chain(trusted.path());
-        let stranger = tempfile::tempdir().expect("tempdir");
-        let (_, other_cert, other_key) = test_chain(stranger.path());
+        let trusted = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(trusted.path())?;
+        let stranger = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, other_cert, other_key) = test_chain(stranger.path())?;
 
         // One socket for both collectors: the port stays bound from the first
         // collector's start to the second's, so no parallel test can take it
         // in between. Connections that arrive between them wait in its
         // accept queue for the second.
-        let (held, bind) = loopback_tcp_listener();
+        let (held, bind) = loopback_tcp_listener()?;
         let first = CaptureConfig {
             duration: Some(Duration::from_secs(2)),
             ..CaptureConfig::default()
         };
         let (_rx1, done1) = start_listener(
-            HepSocketSource::Tcp(held.try_clone().expect("a second handle on the port")),
+            HepSocketSource::Tcp(
+                held.try_clone()
+                    .map_err(|e| format!("a second handle on the port: {e:?}"))?,
+            ),
             HepTransport::Tls,
             Some((cert, key)),
             vec![],
@@ -4908,8 +4967,9 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("the trusted collector's handshake");
-        send_one(&sender).expect("the first packet crosses the trusted session");
+        .map_err(|e| format!("the trusted collector's handshake: {e:?}"))?;
+        send_one(&sender)
+            .map_err(|e| format!("the first packet crosses the trusted session: {e:?}"))?;
         // The second collector serves the same socket, so the first must be
         // gone: two collectors accepting from one queue would split the
         // connections between them.
@@ -4939,14 +4999,17 @@ mod tests {
              handshake failure: {:?}",
             counters.snapshot()
         );
+        Ok(())
     }
 
     /// A sender whose sink is `sink`, for driving `transmit` without a network.
-    fn sender_with_sink(sink: HepSink) -> HepSender {
+    fn sender_with_sink(sink: HepSink) -> Result<HepSender, TestError> {
         let destination = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "192.0.2.10:9061");
-        HepSender {
+        Ok(HepSender {
             sink: parking_lot::Mutex::new(sink),
-            local_addr: "127.0.0.1:0".parse().expect("literal"),
+            local_addr: "127.0.0.1:0"
+                .parse()
+                .map_err(|e| format!("literal: {e:?}"))?,
             transport: HepTransport::Tcp,
             capture_id: 1,
             auth_key: None,
@@ -4955,7 +5018,7 @@ mod tests {
             nonce_counter: std::sync::atomic::AtomicU64::new(0),
             counters: crate::capture::hep_export::HepExportCounters::new("tcp"),
             permit: HepExportPermit::for_destination(&destination),
-        }
+        })
     }
 
     /// **Every kind of failure a sink reports lands under its own count**,
@@ -4964,7 +5027,7 @@ mod tests {
     /// kind, so one counted under a neighbor's name shows as a wrong number.
     /// A delivery over a rebuilt connection counts as sent AND as a reconnect.
     #[test]
-    fn every_failure_kind_a_sink_reports_is_counted_under_its_own_name() {
+    fn every_failure_kind_a_sink_reports_is_counted_under_its_own_name() -> Result<(), TestError> {
         use crate::capture::hep_export::ExportFailure;
         let script: std::sync::Arc<
             parking_lot::Mutex<Vec<std::result::Result<Delivery, ExportFailure>>>,
@@ -4983,7 +5046,7 @@ mod tests {
         let sender = sender_with_sink(Box::new(move |_pkt: &[u8]| match feed.lock().remove(0) {
             Ok(d) => Ok(d),
             Err(kind) => Err(SinkFailure::at(kind, std::io::Error::other("scripted"))),
-        }));
+        }))?;
         let total = script.lock().len();
         for _ in 0..total {
             let _ = send_one(&sender);
@@ -5002,18 +5065,24 @@ mod tests {
             snap.reconnects, 1,
             "only the rebuilt one is a reconnect: {snap:?}"
         );
+        Ok(())
     }
 
     /// **A UDP exporter counts sends and claims nothing about delivery.** The
     /// kernel takes every datagram whether or not anything listens, so the
     /// count is of sends, and the snapshot says so in words.
     #[test]
-    fn a_udp_sender_counts_sends_and_claims_no_delivery() {
-        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
-        let dest = collector.local_addr().expect("addr").to_string();
-        let sender = HepSender::new(&dest, 1, None, HepAuthMode::Plain).expect("sender");
+    fn a_udp_sender_counts_sends_and_claims_no_delivery() -> Result<(), TestError> {
+        let collector =
+            UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind collector: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("addr: {e:?}"))?
+            .to_string();
+        let sender = HepSender::new(&dest, 1, None, HepAuthMode::Plain)
+            .map_err(|e| format!("sender: {e:?}"))?;
         for _ in 0..3 {
-            send_one(&sender).expect("send");
+            send_one(&sender).map_err(|e| format!("send: {e:?}"))?;
         }
         let snap = sender.counters().snapshot();
         assert_eq!(snap.transport, "udp");
@@ -5024,6 +5093,7 @@ mod tests {
             "{}",
             snap.delivery()
         );
+        Ok(())
     }
 
     /// The certificate is checked against the host the operator dialled, with
@@ -5032,7 +5102,7 @@ mod tests {
     /// Deriving it from anything else — the resolved address, a reverse lookup
     /// — is how a client ends up validating a name nobody asked for.
     #[test]
-    fn the_verified_name_is_the_host_the_operator_dialled() {
+    fn the_verified_name_is_the_host_the_operator_dialled() -> Result<(), TestError> {
         assert_eq!(
             server_name_of("collector.example:9060").as_deref(),
             Some("collector.example")
@@ -5055,6 +5125,7 @@ mod tests {
             None,
             "a non-numeric port means the colon was not the port separator"
         );
+        Ok(())
     }
 
     /// A private CA and an end-entity certificate for `127.0.0.1`, written as
@@ -5068,12 +5139,12 @@ mod tests {
     /// exactly what a certificate for a HEP collector needs.
     fn test_chain(
         dir: &std::path::Path,
-    ) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    ) -> Result<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf), TestError> {
         use rcgen::{
             BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
             KeyPair, KeyUsagePurpose, SanType,
         };
-        let ca_key = KeyPair::generate().expect("CA key");
+        let ca_key = KeyPair::generate().map_err(|e| format!("CA key: {e:?}"))?;
         let mut ca_params = CertificateParams::default();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Constrained(0));
         ca_params.key_usages = vec![
@@ -5087,31 +5158,35 @@ mod tests {
         let ca_cert = ca_params
             .clone()
             .self_signed(&ca_key)
-            .expect("self-signed CA");
+            .map_err(|e| format!("self-signed CA: {e:?}"))?;
         let issuer = Issuer::new(ca_params, &ca_key);
 
-        let ee_key = KeyPair::generate().expect("collector key");
+        let ee_key = KeyPair::generate().map_err(|e| format!("collector key: {e:?}"))?;
         let mut ee = CertificateParams::default();
         ee.is_ca = IsCa::ExplicitNoCa;
         ee.subject_alt_names = vec![SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST))];
         ee.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         ee.distinguished_name
             .push(DnType::CommonName, "sipnab HEP test collector");
-        let ee_cert = ee.signed_by(&ee_key, &issuer).expect("issue the leaf");
+        let ee_cert = ee
+            .signed_by(&ee_key, &issuer)
+            .map_err(|e| format!("issue the leaf: {e:?}"))?;
 
         let ca_path = dir.join("ca.pem");
         let cert_path = dir.join("collector.pem");
         let key_path = dir.join("collector.key");
-        std::fs::write(&ca_path, ca_cert.pem()).expect("write ca.pem");
-        std::fs::write(&cert_path, ee_cert.pem()).expect("write collector.pem");
-        std::fs::write(&key_path, ee_key.serialize_pem()).expect("write collector.key");
+        std::fs::write(&ca_path, ca_cert.pem()).map_err(|e| format!("write ca.pem: {e:?}"))?;
+        std::fs::write(&cert_path, ee_cert.pem())
+            .map_err(|e| format!("write collector.pem: {e:?}"))?;
+        std::fs::write(&key_path, ee_key.serialize_pem())
+            .map_err(|e| format!("write collector.key: {e:?}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
-                .expect("chmod the key");
+                .map_err(|e| format!("chmod the key: {e:?}"))?;
         }
-        (ca_path, cert_path, key_path)
+        Ok((ca_path, cert_path, key_path))
     }
 
     /// A TLS listener and a TLS sender carry a HEP packet end to end, over a
@@ -5122,10 +5197,10 @@ mod tests {
     /// framing inside the encrypted stream, and the packet arriving at the
     /// pipeline with its payload intact.
     #[test]
-    fn a_tls_listener_and_sender_carry_a_packet_end_to_end() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (ca, cert, key) = test_chain(dir.path());
-        let (socket, bind) = loopback_tcp();
+    fn a_tls_listener_and_sender_carry_a_packet_end_to_end() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(dir.path())?;
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(20)),
@@ -5150,21 +5225,22 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("the collector's certificate is issued by the named CA");
+        .map_err(|e| format!("the collector's certificate is issued by the named CA: {e:?}"))?;
         let endpoint = v4_endpoint();
         for body in [&b"ENCRYPTED-1"[..], b"ENCRYPTED-2"] {
             sender
                 .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
-                .expect("send over TLS");
+                .map_err(|e| format!("send over TLS: {e:?}"))?;
         }
 
-        let got = drain_payloads(&rx, 2);
+        let got = drain_payloads(&rx, 2)?;
         assert_eq!(got[0].as_slice(), b"ENCRYPTED-1");
         assert_eq!(got[1].as_slice(), b"ENCRYPTED-2");
         assert!(
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "the TLS listener stops cleanly once the count is reached"
         );
+        Ok(())
     }
 
     /// A collector whose certificate this sender will not accept is an error
@@ -5175,15 +5251,15 @@ mod tests {
     /// first SIP message is what discovers the certificate was never
     /// acceptable.
     #[test]
-    fn a_collector_the_sender_will_not_trust_fails_at_startup() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_ca, cert, key) = test_chain(dir.path());
+    fn a_collector_the_sender_will_not_trust_fails_at_startup() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_ca, cert, key) = test_chain(dir.path())?;
         // A second, unrelated CA: the collector's certificate is perfectly
         // valid and simply not issued by the one the operator named.
-        let stranger = tempfile::tempdir().expect("tempdir");
-        let (other_ca, _, _) = test_chain(stranger.path());
+        let stranger = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (other_ca, _, _) = test_chain(stranger.path())?;
 
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             duration: Some(Duration::from_secs(5)),
             ..CaptureConfig::default()
@@ -5206,7 +5282,7 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         ) {
-            Ok(_) => panic!("a certificate from an unnamed issuer must not be accepted"),
+            Ok(_) => return Err("a certificate from an unnamed issuer must not be accepted".into()),
             Err(e) => e,
         };
         let text = format!("{err:#}");
@@ -5214,6 +5290,7 @@ mod tests {
             text.contains("TLS session"),
             "the failure must name the handshake, not something further on: {text}"
         );
+        Ok(())
     }
 
     /// A named CA is the WHOLE trust store, and a path that names nothing
@@ -5224,11 +5301,11 @@ mod tests {
     /// asked for; quietly accepting an empty store would refuse every
     /// collector, which reads as a broken far end rather than a typo.
     #[test]
-    fn a_named_ca_replaces_the_trust_store_rather_than_joining_it() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (ca, _cert, _key) = test_chain(dir.path());
+    fn a_named_ca_replaces_the_trust_store_rather_than_joining_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, _cert, _key) = test_chain(dir.path())?;
 
-        let only = hep_tls_roots(Some(&ca), None).expect("one CA loads");
+        let only = hep_tls_roots(Some(&ca), None).map_err(|e| format!("one CA loads: {e:?}"))?;
         assert_eq!(
             only.len(),
             1,
@@ -5242,48 +5319,54 @@ mod tests {
         );
 
         let empty = dir.path().join("empty.pem");
-        std::fs::write(&empty, b"# no certificate here\n").expect("write");
-        let err =
-            hep_tls_roots(Some(&empty), None).expect_err("a file with no certificate is an error");
+        std::fs::write(&empty, b"# no certificate here\n").map_err(|e| format!("write: {e:?}"))?;
+        let err = hep_tls_roots(Some(&empty), None)
+            .err()
+            .ok_or("a file with no certificate is an error")?;
         assert!(
             format!("{err:#}").contains("no certificate"),
             "the refusal must say what was missing: {err:#}"
         );
+        Ok(())
     }
 
     /// `--hep-tls-extra-ca` ADDS its certificates to the host's bundle: the
     /// store holds both. The negative control is the same bundle without the
     /// extra file, which holds one.
     #[test]
-    fn an_extra_ca_joins_the_host_bundle_rather_than_replacing_it() {
-        let host = tempfile::tempdir().expect("tempdir");
-        let extra = tempfile::tempdir().expect("tempdir");
-        let (host_ca, _, _) = test_chain(host.path());
-        let (extra_ca, _, _) = test_chain(extra.path());
+    fn an_extra_ca_joins_the_host_bundle_rather_than_replacing_it() -> Result<(), TestError> {
+        let host = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let extra = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (host_ca, _, _) = test_chain(host.path())?;
+        let (extra_ca, _, _) = test_chain(extra.path())?;
 
         let joined = hep_tls_roots_from(None, Some(&extra_ca), Some(&host_ca))
-            .expect("the host bundle and the extra CA load");
+            .map_err(|e| format!("the host bundle and the extra CA load: {e:?}"))?;
         assert_eq!(joined.len(), 2, "host root plus the extra CA");
 
-        let host_only = hep_tls_roots_from(None, None, Some(&host_ca)).expect("host bundle");
+        let host_only = hep_tls_roots_from(None, None, Some(&host_ca))
+            .map_err(|e| format!("host bundle: {e:?}"))?;
         assert_eq!(
             host_only.len(),
             1,
             "without the extra CA only the host root"
         );
+        Ok(())
     }
 
     /// `--hep-tls-ca` still REPLACES the store when a host bundle exists:
     /// adding `--hep-tls-extra-ca` as a second option must not have changed
     /// the first.
     #[test]
-    fn a_named_ca_still_ignores_the_host_bundle() {
-        let host = tempfile::tempdir().expect("tempdir");
-        let named = tempfile::tempdir().expect("tempdir");
-        let (host_ca, _, _) = test_chain(host.path());
-        let (named_ca, _, _) = test_chain(named.path());
-        let only = hep_tls_roots_from(Some(&named_ca), None, Some(&host_ca)).expect("loads");
+    fn a_named_ca_still_ignores_the_host_bundle() -> Result<(), TestError> {
+        let host = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let named = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (host_ca, _, _) = test_chain(host.path())?;
+        let (named_ca, _, _) = test_chain(named.path())?;
+        let only = hep_tls_roots_from(Some(&named_ca), None, Some(&host_ca))
+            .map_err(|e| format!("loads: {e:?}"))?;
         assert_eq!(only.len(), 1, "the named CA is the whole store");
+        Ok(())
     }
 
     /// An extra CA on a host with no bundle is refused, naming both options:
@@ -5291,47 +5374,53 @@ mod tests {
     /// trusting only this one would be the replace behavior they did not
     /// choose.
     #[test]
-    fn an_extra_ca_with_no_host_bundle_is_refused_naming_both_options() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (extra_ca, _, _) = test_chain(dir.path());
-        let err =
-            hep_tls_roots_from(None, Some(&extra_ca), None).expect_err("no host bundle to add to");
+    fn an_extra_ca_with_no_host_bundle_is_refused_naming_both_options() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (extra_ca, _, _) = test_chain(dir.path())?;
+        let err = hep_tls_roots_from(None, Some(&extra_ca), None)
+            .err()
+            .ok_or("no host bundle to add to")?;
         let text = format!("{err:#}");
         assert!(
             text.contains("--hep-tls-extra-ca") && text.contains("--hep-tls-ca"),
             "the refusal must name the option given and the one to use instead: {text}"
         );
+        Ok(())
     }
 
     /// An extra CA file with no certificate in it is an error, not a no-op.
     #[test]
-    fn an_extra_ca_file_with_no_certificate_is_refused() {
-        let host = tempfile::tempdir().expect("tempdir");
-        let (host_ca, _, _) = test_chain(host.path());
+    fn an_extra_ca_file_with_no_certificate_is_refused() -> Result<(), TestError> {
+        let host = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (host_ca, _, _) = test_chain(host.path())?;
         let empty = host.path().join("empty-extra.pem");
-        std::fs::write(&empty, b"# no certificate here\n").expect("write");
+        std::fs::write(&empty, b"# no certificate here\n").map_err(|e| format!("write: {e:?}"))?;
         let err = hep_tls_roots_from(None, Some(&empty), Some(&host_ca))
-            .expect_err("an empty extra CA is an error");
+            .err()
+            .ok_or("an empty extra CA is an error")?;
         let text = format!("{err:#}");
         assert!(
             text.contains("no certificate") && text.contains("empty-extra.pem"),
             "the refusal must name the file and what was missing: {text}"
         );
+        Ok(())
     }
 
     /// Both options at once are refused, naming both: one says "only this
     /// CA", the other "the host's roots and this CA".
     #[test]
-    fn a_named_ca_and_an_extra_ca_together_are_refused() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (ca, _, _) = test_chain(dir.path());
+    fn a_named_ca_and_an_extra_ca_together_are_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, _, _) = test_chain(dir.path())?;
         let err = hep_tls_roots_from(Some(&ca), Some(&ca), Some(&ca))
-            .expect_err("replace and add at once is contradictory");
+            .err()
+            .ok_or("replace and add at once is contradictory")?;
         let text = format!("{err:#}");
         assert!(
             text.contains("--hep-tls-ca") && text.contains("--hep-tls-extra-ca"),
             "the refusal must name both options: {text}"
         );
+        Ok(())
     }
 
     /// Through the real sender: a collector whose certificate is issued by
@@ -5339,10 +5428,10 @@ mod tests {
     /// Without a host bundle (a minimal container) the sender refuses at
     /// startup instead, and that refusal is asserted.
     #[test]
-    fn the_sender_trusts_a_collector_issued_by_the_extra_ca() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (ca, cert, key) = test_chain(dir.path());
-        let (socket, bind) = loopback_tcp();
+    fn the_sender_trusts_a_collector_issued_by_the_extra_ca() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(dir.path())?;
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
@@ -5367,20 +5456,23 @@ mod tests {
         );
         match crate::tls_files::host_ca_bundle() {
             Some(_) => {
-                let sender = sent.expect("the extra CA issued the collector's certificate");
+                let sender = sent.map_err(|e| {
+                    format!("the extra CA issued the collector's certificate: {e:?}")
+                })?;
                 sender
                     .send_payload(&v4_endpoint(), Utc::now(), HepProtocol::Sip, b"EXTRA-CA")
-                    .expect("send over TLS");
-                assert_eq!(drain_payloads(&rx, 1)[0].as_slice(), b"EXTRA-CA");
+                    .map_err(|e| format!("send over TLS: {e:?}"))?;
+                assert_eq!(drain_payloads(&rx, 1)?[0].as_slice(), b"EXTRA-CA");
             }
             None => {
                 let text = match sent {
-                    Ok(_) => panic!("no host bundle: an extra CA has nothing to join"),
+                    Ok(_) => return Err("no host bundle: an extra CA has nothing to join".into()),
                     Err(e) => format!("{e:#}"),
                 };
                 assert!(text.contains("--hep-tls-ca"), "{text}");
             }
         }
+        Ok(())
     }
 
     /// A private key any local account can read is refused.
@@ -5391,49 +5483,62 @@ mod tests {
     /// key is normally handed to a service account.
     #[cfg(unix)]
     #[test]
-    fn a_world_readable_tls_key_is_refused() {
+    fn a_world_readable_tls_key_is_refused() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (_ca, cert, key) = test_chain(dir.path());
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_ca, cert, key) = test_chain(dir.path())?;
 
-        hep_tls_server_config(Some(&cert), Some(&key)).expect("mode 600 is acceptable");
+        hep_tls_server_config(Some(&cert), Some(&key))
+            .map_err(|e| format!("mode 600 is acceptable: {e:?}"))?;
 
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644))
+            .map_err(|e| format!("chmod: {e:?}"))?;
         let err = hep_tls_server_config(Some(&cert), Some(&key))
-            .expect_err("a world-readable key must be refused");
+            .err()
+            .ok_or("a world-readable key must be refused")?;
         let text = format!("{err:#}");
         assert!(
             text.contains("world-readable"),
             "the refusal must say what is wrong with the file: {text}"
         );
 
-        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640)).expect("chmod");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640))
+            .map_err(|e| format!("chmod: {e:?}"))?;
         hep_tls_server_config(Some(&cert), Some(&key))
-            .expect("group-readable is how a key reaches a service account");
+            .map_err(|e| format!("group-readable is how a key reaches a service account: {e:?}"))?;
+        Ok(())
     }
 
     /// A loopback TCP listener on a port the kernel chose, and its address.
     ///
     /// The socket stays bound until the listener under test takes it over, so
     /// no parallel test can be given the port in between.
-    fn loopback_tcp_listener() -> (std::net::TcpListener, String) {
-        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-        let addr = l.local_addr().expect("local_addr").to_string();
-        (l, addr)
+    fn loopback_tcp_listener() -> Result<(std::net::TcpListener, String), TestError> {
+        let l = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind a loopback port: {e:?}"))?;
+        let addr = l
+            .local_addr()
+            .map_err(|e| format!("local_addr: {e:?}"))?
+            .to_string();
+        Ok((l, addr))
     }
 
     /// [`loopback_tcp_listener`], ready to hand to [`start_listener`].
-    fn loopback_tcp() -> (HepSocketSource, String) {
-        let (l, addr) = loopback_tcp_listener();
-        (HepSocketSource::Tcp(l), addr)
+    fn loopback_tcp() -> Result<(HepSocketSource, String), TestError> {
+        let (l, addr) = loopback_tcp_listener()?;
+        Ok((HepSocketSource::Tcp(l), addr))
     }
 
     /// A loopback UDP socket on a port the kernel chose, and its address,
     /// ready to hand to [`start_listener`] or [`capture_hep_on`].
-    fn loopback_udp() -> (HepSocketSource, String) {
-        let u = UdpSocket::bind("127.0.0.1:0").expect("bind a loopback port");
-        let addr = u.local_addr().expect("local_addr").to_string();
-        (HepSocketSource::Udp(u), addr)
+    fn loopback_udp() -> Result<(HepSocketSource, String), TestError> {
+        let u =
+            UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind a loopback port: {e:?}"))?;
+        let addr = u
+            .local_addr()
+            .map_err(|e| format!("local_addr: {e:?}"))?
+            .to_string();
+        Ok((HepSocketSource::Udp(u), addr))
     }
 
     /// A HEP v3 packet with `body` as its payload and `capture_id` stamped on
@@ -5464,9 +5569,9 @@ mod tests {
     /// A TCP listener the harness starts is still the one serving its port
     /// when another test tries to bind that port first.
     #[test]
-    fn a_tcp_test_listener_keeps_its_port_from_a_parallel_bind() {
+    fn a_tcp_test_listener_keeps_its_port_from_a_parallel_bind() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         // What a parallel test does in the gap. It may only fail.
         let _intruder = std::net::TcpListener::bind(&bind);
         let config = CaptureConfig {
@@ -5475,18 +5580,20 @@ mod tests {
             ..CaptureConfig::default()
         };
         let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
-        let mut agent = std::net::TcpStream::connect(&bind).expect("agent connects");
+        let mut agent =
+            std::net::TcpStream::connect(&bind).map_err(|e| format!("agent connects: {e:?}"))?;
         agent
             .write_all(&hep3_from(1, None, b"MINE"))
-            .expect("write");
-        assert_eq!(drain_payloads(&rx, 1), vec![b"MINE".to_vec()]);
+            .map_err(|e| format!("write: {e:?}"))?;
+        assert_eq!(drain_payloads(&rx, 1)?, vec![b"MINE".to_vec()]);
+        Ok(())
     }
 
     /// A UDP listener the harness starts is still the one serving its port
     /// when another test tries to bind that port first.
     #[test]
-    fn a_udp_test_listener_keeps_its_port_from_a_parallel_bind() {
-        let (socket, bind) = loopback_udp();
+    fn a_udp_test_listener_keeps_its_port_from_a_parallel_bind() -> Result<(), TestError> {
+        let (socket, bind) = loopback_udp()?;
         // What a parallel test does in the gap. It may only fail.
         let _intruder = UdpSocket::bind(&bind);
         let config = CaptureConfig {
@@ -5495,26 +5602,30 @@ mod tests {
             ..CaptureConfig::default()
         };
         let (rx, _done) = start_listener(socket, HepTransport::Udp, None, vec![], None, config);
-        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let sender = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind sender: {e:?}"))?;
         sender
             .send_to(&hep3_from(1, None, b"MINE"), &bind)
-            .expect("send");
-        assert_eq!(drain_payloads(&rx, 1), vec![b"MINE".to_vec()]);
+            .map_err(|e| format!("send: {e:?}"))?;
+        assert_eq!(drain_payloads(&rx, 1)?, vec![b"MINE".to_vec()]);
+        Ok(())
     }
 
     /// A collector replaced on the same address — the shape of the test that
     /// failed — keeps the port between the first collector's exit and the
     /// second one's start.
     #[test]
-    fn a_replaced_test_collector_keeps_its_port_from_a_parallel_bind() {
+    fn a_replaced_test_collector_keeps_its_port_from_a_parallel_bind() -> Result<(), TestError> {
         use std::io::Write;
-        let (held, bind) = loopback_tcp_listener();
+        let (held, bind) = loopback_tcp_listener()?;
         let first = CaptureConfig {
             duration: Some(Duration::from_millis(300)),
             ..CaptureConfig::default()
         };
         let (_rx1, done1) = start_listener(
-            HepSocketSource::Tcp(held.try_clone().expect("a second handle on the port")),
+            HepSocketSource::Tcp(
+                held.try_clone()
+                    .map_err(|e| format!("a second handle on the port: {e:?}"))?,
+            ),
             HepTransport::Tcp,
             None,
             vec![],
@@ -5541,11 +5652,13 @@ mod tests {
             None,
             second,
         );
-        let mut agent = std::net::TcpStream::connect(&bind).expect("agent connects");
+        let mut agent =
+            std::net::TcpStream::connect(&bind).map_err(|e| format!("agent connects: {e:?}"))?;
         agent
             .write_all(&hep3_from(1, None, b"MINE"))
-            .expect("write");
-        assert_eq!(drain_payloads(&rx2, 1), vec![b"MINE".to_vec()]);
+            .map_err(|e| format!("write: {e:?}"))?;
+        assert_eq!(drain_payloads(&rx2, 1)?, vec![b"MINE".to_vec()]);
+        Ok(())
     }
 
     /// Start a real listener on `socket` and hand back the pipeline it feeds.
@@ -5598,15 +5711,20 @@ mod tests {
     }
 
     /// The payloads that reached the pipeline, in arrival order.
-    fn drain_payloads(rx: &crate::capture::channel::PacketRx, want: usize) -> Vec<Vec<u8>> {
+    fn drain_payloads(
+        rx: &crate::capture::channel::PacketRx,
+        want: usize,
+    ) -> Result<Vec<Vec<u8>>, TestError> {
         let mut got = Vec::new();
         for _ in 0..want {
             match rx.recv_timeout(MUST_ARRIVE) {
                 Ok(p) => got.push(p.data.to_vec()),
-                Err(e) => panic!("expected {want} packets, got {}: {e}", got.len()),
+                Err(e) => {
+                    return Err(format!("expected {want} packets, got {}: {e}", got.len()).into());
+                }
             }
         }
-        got
+        Ok(got)
     }
 
     /// A TCP listener reads a stream of HEP packets and delivers every one of
@@ -5616,8 +5734,8 @@ mod tests {
     /// stream its own way, or a listener that read one packet per `read()`,
     /// would each fail here while a single-packet test passed.
     #[test]
-    fn a_tcp_listener_delivers_every_packet_a_real_sender_writes() {
-        let (socket, bind) = loopback_tcp();
+    fn a_tcp_listener_delivers_every_packet_a_real_sender_writes() -> Result<(), TestError> {
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(3),
             duration: Some(Duration::from_secs(20)),
@@ -5634,7 +5752,7 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         )
-        .expect("the listener is up, so the connection must succeed");
+        .map_err(|e| format!("the listener is up, so the connection must succeed: {e:?}"))?;
         let endpoint = v4_endpoint();
         let bodies: [&[u8]; 3] = [
             b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n",
@@ -5644,10 +5762,10 @@ mod tests {
         for body in bodies {
             sender
                 .send_payload(&endpoint, Utc::now(), HepProtocol::Sip, body)
-                .expect("send over TCP");
+                .map_err(|e| format!("send over TCP: {e:?}"))?;
         }
 
-        let got = drain_payloads(&rx, bodies.len());
+        let got = drain_payloads(&rx, bodies.len())?;
         for (payload, body) in got.iter().zip(bodies) {
             assert_eq!(payload.as_slice(), body, "the payload crosses verbatim");
         }
@@ -5655,6 +5773,7 @@ mod tests {
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "the listener stops cleanly once the count is reached"
         );
+        Ok(())
     }
 
     /// Several agents share one TCP listener, and each keeps its own identity.
@@ -5663,9 +5782,9 @@ mod tests {
     /// single-peer test and then, in an estate, silently hold the second proxy
     /// at the accept queue until the first one restarted.
     #[test]
-    fn a_tcp_listener_serves_several_agents_at_once() {
+    fn a_tcp_listener_serves_several_agents_at_once() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(4),
             duration: Some(Duration::from_secs(20)),
@@ -5673,17 +5792,23 @@ mod tests {
         };
         let (rx, _done) = start_listener(socket, HepTransport::Tcp, None, vec![], None, config);
 
-        let mut a = std::net::TcpStream::connect(&bind).expect("first agent connects");
-        let mut b = std::net::TcpStream::connect(&bind).expect("second agent connects");
+        let mut a = std::net::TcpStream::connect(&bind)
+            .map_err(|e| format!("first agent connects: {e:?}"))?;
+        let mut b = std::net::TcpStream::connect(&bind)
+            .map_err(|e| format!("second agent connects: {e:?}"))?;
         // Interleaved on purpose: if the listener finished one connection
         // before starting the next, `b`'s first packet could not arrive
         // between `a`'s two.
-        a.write_all(&hep3_from(1, None, b"A1")).expect("a1");
-        b.write_all(&hep3_from(2, None, b"B1")).expect("b1");
-        a.write_all(&hep3_from(1, None, b"A2")).expect("a2");
-        b.write_all(&hep3_from(2, None, b"B2")).expect("b2");
+        a.write_all(&hep3_from(1, None, b"A1"))
+            .map_err(|e| format!("a1: {e:?}"))?;
+        b.write_all(&hep3_from(2, None, b"B1"))
+            .map_err(|e| format!("b1: {e:?}"))?;
+        a.write_all(&hep3_from(1, None, b"A2"))
+            .map_err(|e| format!("a2: {e:?}"))?;
+        b.write_all(&hep3_from(2, None, b"B2"))
+            .map_err(|e| format!("b2: {e:?}"))?;
 
-        let mut got: Vec<Vec<u8>> = drain_payloads(&rx, 4);
+        let mut got: Vec<Vec<u8>> = drain_payloads(&rx, 4)?;
         got.sort();
         assert_eq!(
             got,
@@ -5695,6 +5820,7 @@ mod tests {
             ],
             "both agents must be served"
         );
+        Ok(())
     }
 
     /// A packet split across two writes is one packet, not two broken ones.
@@ -5703,9 +5829,9 @@ mod tests {
     /// what a large `INVITE` does on a busy link. The listener must hold the
     /// fragment and wait rather than parse what it has.
     #[test]
-    fn a_packet_split_across_two_writes_is_reassembled() {
+    fn a_packet_split_across_two_writes_is_reassembled() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
@@ -5715,20 +5841,25 @@ mod tests {
 
         let pkt = hep3_from(5, None, b"INVITE sip:split@example SIP/2.0\r\n\r\n");
         let cut = 4; // mid-magic: even the header is not whole yet
-        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
-        peer.set_nodelay(true).expect("nodelay");
-        peer.write_all(&pkt[..cut]).expect("first half");
+        let mut peer =
+            std::net::TcpStream::connect(&bind).map_err(|e| format!("connect: {e:?}"))?;
+        peer.set_nodelay(true)
+            .map_err(|e| format!("nodelay: {e:?}"))?;
+        peer.write_all(&pkt[..cut])
+            .map_err(|e| format!("first half: {e:?}"))?;
         assert!(
             rx.recv_timeout(Duration::from_millis(300)).is_err(),
             "a partial packet must produce nothing at all"
         );
-        peer.write_all(&pkt[cut..]).expect("second half");
+        peer.write_all(&pkt[cut..])
+            .map_err(|e| format!("second half: {e:?}"))?;
 
-        let got = drain_payloads(&rx, 1);
+        let got = drain_payloads(&rx, 1)?;
         assert_eq!(
             got[0].as_slice(),
             b"INVITE sip:split@example SIP/2.0\r\n\r\n"
         );
+        Ok(())
     }
 
     /// A packet whose header is whole but whose body is still arriving is
@@ -5741,9 +5872,9 @@ mod tests {
     /// comparison leaves the sibling passing and this one failing, which is
     /// why both exist.
     #[test]
-    fn a_packet_whose_body_is_still_arriving_is_held_until_it_lands() {
+    fn a_packet_whose_body_is_still_arriving_is_held_until_it_lands() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
@@ -5756,17 +5887,21 @@ mod tests {
         // what has arrived.
         let cut = HEP3_HEADER_LEN + 4;
         assert!(cut < pkt.len(), "the fixture must be longer than the cut");
-        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
-        peer.set_nodelay(true).expect("nodelay");
+        let mut peer =
+            std::net::TcpStream::connect(&bind).map_err(|e| format!("connect: {e:?}"))?;
+        peer.set_nodelay(true)
+            .map_err(|e| format!("nodelay: {e:?}"))?;
         peer.write_all(&pkt[..cut])
-            .expect("header and a little body");
+            .map_err(|e| format!("header and a little body: {e:?}"))?;
         assert!(
             rx.recv_timeout(Duration::from_millis(300)).is_err(),
             "a packet whose declared length has not arrived must produce nothing"
         );
-        peer.write_all(&pkt[cut..]).expect("the rest of the body");
-        let got = drain_payloads(&rx, 1);
+        peer.write_all(&pkt[cut..])
+            .map_err(|e| format!("the rest of the body: {e:?}"))?;
+        let got = drain_payloads(&rx, 1)?;
         assert_eq!(got[0].as_slice(), body);
+        Ok(())
     }
 
     /// A peer that vanishes mid-packet costs its own connection and nothing
@@ -5776,9 +5911,10 @@ mod tests {
     /// listener must keep serving. A collector that exited here would be
     /// killable by any agent that lost power at the wrong moment.
     #[test]
-    fn a_peer_that_disconnects_mid_packet_does_not_take_the_listener_with_it() {
+    fn a_peer_that_disconnects_mid_packet_does_not_take_the_listener_with_it()
+    -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(1),
             duration: Some(Duration::from_secs(20)),
@@ -5788,18 +5924,20 @@ mod tests {
 
         {
             let truncated = hep3_from(9, None, b"INVITE sip:gone@example SIP/2.0\r\n\r\n");
-            let mut doomed = std::net::TcpStream::connect(&bind).expect("connect");
+            let mut doomed =
+                std::net::TcpStream::connect(&bind).map_err(|e| format!("connect: {e:?}"))?;
             doomed
                 .write_all(&truncated[..truncated.len() / 2])
-                .expect("half a packet");
+                .map_err(|e| format!("half a packet: {e:?}"))?;
         }
 
-        let mut survivor = std::net::TcpStream::connect(&bind).expect("a later agent connects");
+        let mut survivor = std::net::TcpStream::connect(&bind)
+            .map_err(|e| format!("a later agent connects: {e:?}"))?;
         survivor
             .write_all(&hep3_from(9, None, b"ALIVE"))
-            .expect("a whole packet");
+            .map_err(|e| format!("a whole packet: {e:?}"))?;
         assert_eq!(
-            drain_payloads(&rx, 1)[0].as_slice(),
+            drain_payloads(&rx, 1)?[0].as_slice(),
             b"ALIVE",
             "the listener must still be serving after the truncated peer"
         );
@@ -5807,14 +5945,15 @@ mod tests {
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "and must still stop cleanly"
         );
+        Ok(())
     }
 
     /// Receiver-side authentication is a property of the listener, not of the
     /// datagram socket: it must hold over TCP exactly as it does over UDP.
     #[test]
-    fn a_tcp_peer_without_the_secret_is_dropped() {
+    fn a_tcp_peer_without_the_secret_is_dropped() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(20)),
@@ -5829,13 +5968,14 @@ mod tests {
             config,
         );
 
-        let mut peer = std::net::TcpStream::connect(&bind).expect("connect");
+        let mut peer =
+            std::net::TcpStream::connect(&bind).map_err(|e| format!("connect: {e:?}"))?;
         peer.write_all(&hep3_from(1, Some("wrong"), b"IMPOSTOR"))
-            .expect("write the unauthenticated packet");
+            .map_err(|e| format!("write the unauthenticated packet: {e:?}"))?;
         peer.write_all(&hep3_from(1, Some("s3cr3t"), b"GENUINE"))
-            .expect("write the authenticated packet");
+            .map_err(|e| format!("write the authenticated packet: {e:?}"))?;
 
-        let got = drain_payloads(&rx, 1);
+        let got = drain_payloads(&rx, 1)?;
         assert_eq!(
             got[0].as_slice(),
             b"GENUINE",
@@ -5845,6 +5985,7 @@ mod tests {
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "both packets still COUNT toward --count, dropped or not"
         );
+        Ok(())
     }
 
     /// The source allowlist governs a TCP connection at accept time.
@@ -5853,9 +5994,9 @@ mod tests {
     /// anything on a stream: a peer outside the allowlist must not be able to
     /// hold a reader thread open by sending nothing.
     #[test]
-    fn a_tcp_peer_outside_the_allowlist_is_refused_before_it_can_speak() {
+    fn a_tcp_peer_outside_the_allowlist_is_refused_before_it_can_speak() -> Result<(), TestError> {
         use std::io::Write;
-        let (socket, bind) = loopback_tcp();
+        let (socket, bind) = loopback_tcp()?;
         // Not `count: Some(1)`: serve_hep_stream counts every packet it reads
         // off the connection toward --count, dropped ones included, so a
         // one-packet budget ends the reader thread the moment the allowlist
@@ -5871,12 +6012,13 @@ mod tests {
             socket,
             HepTransport::Tcp,
             None,
-            vec![CidrRange::parse("10.0.0.0/8").expect("cidr")],
+            vec![CidrRange::parse("10.0.0.0/8").map_err(|e| format!("cidr: {e:?}"))?],
             None,
             config,
         );
 
-        let mut peer = std::net::TcpStream::connect(&bind).expect("the TCP handshake completes");
+        let mut peer = std::net::TcpStream::connect(&bind)
+            .map_err(|e| format!("the TCP handshake completes: {e:?}"))?;
         // Before the write, not after it. macOS returns EINVAL from
         // setsockopt(SO_RCVTIMEO) once the peer has reset the connection, and
         // a refusal racing our write is precisely what this test arranges --
@@ -5885,7 +6027,7 @@ mod tests {
         // that does not depend on which side wins the race is to ask for the
         // timeout while the socket is still plainly healthy.
         peer.set_read_timeout(Some(Duration::from_millis(750)))
-            .expect("the peer socket takes a read timeout");
+            .map_err(|e| format!("the peer socket takes a read timeout: {e:?}"))?;
         // The write may or may not fail depending on when the reset lands;
         // what matters is that nothing reaches the pipeline.
         let _ = peer.write_all(&hep3_from(1, None, b"NOT ALLOWED"));
@@ -5921,6 +6063,7 @@ mod tests {
              is given a reader thread it could hold open by saying nothing; the \
              read saw {seen:?}"
         );
+        Ok(())
     }
 
     /// A HEP v3 packet the operator can hand to the framer, with `n` payload
@@ -5945,24 +6088,26 @@ mod tests {
     /// has not arrived, and a peer that stopped talking mid-packet. Each must
     /// leave the buffer untouched for the next read.
     #[test]
-    fn the_stream_framer_takes_each_boundary_from_the_declared_length() {
+    fn the_stream_framer_takes_each_boundary_from_the_declared_length() -> Result<(), TestError> {
         let pkt = hep3_bytes(b"OPTIONS sip:a@b SIP/2.0\r\n\r\n");
         assert!(pkt.len() > HEP3_HEADER_LEN);
 
         for short in 0..HEP3_HEADER_LEN {
             assert_eq!(
-                hep_stream_frame(&pkt[..short]).expect("a short header is not yet an error"),
+                hep_stream_frame(&pkt[..short])
+                    .map_err(|e| format!("a short header is not yet an error: {e:?}"))?,
                 None,
                 "{short} bytes cannot carry the 6-byte HEP v3 header"
             );
         }
         assert_eq!(
-            hep_stream_frame(&pkt[..pkt.len() - 1]).expect("a partial body is not yet an error"),
+            hep_stream_frame(&pkt[..pkt.len() - 1])
+                .map_err(|e| format!("a partial body is not yet an error: {e:?}"))?,
             None,
             "the declared total has not arrived"
         );
         assert_eq!(
-            hep_stream_frame(&pkt).expect("a whole packet frames"),
+            hep_stream_frame(&pkt).map_err(|e| format!("a whole packet frames: {e:?}"))?,
             Some(pkt.len()),
             "the frame is exactly the declared total"
         );
@@ -5970,11 +6115,12 @@ mod tests {
         let mut two = pkt.clone();
         two.extend_from_slice(&hep3_bytes(b"BYE sip:a@b SIP/2.0\r\n\r\n"));
         assert_eq!(
-            hep_stream_frame(&two).expect("back-to-back packets frame"),
+            hep_stream_frame(&two).map_err(|e| format!("back-to-back packets frame: {e:?}"))?,
             Some(pkt.len()),
             "the framer must take the FIRST packet, not the whole buffer — a \
              collector that swallowed both would parse one and lose the other"
         );
+        Ok(())
     }
 
     /// Anything that is not HEP v3 ends the connection rather than being
@@ -5986,7 +6132,8 @@ mod tests {
     /// refused for the same reason — it declares no total length, so it cannot
     /// be delimited on a stream at all.
     #[test]
-    fn a_stream_that_is_not_hep_v3_is_refused_rather_than_resynchronized() {
+    fn a_stream_that_is_not_hep_v3_is_refused_rather_than_resynchronized() -> Result<(), TestError>
+    {
         let hep2 = [
             HEP2_VERSION,
             HEP2_MIN_HEADER as u8,
@@ -6006,7 +6153,8 @@ mod tests {
             0,
         ];
         let err = hep_stream_frame(&hep2)
-            .expect_err("HEP v2 declares no total length and cannot be framed");
+            .err()
+            .ok_or("HEP v2 declares no total length and cannot be framed")?;
         assert!(
             err.to_string().contains("HEP3"),
             "the refusal must name what the stream had to start with: {err}"
@@ -6020,6 +6168,7 @@ mod tests {
             "a declared total below the header itself would never advance the \
              reader, and looping on it is a hang, not a drop"
         );
+        Ok(())
     }
 
     /// `send_rtcp` puts protocol type 5 on the wire, and the payload crosses
@@ -6031,14 +6180,19 @@ mod tests {
     /// parser, which discards it, and the remote viewer this exists for gets
     /// no MOS, jitter or loss while appearing to work.
     #[test]
-    fn send_rtcp_puts_protocol_type_5_on_the_wire() {
-        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    fn send_rtcp_puts_protocol_type_5_on_the_wire() -> Result<(), TestError> {
+        let collector =
+            UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind collector: {e:?}"))?;
         collector
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .expect("set read timeout");
-        let dest = collector.local_addr().expect("collector addr").to_string();
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?
+            .to_string();
 
-        let sender = HepSender::new(&dest, 42, None, HepAuthMode::Plain).expect("build sender");
+        let sender = HepSender::new(&dest, 42, None, HepAuthMode::Plain)
+            .map_err(|e| format!("build sender: {e:?}"))?;
 
         // Minimal RTCP Receiver Report: version 2, PT 201, length 1, one SSRC.
         let rtcp: [u8; 8] = [0x80, 201, 0x00, 0x01, 0xde, 0xad, 0xbe, 0xef];
@@ -6051,13 +6205,13 @@ mod tests {
         };
         sender
             .send_rtcp(&endpoint, Utc::now(), &rtcp)
-            .expect("send_rtcp");
+            .map_err(|e| format!("send_rtcp: {e:?}"))?;
 
         let mut buf = [0u8; 2048];
         let n = collector
             .recv(&mut buf)
-            .expect("receive the forwarded datagram");
-        let pkt = parse_hep(&buf[..n]).expect("parse what we just sent");
+            .map_err(|e| format!("receive the forwarded datagram: {e:?}"))?;
+        let pkt = parse_hep(&buf[..n]).map_err(|e| format!("parse what we just sent: {e:?}"))?;
 
         assert_eq!(
             pkt.protocol,
@@ -6072,6 +6226,7 @@ mod tests {
         );
         assert_eq!(pkt.src_port, 5000, "inner endpoint must survive");
         assert_eq!(pkt.dst_port, 5001, "inner endpoint must survive");
+        Ok(())
     }
 
     /// The SIP path still stamps type 1 after `send` was refactored to share
@@ -6081,14 +6236,19 @@ mod tests {
     /// SIP message as RTCP and no existing test would notice: both paths would
     /// still put a well-formed HEP datagram on the wire.
     #[test]
-    fn send_still_stamps_sip_as_protocol_type_1() {
-        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    fn send_still_stamps_sip_as_protocol_type_1() -> Result<(), TestError> {
+        let collector =
+            UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind collector: {e:?}"))?;
         collector
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .expect("set read timeout");
-        let dest = collector.local_addr().expect("collector addr").to_string();
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?
+            .to_string();
 
-        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain).expect("build sender");
+        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain)
+            .map_err(|e| format!("build sender: {e:?}"))?;
 
         let raw = b"OPTIONS sip:a@b SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
         let msg = crate::sip::parse_sip(
@@ -6100,18 +6260,21 @@ mod tests {
             5060,
             crate::capture::parse::TransportProto::Udp,
         )
-        .expect("parse the SIP fixture");
-        sender.send(&msg).expect("send");
+        .map_err(|e| format!("parse the SIP fixture: {e:?}"))?;
+        sender.send(&msg).map_err(|e| format!("send: {e:?}"))?;
 
         let mut buf = [0u8; 2048];
-        let n = collector.recv(&mut buf).expect("receive");
-        let pkt = parse_hep(&buf[..n]).expect("parse");
+        let n = collector
+            .recv(&mut buf)
+            .map_err(|e| format!("receive: {e:?}"))?;
+        let pkt = parse_hep(&buf[..n]).map_err(|e| format!("parse: {e:?}"))?;
 
         assert_eq!(
             pkt.protocol,
             HepProtocol::Sip,
             "SIP must stay protocol type 1"
         );
+        Ok(())
     }
 
     /// A captured packet carrying `payload` on `transport` to `dst_port`,
@@ -6141,25 +6304,37 @@ mod tests {
 
     /// A collector on loopback that gives up after `wait`, and a sender
     /// aimed at it.
-    fn collector_and_sender(wait: std::time::Duration) -> (UdpSocket, HepSender) {
-        let collector = UdpSocket::bind("127.0.0.1:0").expect("bind collector");
+    fn collector_and_sender(
+        wait: std::time::Duration,
+    ) -> Result<(UdpSocket, HepSender), TestError> {
+        let collector =
+            UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind collector: {e:?}"))?;
         collector
             .set_read_timeout(Some(wait))
-            .expect("set read timeout");
-        let dest = collector.local_addr().expect("collector addr").to_string();
-        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain).expect("build sender");
-        (collector, sender)
+            .map_err(|e| format!("set read timeout: {e:?}"))?;
+        let dest = collector
+            .local_addr()
+            .map_err(|e| format!("collector addr: {e:?}"))?
+            .to_string();
+        let sender = HepSender::new(&dest, 7, None, HepAuthMode::Plain)
+            .map_err(|e| format!("build sender: {e:?}"))?;
+        Ok((collector, sender))
     }
 
     /// Forward `pp` to a fresh collector and parse the datagram that arrives.
-    fn forward_and_receive(pp: &ParsedPacket) -> (Forwarded, HepPacket) {
-        let (collector, sender) = collector_and_sender(std::time::Duration::from_secs(5));
-        let what = sender.forward_parsed(pp).expect("forward");
+    fn forward_and_receive(pp: &ParsedPacket) -> Result<(Forwarded, HepPacket), TestError> {
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_secs(5))?;
+        let what = sender
+            .forward_parsed(pp)
+            .map_err(|e| format!("forward: {e:?}"))?;
         let mut buf = [0u8; 2048];
         let n = collector
             .recv(&mut buf)
-            .expect("a datagram reaches the collector");
-        (what, parse_hep(&buf[..n]).expect("parse the datagram"))
+            .map_err(|e| format!("a datagram reaches the collector: {e:?}"))?;
+        Ok((
+            what,
+            parse_hep(&buf[..n]).map_err(|e| format!("parse the datagram: {e:?}"))?,
+        ))
     }
 
     /// A SIP request as the wire carries it.
@@ -6173,8 +6348,8 @@ mod tests {
     /// transport; the loop threw it away one line earlier. TCP SIP reaches
     /// this point reassembled and stamped `Tcp`, so the chunk must read 6.
     #[test]
-    fn forward_parsed_stamps_a_tcp_message_as_ip_protocol_6() {
-        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tcp, 5060));
+    fn forward_parsed_stamps_a_tcp_message_as_ip_protocol_6() -> Result<(), TestError> {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tcp, 5060))?;
         assert_eq!(what, Forwarded::Sip);
         assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
         assert_eq!(
@@ -6183,14 +6358,15 @@ mod tests {
              trunk recorded as UDP",
             pkt.ip_protocol
         );
+        Ok(())
     }
 
     /// SIP recovered from TLS is stamped `Tls` by the pipeline so the true
     /// transport is reported; on the wire it rode TCP, and a collector
     /// filtering `proto=tcp` must find it.
     #[test]
-    fn forward_parsed_stamps_a_tls_message_as_ip_protocol_6() {
-        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tls, 5061));
+    fn forward_parsed_stamps_a_tls_message_as_ip_protocol_6() -> Result<(), TestError> {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Tls, 5061))?;
         assert_eq!(what, Forwarded::Sip);
         assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
         assert_eq!(
@@ -6199,49 +6375,53 @@ mod tests {
             pkt.ip_protocol
         );
         assert_eq!(pkt.dst_port, 5061, "the inner endpoint survives");
+        Ok(())
     }
 
     /// Control: a UDP message still stamps 17, so the fix is not "always 6".
     #[test]
-    fn forward_parsed_stamps_a_udp_message_as_ip_protocol_17() {
-        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Udp, 5060));
+    fn forward_parsed_stamps_a_udp_message_as_ip_protocol_17() -> Result<(), TestError> {
+        let (what, pkt) = forward_and_receive(&captured(OPTIONS, TransportProto::Udp, 5060))?;
         assert_eq!(what, Forwarded::Sip);
         assert_eq!(pkt.protocol, HepProtocol::Sip, "SIP stays protocol type 1");
         assert_eq!(pkt.ip_protocol, 17, "SIP over UDP is IP protocol 17");
         assert_eq!(pkt.payload, OPTIONS, "the message crosses verbatim");
+        Ok(())
     }
 
     /// An RTCP report on the classic odd port goes as protocol type 5 with
     /// its own transport, through the same entry point the batch loop uses.
     #[test]
-    fn forward_parsed_sends_rtcp_as_protocol_type_5() {
+    fn forward_parsed_sends_rtcp_as_protocol_type_5() -> Result<(), TestError> {
         // Receiver Report: version 2, PT 201, length 1, one SSRC.
         let rtcp: &[u8] = &[0x80, 201, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01];
-        let (what, pkt) = forward_and_receive(&captured(rtcp, TransportProto::Udp, 5001));
+        let (what, pkt) = forward_and_receive(&captured(rtcp, TransportProto::Udp, 5001))?;
         assert_eq!(what, Forwarded::Rtcp);
         assert_eq!(pkt.protocol, HepProtocol::Rtcp, "RTCP is protocol type 5");
         assert_eq!(pkt.ip_protocol, 17);
         assert_eq!(pkt.payload, rtcp, "the report crosses verbatim");
+        Ok(())
     }
 
     /// RTP is neither SIP nor RTCP and must not leave the machine: nothing is
     /// sent, and the sender says so.
     #[test]
-    fn forward_parsed_sends_nothing_for_rtp() {
+    fn forward_parsed_sends_nothing_for_rtp() -> Result<(), TestError> {
         // RTP: version 2, PT 0 (PCMU), sequence 1, on the even media port.
         let rtp: &[u8] = &[
             0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xff, 0xff,
         ];
-        let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200));
+        let (collector, sender) = collector_and_sender(std::time::Duration::from_millis(200))?;
         let what = sender
             .forward_parsed(&captured(rtp, TransportProto::Udp, 5000))
-            .expect("forward");
+            .map_err(|e| format!("forward: {e:?}"))?;
         assert_eq!(what, Forwarded::Nothing);
         let mut buf = [0u8; 2048];
         assert!(
             collector.recv(&mut buf).is_err(),
             "a datagram reached the collector for an RTP packet: media is being forwarded"
         );
+        Ok(())
     }
 
     /// Two nodes feeding one collector must not collapse into one identity.
@@ -6255,9 +6435,9 @@ mod tests {
     /// `--hep-id` already exists to distinguish an agent, and the receiver
     /// parsed it (chunk 0x000c) and threw it away.
     #[test]
-    fn two_hep_senders_get_distinct_provenance() {
-        let first_node = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
-        let second_node = hep_source_label(Some(9), "192.0.2.11".parse().unwrap());
+    fn two_hep_senders_get_distinct_provenance() -> Result<(), TestError> {
+        let first_node = hep_source_label(Some(7), "192.0.2.10".parse()?);
+        let second_node = hep_source_label(Some(9), "192.0.2.11".parse()?);
         assert_ne!(
             first_node, second_node,
             "two senders collapsed to one source label"
@@ -6265,8 +6445,8 @@ mod tests {
 
         // Same box, different agents (two sipnab instances on one host) must
         // still separate — that is what the capture-agent id is for.
-        let agent_7 = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
-        let agent_8 = hep_source_label(Some(8), "192.0.2.10".parse().unwrap());
+        let agent_7 = hep_source_label(Some(7), "192.0.2.10".parse()?);
+        let agent_8 = hep_source_label(Some(8), "192.0.2.10".parse()?);
         assert_ne!(
             agent_7, agent_8,
             "same host, different --hep-id collapsed together"
@@ -6274,8 +6454,8 @@ mod tests {
 
         // A sender that sets no id is still identified by where it came from,
         // rather than by the listener it happened to reach.
-        let unnamed_10 = hep_source_label(None, "192.0.2.10".parse().unwrap());
-        let unnamed_11 = hep_source_label(None, "192.0.2.11".parse().unwrap());
+        let unnamed_10 = hep_source_label(None, "192.0.2.10".parse()?);
+        let unnamed_11 = hep_source_label(None, "192.0.2.11".parse()?);
         assert_ne!(
             unnamed_10, unnamed_11,
             "id-less senders collapsed to one source label"
@@ -6284,14 +6464,15 @@ mod tests {
             unnamed_10.contains("192.0.2.10"),
             "an id-less sender must still name its address, got {unnamed_10:?}"
         );
+        Ok(())
     }
 
     /// The label must not name the listener: that is the bug, and a label that
     /// merely ADDED the sender while keeping the bind address would still make
     /// every node share a prefix that reads like the origin.
     #[test]
-    fn hep_provenance_names_the_sender_not_the_listener() {
-        let label = hep_source_label(Some(7), "192.0.2.10".parse().unwrap());
+    fn hep_provenance_names_the_sender_not_the_listener() -> Result<(), TestError> {
+        let label = hep_source_label(Some(7), "192.0.2.10".parse()?);
         assert!(
             !label.contains("0.0.0.0") && !label.contains("9060"),
             "the source label leaks the listener bind address: {label:?}"
@@ -6300,12 +6481,13 @@ mod tests {
             label.contains('7'),
             "the capture-agent id is missing: {label:?}"
         );
+        Ok(())
     }
 
     /// EINTR / WouldBlock / TimedOut are transient recv errors (retry);
     /// genuine socket failures are not.
     #[test]
-    fn eintr_and_read_timeouts_are_transient_not_fatal() {
+    fn eintr_and_read_timeouts_are_transient_not_fatal() -> Result<(), TestError> {
         use std::io::ErrorKind;
         // EINTR (a signal interrupting the blocking recv) must be retried, not
         // treated as a fatal socket error — a single SIGCHLD/SIGWINCH would
@@ -6317,6 +6499,7 @@ mod tests {
         // A genuinely broken socket is fatal.
         assert!(!is_transient_recv_error(ErrorKind::ConnectionReset));
         assert!(!is_transient_recv_error(ErrorKind::AddrNotAvailable));
+        Ok(())
     }
 
     /// The two HEP v3 timestamp chunks, carried exactly as a test writes
@@ -6418,7 +6601,7 @@ mod tests {
 
     /// A well-formed IPv4 HEP v3 packet parses with every field intact.
     #[test]
-    fn parse_valid_hep_v3_ipv4() {
+    fn parse_valid_hep_v3_ipv4() -> Result<(), TestError> {
         let sip_payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -6434,7 +6617,7 @@ mod tests {
             sip_payload,
         );
 
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.version, 3);
         assert_eq!(hep.src_addr, src);
         assert_eq!(hep.dst_addr, dst);
@@ -6444,11 +6627,12 @@ mod tests {
         assert_eq!(hep.payload[..], sip_payload[..]);
         assert_eq!(hep.capture_id, Some(42));
         assert_eq!(hep.timestamp.timestamp(), 1700000000);
+        Ok(())
     }
 
     /// A well-formed IPv6 HEP v3 packet parses with the right addresses.
     #[test]
-    fn parse_valid_hep_v3_ipv6() {
+    fn parse_valid_hep_v3_ipv6() -> Result<(), TestError> {
         let src = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
         let dst = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
@@ -6464,18 +6648,19 @@ mod tests {
             payload,
         );
 
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.version, 3);
         assert_eq!(hep.src_addr, src);
         assert_eq!(hep.dst_addr, dst);
         assert_eq!(hep.src_port, 5060);
         assert_eq!(hep.dst_port, 5080);
+        Ok(())
     }
 
     /// A well-formed legacy HEP v2 packet parses as SIP with its fixed
     /// header fields extracted.
     #[test]
-    fn parse_valid_hep_v2() {
+    fn parse_valid_hep_v2() -> Result<(), TestError> {
         let payload = b"REGISTER sip:example.com SIP/2.0\r\n\r\n";
         let data = make_hep_v2(
             Ipv4Addr::new(192, 168, 1, 10),
@@ -6485,7 +6670,7 @@ mod tests {
             payload,
         );
 
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.version, 2);
         assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)));
         assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)));
@@ -6493,30 +6678,33 @@ mod tests {
         assert_eq!(hep.dst_port, 5060);
         assert_eq!(hep.protocol, HepProtocol::Sip);
         assert_eq!(hep.payload[..], payload[..]);
+        Ok(())
     }
 
     /// A HEP v3 packet shorter than its 6-byte header is rejected.
     #[test]
-    fn parse_truncated_hep_v3_errors() {
+    fn parse_truncated_hep_v3_errors() -> Result<(), TestError> {
         // Too short to even have the header
         let data = b"HEP3\x00";
         assert!(parse_hep(data).is_err());
+        Ok(())
     }
 
     /// A declared total_length larger than the received bytes is rejected.
     #[test]
-    fn parse_hep_v3_bad_total_length() {
+    fn parse_hep_v3_bad_total_length() -> Result<(), TestError> {
         // total_length claims 1000 bytes but we only have 6
         let mut data = Vec::new();
         data.extend_from_slice(b"HEP3");
         data.extend_from_slice(&1000u16.to_be_bytes());
         assert!(parse_hep(&data).is_err());
+        Ok(())
     }
 
     /// A v3 packet without any source-address chunk fails with an error
     /// naming the missing source address.
     #[test]
-    fn parse_hep_v3_missing_src_addr() {
+    fn parse_hep_v3_missing_src_addr() -> Result<(), TestError> {
         // Build a v3 packet with no source address chunks
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 1]);
@@ -6528,38 +6716,44 @@ mod tests {
         data.extend_from_slice(&total_len.to_be_bytes());
         data.extend_from_slice(&chunks);
 
-        let err = parse_hep(&data).unwrap_err();
+        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
         assert!(
             format!("{err}").contains("source address"),
             "Error should mention missing source address, got: {err}"
         );
+        Ok(())
     }
 
     /// Empty input and non-HEP bytes (unknown magic/version) are rejected.
     #[test]
-    fn parse_non_hep_data_errors() {
+    fn parse_non_hep_data_errors() -> Result<(), TestError> {
         assert!(parse_hep(b"").is_err());
         assert!(parse_hep(b"\x00\x00\x00\x00").is_err());
         assert!(parse_hep(b"HTTP/1.1 200 OK").is_err());
+        Ok(())
     }
 
     /// Truncated HEP v2 packets (bare version byte, or fewer bytes than
     /// the declared header) are rejected.
     #[test]
-    fn parse_hep_v2_truncated() {
+    fn parse_hep_v2_truncated() -> Result<(), TestError> {
         // Just the version byte
         assert!(parse_hep(&[0x02]).is_err());
         // Header says 16 bytes but only 10 available
         assert!(parse_hep(&[0x02, 16, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
+        Ok(())
     }
 
     /// An IPv4 packet built by `build_hep_v3` parses back with every field
     /// (including microsecond timestamp precision) preserved.
     #[test]
-    fn build_and_parse_round_trip_ipv4() {
+    fn build_and_parse_round_trip_ipv4() -> Result<(), TestError> {
         let src = IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(172, 16, 0, 2));
-        let ts = Utc.timestamp_opt(1700000000, 500_000_000).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 500_000_000)
+            .single()
+            .ok_or("a valid UTC time")?;
         let payload = b"INVITE sip:alice@example.com SIP/2.0\r\n\r\n";
 
         let endpoint = HepEndpoint {
@@ -6570,7 +6764,8 @@ mod tests {
             transport: TransportProto::Udp,
         };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, None, payload);
-        let parsed = parse_hep(&built).expect("round-trip parse should succeed");
+        let parsed =
+            parse_hep(&built).map_err(|e| format!("round-trip parse should succeed: {e:?}"))?;
 
         assert_eq!(parsed.version, 3);
         assert_eq!(parsed.src_addr, src);
@@ -6583,6 +6778,7 @@ mod tests {
         assert_eq!(parsed.timestamp.timestamp(), 1700000000);
         // Microsecond precision: 500_000_000 ns = 500_000 us
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 500_000);
+        Ok(())
     }
 
     /// The `IP protocol` chunk reports the transport sipnab actually observed.
@@ -6597,7 +6793,7 @@ mod tests {
     /// reader defaults a MISSING chunk to UDP, so round-tripping would report
     /// success for a chunk that was never written.
     #[test]
-    fn hep_ip_protocol_chunk_follows_the_observed_transport() {
+    fn hep_ip_protocol_chunk_follows_the_observed_transport() -> Result<(), TestError> {
         for (transport, expected, why) in [
             (TransportProto::Udp, 17u8, "UDP"),
             (TransportProto::Tcp, 6, "TCP"),
@@ -6619,7 +6815,7 @@ mod tests {
             };
             let pkt = build_hep_v3(&endpoint, Utc::now(), HepProtocol::Sip, 1, None, b"INVITE");
             let proto = find_hep_chunk(&pkt, 0x0000, CHUNK_IP_PROTO)
-                .expect("a HEP packet must carry an IP protocol chunk");
+                .ok_or("a HEP packet must carry an IP protocol chunk")?;
             assert_eq!(
                 proto,
                 vec![expected],
@@ -6627,6 +6823,7 @@ mod tests {
                  not a constant"
             );
         }
+        Ok(())
     }
 
     /// Walk HEP3 chunks and return the data of the first (vendor,type) match.
@@ -6661,8 +6858,11 @@ mod tests {
     /// With a key configured, the builder emits the `0x000e` auth chunk
     /// carrying the key verbatim.
     #[test]
-    fn hep_auth_chunk_emitted_when_key_present() {
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+    fn hep_auth_chunk_emitted_when_key_present() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(
             &v4_endpoint(),
             ts,
@@ -6677,16 +6877,20 @@ mod tests {
             Some(b"s3cr3t".as_slice())
         );
         // The configured capture/agent id still round-trips.
-        assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(42));
+        assert_eq!(parse_hep(&pkt)?.capture_id, Some(42));
+        Ok(())
     }
 
     /// The parser surfaces the `0x000e` auth-key chunk to the receiver.
     #[test]
-    fn parse_captures_auth_key_chunk() {
+    fn parse_captures_auth_key_chunk() -> Result<(), TestError> {
         // The receiver must be able to READ the 0x000e auth-key chunk, not
         // just the sender write it — this is what enables receiver-side
         // authentication (SN-01).
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(
             &v4_endpoint(),
             ts,
@@ -6695,42 +6899,49 @@ mod tests {
             Some("s3cr3t"),
             b"INVITE",
         );
-        let parsed = parse_hep(&pkt).unwrap();
+        let parsed = parse_hep(&pkt)?;
         assert_eq!(parsed.auth_key.as_deref(), Some(b"s3cr3t".as_slice()));
+        Ok(())
     }
 
     /// With no auth chunk on the wire, the parsed `auth_key` is `None`.
     #[test]
-    fn parse_auth_key_none_when_absent() {
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+    fn parse_auth_key_none_when_absent() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
-        assert_eq!(parse_hep(&pkt).unwrap().auth_key, None);
+        assert_eq!(parse_hep(&pkt)?.auth_key, None);
+        Ok(())
     }
 
     /// A sender toward an IPv6 collector must bind an IPv6 local socket:
     /// an unconditional `0.0.0.0:0` (IPv4-only) bind makes the connect to
     /// an IPv6 destination fail, so `--hep-send [::1]:9060` cannot work.
     #[test]
-    fn hep_sender_to_ipv6_dest_binds_ipv6_socket() {
+    fn hep_sender_to_ipv6_dest_binds_ipv6_socket() -> Result<(), TestError> {
         let sender = HepSender::new("[::1]:9060", 1, None, HepAuthMode::Plain)
-            .expect("sender toward an IPv6 collector must construct");
+            .map_err(|e| format!("sender toward an IPv6 collector must construct: {e:?}"))?;
         let local = sender.local_addr();
         assert!(
             local.is_ipv6(),
             "local bind family must be IPv6, got {local}"
         );
+        Ok(())
     }
 
     /// The IPv4 destination path is unchanged: local bind stays IPv4.
     #[test]
-    fn hep_sender_to_ipv4_dest_binds_ipv4_socket() {
+    fn hep_sender_to_ipv4_dest_binds_ipv4_socket() -> Result<(), TestError> {
         let sender = HepSender::new("127.0.0.1:9060", 1, None, HepAuthMode::Plain)
-            .expect("sender toward an IPv4 collector must construct");
+            .map_err(|e| format!("sender toward an IPv4 collector must construct: {e:?}"))?;
         let local = sender.local_addr();
         assert!(
             local.is_ipv4(),
             "local bind family must be IPv4, got {local}"
         );
+        Ok(())
     }
 
     /// A destination the operator named reaches the sender through
@@ -6738,18 +6949,19 @@ mod tests {
     /// Without the permit in the field, [`HepSender::transmit`] could not be
     /// called at all, so this is what puts the export inside the permit system.
     #[test]
-    fn a_sender_built_from_an_operator_destination_carries_its_permit() {
+    fn a_sender_built_from_an_operator_destination_carries_its_permit() -> Result<(), TestError> {
         let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "127.0.0.1:9060");
         assert_eq!(dest.flag(), "--hep-send");
         assert_eq!(dest.as_str(), "127.0.0.1:9060");
 
         let sender = HepSender::for_destination(&dest, HepSenderOpts::default())
-            .expect("an operator-named destination must construct a sender");
+            .map_err(|e| format!("an operator-named destination must construct a sender: {e:?}"))?;
         // `transmit` is the only path to the socket and it needs the permit;
         // that this compiles is the assertion.
         sender
             .transmit(&sender.permit, b"HEP3\x00\x06")
-            .expect("a connected loopback socket must accept a datagram");
+            .map_err(|e| format!("a connected loopback socket must accept a datagram: {e:?}"))?;
+        Ok(())
     }
 
     /// The notice names the flag, the destination and the capture, and says
@@ -6758,10 +6970,11 @@ mod tests {
     /// capture reads "HEP sender targeting …" without hearing "the capture is
     /// about to leave this machine".
     #[test]
-    fn the_file_export_notice_names_the_flag_the_destination_and_the_capture() {
+    fn the_file_export_notice_names_the_flag_the_destination_and_the_capture()
+    -> Result<(), TestError> {
         let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "collector.example:9060");
         let paths = vec![std::path::PathBuf::from("/cases/4711/customer.pcap")];
-        let msg = file_export_notice(&dest, &paths).expect("a file source must produce a notice");
+        let msg = file_export_notice(&dest, &paths).ok_or("a file source must produce a notice")?;
 
         assert!(msg.contains("--hep-send"), "must name the flag: {msg}");
         assert!(
@@ -6780,18 +6993,19 @@ mod tests {
             msg.contains("redacts nothing"),
             "must say the contents are forwarded as recorded: {msg}"
         );
+        Ok(())
     }
 
     /// A `tcpdump -C -W` ring is summarized rather than listed in full: the
     /// count is exact, the first few names are shown, and the sentence stays
     /// readable.
     #[test]
-    fn the_file_export_notice_summarizes_a_capture_ring() {
+    fn the_file_export_notice_summarizes_a_capture_ring() -> Result<(), TestError> {
         let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "10.0.0.5:9060");
         let paths: Vec<std::path::PathBuf> = (0..40)
             .map(|i| std::path::PathBuf::from(format!("/cases/ring/tg.pcap{i}")))
             .collect();
-        let msg = file_export_notice(&dest, &paths).expect("a file source must produce a notice");
+        let msg = file_export_notice(&dest, &paths).ok_or("a file source must produce a notice")?;
 
         assert!(
             msg.contains("40 capture FILES"),
@@ -6806,33 +7020,36 @@ mod tests {
             !msg.contains("tg.pcap39"),
             "must not list the whole ring: {msg}"
         );
+        Ok(())
     }
 
     /// No files, no notice. A live or HEP-fed run forwards traffic the
     /// operator is already watching go past, which is what `--hep-send` reads
     /// like; there is nothing surprising to announce.
     #[test]
-    fn a_run_reading_no_files_has_nothing_to_announce() {
+    fn a_run_reading_no_files_has_nothing_to_announce() -> Result<(), TestError> {
         let dest = OperatorDestination::from_cli_flag(HEP_SEND_FLAG, "10.0.0.5:9060");
         assert!(
             file_export_notice(&dest, &[]).is_none(),
             "only a file source forwards a stored capture"
         );
+        Ok(())
     }
 
     /// With no receiver secret configured, every packet passes auth.
     #[test]
-    fn verify_hep_auth_accepts_all_when_no_secret_configured() {
+    fn verify_hep_auth_accepts_all_when_no_secret_configured() -> Result<(), TestError> {
         // Backward compatible: with no receiver secret, any packet passes
         // (with or without an auth chunk).
         assert!(hep_auth_ok(None, Some(b"anything")));
         assert!(hep_auth_ok(None, None));
+        Ok(())
     }
 
     /// With a secret configured, only an exact key match passes; missing,
     /// wrong, and prefix-extended keys are rejected.
     #[test]
-    fn verify_hep_auth_requires_matching_key_when_secret_configured() {
+    fn verify_hep_auth_requires_matching_key_when_secret_configured() -> Result<(), TestError> {
         assert!(
             hep_auth_ok(Some("secret"), Some(b"secret")),
             "exact match accepted"
@@ -6846,26 +7063,31 @@ mod tests {
             !hep_auth_ok(Some("secret"), Some(b"secretX")),
             "prefix not accepted"
         );
+        Ok(())
     }
 
     /// An unguarded non-loopback bind (no auth, no allowlist) is refused.
     #[test]
-    fn hep_bind_policy_refuses_non_loopback_without_auth_or_allowlist() {
-        let err = enforce_hep_bind_policy("0.0.0.0:9060", false, 0).unwrap_err();
+    fn hep_bind_policy_refuses_non_loopback_without_auth_or_allowlist() -> Result<(), TestError> {
+        let err = enforce_hep_bind_policy("0.0.0.0:9060", false, 0)
+            .err()
+            .ok_or("expected an error, got Ok")?;
         assert!(err.contains("non-loopback"), "got: {err}");
+        Ok(())
     }
 
     /// IPv4 and IPv6 loopback binds are allowed without auth or allowlist.
     #[test]
-    fn hep_bind_policy_allows_loopback_unauthenticated() {
+    fn hep_bind_policy_allows_loopback_unauthenticated() -> Result<(), TestError> {
         assert!(enforce_hep_bind_policy("127.0.0.1:9060", false, 0).is_ok());
         assert!(enforce_hep_bind_policy("[::1]:9060", false, 0).is_ok());
+        Ok(())
     }
 
     /// Either a shared secret or a non-empty allowlist permits a
     /// non-loopback bind.
     #[test]
-    fn hep_bind_policy_allows_non_loopback_with_auth_or_allowlist() {
+    fn hep_bind_policy_allows_non_loopback_with_auth_or_allowlist() -> Result<(), TestError> {
         assert!(
             enforce_hep_bind_policy("0.0.0.0:9060", true, 0).is_ok(),
             "auth suffices"
@@ -6874,23 +7096,25 @@ mod tests {
             enforce_hep_bind_policy("0.0.0.0:9060", false, 1).is_ok(),
             "allowlist suffices"
         );
+        Ok(())
     }
 
     /// Loopback classification is purely syntactic: literal loopback IPs are
     /// loopback; routable literals are not. No DNS resolution happens.
     #[test]
-    fn hep_bind_loopback_classifies_literals() {
+    fn hep_bind_loopback_classifies_literals() -> Result<(), TestError> {
         assert!(hep_bind_is_loopback("127.0.0.1:9060"));
         assert!(hep_bind_is_loopback("[::1]:9060"));
         assert!(!hep_bind_is_loopback("0.0.0.0:9060"));
         assert!(!hep_bind_is_loopback("192.0.2.1:9060"));
+        Ok(())
     }
 
     /// A hostname is NOT resolved to decide loopback-ness (no blocking DNS in
     /// a security check); it is treated conservatively as non-loopback, and
     /// `enforce_hep_bind_policy` therefore fail-closes it without auth/allowlist.
     #[test]
-    fn hep_bind_hostname_is_conservatively_non_loopback() {
+    fn hep_bind_hostname_is_conservatively_non_loopback() -> Result<(), TestError> {
         assert!(
             !hep_bind_is_loopback("localhost:9060"),
             "a hostname must not be resolved and must count as non-loopback"
@@ -6906,17 +7130,18 @@ mod tests {
         // With auth it is permitted (the warning about the non-literal is a
         // startup log, not a refusal).
         assert!(enforce_hep_bind_policy("localhost:9060", true, 0).is_ok());
+        Ok(())
     }
 
     /// The global ceiling drops the excess packet regardless of which peer
     /// sends it.
     #[test]
-    fn per_peer_limiter_global_ceiling_drops_excess() {
+    fn per_peer_limiter_global_ceiling_drops_excess() -> Result<(), TestError> {
         // Global ceiling of 2/s: the third packet in a window is dropped
         // regardless of peer.
         let mut lim = HepRateLimiter::new(2, 100, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
-        let a: IpAddr = "10.0.0.1".parse().unwrap();
-        let b: IpAddr = "10.0.0.2".parse().unwrap();
+        let a: IpAddr = "10.0.0.1".parse()?;
+        let b: IpAddr = "10.0.0.2".parse()?;
         assert!(lim.allow(a).is_ok());
         assert!(lim.allow(b).is_ok());
         assert_eq!(
@@ -6924,17 +7149,18 @@ mod tests {
             Err(crate::rate_limit::Refusal::Global),
             "global ceiling of 2 reached"
         );
+        Ok(())
     }
 
     /// The per-peer cap throttles a flooding peer without consuming a
     /// quiet peer's allowance.
     #[test]
-    fn per_peer_limiter_isolates_noisy_peer() {
+    fn per_peer_limiter_isolates_noisy_peer() -> Result<(), TestError> {
         // Per-peer cap of 1 with a generous global ceiling: a flooding peer
         // is throttled without consuming another peer's allowance.
         let mut lim = HepRateLimiter::new(1000, 1, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
-        let noisy: IpAddr = "10.0.0.1".parse().unwrap();
-        let quiet: IpAddr = "10.0.0.2".parse().unwrap();
+        let noisy: IpAddr = "10.0.0.1".parse()?;
+        let quiet: IpAddr = "10.0.0.2".parse()?;
         assert!(lim.allow(noisy).is_ok());
         assert_eq!(
             lim.allow(noisy),
@@ -6945,13 +7171,14 @@ mod tests {
             lim.allow(quiet).is_ok(),
             "quiet peer still gets its own allowance"
         );
+        Ok(())
     }
 
     /// Once the per-peer tracking map is full, a brand-new peer is dropped
     /// rather than bypassing the per-peer cap — a many-source-IP flood must
     /// not get a free pass just because it exhausted the tracking table.
     #[test]
-    fn per_peer_limiter_full_map_drops_new_peer() {
+    fn per_peer_limiter_full_map_drops_new_peer() -> Result<(), TestError> {
         // Effectively unlimited global ceiling so only the per-peer path (and
         // the map-full guard) can drop.
         let mut lim =
@@ -6973,12 +7200,13 @@ mod tests {
             Err(crate::rate_limit::Refusal::TrackingFull),
             "new peer past the tracking cap must be dropped, not bypass the cap"
         );
+        Ok(())
     }
 
     /// The startup summary renders per-peer 0 as "disabled" and non-zero
     /// values as a rate.
     #[test]
-    fn describe_limiters_reports_per_peer_state() {
+    fn describe_limiters_reports_per_peer_state() -> Result<(), TestError> {
         assert_eq!(
             describe_hep_limiters(50000, 0),
             "HEP rate limiting: global 50000/s, per-peer disabled"
@@ -6987,27 +7215,29 @@ mod tests {
             describe_hep_limiters(40000, 10000),
             "HEP rate limiting: global 40000/s, per-peer 10000/s"
         );
+        Ok(())
     }
 
     /// A global ceiling of 0 means DISABLED (matching the per-peer knob),
     /// not "drop everything": every packet passes when only the global limit
     /// is 0.
     #[test]
-    fn global_rate_limit_zero_disables_ceiling() {
+    fn global_rate_limit_zero_disables_ceiling() -> Result<(), TestError> {
         let mut lim = HepRateLimiter::new(0, 0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
-        let p: IpAddr = "10.0.0.1".parse().unwrap();
+        let p: IpAddr = "10.0.0.1".parse()?;
         for _ in 0..10_000 {
             assert!(
                 lim.allow(p).is_ok(),
                 "global 0 must disable the ceiling, not drop"
             );
         }
+        Ok(())
     }
 
     /// The startup summary renders a global ceiling of 0 as "disabled" so the
     /// knob reads consistently with the per-peer summary.
     #[test]
-    fn describe_limiters_reports_global_disabled() {
+    fn describe_limiters_reports_global_disabled() -> Result<(), TestError> {
         assert_eq!(
             describe_hep_limiters(0, 0),
             "HEP rate limiting: global disabled, per-peer disabled"
@@ -7016,6 +7246,7 @@ mod tests {
             describe_hep_limiters(0, 5000),
             "HEP rate limiting: global disabled, per-peer 5000/s"
         );
+        Ok(())
     }
 
     /// The three PEM labels `pem_private_key` accepts, spelled exactly.
@@ -7033,8 +7264,8 @@ mod tests {
     /// failure arrived as "a world-readable key was accepted" rather than as
     /// "the label table is wrong". Nothing pinned the labels themselves.
     #[test]
-    fn every_pem_private_key_label_is_accepted() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn every_pem_private_key_label_is_accepted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         // A body that base64-decodes; `pem_private_key` returns at the first
         // block whose LABEL matches, and does not parse the DER.
         let body = "AAECAwQFBgcICQoLDA0ODw==";
@@ -7044,12 +7275,12 @@ mod tests {
                 &path,
                 format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----\n"),
             )
-            .expect("write key");
+            .map_err(|e| format!("write key: {e:?}"))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                    .expect("chmod 600");
+                    .map_err(|e| format!("chmod 600: {e:?}"))?;
             }
             assert!(
                 pem_private_key(&path).is_ok(),
@@ -7057,6 +7288,7 @@ mod tests {
                  stops every TLS key in the tree from loading"
             );
         }
+        Ok(())
     }
 
     /// A label that is none of the three is refused, and the refusal names all
@@ -7067,19 +7299,19 @@ mod tests {
     /// text is the other string the rename corrupted, so it is asserted rather
     /// than assumed.
     #[test]
-    fn an_unknown_pem_label_is_refused_by_a_message_naming_all_three() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_unknown_pem_label_is_refused_by_a_message_naming_all_three() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("certificate.pem");
         std::fs::write(
             &path,
             "-----BEGIN CERTIFICATE-----\nAAECAwQFBgcICQoLDA0ODw==\n-----END CERTIFICATE-----\n",
         )
-        .expect("write pem");
+        .map_err(|e| format!("write pem: {e:?}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .expect("chmod 600");
+                .map_err(|e| format!("chmod 600: {e:?}"))?;
         }
         let err = pem_private_key(&path)
             .err()
@@ -7092,6 +7324,7 @@ mod tests {
                  convert to; got: {err}"
             );
         }
+        Ok(())
     }
 
     /// Tests for the HMAC datagram build/verify cycle: format, version,
@@ -7100,6 +7333,8 @@ mod tests {
     #[cfg(feature = "hep")]
     mod hmac_auth {
         use super::super::*;
+
+        type TestError = Box<dyn std::error::Error>;
 
         /// Shared HMAC key used by every test in this module.
         ///
@@ -7157,7 +7392,7 @@ mod tests {
         /// A freshly built datagram carries a full-length version-2 token and
         /// verifies against the same key and time.
         #[test]
-        fn token_round_trips_and_verifies() {
+        fn token_round_trips_and_verifies() -> Result<(), TestError> {
             let payload = b"REGISTER sip:example.com SIP/2.0\r\n";
             let pkt = signed(payload, NOW, &NONCE);
             let (start, end) = span(&pkt);
@@ -7178,12 +7413,13 @@ mod tests {
                 ),
                 Ok(())
             );
+            Ok(())
         }
 
         /// A span of the wrong length, and a version byte naming no scheme,
         /// are both refused as malformed.
         #[test]
-        fn verify_rejects_bad_length_and_version() {
+        fn verify_rejects_bad_length_and_version() -> Result<(), TestError> {
             let pkt = signed(b"p", NOW, &NONCE);
             let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
@@ -7213,6 +7449,7 @@ mod tests {
                 Err(HmacAuthError::BadFormat),
                 "unknown version rejected"
             );
+            Ok(())
         }
 
         /// The superseded version-1 token is refused by NAME, not lumped in
@@ -7220,7 +7457,7 @@ mod tests {
         /// out-of-date sender from a broken one, and it must never fall back
         /// to the payload-only scheme.
         #[test]
-        fn verify_refuses_the_superseded_version_one_token() {
+        fn verify_refuses_the_superseded_version_one_token() -> Result<(), TestError> {
             let pkt = signed(b"p", NOW, &NONCE);
             let (start, end) = span(&pkt);
             let mut downgraded = pkt.clone();
@@ -7238,11 +7475,12 @@ mod tests {
                 Err(HmacAuthError::UnsupportedVersion),
                 "a v1 token is refused with its own error, never accepted"
             );
+            Ok(())
         }
 
         /// Timestamps outside the window, on either side of now, are refused.
         #[test]
-        fn verify_rejects_stale_and_future_timestamps() {
+        fn verify_rejects_stale_and_future_timestamps() -> Result<(), TestError> {
             let payload = b"INVITE sip:x SIP/2.0\r\n";
             let mut cache = HmacNonceCache::new();
             let stale = signed(payload, NOW - 100, &NONCE);
@@ -7259,12 +7497,13 @@ mod tests {
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "100s in the future is outside a 30s window"
             );
+            Ok(())
         }
 
         /// Tampering with the payload, or signing with a different key,
         /// fails the MAC.
         #[test]
-        fn verify_rejects_tampered_payload_and_wrong_key() {
+        fn verify_rejects_tampered_payload_and_wrong_key() -> Result<(), TestError> {
             let pkt = signed(b"original-payload", NOW, &NONCE);
             let (start, end) = span(&pkt);
             let mut cache = HmacNonceCache::new();
@@ -7297,6 +7536,7 @@ mod tests {
                 Err(HmacAuthError::BadMac),
                 "a different key does not verify"
             );
+            Ok(())
         }
 
         /// Two DIFFERENT senders' packets are both accepted.
@@ -7315,7 +7555,7 @@ mod tests {
         /// which is the part worth fixing. An alert being wrong about today
         /// says nothing about whether tomorrow is guarded.
         #[test]
-        fn two_packets_with_different_nonces_are_both_accepted() {
+        fn two_packets_with_different_nonces_are_both_accepted() -> Result<(), TestError> {
             let a = signed(b"INVITE sip:a SIP/2.0\r\n", NOW, &[1u8; 16]);
             let b = signed(b"INVITE sip:b SIP/2.0\r\n", NOW, &[2u8; 16]);
             let mut cache = HmacNonceCache::new();
@@ -7346,11 +7586,12 @@ mod tests {
                  the token -- every packet looks like a replay of the first and \
                  ingest stops after one datagram."
             );
+            Ok(())
         }
 
         /// The same nonce twice inside the window is a replay.
         #[test]
-        fn verify_rejects_replayed_nonce() {
+        fn verify_rejects_replayed_nonce() -> Result<(), TestError> {
             let pkt = signed(b"BYE sip:x SIP/2.0\r\n", NOW, &NONCE);
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
@@ -7364,33 +7605,37 @@ mod tests {
                 Err(HmacAuthError::Replay),
                 "identical replay rejected"
             );
+            Ok(())
         }
 
         /// End to end: the token stamped into the `0x000e` chunk survives the
         /// wire round trip, and the parse hands the verifier the span it needs.
         #[test]
-        fn hep_v3_round_trips_through_build_parse_verify() {
+        fn hep_v3_round_trips_through_build_parse_verify() -> Result<(), TestError> {
             let payload = b"OPTIONS sip:probe SIP/2.0\r\n";
             let pkt = signed(payload, NOW, &NONCE);
-            let parsed = parse_hep(&pkt).expect("valid HEP v3");
+            let parsed = parse_hep(&pkt).map_err(|e| format!("valid HEP v3: {e:?}"))?;
             assert_eq!(parsed.payload, payload);
             assert_eq!(
                 parsed.src_addr,
-                "10.0.0.1".parse::<IpAddr>().expect("literal")
+                "10.0.0.1"
+                    .parse::<IpAddr>()
+                    .map_err(|e| format!("literal: {e:?}"))?
             );
-            let sp = parsed.auth_span.expect("an auth chunk was emitted");
+            let sp = parsed.auth_span.ok_or("an auth chunk was emitted")?;
             let mut cache = HmacNonceCache::new();
             assert_eq!(
                 verify_hmac_datagram(key(), &pkt, sp, NOW, DEFAULT_HMAC_WINDOW_SECS, &mut cache),
                 Ok(())
             );
+            Ok(())
         }
 
         /// Pruning is amortized: the first call prunes, then at most once per
         /// second, so an accepted-packet burst does not walk the whole nonce
         /// map on every packet.
         #[test]
-        fn nonce_cache_amortizes_pruning() {
+        fn nonce_cache_amortizes_pruning() -> Result<(), TestError> {
             let mut cache = HmacNonceCache::new();
             let t0 = Instant::now();
             assert!(cache.should_prune(t0), "first prune always runs");
@@ -7410,13 +7655,14 @@ mod tests {
                 !cache.should_prune(t0 + Duration::from_millis(1500)),
                 "and not again until the next second"
             );
+            Ok(())
         }
 
         /// A nonce old enough to prune but still in the map cannot be
         /// replayed: the timestamp-window check refuses it first, which is
         /// what makes the amortized prune safe.
         #[test]
-        fn expired_unpruned_nonce_still_rejected_by_window() {
+        fn expired_unpruned_nonce_still_rejected_by_window() -> Result<(), TestError> {
             let pkt = signed(b"p", NOW, &NONCE);
             let sp = span(&pkt);
             let mut cache = HmacNonceCache::new();
@@ -7430,12 +7676,13 @@ mod tests {
                 Err(HmacAuthError::TimestampOutOfWindow),
                 "an hour later the window refuses it before the cache is asked"
             );
+            Ok(())
         }
 
         /// A forged token cannot seed the replay cache with its nonce and so
         /// cannot lock out the authentic packet that uses the same one.
         #[test]
-        fn forged_token_does_not_poison_replay_cache() {
+        fn forged_token_does_not_poison_replay_cache() -> Result<(), TestError> {
             let payload = b"INVITE sip:victim SIP/2.0\r\n";
             let mut cache = HmacNonceCache::new();
             let forged = build_hep_v3_hmac(
@@ -7477,38 +7724,50 @@ mod tests {
                 Ok(()),
                 "authentic token with the same nonce still accepted"
             );
+            Ok(())
         }
     }
 
     /// An auth key containing backslashes/colons/slashes round-trips
     /// verbatim in the `0x000e` chunk.
     #[test]
-    fn hep_auth_chunk_handles_special_bytes() {
+    fn hep_auth_chunk_handles_special_bytes() -> Result<(), TestError> {
         // An auth key with backslashes / colons / slashes must round-trip
         // verbatim in the 0x000e chunk (no escaping or truncation).
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let key = "k3y\\with:special/chars"; // material: fixture -- the key-file parser under test must accept these bytes
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 7, Some(key), b"X");
         assert_eq!(
             find_hep_chunk(&pkt, 0x0000, 0x000e).as_deref(),
             Some(key.as_bytes())
         );
+        Ok(())
     }
 
     /// A non-default capture agent ID is emitted and parses back intact.
     #[test]
-    fn hep_custom_capture_id_round_trips() {
+    fn hep_custom_capture_id_round_trips() -> Result<(), TestError> {
         // A non-default capture/agent id is emitted and parses back.
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 4242, None, b"X");
-        assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(4242));
+        assert_eq!(parse_hep(&pkt)?.capture_id, Some(4242));
+        Ok(())
     }
 
     /// With no key configured, the builder omits the `0x000e` chunk while
     /// still producing a valid packet.
     #[test]
-    fn hep_no_auth_chunk_when_key_absent() {
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+    fn hep_no_auth_chunk_when_key_absent() -> Result<(), TestError> {
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
         assert!(
             find_hep_chunk(&pkt, 0x0000, 0x000e).is_none(),
@@ -7516,15 +7775,19 @@ mod tests {
         );
         // The packet is still a valid HEP3 message.
         assert!(parse_hep(&pkt).is_ok());
+        Ok(())
     }
 
     /// TS_SEC is a fixed u32 seconds-since-epoch wire field; a capture time
     /// outside 1970-01-01..2106-02-07 clamps to the u32 range instead of
     /// silently wrapping through `as u32`.
     #[test]
-    fn hep_ts_sec_clamps_to_u32_range() {
+    fn hep_ts_sec_clamps_to_u32_range() -> Result<(), TestError> {
         // Post-2106: seconds beyond u32::MAX clamp to u32::MAX, not wrap.
-        let far_future = Utc.timestamp_opt(5_000_000_000, 0).single().unwrap();
+        let far_future = Utc
+            .timestamp_opt(5_000_000_000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), far_future, HepProtocol::Sip, 1, None, b"X");
         assert_eq!(
             find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
@@ -7532,7 +7795,10 @@ mod tests {
             "post-2106 timestamp must clamp to u32::MAX"
         );
         // Pre-1970: negative seconds clamp to 0, not wrap to a huge u32.
-        let pre_epoch = Utc.timestamp_opt(-100, 0).single().unwrap();
+        let pre_epoch = Utc
+            .timestamp_opt(-100, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), pre_epoch, HepProtocol::Sip, 1, None, b"X");
         assert_eq!(
             find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
@@ -7540,22 +7806,29 @@ mod tests {
             "pre-1970 timestamp must clamp to 0"
         );
         // A normal, in-range timestamp is unchanged.
-        let normal = Utc.timestamp_opt(1_700_000_000, 0).single().unwrap();
+        let normal = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(&v4_endpoint(), normal, HepProtocol::Sip, 1, None, b"X");
         assert_eq!(
             find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
             Some(&1_700_000_000u32.to_be_bytes()[..]),
             "in-range timestamp must pass through unchanged"
         );
+        Ok(())
     }
 
     /// An IPv6 RTP packet built by `build_hep_v3` parses back with its
     /// addresses and ports preserved.
     #[test]
-    fn build_and_parse_round_trip_ipv6() {
+    fn build_and_parse_round_trip_ipv6() -> Result<(), TestError> {
         let src = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
         let dst = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let payload = b"BYE sip:test@example.com SIP/2.0\r\n\r\n";
 
         let endpoint = HepEndpoint {
@@ -7566,19 +7839,21 @@ mod tests {
             transport: TransportProto::Udp,
         };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, None, payload);
-        let parsed = parse_hep(&built).expect("round-trip parse should succeed");
+        let parsed =
+            parse_hep(&built).map_err(|e| format!("round-trip parse should succeed: {e:?}"))?;
 
         assert_eq!(parsed.src_addr, src);
         assert_eq!(parsed.dst_addr, dst);
         assert_eq!(parsed.src_port, 6000);
         assert_eq!(parsed.dst_port, 7000);
         assert_eq!(parsed.protocol, HepProtocol::Rtp);
+        Ok(())
     }
 
     /// `HepProtocol` byte encode/decode is a bijection for known and
     /// unknown protocol values.
     #[test]
-    fn hep_protocol_round_trip() {
+    fn hep_protocol_round_trip() -> Result<(), TestError> {
         assert_eq!(HepProtocol::from_byte(1), HepProtocol::Sip);
         assert_eq!(HepProtocol::from_byte(5), HepProtocol::Rtcp);
         assert_eq!(HepProtocol::from_byte(32), HepProtocol::Rtp);
@@ -7588,11 +7863,12 @@ mod tests {
         assert_eq!(HepProtocol::Rtcp.to_byte(), 5);
         assert_eq!(HepProtocol::Rtp.to_byte(), 32);
         assert_eq!(HepProtocol::Unknown(42).to_byte(), 42);
+        Ok(())
     }
 
     /// A chunk claiming more bytes than the packet holds is rejected.
     #[test]
-    fn hep_v3_chunk_overflow_rejected() {
+    fn hep_v3_chunk_overflow_rejected() -> Result<(), TestError> {
         // Build a packet where a chunk claims to be longer than remaining data
         let mut data = Vec::new();
         data.extend_from_slice(HEP3_MAGIC);
@@ -7606,6 +7882,7 @@ mod tests {
         data.extend_from_slice(&100u16.to_be_bytes());
 
         assert!(parse_hep(&data).is_err());
+        Ok(())
     }
 
     /// Issue #5 regression: verify the HEP→Packet conversion preserves
@@ -7627,14 +7904,17 @@ mod tests {
     /// protocol to SIP here left every one of them green. This is the test that
     /// dies.
     #[test]
-    fn hep_to_packet_carries_the_capture_protocol_and_correlation_id() {
+    fn hep_to_packet_carries_the_capture_protocol_and_correlation_id() -> Result<(), TestError> {
         let hep = HepPacket {
             version: 3,
-            src_addr: "192.0.2.10".parse().unwrap(),
-            dst_addr: "192.0.2.20".parse().unwrap(),
+            src_addr: "192.0.2.10".parse()?,
+            dst_addr: "192.0.2.20".parse()?,
             src_port: 22222,
             dst_port: 2223,
-            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            timestamp: Utc
+                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
             // rtpengine's own capture protocol for a mirrored `ng` datagram.
             protocol: HepProtocol::Unknown(0x3d),
             payload: b"cookie1 d7:command5:offere".to_vec(),
@@ -7648,10 +7928,10 @@ mod tests {
         let origin = packet
             .pre_parsed
             .as_ref()
-            .expect("pre_parsed must be set")
+            .ok_or("pre_parsed must be set")?
             .hep
             .as_ref()
-            .expect("a packet from a HEP source must say what the wrapper said");
+            .ok_or("a packet from a HEP source must say what the wrapper said")?;
 
         assert_eq!(
             origin.protocol, 0x3d,
@@ -7664,18 +7944,22 @@ mod tests {
             "an ng reply carries no call-id of its own, so dropping this \
              leaves the relay's allocated port belonging to no call"
         );
+        Ok(())
     }
 
     #[test]
-    fn hep_to_packet_attaches_pre_parsed_metadata() {
+    fn hep_to_packet_attaches_pre_parsed_metadata() -> Result<(), TestError> {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
         let hep = HepPacket {
             version: 3,
-            src_addr: "192.0.2.10".parse().unwrap(),
-            dst_addr: "192.0.2.20".parse().unwrap(),
+            src_addr: "192.0.2.10".parse()?,
+            dst_addr: "192.0.2.20".parse()?,
             src_port: 5060,
             dst_port: 5060,
-            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            timestamp: Utc
+                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
             protocol: HepProtocol::Sip,
             payload: payload.to_vec(),
             correlation_id: None,
@@ -7688,26 +7972,30 @@ mod tests {
         let meta = packet
             .pre_parsed
             .as_ref()
-            .expect("pre_parsed must be set so parser short-circuits");
-        assert_eq!(meta.src_addr, "192.0.2.10".parse::<IpAddr>().unwrap());
-        assert_eq!(meta.dst_addr, "192.0.2.20".parse::<IpAddr>().unwrap());
+            .ok_or("pre_parsed must be set so parser short-circuits")?;
+        assert_eq!(meta.src_addr, "192.0.2.10".parse::<IpAddr>()?);
+        assert_eq!(meta.dst_addr, "192.0.2.20".parse::<IpAddr>()?);
         assert_eq!(meta.src_port, 5060);
         assert_eq!(meta.dst_port, 5060);
         assert_eq!(meta.ip_protocol, 17);
         assert_eq!(&packet.data[..], &payload[..]);
+        Ok(())
     }
 
     /// HEP packets that carry TCP-borne SIP must surface `ip_protocol = 6`
     /// so downstream consumers see TransportProto::Tcp.
     #[test]
-    fn hep_to_packet_preserves_tcp_protocol() {
+    fn hep_to_packet_preserves_tcp_protocol() -> Result<(), TestError> {
         let hep = HepPacket {
             version: 3,
-            src_addr: "192.168.1.10".parse().unwrap(),
-            dst_addr: "192.168.1.20".parse().unwrap(),
+            src_addr: "192.168.1.10".parse()?,
+            dst_addr: "192.168.1.20".parse()?,
             src_port: 5060,
             dst_port: 5061,
-            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            timestamp: Utc
+                .with_ymd_and_hms(2024, 1, 15, 12, 0, 0)
+                .single()
+                .ok_or("a valid UTC time")?,
             protocol: HepProtocol::Sip,
             payload: b"REGISTER sip:carol SIP/2.0\r\n\r\n".to_vec(),
             correlation_id: None,
@@ -7717,14 +8005,15 @@ mod tests {
             ip_protocol: 6,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");
-        let meta = packet.pre_parsed.as_ref().unwrap();
+        let meta = packet.pre_parsed.as_ref().ok_or("pre_parsed is set")?;
         assert_eq!(meta.ip_protocol, 6);
+        Ok(())
     }
 
     /// Default IP protocol when a HEP packet omits CHUNK_IP_PROTO is UDP,
     /// matching the most common HEP payload (SIP/UDP, RTP/UDP).
     #[test]
-    fn parse_hep_defaults_ip_protocol_to_udp_when_chunk_missing() {
+    fn parse_hep_defaults_ip_protocol_to_udp_when_chunk_missing() -> Result<(), TestError> {
         // Build a HEP v3 packet that intentionally omits CHUNK_IP_PROTO.
         let payload = b"OPTIONS sip:test SIP/2.0\r\n\r\n";
         let mut chunks = Vec::new();
@@ -7744,8 +8033,9 @@ mod tests {
         data.extend_from_slice(&total_len.to_be_bytes());
         data.extend_from_slice(&chunks);
 
-        let parsed = parse_hep(&data).expect("HEP parse");
+        let parsed = parse_hep(&data).map_err(|e| format!("HEP parse: {e:?}"))?;
         assert_eq!(parsed.ip_protocol, 17);
+        Ok(())
     }
 
     // ── Malformed / edge HEP v3 parsing ──────────────────────────────
@@ -7765,31 +8055,33 @@ mod tests {
     /// A chunk whose declared length is below the 6-byte header minimum
     /// must be rejected (guards against an offset that never advances).
     #[test]
-    fn parse_hep_v3_chunk_len_below_header_rejected() {
+    fn parse_hep_v3_chunk_len_below_header_rejected() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         // vendor=0, type=SRC_IPV4, length=3 (illegal: < CHUNK_HEADER_LEN)
         chunks.extend_from_slice(&0u16.to_be_bytes());
         chunks.extend_from_slice(&CHUNK_SRC_IPV4.to_be_bytes());
         chunks.extend_from_slice(&3u16.to_be_bytes());
         let data = assemble_v3(&chunks);
-        let err = parse_hep(&data).unwrap_err();
+        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
         assert!(
             format!("{err}").contains("smaller than header"),
             "expected header-min error, got: {err}"
         );
+        Ok(())
     }
 
     /// A zero-length declared chunk is the degenerate case of the
     /// below-header check and must also be rejected (it would otherwise
     /// loop forever without advancing `offset`).
     #[test]
-    fn parse_hep_v3_zero_length_chunk_rejected() {
+    fn parse_hep_v3_zero_length_chunk_rejected() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         chunks.extend_from_slice(&0u16.to_be_bytes());
         chunks.extend_from_slice(&CHUNK_IP_FAMILY.to_be_bytes());
         chunks.extend_from_slice(&0u16.to_be_bytes()); // length = 0
         let data = assemble_v3(&chunks);
         assert!(parse_hep(&data).is_err());
+        Ok(())
     }
 
     /// `total_length` smaller than the 6-byte header is refused, and refused
@@ -7802,39 +8094,41 @@ mod tests {
     /// now names the length, and this test follows the message rather than
     /// pinning the old one.
     #[test]
-    fn parse_hep_v3_total_len_below_header() {
+    fn parse_hep_v3_total_len_below_header() -> Result<(), TestError> {
         let mut data = Vec::new();
         data.extend_from_slice(HEP3_MAGIC);
         data.extend_from_slice(&3u16.to_be_bytes()); // total_len = 3 < header
         // pad so the slice itself is long enough to read the header
         data.extend_from_slice(&[0u8, 0u8]);
-        let err = parse_hep(&data).unwrap_err();
+        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
         assert!(
             format!("{err}").contains("total_length"),
             "the refusal must name the length that cannot be true, got: {err}"
         );
+        Ok(())
     }
 
     /// A v3 packet carrying source but no destination address chunk must
     /// fail with a destination-address error (mirrors the src-addr test).
     #[test]
-    fn parse_hep_v3_missing_dst_addr() {
+    fn parse_hep_v3_missing_dst_addr() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"test");
         let data = assemble_v3(&chunks);
-        let err = parse_hep(&data).unwrap_err();
+        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
         assert!(
             format!("{err}").contains("destination address"),
             "expected missing-destination error, got: {err}"
         );
+        Ok(())
     }
 
     /// Each fixed-width chunk has a minimum-length guard. A truncated
     /// chunk body (e.g. a 3-byte SRC_IPV4) must be rejected rather than
     /// reading past the declared data.
     #[test]
-    fn parse_hep_v3_short_fixed_chunks_rejected() {
+    fn parse_hep_v3_short_fixed_chunks_rejected() -> Result<(), TestError> {
         // (chunk_type, too-short data, expected error fragment)
         let cases: &[(u16, &[u8], &str)] = &[
             (CHUNK_IP_PROTO, &[], "IP_PROTO chunk too short"),
@@ -7853,19 +8147,20 @@ mod tests {
             let mut chunks = Vec::new();
             append_chunk(&mut chunks, 0, *ty, body);
             let data = assemble_v3(&chunks);
-            let err = parse_hep(&data).unwrap_err();
+            let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
             assert!(
                 format!("{err}").contains(frag),
                 "chunk type {ty:#06x}: expected `{frag}`, got: {err}"
             );
         }
+        Ok(())
     }
 
     /// Unknown vendor chunks and the informational IP_FAMILY chunk are
     /// skipped without aborting the parse: a packet that mixes them with
     /// the required chunks still parses cleanly.
     #[test]
-    fn parse_hep_v3_skips_unknown_and_family_chunks() {
+    fn parse_hep_v3_skips_unknown_and_family_chunks() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         // Informational family chunk (a no-op branch in the parser).
         append_chunk(&mut chunks, 0, CHUNK_IP_FAMILY, &[2]);
@@ -7878,7 +8173,8 @@ mod tests {
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"PING");
         let data = assemble_v3(&chunks);
 
-        let hep = parse_hep(&data).expect("unknown chunks should be skipped");
+        let hep =
+            parse_hep(&data).map_err(|e| format!("unknown chunks should be skipped: {e:?}"))?;
         assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
         assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
         assert_eq!(hep.src_port, 5060);
@@ -7886,12 +8182,13 @@ mod tests {
         assert_eq!(&hep.payload[..], b"PING");
         // No capture-id chunk present.
         assert_eq!(hep.capture_id, None);
+        Ok(())
     }
 
     /// The correlation-id chunk decodes as UTF-8 with trailing NULs
     /// trimmed (senders often NUL-pad the Call-ID).
     #[test]
-    fn parse_hep_v3_correlation_id_trims_trailing_nuls() {
+    fn parse_hep_v3_correlation_id_trims_trailing_nuls() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
@@ -7899,14 +8196,15 @@ mod tests {
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"X");
         let data = assemble_v3(&chunks);
 
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.correlation_id.as_deref(), Some("call-abc-123"));
+        Ok(())
     }
 
     /// Invalid UTF-8 in the correlation-id is lossily decoded (never an
     /// error) so a single bad byte can't drop an otherwise-valid packet.
     #[test]
-    fn parse_hep_v3_correlation_id_invalid_utf8_is_lossy() {
+    fn parse_hep_v3_correlation_id_invalid_utf8_is_lossy() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
@@ -7914,17 +8212,18 @@ mod tests {
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"X");
         let data = assemble_v3(&chunks);
 
-        let hep = parse_hep(&data).expect("lossy decode, not an error");
-        let cid = hep.correlation_id.expect("correlation id present");
+        let hep = parse_hep(&data).map_err(|e| format!("lossy decode, not an error: {e:?}"))?;
+        let cid = hep.correlation_id.ok_or("correlation id present")?;
         // U+FFFD replacement char for each invalid byte, then the '!'.
         assert!(cid.ends_with('!'), "got: {cid:?}");
         assert!(cid.contains('\u{fffd}'), "got: {cid:?}");
+        Ok(())
     }
 
     /// IPv6 source/destination chunks decode to the right addresses,
     /// exercising the 16-byte address branches directly (not via builder).
     #[test]
-    fn parse_hep_v3_ipv6_chunks_decode() {
+    fn parse_hep_v3_ipv6_chunks_decode() -> Result<(), TestError> {
         let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xaa);
         let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xbb);
         let mut chunks = Vec::new();
@@ -7933,22 +8232,23 @@ mod tests {
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"Y");
         let data = assemble_v3(&chunks);
 
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.src_addr, IpAddr::V6(src));
         assert_eq!(hep.dst_addr, IpAddr::V6(dst));
+        Ok(())
     }
 
     /// An empty payload chunk yields an empty payload Vec (not an error),
     /// and an absent payload chunk leaves the payload empty by default.
     #[test]
-    fn parse_hep_v3_empty_and_absent_payload() {
+    fn parse_hep_v3_empty_and_absent_payload() -> Result<(), TestError> {
         // Empty payload chunk.
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"");
         let data = assemble_v3(&chunks);
-        let hep = parse_hep(&data).expect("empty payload is valid");
+        let hep = parse_hep(&data).map_err(|e| format!("empty payload is valid: {e:?}"))?;
         assert!(hep.payload.is_empty());
 
         // No payload chunk at all.
@@ -7956,14 +8256,15 @@ mod tests {
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
         let data = assemble_v3(&chunks);
-        let hep = parse_hep(&data).expect("absent payload is valid");
+        let hep = parse_hep(&data).map_err(|e| format!("absent payload is valid: {e:?}"))?;
         assert!(hep.payload.is_empty());
+        Ok(())
     }
 
     /// RTCP and Unknown protocol-type bytes decode correctly through the
     /// parser (covers the non-SIP arms of HepProtocol::from_byte in situ).
     #[test]
-    fn parse_hep_v3_rtcp_and_unknown_proto_types() {
+    fn parse_hep_v3_rtcp_and_unknown_proto_types() -> Result<(), TestError> {
         let make = |proto: u8| {
             let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
             let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -7975,12 +8276,10 @@ mod tests {
                 b"Z",
             )
         };
-        assert_eq!(parse_hep(&make(5)).unwrap().protocol, HepProtocol::Rtcp);
-        assert_eq!(parse_hep(&make(32)).unwrap().protocol, HepProtocol::Rtp);
-        assert_eq!(
-            parse_hep(&make(200)).unwrap().protocol,
-            HepProtocol::Unknown(200)
-        );
+        assert_eq!(parse_hep(&make(5))?.protocol, HepProtocol::Rtcp);
+        assert_eq!(parse_hep(&make(32))?.protocol, HepProtocol::Rtp);
+        assert_eq!(parse_hep(&make(200))?.protocol, HepProtocol::Unknown(200));
+        Ok(())
     }
 
     /// A chunk header that begins inside `total_length` but whose 6-byte
@@ -7988,7 +8287,7 @@ mod tests {
     /// left unwalked (loop guard `offset + CHUNK_HEADER_LEN <= total_len`).
     /// The required chunks before it still parse.
     #[test]
-    fn parse_hep_v3_trailing_partial_chunk_header_ignored() {
+    fn parse_hep_v3_trailing_partial_chunk_header_ignored() -> Result<(), TestError> {
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
@@ -7997,8 +8296,10 @@ mod tests {
         chunks.extend_from_slice(&[0xde, 0xad, 0xbe]);
         let data = assemble_v3(&chunks);
 
-        let hep = parse_hep(&data).expect("partial trailing header is ignored");
+        let hep =
+            parse_hep(&data).map_err(|e| format!("partial trailing header is ignored: {e:?}"))?;
         assert_eq!(&hep.payload[..], b"OK");
+        Ok(())
     }
 
     // ── Malformed / edge HEP v2 parsing ──────────────────────────────
@@ -8006,20 +8307,21 @@ mod tests {
     /// A HEP v2 header length below the 16-byte IPv4 minimum is rejected
     /// even when enough bytes are present.
     #[test]
-    fn parse_hep_v2_header_len_below_minimum() {
+    fn parse_hep_v2_header_len_below_minimum() -> Result<(), TestError> {
         // version=2, header_len=10 (< HEP2_MIN_HEADER), followed by padding.
         let data = [0x02u8, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-        let err = parse_hep(&data).unwrap_err();
+        let err = parse_hep(&data).err().ok_or("expected an error, got Ok")?;
         assert!(
             format!("{err}").contains("below minimum"),
             "expected below-minimum error, got: {err}"
         );
+        Ok(())
     }
 
     /// A HEP v2 packet whose header consumes the whole buffer yields an
     /// empty payload (boundary case: `data[header_len..]` is empty).
     #[test]
-    fn parse_hep_v2_empty_payload() {
+    fn parse_hep_v2_empty_payload() -> Result<(), TestError> {
         let data = make_hep_v2(
             Ipv4Addr::new(1, 2, 3, 4),
             Ipv4Addr::new(5, 6, 7, 8),
@@ -8027,13 +8329,14 @@ mod tests {
             200,
             b"",
         );
-        let hep = parse_hep(&data).expect("parse should succeed");
+        let hep = parse_hep(&data).map_err(|e| format!("parse should succeed: {e:?}"))?;
         assert_eq!(hep.version, 2);
         assert!(hep.payload.is_empty());
         assert_eq!(hep.ip_protocol, 17);
         assert_eq!(hep.protocol, HepProtocol::Sip);
         assert_eq!(hep.correlation_id, None);
         assert_eq!(hep.capture_id, None);
+        Ok(())
     }
 
     // ── Builder structure & round-trips ──────────────────────────────
@@ -8042,7 +8345,7 @@ mod tests {
     /// real byte count, and (for IPv4) the IPv4 family/address chunk types
     /// rather than the IPv6 variants.
     #[test]
-    fn build_hep_v3_header_and_length_consistent() {
+    fn build_hep_v3_header_and_length_consistent() -> Result<(), TestError> {
         let endpoint = HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
@@ -8050,7 +8353,10 @@ mod tests {
             dst_port: 5061,
             transport: TransportProto::Udp,
         };
-        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1700000000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 7, None, b"hello");
 
         assert_eq!(&built[..4], HEP3_MAGIC);
@@ -8074,17 +8380,18 @@ mod tests {
             !built[HEP3_HEADER_LEN..].chunks(2).any(|w| w == v6_src),
             "IPv6 src chunk type must be absent for IPv4 endpoint"
         );
+        Ok(())
     }
 
     /// A payload larger than the HEP3 u16 length field is truncated so the
     /// declared total length matches the actual packet size (and stays within
     /// 65535) instead of wrapping into a corrupt header.
     #[test]
-    fn build_hep_v3_oversized_payload_does_not_wrap_length() {
+    fn build_hep_v3_oversized_payload_does_not_wrap_length() -> Result<(), TestError> {
         use std::net::IpAddr;
         let endpoint = HepEndpoint {
-            src_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
-            dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            src_addr: "10.0.0.1".parse::<IpAddr>()?,
+            dst_addr: "10.0.0.2".parse::<IpAddr>()?,
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
@@ -8111,12 +8418,13 @@ mod tests {
         );
         // The truncated packet must still parse.
         assert!(parse_hep(&pkt).is_ok(), "truncated HEP packet must parse");
+        Ok(())
     }
 
     /// `append_chunk` writes a 6-byte header (vendor, type, length) where
     /// length counts the header plus the data, followed by the data verbatim.
     #[test]
-    fn append_chunk_layout() {
+    fn append_chunk_layout() -> Result<(), TestError> {
         let mut buf = Vec::new();
         append_chunk(&mut buf, 0xabcd, 0x0011, &[0xde, 0xad]);
         assert_eq!(buf.len(), CHUNK_HEADER_LEN + 2);
@@ -8127,12 +8435,13 @@ mod tests {
             CHUNK_HEADER_LEN + 2
         );
         assert_eq!(&buf[6..], &[0xde, 0xad]);
+        Ok(())
     }
 
     /// Round-trip an RTCP packet with sub-second timestamp precision and
     /// verify the correlation/capture metadata survives when present.
     #[test]
-    fn build_and_parse_round_trip_rtcp_with_usec() {
+    fn build_and_parse_round_trip_rtcp_with_usec() -> Result<(), TestError> {
         let endpoint = HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
             dst_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6)),
@@ -8140,10 +8449,13 @@ mod tests {
             dst_port: 40001,
             transport: TransportProto::Udp,
         };
-        let ts = Utc.timestamp_opt(1234567890, 250_000_000).single().unwrap();
+        let ts = Utc
+            .timestamp_opt(1234567890, 250_000_000)
+            .single()
+            .ok_or("a valid UTC time")?;
         let payload = &[0x80, 0xc8, 0x00, 0x06]; // RTCP SR header start
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtcp, 1000, None, payload);
-        let parsed = parse_hep(&built).expect("round-trip");
+        let parsed = parse_hep(&built).map_err(|e| format!("round-trip: {e:?}"))?;
 
         assert_eq!(parsed.protocol, HepProtocol::Rtcp);
         assert_eq!(parsed.ip_protocol, 17);
@@ -8151,12 +8463,13 @@ mod tests {
         assert_eq!(&parsed.payload[..], payload);
         assert_eq!(parsed.timestamp.timestamp(), 1234567890);
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 250_000);
+        Ok(())
     }
 
     /// A crafted TS_USEC far outside the microsecond range must not
     /// overflow the ns conversion; the packet still parses.
     #[test]
-    fn parse_hep_v3_huge_ts_usec_does_not_panic() {
+    fn parse_hep_v3_huge_ts_usec_does_not_panic() -> Result<(), TestError> {
         // A crafted HEP packet can carry a TS_USEC far outside [0, 1_000_000).
         // The microsecond→nanosecond conversion (`ts_usec * 1000`) must not
         // overflow u32 (panics in debug / wraps in release); the packet should
@@ -8173,8 +8486,10 @@ mod tests {
             1,
             b"hello",
         );
-        let hep = parse_hep(&data).expect("packet with garbage ts_usec must still parse");
+        let hep = parse_hep(&data)
+            .map_err(|e| format!("packet with garbage ts_usec must still parse: {e:?}"))?;
         assert_eq!(hep.src_addr, src);
+        Ok(())
     }
 
     /// The `--count` limit counts packets RECEIVED, not only those forwarded
@@ -8182,11 +8497,11 @@ mod tests {
     /// source allowlist) still stops once `count` datagrams have arrived,
     /// instead of running until the duration limit.
     #[test]
-    fn count_limit_counts_received_not_only_forwarded() {
+    fn count_limit_counts_received_not_only_forwarded() -> Result<(), TestError> {
         use std::sync::mpsc;
         // A socket bound here and handed to the listener, so the test knows
         // where to send without scraping logs and the port is never free.
-        let (socket, bind) = loopback_udp();
+        let (socket, bind) = loopback_udp()?;
 
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let config = CaptureConfig {
@@ -8198,10 +8513,10 @@ mod tests {
         };
         let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
         let (done_tx, done_rx) = mpsc::channel();
+        // Allowlist excludes 127.0.0.1, so every received datagram is
+        // dropped before it can be forwarded — yet it must still count.
+        let allow = vec![CidrRange::parse("10.0.0.0/8").map_err(|e| format!("cidr: {e:?}"))?];
         std::thread::spawn(move || {
-            // Allowlist excludes 127.0.0.1, so every received datagram is
-            // dropped before it can be forwarded — yet it must still count.
-            let allow = vec![CidrRange::parse("10.0.0.0/8").expect("cidr")];
             let opts = HepListenerOpts {
                 allowlist: &allow,
                 rate_limit: 1_000_000,
@@ -8224,8 +8539,11 @@ mod tests {
             "listener must report a successful bind"
         );
 
-        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
-        let ts = Utc.timestamp_opt(1_700_000_000, 0).single().unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind sender: {e:?}"))?;
+        let ts = Utc
+            .timestamp_opt(1_700_000_000, 0)
+            .single()
+            .ok_or("a valid UTC time")?;
         let pkt = build_hep_v3(
             &v4_endpoint(),
             ts,
@@ -8235,7 +8553,9 @@ mod tests {
             b"INVITE sip:x SIP/2.0\r\n\r\n",
         );
         for _ in 0..2 {
-            sender.send_to(&pkt, &bind).expect("send datagram");
+            sender
+                .send_to(&pkt, &bind)
+                .map_err(|e| format!("send datagram: {e:?}"))?;
             std::thread::sleep(Duration::from_millis(20));
         }
 
@@ -8251,6 +8571,7 @@ mod tests {
             rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "allowlist drops everything; no packet should reach the pipeline"
         );
+        Ok(())
     }
 
     // ── Silence: what counts as traffic (HEP1) ───────────────────────────
@@ -8299,11 +8620,12 @@ mod tests {
     /// Driven on an injected clock through the one path both transports hand
     /// packets to, so the test takes no time and covers UDP and stream alike.
     #[test]
-    fn a_sender_whose_every_packet_is_refused_still_trips_the_silence_warning() {
+    fn a_sender_whose_every_packet_is_refused_still_trips_the_silence_warning()
+    -> Result<(), TestError> {
         let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
-        let peer: IpAddr = "192.0.2.7".parse().expect("literal");
+        let peer: IpAddr = "192.0.2.7".parse().map_err(|e| format!("literal: {e:?}"))?;
         let wrong = hep3_from(7, Some(wrong_key()), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
         let mut warning = None;
@@ -8319,11 +8641,11 @@ mod tests {
             }
         }
 
-        let warning = warning.expect(
+        let warning = warning.ok_or(
             "thirty-five seconds of packets that were ALL refused must trip the \
              thirty-second silence warning; arrivals that nothing admitted are \
              not traffic",
-        );
+        )?;
         assert_eq!(
             warning.idle,
             Duration::from_secs(30),
@@ -8343,16 +8665,17 @@ mod tests {
         for needle in ["no packets admitted for 30s", "auth_mismatch", "192.0.2.7"] {
             assert!(line.contains(needle), "`{needle}` missing from: {line}");
         }
+        Ok(())
     }
 
     /// An admitted packet IS traffic: it restarts the quiet period, and ends a
     /// warned one with a "resumed" report.
     #[test]
-    fn an_admitted_packet_ends_the_quiet_period_it_interrupts() {
+    fn an_admitted_packet_ends_the_quiet_period_it_interrupts() -> Result<(), TestError> {
         let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
-        let peer: IpAddr = "192.0.2.8".parse().expect("literal");
+        let peer: IpAddr = "192.0.2.8".parse().map_err(|e| format!("literal: {e:?}"))?;
         let right = hep3_from(9, Some(right_key()), b"OPTIONS sip:x SIP/2.0\r\n\r\n");
 
         assert!(
@@ -8376,19 +8699,20 @@ mod tests {
                 .is_none(),
             "twenty seconds after an admitted packet is inside the threshold"
         );
+        Ok(())
     }
 
     /// Nothing arriving at all keeps the original wording, which operators and
     /// runbooks grep for.
     #[test]
-    fn a_listener_that_receives_nothing_keeps_the_original_warning() {
+    fn a_listener_that_receives_nothing_keeps_the_original_warning() -> Result<(), TestError> {
         let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
         let warning = ingest
             .sweep(t0 + Duration::from_secs(30))
             .listener
-            .expect("thirty seconds of nothing warns");
+            .ok_or("thirty seconds of nothing warns")?;
         assert_eq!(warning.refused, 0);
         assert_eq!(warning.dominant, None, "nothing was refused");
         let line = warning.render("0.0.0.0:9060", true);
@@ -8396,6 +8720,7 @@ mod tests {
             line.contains("no packets for 30s") && line.contains("UDP gives no error"),
             "{line}"
         );
+        Ok(())
     }
 
     // ── The roster, as the listener feeds it ─────────────────────────────
@@ -8409,7 +8734,7 @@ mod tests {
     /// is added. Two source reasons collapsing onto one roster reason would
     /// count, log and label things an operator fixes differently as one.
     #[test]
-    fn every_source_reason_maps_onto_a_roster_reason_of_its_own() {
+    fn every_source_reason_maps_onto_a_roster_reason_of_its_own() -> Result<(), TestError> {
         use crate::rate_limit::Refusal;
         for (i, r) in Refusal::ALL.iter().enumerate() {
             assert_eq!(r.position(), i, "Refusal::ALL out of step at {r:?}");
@@ -8442,6 +8767,7 @@ mod tests {
             "the roster vocabulary is exactly the {mapped} mapped reasons and the \
              listener's own four"
         );
+        Ok(())
     }
 
     /// Listener options with an allowlist that excludes loopback.
@@ -8463,14 +8789,17 @@ mod tests {
     /// check — would put an address nobody allowed on the roster of who is
     /// feeding the collector.
     #[test]
-    fn a_packet_the_allowlist_refuses_is_a_refused_source_and_never_a_sender() {
+    fn a_packet_the_allowlist_refuses_is_a_refused_source_and_never_a_sender()
+    -> Result<(), TestError> {
         static ALLOW: std::sync::OnceLock<Vec<CidrRange>> = std::sync::OnceLock::new();
         let allow = ALLOW.get_or_init(|| CidrRange::parse("10.0.0.0/8").into_iter().collect());
         let opts = allowlisted_opts(allow);
         let t0 = Instant::now();
         let roster = listener_roster(&opts, t0, Utc::now());
         let mut ingest = HepIngest::new(&opts, roster.clone());
-        let outside: IpAddr = "192.0.2.50".parse().expect("literal");
+        let outside: IpAddr = "192.0.2.50"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
         let pkt = hep3_from(
             7,
             Some(crate::test_material::key_str("hep-roster-unused")),
@@ -8490,20 +8819,21 @@ mod tests {
         assert_eq!(rep.refused_by_reason.get("allowlist").copied(), Some(3));
         assert_eq!(rep.refused_sources.len(), 1);
         assert_eq!(rep.refused_sources[0].peer, "192.0.2.50");
+        Ok(())
     }
 
     /// **Two senders and one wrong-key sender, through the listener's own
     /// path**: two roster entries with their counts, and the wrong key as a
     /// refused source under `auth_mismatch`.
     #[test]
-    fn the_listener_path_feeds_the_roster_with_senders_and_refusals() {
+    fn the_listener_path_feeds_the_roster_with_senders_and_refusals() -> Result<(), TestError> {
         let opts = keyed_opts(right_key(), Duration::from_secs(30));
         let t0 = Instant::now();
         let roster = listener_roster(&opts, t0, Utc::now());
         let mut ingest = HepIngest::new(&opts, roster.clone());
-        let a: IpAddr = "10.1.0.7".parse().expect("literal");
-        let b: IpAddr = "10.1.0.9".parse().expect("literal");
-        let bad: IpAddr = "10.1.0.66".parse().expect("literal");
+        let a: IpAddr = "10.1.0.7".parse().map_err(|e| format!("literal: {e:?}"))?;
+        let b: IpAddr = "10.1.0.9".parse().map_err(|e| format!("literal: {e:?}"))?;
+        let bad: IpAddr = "10.1.0.66".parse().map_err(|e| format!("literal: {e:?}"))?;
         let body = b"OPTIONS sip:x SIP/2.0\r\n\r\n";
         for s in 0..3 {
             let now = t0 + Duration::from_secs(s);
@@ -8550,27 +8880,28 @@ mod tests {
             Some(3)
         );
         assert_eq!(rep.packets_received, 10);
+        Ok(())
     }
 
     /// `capture_hep` hands its roster to the capture channel's meter, which
     /// is how every surface that already holds the meter reaches it.
     #[test]
-    fn a_listener_hangs_its_roster_on_the_capture_meter() {
-        let (socket, bind) = loopback_udp();
+    fn a_listener_hangs_its_roster_on_the_capture_meter() -> Result<(), TestError> {
+        let (socket, bind) = loopback_udp()?;
         let config = CaptureConfig {
             count: Some(2),
             duration: Some(Duration::from_secs(8)),
             ..CaptureConfig::default()
         };
         let (rx, done) = start_listener(socket, HepTransport::Udp, None, Vec::new(), None, config);
-        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let sender = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind sender: {e:?}"))?;
         for id in [7u32, 9] {
             sender
                 .send_to(
                     &hep3_from(id, None, b"OPTIONS sip:x SIP/2.0\r\n\r\n"),
                     &bind,
                 )
-                .expect("send");
+                .map_err(|e| format!("send: {e:?}"))?;
             std::thread::sleep(Duration::from_millis(20));
         }
         let _ = done.recv_timeout(MUST_ARRIVE);
@@ -8578,11 +8909,12 @@ mod tests {
             .meter()
             .hep_roster()
             .cloned()
-            .expect("the listener must attach its roster to the meter");
+            .ok_or("the listener must attach its roster to the meter")?;
         let rep = roster.report(usize::MAX);
         let sources: Vec<&str> = rep.senders.iter().map(|s| s.source.as_str()).collect();
         assert_eq!(sources, vec!["hep:7@127.0.0.1", "hep:9@127.0.0.1"]);
         assert_eq!(rep.trust.as_deref(), Some("unauthenticated"));
+        Ok(())
     }
 
     // ── Per-source frame ordinals (SRC1 stage 2) ─────────────────────────
@@ -8596,12 +8928,12 @@ mod tests {
     /// Returns `(source label, ordinal)` per packet that reached the pipeline,
     /// in arrival order. One datagram per entry in `capture_ids`, in order, so
     /// a caller can interleave senders.
-    fn hep_ordinals_for(capture_ids: &[u32]) -> Vec<(String, Option<u64>)> {
+    fn hep_ordinals_for(capture_ids: &[u32]) -> Result<Vec<(String, Option<u64>)>, TestError> {
         use std::sync::mpsc;
 
         // A socket bound here and handed to the listener, so the test knows
         // where to send without scraping logs and the port is never free.
-        let (socket, bind) = loopback_udp();
+        let (socket, bind) = loopback_udp()?;
 
         let (tx, rx) = crate::capture::channel::packet_channel(64);
         let config = CaptureConfig {
@@ -8636,7 +8968,7 @@ mod tests {
             "listener must report a successful bind"
         );
 
-        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let sender = UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind sender: {e:?}"))?;
         let ts = Utc
             .timestamp_opt(1_700_000_000, 0)
             .single()
@@ -8650,7 +8982,9 @@ mod tests {
                 None,
                 b"INVITE sip:x SIP/2.0\r\n\r\n",
             );
-            sender.send_to(&pkt, &bind).expect("send datagram");
+            sender
+                .send_to(&pkt, &bind)
+                .map_err(|e| format!("send datagram: {e:?}"))?;
             // Serialized so arrival order is send order: the assertions are
             // about which COUNTER advanced, never about scheduling.
             std::thread::sleep(Duration::from_millis(20));
@@ -8663,11 +8997,15 @@ mod tests {
                     p.interface.as_deref().unwrap_or("<none>").to_string(),
                     p.origin.map(|o| o.ordinal),
                 )),
-                Err(e) => panic!("expected {} packets, got {got:?}: {e}", capture_ids.len()),
+                Err(e) => {
+                    return Err(
+                        format!("expected {} packets, got {got:?}: {e}", capture_ids.len()).into(),
+                    );
+                }
             }
         }
         let _ = done_rx.recv_timeout(Duration::from_secs(5));
-        got
+        Ok(got)
     }
 
     /// **Ordinals are per source and monotonic.**
@@ -8677,8 +9015,8 @@ mod tests {
     /// `None` — it requires both halves — so no fact HEP delivered could name
     /// the datagram it came from.
     #[test]
-    fn ordinals_are_per_source_and_monotonic() {
-        let got = hep_ordinals_for(&[7, 7, 7]);
+    fn ordinals_are_per_source_and_monotonic() -> Result<(), TestError> {
+        let got = hep_ordinals_for(&[7, 7, 7])?;
         let ordinals: Vec<Option<u64>> = got.iter().map(|(_, o)| *o).collect();
         assert_eq!(
             ordinals,
@@ -8693,6 +9031,7 @@ mod tests {
             1,
             "one capture id from one peer is ONE source: {labels:?}"
         );
+        Ok(())
     }
 
     /// **Two members interleaving do not share a counter.**
@@ -8704,8 +9043,8 @@ mod tests {
     /// source can find, which is worse than no pointer because it looks like
     /// one.
     #[test]
-    fn two_members_interleaving_do_not_share_an_ordinal_counter() {
-        let got = hep_ordinals_for(&[7, 9, 7, 9, 7, 9]);
+    fn two_members_interleaving_do_not_share_an_ordinal_counter() -> Result<(), TestError> {
+        let got = hep_ordinals_for(&[7, 9, 7, 9, 7, 9])?;
         let mut per_source: std::collections::BTreeMap<&str, Vec<Option<u64>>> =
             std::collections::BTreeMap::new();
         for (label, ord) in &got {
@@ -8724,56 +9063,64 @@ mod tests {
                  share a listener-wide counter: {per_source:?}"
             );
         }
+        Ok(())
     }
 
     /// A bare address is a HOST, so `--hep-allow 10.0.0.40` works without the
     /// operator having to know to write `/32`.
     #[test]
-    fn a_bare_ipv4_address_is_accepted_as_a_host_route() {
-        let r = CidrRange::parse("10.0.0.40").expect("a bare address is a host");
-        assert!(r.contains("10.0.0.40".parse().unwrap()), "matches itself");
+    fn a_bare_ipv4_address_is_accepted_as_a_host_route() -> Result<(), TestError> {
+        let r = CidrRange::parse("10.0.0.40")
+            .map_err(|e| format!("a bare address is a host: {e:?}"))?;
+        assert!(r.contains("10.0.0.40".parse()?), "matches itself");
         assert!(
-            !r.contains("10.0.0.41".parse().unwrap()),
+            !r.contains("10.0.0.41".parse()?),
             "and nothing else - a bare address must never widen the allowlist"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_bare_ipv6_address_is_accepted_as_a_host_route() {
-        let r = CidrRange::parse("2001:db8::1").expect("a bare v6 address is a host");
-        assert!(r.contains("2001:db8::1".parse().unwrap()));
-        assert!(!r.contains("2001:db8::2".parse().unwrap()));
+    fn a_bare_ipv6_address_is_accepted_as_a_host_route() -> Result<(), TestError> {
+        let r = CidrRange::parse("2001:db8::1")
+            .map_err(|e| format!("a bare v6 address is a host: {e:?}"))?;
+        assert!(r.contains("2001:db8::1".parse()?));
+        assert!(!r.contains("2001:db8::2".parse()?));
+        Ok(())
     }
 
     /// The security-relevant case. An address that LOOKS like a classful
     /// network must still be a single host: inferring /8 from `10.0.0.0` would
     /// silently admit sixteen million addresses the operator never named.
     #[test]
-    fn a_bare_address_is_never_inferred_as_a_classful_network() {
-        let r = CidrRange::parse("10.0.0.0").expect("parses");
-        assert!(r.contains("10.0.0.0".parse().unwrap()));
+    fn a_bare_address_is_never_inferred_as_a_classful_network() -> Result<(), TestError> {
+        let r = CidrRange::parse("10.0.0.0").map_err(|e| format!("parses: {e:?}"))?;
+        assert!(r.contains("10.0.0.0".parse()?));
         assert!(
-            !r.contains("10.0.0.1".parse().unwrap()),
+            !r.contains("10.0.0.1".parse()?),
             "10.0.0.0 is one host, not 10.0.0.0/8"
         );
-        assert!(!r.contains("10.255.255.255".parse().unwrap()));
+        assert!(!r.contains("10.255.255.255".parse()?));
+        Ok(())
     }
 
     #[test]
-    fn explicit_cidr_still_parses_and_still_bounds() {
-        let r = CidrRange::parse("10.0.0.0/8").expect("cidr");
-        assert!(r.contains("10.1.2.3".parse().unwrap()));
-        assert!(!r.contains("11.0.0.1".parse().unwrap()));
+    fn explicit_cidr_still_parses_and_still_bounds() -> Result<(), TestError> {
+        let r = CidrRange::parse("10.0.0.0/8").map_err(|e| format!("cidr: {e:?}"))?;
+        assert!(r.contains("10.1.2.3".parse()?));
+        assert!(!r.contains("11.0.0.1".parse()?));
+        Ok(())
     }
 
     /// Malformed input must still be refused with a reason, not silently
     /// treated as a host.
     #[test]
-    fn malformed_input_is_still_refused() {
+    fn malformed_input_is_still_refused() -> Result<(), TestError> {
         assert!(CidrRange::parse("notanip").is_err(), "not an address");
         assert!(CidrRange::parse("10.0.0.40/").is_err(), "empty prefix");
         assert!(CidrRange::parse("10.0.0.40/33").is_err(), "prefix too long");
         assert!(CidrRange::parse("").is_err(), "empty string");
+        Ok(())
     }
 
     /// The decisions the HEP listener's helpers make, driven directly: the
@@ -8794,11 +9141,12 @@ mod tests {
         }
 
         #[test]
-        fn a_flag_is_claimed_exactly_once() {
+        fn a_flag_is_claimed_exactly_once() -> Result<(), TestError> {
             let flag = AtomicBool::new(false);
             assert!(first_claim(&flag), "the first claim must succeed");
             assert!(!first_claim(&flag), "a second claim must not");
             assert!(!first_claim(&flag), "nor any later one");
+            Ok(())
         }
 
         /// The WARN lines `f` logs on its first call, and those it logs on two
@@ -8813,7 +9161,7 @@ mod tests {
         }
 
         #[test]
-        fn a_version_one_rejection_warns_once_and_says_why() {
+        fn a_version_one_rejection_warns_once_and_says_why() -> Result<(), TestError> {
             let warned = HmacSenderWideWarned::new();
             let (first, later) = first_then_later(|| {
                 log_hmac_rejection(HmacAuthError::UnsupportedVersion, 30, &warned);
@@ -8829,10 +9177,11 @@ mod tests {
                 "a version-1 rejection is not a clock problem:\n{first}"
             );
             assert!(later.is_empty(), "not per packet:\n{later}");
+            Ok(())
         }
 
         #[test]
-        fn a_clock_skew_rejection_warns_once_quoting_the_window() {
+        fn a_clock_skew_rejection_warns_once_quoting_the_window() -> Result<(), TestError> {
             let warned = HmacSenderWideWarned::new();
             let (first, later) = first_then_later(|| {
                 log_hmac_rejection(HmacAuthError::TimestampOutOfWindow, 45, &warned);
@@ -8848,10 +9197,11 @@ mod tests {
                 "{first}"
             );
             assert!(later.is_empty(), "not per packet:\n{later}");
+            Ok(())
         }
 
         #[test]
-        fn a_rejection_that_does_not_drop_a_whole_sender_does_not_warn() {
+        fn a_rejection_that_does_not_drop_a_whole_sender_does_not_warn() -> Result<(), TestError> {
             let warned = HmacSenderWideWarned::new();
             let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
                 for e in [
@@ -8866,10 +9216,11 @@ mod tests {
                 logs.is_empty(),
                 "per-packet rejections stay at debug:\n{logs}"
             );
+            Ok(())
         }
 
         #[test]
-        fn a_full_tracking_table_warns_once_and_other_refusals_do_not() {
+        fn a_full_tracking_table_warns_once_and_other_refusals_do_not() -> Result<(), TestError> {
             use crate::rate_limit::Refusal;
             let lim = HepRateLimiter::new(0, 0, crate::rate_limit::DEFAULT_MAX_TRACKED_PEERS);
             let warned = AtomicBool::new(false);
@@ -8889,6 +9240,7 @@ mod tests {
             );
             assert!(first.contains("First refused peer: 192.0.2.7"), "{first}");
             assert!(later.is_empty(), "not per packet:\n{later}");
+            Ok(())
         }
 
         /// A token the verifier refuses is refused under ITS reason, not as a
@@ -8896,7 +9248,7 @@ mod tests {
         /// reading "auth missing" for a sender that did send a token looks at the
         /// wrong end.
         #[test]
-        fn a_refused_hmac_token_is_refused_for_its_own_reason() {
+        fn a_refused_hmac_token_is_refused_for_its_own_reason() -> Result<(), TestError> {
             let key = Some(crate::test_material::key_str("hep-refusal-reason"));
             let mut cache = HmacNonceCache::new();
             // Any bytes will do: the refusals below depend on the token's span
@@ -8916,6 +9268,7 @@ mod tests {
                 hmac_auth_ok(None, &datagram, Some((0, 4)), 30, &mut cache),
                 Ok(())
             );
+            Ok(())
         }
 
         /// A capture config with the given limits and every other field default.
@@ -8928,7 +9281,7 @@ mod tests {
         }
 
         #[test]
-        fn the_count_limit_is_reached_at_the_count_not_after_it() {
+        fn the_count_limit_is_reached_at_the_count_not_after_it() -> Result<(), TestError> {
             let now = Instant::now();
             let cfg = limits(Some(3), None);
             assert_eq!(capture_limit_reached(&cfg, 2, now), None);
@@ -8938,41 +9291,45 @@ mod tests {
             );
             assert_eq!(count_limit_reached(&cfg, 4), Some(3));
             assert_eq!(count_limit_reached(&limits(None, None), u64::MAX), None);
+            Ok(())
         }
 
         #[test]
-        fn the_duration_limit_is_reached_once_that_long_has_passed() {
+        fn the_duration_limit_is_reached_once_that_long_has_passed() -> Result<(), TestError> {
             let cfg = limits(None, Some(Duration::from_secs(60)));
             assert_eq!(capture_limit_reached(&cfg, 0, Instant::now()), None);
             let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
                 // A monotonic clock younger than a minute cannot express the
                 // start; nothing to assert on such a host.
-                return;
+                return Ok(());
             };
             assert_eq!(
                 capture_limit_reached(&cfg, 0, long_ago),
                 Some(ListenerStop::Duration(Duration::from_secs(60)))
             );
+            Ok(())
         }
 
         #[test]
-        fn the_count_is_asked_before_the_duration() {
+        fn the_count_is_asked_before_the_duration() -> Result<(), TestError> {
             let Some(long_ago) = Instant::now().checked_sub(Duration::from_secs(61)) else {
-                return;
+                return Ok(());
             };
             let cfg = limits(Some(1), Some(Duration::from_secs(60)));
             assert_eq!(
                 capture_limit_reached(&cfg, 1, long_ago),
                 Some(ListenerStop::Count(1))
             );
+            Ok(())
         }
 
         #[test]
-        fn no_limit_set_never_stops_the_listener() {
+        fn no_limit_set_never_stops_the_listener() -> Result<(), TestError> {
             assert_eq!(
                 capture_limit_reached(&limits(None, None), u64::MAX, Instant::now()),
                 None
             );
+            Ok(())
         }
 
         /// Listener options with the given allowlist and key; every limit off.
@@ -8993,7 +9350,8 @@ mod tests {
         }
 
         #[test]
-        fn an_unauthenticated_routable_bind_is_warned_about_and_a_loopback_one_is_not() {
+        fn an_unauthenticated_routable_bind_is_warned_about_and_a_loopback_one_is_not()
+        -> Result<(), TestError> {
             let routable = crate::test_utils::capture_logs(tracing::Level::WARN, || {
                 warn_on_unverified_bind("0.0.0.0:9060", &opts(&[], None));
             });
@@ -9013,14 +9371,16 @@ mod tests {
             });
             assert!(keyed.contains("authentication active"), "{keyed}");
             assert!(!keyed.contains("unauthenticated"), "{keyed}");
+            Ok(())
         }
 
         #[test]
-        fn a_hostname_bind_is_warned_about_as_unverifiable() {
+        fn a_hostname_bind_is_warned_about_as_unverifiable() -> Result<(), TestError> {
             let logs = crate::test_utils::capture_logs(tracing::Level::WARN, || {
                 warn_on_unverified_bind("collector.example:9060", &opts(&[], Some("k")));
             });
             assert!(logs.contains("not a literal IP"), "{logs}");
+            Ok(())
         }
 
         #[test]
@@ -9095,7 +9455,7 @@ mod tests {
         /// are already buffered: "stop after N" does not mean "after N, plus
         /// whatever else arrived in the same read".
         #[test]
-        fn a_stream_stops_at_the_count_with_packets_still_buffered() {
+        fn a_stream_stops_at_the_count_with_packets_still_buffered() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(Some(2), None);
@@ -9110,12 +9470,13 @@ mod tests {
             assert_eq!(shared.received.load(Ordering::Relaxed), 2);
             assert_eq!(buf, one, "the packet past the count stays unread");
             assert_eq!(delivered(&rx), 2);
+            Ok(())
         }
 
         /// Whole packets are handed on and a partial one is kept for the next
         /// read.
         #[test]
-        fn a_partial_packet_waits_for_the_next_read() {
+        fn a_partial_packet_waits_for_the_next_read() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(None, None);
@@ -9130,12 +9491,13 @@ mod tests {
             assert_eq!(shared.received.load(Ordering::Relaxed), 1);
             assert_eq!(buf, &one[..5]);
             assert_eq!(delivered(&rx), 1);
+            Ok(())
         }
 
         /// A pipeline that has gone stops the whole listener, not only this
         /// connection: every other reader polls `stop`.
         #[test]
-        fn a_pipeline_that_has_gone_stops_every_reader() {
+        fn a_pipeline_that_has_gone_stops_every_reader() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(None, None);
@@ -9151,12 +9513,13 @@ mod tests {
                 shared.stop.load(Ordering::Relaxed),
                 "the listener-wide stop must be raised for the other readers"
             );
+            Ok(())
         }
 
         /// A reader on a listener that is winding down reads nothing more, even
         /// with bytes waiting and no limit reached.
         #[test]
-        fn a_reader_stops_once_the_listener_is_winding_down() {
+        fn a_reader_stops_once_the_listener_is_winding_down() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(None, None);
@@ -9170,12 +9533,13 @@ mod tests {
             assert_eq!(shared.received.load(Ordering::Relaxed), 0);
             assert_eq!(stream.position(), 0, "nothing may be read");
             assert_eq!(delivered(&rx), 0);
+            Ok(())
         }
 
         /// The same reader, not winding down, reads the stream to its end and
         /// delivers what it carried.
         #[test]
-        fn a_reader_delivers_a_stream_to_its_end() {
+        fn a_reader_delivers_a_stream_to_its_end() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(None, None);
@@ -9188,6 +9552,7 @@ mod tests {
 
             assert_eq!(shared.received.load(Ordering::Relaxed), 2);
             assert_eq!(delivered(&rx), 2);
+            Ok(())
         }
 
         /// A connected loopback TCP pair: the accepted side, and the client.
@@ -9242,17 +9607,18 @@ mod tests {
         /// A handshake is given up once its deadline has passed, or as soon as
         /// the listener winds down; before either it goes on.
         #[test]
-        fn a_handshake_is_given_up_at_its_deadline_or_on_stop() {
+        fn a_handshake_is_given_up_at_its_deadline_or_on_stop() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let stop = AtomicBool::new(false);
             let later = Instant::now() + Duration::from_secs(60);
             assert!(!tls_handshake_cut_short(&stop, later, PEER));
             let Some(past) = Instant::now().checked_sub(Duration::from_secs(1)) else {
-                return;
+                return Ok(());
             };
             assert!(tls_handshake_cut_short(&stop, past, PEER));
             stop.store(true, Ordering::Relaxed);
             assert!(tls_handshake_cut_short(&stop, later, PEER));
+            Ok(())
         }
 
         /// A transport that hands over `inbound` and then has nothing more to
@@ -9286,7 +9652,7 @@ mod tests {
         #[test]
         fn a_handshake_round_that_moves_no_bytes_ends_the_handshake() -> Result<(), TestError> {
             let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
-            let (_ca, cert, key) = test_chain(dir.path());
+            let (_ca, cert, key) = test_chain(dir.path())?;
             let server_cfg = hep_tls_server_config(Some(&cert), Some(&key))
                 .map_err(|e| format!("server config: {e:?}"))?;
             let mut server = rustls::ServerConnection::new(server_cfg)
@@ -9328,7 +9694,7 @@ mod tests {
         fn a_handshake_round_that_times_out_waiting_for_the_peer_goes_on() -> Result<(), TestError>
         {
             let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
-            let (_ca, cert, key) = test_chain(dir.path());
+            let (_ca, cert, key) = test_chain(dir.path())?;
             let server_cfg = hep_tls_server_config(Some(&cert), Some(&key))
                 .map_err(|e| format!("server config: {e:?}"))?;
             let mut server = rustls::ServerConnection::new(server_cfg)
@@ -9343,18 +9709,22 @@ mod tests {
         /// The bind policy is asked before any socket is touched, on every
         /// transport: an unguarded routable address fails the preflight.
         #[test]
-        fn the_preflight_refuses_an_unguarded_routable_bind() {
+        fn the_preflight_refuses_an_unguarded_routable_bind() -> Result<(), TestError> {
             let err = hep_listener_preflight("0.0.0.0:9060", &opts(&[], None))
-                .expect_err("an unguarded routable bind must be refused");
+                .err()
+                .ok_or("an unguarded routable bind must be refused")?;
             assert_eq!(
                 format!("{err:#}"),
-                enforce_hep_bind_policy("0.0.0.0:9060", false, 0).expect_err("the same refusal"),
+                enforce_hep_bind_policy("0.0.0.0:9060", false, 0)
+                    .err()
+                    .ok_or("the same refusal")?,
                 "the preflight reports the policy's own reason"
             );
             assert!(matches!(
                 hep_listener_preflight("0.0.0.0:9060", &opts(&[], Some("k"))),
                 Ok(None)
             ));
+            Ok(())
         }
 
         /// Whoever awaits readiness hears the failure, in full, and the caller
@@ -9370,7 +9740,7 @@ mod tests {
                 Err("outer step: inner cause".to_string())
             );
             assert_eq!(
-                format!("{:#}", r.expect_err("the error comes back")),
+                format!("{:#}", r.err().ok_or("the error comes back")?),
                 "outer step: inner cause"
             );
             Ok(())
@@ -9396,7 +9766,7 @@ mod tests {
 
         /// A packet that ended a silence says so on its way to the pipeline.
         #[test]
-        fn a_packet_that_ends_a_silence_reports_the_resumption() {
+        fn a_packet_that_ends_a_silence_reports_the_resumption() -> Result<(), TestError> {
             let (tx, _rx) = crate::capture::channel::packet_channel(16);
             let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
                 let flow = forward_received(
@@ -9417,6 +9787,7 @@ mod tests {
                 logs.contains("HEP listener on 127.0.0.1:9060: traffic resumed after 31s idle"),
                 "{logs}"
             );
+            Ok(())
         }
     }
 }

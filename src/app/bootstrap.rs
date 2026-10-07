@@ -5396,6 +5396,7 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The forwarder draws no TUI, so it logs at `info` by default like a
     /// `-N` run: its delivery lines are what an operator reads. `-q` still
@@ -5426,7 +5427,7 @@ mod tests {
     /// PERMIT rather than a flag check: `plan` warns, and this is the arm that
     /// makes the warning true.
     #[test]
-    fn a_file_run_never_asks_the_relay() {
+    fn a_file_run_never_asks_the_relay() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.rtp_args.rtpengine_control = Some("127.0.0.1:22222".to_owned());
         let file = CaptureSource::File {
@@ -5441,12 +5442,13 @@ mod tests {
              flag was set"
         );
         assert!(control.snapshot.links.is_empty());
+        Ok(())
     }
 
     /// No flag, no snapshot -- and `taken_at` stays `None` rather than
     /// recording a moment nothing happened at.
     #[test]
-    fn no_flag_means_the_relay_was_never_asked() {
+    fn no_flag_means_the_relay_was_never_asked() -> Result<(), TestError> {
         let cli = base_cli();
         let live = CaptureSource::Live {
             device: "eth0".to_owned(),
@@ -5456,12 +5458,13 @@ mod tests {
 
         assert_eq!(control.snapshot.taken_at, None);
         assert!(control.snapshot.links.is_empty());
+        Ok(())
     }
 
     /// An address that is not an address asks nothing, and says so, rather
     /// than being read as a relay that holds no calls.
     #[test]
-    fn an_unparseable_control_address_asks_nothing() {
+    fn an_unparseable_control_address_asks_nothing() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.rtp_args.rtpengine_control = Some("not-an-address".to_owned());
         let live = CaptureSource::Live {
@@ -5474,6 +5477,7 @@ mod tests {
             control.snapshot.taken_at, None,
             "nothing was asked, so nothing may claim a relay answered"
         );
+        Ok(())
     }
 
     fn base_cli() -> Cli {
@@ -5490,80 +5494,92 @@ mod tests {
     /// conversion belongs where the string is read, so the one comparison the
     /// capture loop makes cannot carry a second opinion about the unit.
     #[test]
-    fn parse_autostop_duration_and_filesize() {
-        let (dur, size) = parse_autostop("duration:30").unwrap();
+    fn parse_autostop_duration_and_filesize() -> Result<(), TestError> {
+        let (dur, size) = parse_autostop("duration:30")?;
         assert_eq!(dur, Some(std::time::Duration::from_secs(30)));
         assert_eq!(size, None);
 
-        let (dur, size) = parse_autostop("filesize:100").unwrap();
+        let (dur, size) = parse_autostop("filesize:100")?;
         assert_eq!(dur, None);
         assert_eq!(size, Some(104_857_600));
+        Ok(())
     }
 
     /// Missing colon, non-numeric value, and unknown key are rejected.
     #[test]
-    fn parse_autostop_errors() {
+    fn parse_autostop_errors() -> Result<(), TestError> {
         assert!(parse_autostop("duration").is_err()); // missing ':'
         assert!(parse_autostop("duration:notanumber").is_err());
         assert!(parse_autostop("unknown:10").is_err()); // unknown key
+        Ok(())
     }
 
     /// An autostop threshold of 0 is rejected: `duration:0` stops the capture
     /// immediately and `filesize:0` after zero bytes, so it captures nothing.
     #[test]
-    fn parse_autostop_rejects_zero() {
+    fn parse_autostop_rejects_zero() -> Result<(), TestError> {
         assert!(parse_autostop("duration:0").is_err());
         assert!(parse_autostop("filesize:0").is_err());
         assert!(parse_autostop("duration:30").is_ok());
         assert!(parse_autostop("filesize:100").is_ok());
+        Ok(())
     }
 
     // ── build_filter_expr ──────────────────────────────────────────────
 
     /// An explicit `--filter` expression compiles into a filter.
     #[test]
-    fn build_filter_expr_explicit_flag_wins() {
+    fn build_filter_expr_explicit_flag_wins() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.matching_args.filter = Some("retransmits > 0".to_string());
         let config = Config::default();
-        assert!(build_filter_expr(&cli, &config).unwrap().is_some());
+        assert!(
+            build_filter_expr(&cli, &config)
+                .map_err(|e| format!("{e:?}"))?
+                .is_some()
+        );
+        Ok(())
     }
 
     /// A malformed `--filter` expression yields an `Err` (exit code 2),
     /// NOT a process exit — so `plan()` stays testable and composable.
     #[test]
-    fn build_filter_expr_invalid_filter_returns_err() {
+    fn build_filter_expr_invalid_filter_returns_err() -> Result<(), TestError> {
         let mut cli = base_cli();
         // `from.user ==` is the documented invalid-DSL example.
         cli.matching_args.filter = Some("from.user ==".to_string());
         let err = build_filter_expr(&cli, &Config::default())
-            .expect_err("a malformed --filter must return Err, not exit");
+            .err()
+            .ok_or("a malformed --filter must return Err, not exit")?;
         assert_eq!(err.exit_code, 2);
         assert!(
             err.message.contains("Invalid --filter expression"),
             "got: {}",
             err.message
         );
+        Ok(())
     }
 
     /// A malformed config-file filter expression yields an `Err`, not an exit.
     #[test]
-    fn build_filter_expr_invalid_config_expr_returns_err() {
+    fn build_filter_expr_invalid_config_expr_returns_err() -> Result<(), TestError> {
         let mut config = Config::default();
         config.filter.expression = Some("from.user ==".to_string());
         let err = build_filter_expr(&base_cli(), &config)
-            .expect_err("a malformed config filter must return Err, not exit");
+            .err()
+            .ok_or("a malformed config filter must return Err, not exit")?;
         assert_eq!(err.exit_code, 2);
         assert!(
             err.message.contains("Invalid config filter expression"),
             "got: {}",
             err.message
         );
+        Ok(())
     }
 
     /// Each diagnostic alias flag builds a filter; multiple flags OR together.
     #[test]
-    fn build_filter_expr_diagnostic_aliases() {
+    fn build_filter_expr_diagnostic_aliases() -> Result<(), TestError> {
         let config = Config::default();
         // Each diagnostic flag on its own produces a filter.
         let flags: [fn(&mut Cli); 5] = [
@@ -5576,108 +5592,130 @@ mod tests {
         for set in flags {
             let mut cli = base_cli();
             set(&mut cli);
-            assert!(build_filter_expr(&cli, &config).unwrap().is_some());
+            assert!(
+                build_filter_expr(&cli, &config)
+                    .map_err(|e| format!("{e:?}"))?
+                    .is_some()
+            );
         }
         // Multiple flags combine with OR.
         let mut cli = base_cli();
         cli.alias_args.problems = true;
         cli.alias_args.one_way = true;
-        assert!(build_filter_expr(&cli, &config).unwrap().is_some());
+        assert!(
+            build_filter_expr(&cli, &config)
+                .map_err(|e| format!("{e:?}"))?
+                .is_some()
+        );
+        Ok(())
     }
 
     /// No sources → `None`; a config-file expression is the fallback source.
     #[test]
-    fn build_filter_expr_config_fallback_and_none() {
+    fn build_filter_expr_config_fallback_and_none() -> Result<(), TestError> {
         // No flags, no config -> None.
         assert!(
             build_filter_expr(&base_cli(), &Config::default())
-                .unwrap()
+                .map_err(|e| format!("{e:?}"))?
                 .is_none()
         );
 
         // Config fallback expression is used when no CLI flag is set.
         let mut config = Config::default();
         config.filter.expression = Some("retransmits > 0".to_string());
-        assert!(build_filter_expr(&base_cli(), &config).unwrap().is_some());
+        assert!(
+            build_filter_expr(&base_cli(), &config)
+                .map_err(|e| format!("{e:?}"))?
+                .is_some()
+        );
+        Ok(())
     }
 
     // ── build_capture_config ───────────────────────────────────────────
 
     /// With no flags or config, the hard-coded capture defaults apply.
     #[test]
-    fn build_capture_config_defaults() {
-        let cc = build_capture_config(&base_cli(), &Config::default()).unwrap();
+    fn build_capture_config_defaults() -> Result<(), TestError> {
+        let cc =
+            build_capture_config(&base_cli(), &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert_eq!(cc.snaplen, 65535);
         assert_eq!(cc.buffer_mb, crate::capture::DEFAULT_BUFFER_MB);
         assert_eq!(cc.bpf_filter, None);
         assert_eq!(cc.count, None);
         assert_eq!(cc.duration, None);
         assert!(!cc.replay);
+        Ok(())
     }
 
     /// Promiscuous mode defaults to on.
     #[test]
-    fn build_capture_config_promisc_default_on() {
-        let cc = build_capture_config(&base_cli(), &Config::default()).unwrap();
+    fn build_capture_config_promisc_default_on() -> Result<(), TestError> {
+        let cc =
+            build_capture_config(&base_cli(), &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert!(cc.promisc, "promiscuous mode should default to on");
+        Ok(())
     }
 
     /// `--no-promisc` disables promiscuous mode.
     #[test]
-    fn build_capture_config_no_promisc_flag_disables() {
+    fn build_capture_config_no_promisc_flag_disables() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.no_promisc = true;
-        let cc = build_capture_config(&cli, &Config::default()).unwrap();
+        let cc = build_capture_config(&cli, &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert!(!cc.promisc, "--no-promisc should disable promiscuous mode");
+        Ok(())
     }
 
     /// `[capture] promisc = false` is honored when the CLI flag is unset.
     #[test]
-    fn build_capture_config_promisc_config_fallback() {
+    fn build_capture_config_promisc_config_fallback() -> Result<(), TestError> {
         let mut config = Config::default();
         config.capture.promisc = Some(false);
         // CLI leaves --no-promisc unset -> config value wins.
-        let cc = build_capture_config(&base_cli(), &config).unwrap();
+        let cc = build_capture_config(&base_cli(), &config).map_err(|e| format!("{e:?}"))?;
         assert!(
             !cc.promisc,
             "[capture] promisc=false should disable promisc"
         );
+        Ok(())
     }
 
     /// `--no-promisc` wins over `[capture] promisc = true`.
     #[test]
-    fn build_capture_config_no_promisc_flag_overrides_config() {
+    fn build_capture_config_no_promisc_flag_overrides_config() -> Result<(), TestError> {
         let mut config = Config::default();
         config.capture.promisc = Some(true);
         let mut cli = base_cli();
         cli.capture_args.no_promisc = true;
-        let cc = build_capture_config(&cli, &config).unwrap();
+        let cc = build_capture_config(&cli, &config).map_err(|e| format!("{e:?}"))?;
         assert!(
             !cc.promisc,
             "--no-promisc must override [capture] promisc=true"
         );
+        Ok(())
     }
 
     /// CLI snaplen/buffer/count/replay/positional-BPF override the defaults.
     #[test]
-    fn build_capture_config_cli_overrides() {
+    fn build_capture_config_cli_overrides() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.snaplen = Some(1500);
         cli.capture_args.buffer = Some(8);
         cli.capture_args.count = Some(42);
         cli.capture_args.replay = true;
         cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
-        let cc = build_capture_config(&cli, &Config::default()).unwrap();
+        let cc = build_capture_config(&cli, &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert_eq!(cc.snaplen, 1500);
         assert_eq!(cc.buffer_mb, 8);
         assert_eq!(cc.count, Some(42));
         assert!(cc.replay);
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp port 5060"));
+        Ok(())
     }
 
     /// `--bpf-file` contents (trimmed) win over a positional BPF filter.
     #[test]
-    fn build_capture_config_bpf_file_takes_precedence() {
+    fn build_capture_config_bpf_file_takes_precedence() -> Result<(), TestError> {
         // A UNIQUE directory, not a fixed name under the shared temp dir. This
         // test used to write `$TMPDIR/sipnab_test_bpf_filter.txt` and remove it
         // on the way out, so two concurrent runs of this binary raced: one
@@ -5687,27 +5725,28 @@ mod tests {
         // harness twice at once -- 3170 passed, this one failed. It matters
         // beyond a developer's own machine, because CI runs on a self-hosted
         // runner that shares /tmp with whatever else is building there.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bpf_filter.txt");
-        std::fs::write(&path, "  udp and port 5060\n").unwrap();
+        std::fs::write(&path, "  udp and port 5060\n")?;
         let mut cli = base_cli();
         cli.capture_args.bpf_file = Some(path.to_string_lossy().into_owned());
         // positional filter present but --bpf-file wins
         cli.bpf_filter = vec!["tcp".to_string()];
-        let cc = build_capture_config(&cli, &Config::default()).unwrap();
+        let cc = build_capture_config(&cli, &Config::default()).map_err(|e| format!("{e:?}"))?;
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp and port 5060"));
         // `dir` cleans itself up on drop; no manual remove to race on.
+        Ok(())
     }
 
     /// `[capture] bpf_filter` is the capture filter when the command line names
     /// none, and both command-line forms replace it (issue #343). Precedence is
     /// `--bpf-file`, then the positional filter, then the key.
     #[test]
-    fn build_capture_config_bpf_filter_key_is_the_lowest_source() {
+    fn build_capture_config_bpf_filter_key_is_the_lowest_source() -> Result<(), TestError> {
         let mut config = Config::default();
         config.capture.bpf_filter = Some("udp dst port 9063".to_string());
 
-        let cc = build_capture_config(&base_cli(), &config).unwrap();
+        let cc = build_capture_config(&base_cli(), &config).map_err(|e| format!("{e:?}"))?;
         assert_eq!(
             cc.bpf_filter.as_deref(),
             Some("udp dst port 9063"),
@@ -5720,35 +5759,36 @@ mod tests {
 
         let mut cli = base_cli();
         cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
-        let cc = build_capture_config(&cli, &config).unwrap();
+        let cc = build_capture_config(&cli, &config).map_err(|e| format!("{e:?}"))?;
         assert_eq!(
             cc.bpf_filter.as_deref(),
             Some("udp port 5060"),
             "the positional filter must outrank the key"
         );
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("f.bpf");
-        std::fs::write(&path, "tcp port 5061\n").unwrap();
+        std::fs::write(&path, "tcp port 5061\n")?;
         let mut cli = base_cli();
         cli.capture_args.bpf_file = Some(path.to_string_lossy().into_owned());
-        let cc = build_capture_config(&cli, &config).unwrap();
+        let cc = build_capture_config(&cli, &config).map_err(|e| format!("{e:?}"))?;
         assert_eq!(
             cc.bpf_filter.as_deref(),
             Some("tcp port 5061"),
             "--bpf-file must outrank the key"
         );
+        Ok(())
     }
 
     /// Only a filter typed after the options is marked positional: it alone
     /// gets the match-expression hint when it fails to compile.
     #[test]
-    fn only_the_positional_filter_is_marked_positional() {
+    fn only_the_positional_filter_is_marked_positional() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.bpf_filter = vec!["INVITE".to_string()];
         assert!(
             build_capture_config(&cli, &Config::default())
-                .unwrap()
+                .map_err(|e| format!("{e:?}"))?
                 .bpf_filter_positional
         );
 
@@ -5756,50 +5796,54 @@ mod tests {
         config.capture.bpf_filter = Some("udp".to_string());
         assert!(
             !build_capture_config(&base_cli(), &config)
-                .unwrap()
+                .map_err(|e| format!("{e:?}"))?
                 .bpf_filter_positional
         );
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f = dir.path().join("f.bpf");
-        std::fs::write(&f, "udp\n").unwrap();
+        std::fs::write(&f, "udp\n")?;
         let mut cli = base_cli();
         cli.capture_args.bpf_file = Some(f.to_string_lossy().into_owned());
         cli.bpf_filter = vec!["tcp".to_string()];
         assert!(
             !build_capture_config(&cli, &Config::default())
-                .unwrap()
+                .map_err(|e| format!("{e:?}"))?
                 .bpf_filter_positional,
             "--bpf-file wins, so the positional words are not the filter"
         );
+        Ok(())
     }
 
     /// Config-file snaplen/buffer values apply when the CLI leaves them unset.
     #[test]
-    fn build_capture_config_config_fallback() {
+    fn build_capture_config_config_fallback() -> Result<(), TestError> {
         let mut config = Config::default();
         config.capture.snaplen = Some(256);
         config.capture.buffer = Some(16);
         // CLI leaves snaplen/buffer unset -> config values used.
-        let cc = build_capture_config(&base_cli(), &config).unwrap();
+        let cc = build_capture_config(&base_cli(), &config).map_err(|e| format!("{e:?}"))?;
         assert_eq!(cc.snaplen, 256);
         assert_eq!(cc.buffer_mb, 16);
+        Ok(())
     }
 
     /// A malformed `--duration` yields an `Err` (exit code 2), not a process
     /// exit — the plan must stay composable and testable.
     #[test]
-    fn build_capture_config_bad_duration_returns_err() {
+    fn build_capture_config_bad_duration_returns_err() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.duration = Some("abc".to_string());
         let err = build_capture_config(&cli, &Config::default())
-            .expect_err("a malformed --duration must return Err, not exit");
+            .err()
+            .ok_or("a malformed --duration must return Err, not exit")?;
         assert_eq!(err.exit_code, 2);
         assert!(
             err.message.contains("Invalid --duration"),
             "got: {}",
             err.message
         );
+        Ok(())
     }
 
     // ── immediate mode / ring format (CT7) ─────────────────────────────
@@ -5813,37 +5857,40 @@ mod tests {
     /// Only the interactive TUI keeps immediate mode; every headless mode
     /// trades it for TPACKET_V3's snaplen-independent ring.
     #[test]
-    fn immediate_mode_is_the_tui_and_nothing_else() {
+    fn immediate_mode_is_the_tui_and_nothing_else() -> Result<(), TestError> {
         assert!(immediate_mode_for(&RunMode::Tui));
         assert!(!immediate_mode_for(&RunMode::Batch));
         assert!(!immediate_mode_for(&RunMode::CoresFile));
+        Ok(())
     }
 
     /// A headless live capture (`-N -d ...`) must reach the capture thread with
     /// immediate mode OFF — the whole point of the change, since that is what
     /// lets libpcap choose TPACKET_V3.
     #[test]
-    fn a_capture_source_limit_below_the_hep_senders_it_must_hold_is_refused() {
+    fn a_capture_source_limit_below_the_hep_senders_it_must_hold_is_refused()
+    -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.hep_args.hep_listen = Some("127.0.0.1:0".to_string());
         cli.limits_args.max_capture_sources = Some(100);
         let text = match plan(&cli, &Config::default()) {
             Err(e) => e.message,
-            Ok(_) => panic!("100 cannot hold 4096 HEP senders"),
+            Ok(_) => return Err("100 cannot hold 4096 HEP senders".into()),
         };
         assert!(
             text.contains("max_capture_sources") && text.contains("max_tracked_peers"),
             "the refusal names both settings: {text}"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unknown_mcp_tool_name_refuses_the_run_naming_it() {
+    fn an_unknown_mcp_tool_name_refuses_the_run_naming_it() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.mcp_args.mcp_tools = Some("core,minimal".to_string());
         let e = match plan(&cli, &Config::default()) {
             Err(e) => e,
-            Ok(_) => panic!("an unknown tool name must refuse the run"),
+            Ok(_) => return Err("an unknown tool name must refuse the run".into()),
         };
         assert_eq!(e.exit_code, 2);
         assert!(
@@ -5853,10 +5900,11 @@ mod tests {
         );
         cli.mcp_args.mcp_tools = Some("core,relay".to_string());
         assert!(plan(&cli, &Config::default()).is_ok(), "known names run");
+        Ok(())
     }
 
     #[test]
-    fn a_malformed_config_bundle_refuses_the_run_even_unused() {
+    fn a_malformed_config_bundle_refuses_the_run_even_unused() -> Result<(), TestError> {
         let cli = base_cli();
         let mut config = Config::default();
         config
@@ -5865,22 +5913,26 @@ mod tests {
             .insert("mine".into(), vec!["nope".into()]);
         let e = match plan(&cli, &config) {
             Err(e) => e,
-            Ok(_) => panic!("a bundle naming an unknown tool must refuse the run"),
+            Ok(_) => return Err("a bundle naming an unknown tool must refuse the run".into()),
         };
         assert!(e.message.contains("[mcp.bundles] mine"), "{}", e.message);
+        Ok(())
     }
 
     #[test]
-    fn a_capture_source_limit_that_covers_the_run_is_accepted_and_carried() {
+    fn a_capture_source_limit_that_covers_the_run_is_accepted_and_carried() -> Result<(), TestError>
+    {
         let mut cli = base_cli();
         cli.hep_args.hep_listen = Some("127.0.0.1:0".to_string());
         cli.limits_args.max_capture_sources = Some(5_000);
-        let p = plan(&cli, &Config::default()).expect("5000 holds 4096 senders");
+        let p = plan(&cli, &Config::default())
+            .map_err(|e| format!("5000 holds 4096 senders: {e:?}"))?;
         assert_eq!(p.max_capture_sources, 5_000);
+        Ok(())
     }
 
     #[test]
-    fn without_hep_the_limit_must_cover_the_inputs() {
+    fn without_hep_the_limit_must_cover_the_inputs() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.input = vec![
             "tests/fixtures/sip_call.pcap".into(),
@@ -5892,29 +5944,33 @@ mod tests {
             "one slot cannot hold two input files"
         );
         cli.limits_args.max_capture_sources = Some(2);
-        let p = plan(&cli, &Config::default()).expect("two slots hold two files");
+        let p = plan(&cli, &Config::default())
+            .map_err(|e| format!("two slots hold two files: {e:?}"))?;
         assert_eq!(p.max_capture_sources, 2);
+        Ok(())
     }
 
     #[test]
-    fn the_default_limit_is_carried_when_nothing_sets_it() {
-        let p = plan(&base_cli(), &Config::default()).expect("plan");
+    fn the_default_limit_is_carried_when_nothing_sets_it() -> Result<(), TestError> {
+        let p = plan(&base_cli(), &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             p.max_capture_sources,
             crate::capture::packet::DEFAULT_MAX_CAPTURE_SOURCES
         );
+        Ok(())
     }
 
     #[test]
-    fn plan_turns_immediate_mode_off_for_headless_capture() {
+    fn plan_turns_immediate_mode_off_for_headless_capture() -> Result<(), TestError> {
         let mut cli = base_cli(); // -N
         cli.capture_args.device = Some("eth0".to_string());
-        let p = plan(&cli, &Config::default()).expect("plan must succeed");
+        let p = plan(&cli, &Config::default()).map_err(|e| format!("plan must succeed: {e:?}"))?;
         assert!(matches!(p.mode, RunMode::Batch));
         assert!(
             !p.capture_config.immediate_mode,
             "a headless capture must let libpcap pick TPACKET_V3"
         );
+        Ok(())
     }
 
     /// The TUI keeps immediate mode: a person is watching messages land, and a
@@ -5922,32 +5978,35 @@ mod tests {
     /// interactive tool feel broken.
     #[cfg(feature = "tui")]
     #[test]
-    fn plan_keeps_immediate_mode_for_the_tui() {
+    fn plan_keeps_immediate_mode_for_the_tui() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab"]); // no -N: interactive
         cli.capture_args.device = Some("eth0".to_string());
-        let p = plan(&cli, &Config::default()).expect("plan must succeed");
+        let p = plan(&cli, &Config::default()).map_err(|e| format!("plan must succeed: {e:?}"))?;
         assert!(matches!(p.mode, RunMode::Tui));
         assert!(
             p.capture_config.immediate_mode,
             "the interactive path must keep per-packet delivery"
         );
+        Ok(())
     }
 
     /// Whatever the feature set, the flag on the plan always agrees with the
     /// mode on the plan — the two can never drift apart.
     #[test]
-    fn plan_immediate_mode_always_matches_the_run_mode() {
+    fn plan_immediate_mode_always_matches_the_run_mode() -> Result<(), TestError> {
         for headless in [true, false] {
             let mut cli = Cli::parse_from_args(["sipnab"]);
             cli.mode_args.no_tui = headless;
             cli.capture_args.device = Some("eth0".to_string());
-            let p = plan(&cli, &Config::default()).expect("plan must succeed");
+            let p =
+                plan(&cli, &Config::default()).map_err(|e| format!("plan must succeed: {e:?}"))?;
             assert_eq!(
                 p.capture_config.immediate_mode,
                 matches!(p.mode, RunMode::Tui),
                 "immediate mode must follow the run mode exactly (headless={headless})"
             );
         }
+        Ok(())
     }
 
     // ── --cores on a source that cannot use it (G6) ────────────────────
@@ -5955,23 +6014,25 @@ mod tests {
     /// The honored case says nothing: `--cores N -I file` is exactly what the
     /// parallel reader is for.
     #[test]
-    fn cores_warning_silent_when_cores_are_actually_used() {
+    fn cores_warning_silent_when_cores_are_actually_used() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 8;
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         assert!(cores_ignored_warning(&cli).is_none());
+        Ok(())
     }
 
     /// `--cores 1` is the default and means nothing was asked for, on any
     /// source — warning about it would be noise on every live run.
     #[test]
-    fn cores_warning_silent_at_the_default_core_count() {
+    fn cores_warning_silent_at_the_default_core_count() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 1;
         cli.capture_args.device = Some("eth0".to_string());
         assert!(cores_ignored_warning(&cli).is_none());
         cli.capture_args.multi_device = true;
         assert!(cores_ignored_warning(&cli).is_none());
+        Ok(())
     }
 
     /// The original defect was `--cores 8 -d eth0` running single-threaded IN
@@ -5986,7 +6047,7 @@ mod tests {
     /// validation does not, so it can say "one socket, because X" where this
     /// could only ever have said "ignored".
     #[test]
-    fn cores_on_a_live_device_is_not_reported_as_ignored() {
+    fn cores_on_a_live_device_is_not_reported_as_ignored() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 8;
         cli.capture_args.device = Some("eth0".to_string());
@@ -5995,29 +6056,32 @@ mod tests {
             None,
             "live --cores fans the interface out; calling it ignored is false"
         );
+        Ok(())
     }
 
     /// No source at all is still a live run — the device is auto-detected — so
     /// it fans out for the same reason a named device does, and is not
     /// reported as ignored either.
     #[test]
-    fn cores_on_auto_detected_capture_is_not_reported_as_ignored() {
+    fn cores_on_auto_detected_capture_is_not_reported_as_ignored() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 4;
         assert_eq!(cores_ignored_warning(&cli), None);
+        Ok(())
     }
 
     /// `--multi-device` bypasses the parallel reader even with `-I` present,
     /// because the run-mode test excludes it. A warning that keyed only on
     /// "no input" would miss this and leave the same silence behind.
     #[test]
-    fn cores_warning_fires_on_multi_device_even_with_input() {
+    fn cores_warning_fires_on_multi_device_even_with_input() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 4;
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         cli.capture_args.multi_device = true;
-        let msg = cores_ignored_warning(&cli).expect("--multi-device must be reported");
+        let msg = cores_ignored_warning(&cli).ok_or("--multi-device must be reported")?;
         assert!(msg.contains("--multi-device"), "got: {msg}");
+        Ok(())
     }
 
     /// The warning fires exactly when `--multi-device` is set, for every
@@ -6031,7 +6095,7 @@ mod tests {
     /// that genuinely discards it is `--multi-device`, which already opens one
     /// capture per interface.
     #[test]
-    fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it() {
+    fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it() -> Result<(), TestError> {
         for (has_input, multi_device) in
             [(false, false), (false, true), (true, false), (true, true)]
         {
@@ -6051,6 +6115,7 @@ mod tests {
                  cover every case that does not honor --cores, and no other"
             );
         }
+        Ok(())
     }
 
     /// `--metrics` with `--cores N -I file` must say it will not be served.
@@ -6060,18 +6125,19 @@ mod tests {
     /// refused, and the only symptom is a dashboard that never fills in.
     #[cfg(feature = "metrics")]
     #[test]
-    fn metrics_warns_when_the_parallel_path_will_not_serve_it() {
+    fn metrics_warns_when_the_parallel_path_will_not_serve_it() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 4;
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         cli.listener_args.metrics = Some("127.0.0.1:9090".to_string());
         let msg = metrics_ignored_on_cores_warning(&cli)
-            .expect("--metrics on the parallel path must be reported");
+            .ok_or("--metrics on the parallel path must be reported")?;
         assert!(
             msg.contains("--metrics") && msg.contains("--cores"),
             "the warning must name both flags so the operator knows what to \
              drop: {msg}"
         );
+        Ok(())
     }
 
     /// Silent whenever the endpoint WILL be served, or was never asked for.
@@ -6081,7 +6147,7 @@ mod tests {
     /// it, and an ignored warning is the same as no warning.
     #[cfg(feature = "metrics")]
     #[test]
-    fn metrics_warning_is_silent_wherever_metrics_are_actually_served() {
+    fn metrics_warning_is_silent_wherever_metrics_are_actually_served() -> Result<(), TestError> {
         // Asked for, and the single-threaded headless path serves it.
         let mut served = base_cli();
         served.capture_args.input = vec!["capture.pcap".to_string()];
@@ -6110,6 +6176,7 @@ mod tests {
             metrics_ignored_on_cores_warning(&live).is_none(),
             "a live run falls back to one core and starts the metrics server"
         );
+        Ok(())
     }
 
     // ── a scanner pattern nothing reads ────────────────────────────────
@@ -6129,23 +6196,24 @@ mod tests {
     /// The symptom is silence, which is exactly what a clean network looks
     /// like -- the failure mode this file already refuses one axis of.
     #[test]
-    fn a_scanner_pattern_no_detector_will_read_is_refused() {
+    fn a_scanner_pattern_no_detector_will_read_is_refused() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
 
         let msg = scanner_pattern_unread_refusal(&cli, &Config::default())
-            .expect("a pattern no detector reads must be reported, not ignored");
+            .ok_or("a pattern no detector reads must be reported, not ignored")?;
 
         assert!(
             msg.contains("--kill-ua") && msg.contains("--kill-scanner"),
             "the message must name what the operator typed AND the remedy, \
              since the remedy is a different flag:\n{msg}"
         );
+        Ok(())
     }
 
     /// Armed from the command line: nothing to report.
     #[test]
-    fn a_scanner_pattern_is_fine_once_the_detector_is_armed() {
+    fn a_scanner_pattern_is_fine_once_the_detector_is_armed() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--kill-scanner"]);
         cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
 
@@ -6153,13 +6221,14 @@ mod tests {
             scanner_pattern_unread_refusal(&cli, &Config::default()).is_none(),
             "the detector is armed, so the pattern reaches it"
         );
+        Ok(())
     }
 
     /// Armed from the CONFIG FILE. This is why the fix is not clap's
     /// `requires`: clap sees command-line arguments and cannot see
     /// `[security] kill_scanner = true`, so it would refuse a run that works.
     #[test]
-    fn a_scanner_pattern_is_fine_when_the_config_file_arms_the_detector() {
+    fn a_scanner_pattern_is_fine_when_the_config_file_arms_the_detector() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
         cli.security_args.kill_ua = Some("friendly-scanner".to_owned());
         let mut config = Config::default();
@@ -6169,6 +6238,7 @@ mod tests {
             scanner_pattern_unread_refusal(&cli, &config).is_none(),
             "`[security] kill_scanner = true` arms the same detector"
         );
+        Ok(())
     }
 
     /// The kill worker is wanted by every spelling of "answer scanners": the
@@ -6179,7 +6249,8 @@ mod tests {
     /// worker that could never spoof even with `CAP_NET_RAW` in hand: the key
     /// did less than the flag it stands for.
     #[test]
-    fn every_spelling_of_the_kill_defense_wants_the_worker_and_nothing_else_does() {
+    fn every_spelling_of_the_kill_defense_wants_the_worker_and_nothing_else_does()
+    -> Result<(), TestError> {
         let plain = Cli::parse_from_args(["sipnab", "-N"]);
         assert!(
             !kill_worker_wanted(&plain, &Config::default()),
@@ -6203,6 +6274,7 @@ mod tests {
         );
         config.security.kill_scanner = Some(false);
         assert!(!kill_worker_wanted(&plain, &config));
+        Ok(())
     }
 
     // ── detection flags on a mode that builds no detector ──────────────
@@ -6217,7 +6289,7 @@ mod tests {
     /// the refusal used to send the operator to `-N`. Only the `--cores`
     /// parallel reader still builds no detector, so only it still refuses.
     #[test]
-    fn detection_flags_now_arm_in_the_watching_tui() {
+    fn detection_flags_now_arm_in_the_watching_tui() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.mode_args.no_tui = false;
         cli.capture_args.device = Some("eth0".to_string());
@@ -6229,6 +6301,7 @@ mod tests {
             "the TUI thread runs these detectors now; refusing them would send \
              an operator to -N for findings the TUI already shows"
         );
+        Ok(())
     }
 
     /// The operator-facing effect of wiring detectors into the TUI: a watching
@@ -6237,16 +6310,17 @@ mod tests {
     /// what an operator hits, so this asserts the plan.
     #[cfg(feature = "tui")]
     #[test]
-    fn a_watching_tui_run_with_detection_flags_plans() {
+    fn a_watching_tui_run_with_detection_flags_plans() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab"]); // no -N: interactive
         cli.capture_args.device = Some("eth0".to_string());
         cli.security_args.fraud_detect = true;
         let p = plan(&cli, &Config::default())
-            .expect("a watching run that detects must start, not exit 2");
+            .map_err(|e| format!("a watching run that detects must start, not exit 2: {e:?}"))?;
         assert!(
             matches!(p.mode, RunMode::Tui),
             "anti-vacuity: this must be the TUI mode, the one that used to refuse"
         );
+        Ok(())
     }
 
     /// The parallel offline reader is the same hole, reached a different way.
@@ -6257,17 +6331,18 @@ mod tests {
     /// the `--cores`/`--metrics` combination beside it, with a security answer
     /// instead of a dashboard.
     #[test]
-    fn detection_flags_are_refused_on_the_parallel_offline_reader_too() {
+    fn detection_flags_are_refused_on_the_parallel_offline_reader_too() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.limits_args.cores = 8;
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         cli.security_args.kill_scanner = true;
         let msg = security_detection_unarmed_refusal(&cli, &Config::default(), &RunMode::CoresFile)
-            .expect("detection flags on the parallel path must be reported");
+            .ok_or("detection flags on the parallel path must be reported")?;
         assert!(
             msg.contains("--kill-scanner") && msg.contains("--cores"),
             "the warning must name the flag and the reason it is inert: {msg}"
         );
+        Ok(())
     }
 
     /// Silent wherever the detectors actually run, and wherever none was asked
@@ -6277,7 +6352,7 @@ mod tests {
     /// run which then detects normally teaches operators to ignore it, and an
     /// ignored security warning is worse than none.
     #[test]
-    fn detection_refusal_is_silent_where_the_detectors_actually_run() {
+    fn detection_refusal_is_silent_where_the_detectors_actually_run() -> Result<(), TestError> {
         let mut headless = base_cli();
         headless.capture_args.device = Some("eth0".to_string());
         headless.security_args.kill_scanner = true;
@@ -6298,6 +6373,7 @@ mod tests {
                 .is_none(),
             "nothing was asked for, so nothing is being ignored"
         );
+        Ok(())
     }
 
     /// A detector armed from the CONFIG FILE is seen just as a flag is.
@@ -6309,15 +6385,16 @@ mod tests {
     /// `--cores` reader — the one mode that still builds no detector — it is
     /// refused like a flag would be.
     #[test]
-    fn detection_refusal_reads_the_config_file_too() {
+    fn detection_refusal_reads_the_config_file_too() -> Result<(), TestError> {
         let mut config = Config::default();
         config.security.kill_scanner = Some(true);
         let mut cli = base_cli();
         cli.limits_args.cores = 8;
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         let msg = security_detection_unarmed_refusal(&cli, &config, &RunMode::CoresFile)
-            .expect("a config-armed detector must be reported like a flag-armed one");
+            .ok_or("a config-armed detector must be reported like a flag-armed one")?;
         assert!(msg.contains("--kill-scanner"), "{msg}");
+        Ok(())
     }
 
     /// The warning must stop being true before it stops being printed.
@@ -6338,7 +6415,7 @@ mod tests {
     /// operator scripting sipnab can tell "you asked for something impossible"
     /// apart from "the capture failed".
     #[test]
-    fn plan_refuses_a_run_whose_detection_flags_would_arm_nothing() {
+    fn plan_refuses_a_run_whose_detection_flags_would_arm_nothing() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.input = vec!["tests/fixtures/sip_call.pcap".to_string()];
         cli.mode_args.no_tui = true;
@@ -6347,7 +6424,7 @@ mod tests {
 
         let err = plan(&cli, &Config::default())
             .err()
-            .expect("a run that would detect nothing must not start");
+            .ok_or("a run that would detect nothing must not start")?;
         assert_eq!(
             err.exit_code, 2,
             "refusals of an impossible request exit 2, matching the other \
@@ -6370,6 +6447,7 @@ mod tests {
             "headless detection must still plan — this refusal is scoped to the \
              modes that build no detector"
         );
+        Ok(())
     }
 
     /// The refusal claims a mode builds no detector, and that claim is only
@@ -6378,11 +6456,11 @@ mod tests {
     /// offline reader is the last mode this covers. Wire a detector into it and
     /// this fails, the moment the refusal turns into a lie and has to go.
     #[test]
-    fn the_modes_this_refuses_still_build_no_detector() {
+    fn the_modes_this_refuses_still_build_no_detector() -> Result<(), TestError> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         for rel in ["src/parallel.rs"] {
-            let full = std::fs::read_to_string(root.join(rel))
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"));
+            let full =
+                std::fs::read_to_string(root.join(rel)).map_err(|e| format!("read {rel}: {e}"))?;
             // Code only. A file is allowed to EXPLAIN that it builds no
             // detector, and a gate that reads prose reports whatever the prose
             // says — which is how the sibling band gate came to be silenced by
@@ -6407,6 +6485,7 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     // ── truncating --snaplen feeding -O (CT3) ──────────────────────────
@@ -6416,19 +6495,20 @@ mod tests {
     /// must name the snaplen, the `-O` output it feeds, and that the analysis
     /// itself is intact — only the re-emitted file is truncated.
     #[test]
-    fn snaplen_truncation_warning_fires_on_live_capture_writing_output() {
+    fn snaplen_truncation_warning_fires_on_live_capture_writing_output() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.capture_args.snaplen = Some(262);
         cli.capture_args.output = Some("out.pcap".to_string());
         let msg = snaplen_truncation_warning(&cli, &Config::default())
-            .expect("a truncating snaplen feeding -O must be reported");
+            .ok_or("a truncating snaplen feeding -O must be reported")?;
         assert!(msg.contains("262"), "names the snaplen: {msg}");
         assert!(msg.contains("-O"), "names the output it feeds: {msg}");
         assert!(
             msg.contains("analysis is unaffected"),
             "says the analysis is intact, only the file is short: {msg}"
         );
+        Ok(())
     }
 
     /// A small snaplen with no `-O` truncates only the in-memory capture, which
@@ -6436,17 +6516,18 @@ mod tests {
     /// warn about. A warning here would fire on every deliberate signaling
     /// capture and train operators to ignore it.
     #[test]
-    fn snaplen_truncation_warning_silent_without_output() {
+    fn snaplen_truncation_warning_silent_without_output() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.capture_args.snaplen = Some(262);
         assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
+        Ok(())
     }
 
     /// The full-frame default keeps whole packets, so `-O` writes a complete
     /// pcap: neither the unset default nor an explicit 65535 truncates.
     #[test]
-    fn snaplen_truncation_warning_silent_at_the_full_frame_default() {
+    fn snaplen_truncation_warning_silent_at_the_full_frame_default() -> Result<(), TestError> {
         let mut unset = base_cli();
         unset.capture_args.device = Some("eth0".to_string());
         unset.capture_args.output = Some("out.pcap".to_string());
@@ -6459,33 +6540,36 @@ mod tests {
             snaplen_truncation_warning(&unset, &Config::default()).is_none(),
             "an explicit 65535 truncates nothing"
         );
+        Ok(())
     }
 
     /// A saved-file read (`-I`) copies whole records; `--snaplen` never shortens
     /// it, so re-emitting through `-O` loses nothing and the warning stays
     /// silent even with a small snaplen present.
     #[test]
-    fn snaplen_truncation_warning_silent_on_file_input() {
+    fn snaplen_truncation_warning_silent_on_file_input() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         cli.capture_args.snaplen = Some(262);
         cli.capture_args.output = Some("out.pcap".to_string());
         assert!(snaplen_truncation_warning(&cli, &Config::default()).is_none());
+        Ok(())
     }
 
     /// The snaplen resolves from the config file too, so a small
     /// `[capture] snaplen` with `-O` on a live source is caught even when the
     /// CLI flag is absent — the truncation is the same whichever set it.
     #[test]
-    fn snaplen_truncation_warning_catches_a_config_file_snaplen() {
+    fn snaplen_truncation_warning_catches_a_config_file_snaplen() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.capture_args.output = Some("out.pcap".to_string());
         let mut config = Config::default();
         config.capture.snaplen = Some(320);
         let msg = snaplen_truncation_warning(&cli, &config)
-            .expect("a config-file snaplen truncates just as a CLI one does");
+            .ok_or("a config-file snaplen truncates just as a CLI one does")?;
         assert!(msg.contains("320"), "names the resolved snaplen: {msg}");
+        Ok(())
     }
 
     // ── truncating --snaplen feeding --retain-audio (CT3) ───────────────
@@ -6495,14 +6579,15 @@ mod tests {
     /// marking it short. Unlike the `-O` warning, this one must say the
     /// analysis itself (the exported audio) is affected, not intact.
     #[test]
-    fn snaplen_audio_retention_warning_fires_on_live_capture_with_retain_audio() {
+    fn snaplen_audio_retention_warning_fires_on_live_capture_with_retain_audio()
+    -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.capture_args.snaplen = Some(262);
         cli.mcp_args.mcp = true;
         cli.mcp_args.retain_audio = true;
         let msg = snaplen_audio_retention_warning(&cli, &Config::default())
-            .expect("a truncating snaplen feeding retained audio must be reported");
+            .ok_or("a truncating snaplen feeding retained audio must be reported")?;
         assert!(msg.contains("262"), "names the snaplen: {msg}");
         assert!(
             msg.contains("export_audio"),
@@ -6512,24 +6597,26 @@ mod tests {
             msg.contains("retain-audio"),
             "names the flag that arms retention: {msg}"
         );
+        Ok(())
     }
 
     /// A small snaplen with no `--retain-audio` never buffers RTP payload, so
     /// there is nothing retained to corrupt — silent, matching the `-O`
     /// warning's silence when nothing is written.
     #[test]
-    fn snaplen_audio_retention_warning_silent_without_retain_audio() {
+    fn snaplen_audio_retention_warning_silent_without_retain_audio() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.capture_args.snaplen = Some(262);
         assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
+        Ok(())
     }
 
     /// The full-frame default keeps whole packets, so retained RTP payload is
     /// always complete: neither the unset default nor an explicit 65535
     /// truncates.
     #[test]
-    fn snaplen_audio_retention_warning_silent_at_the_full_frame_default() {
+    fn snaplen_audio_retention_warning_silent_at_the_full_frame_default() -> Result<(), TestError> {
         let mut unset = base_cli();
         unset.capture_args.device = Some("eth0".to_string());
         unset.mcp_args.mcp = true;
@@ -6543,19 +6630,21 @@ mod tests {
             snaplen_audio_retention_warning(&unset, &Config::default()).is_none(),
             "an explicit 65535 truncates nothing"
         );
+        Ok(())
     }
 
     /// A saved-file read (`-I`) copies whole records; `--snaplen` never
     /// shortens it, so retained RTP payload is complete even with a small
     /// snaplen present.
     #[test]
-    fn snaplen_audio_retention_warning_silent_on_file_input() {
+    fn snaplen_audio_retention_warning_silent_on_file_input() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.input = vec!["capture.pcap".to_string()];
         cli.capture_args.snaplen = Some(262);
         cli.mcp_args.mcp = true;
         cli.mcp_args.retain_audio = true;
         assert!(snaplen_audio_retention_warning(&cli, &Config::default()).is_none());
+        Ok(())
     }
 
     /// The snaplen resolves from the config file too, so a small
@@ -6563,7 +6652,7 @@ mod tests {
     /// even when the CLI flag is absent — the truncation is the same
     /// whichever set it.
     #[test]
-    fn snaplen_audio_retention_warning_catches_a_config_file_snaplen() {
+    fn snaplen_audio_retention_warning_catches_a_config_file_snaplen() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".to_string());
         cli.mcp_args.mcp = true;
@@ -6571,13 +6660,14 @@ mod tests {
         let mut config = Config::default();
         config.capture.snaplen = Some(320);
         let msg = snaplen_audio_retention_warning(&cli, &config)
-            .expect("a config-file snaplen truncates just as a CLI one does");
+            .ok_or("a config-file snaplen truncates just as a CLI one does")?;
         assert!(msg.contains("320"), "names the resolved snaplen: {msg}");
+        Ok(())
     }
 
     /// An unreadable `--bpf-file` yields an `Err` (exit code 2), not an exit.
     #[test]
-    fn build_capture_config_unreadable_bpf_file_returns_err() {
+    fn build_capture_config_unreadable_bpf_file_returns_err() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.bpf_file = Some(
             std::env::temp_dir()
@@ -6586,13 +6676,15 @@ mod tests {
                 .into_owned(),
         );
         let err = build_capture_config(&cli, &Config::default())
-            .expect_err("an unreadable --bpf-file must return Err, not exit");
+            .err()
+            .ok_or("an unreadable --bpf-file must return Err, not exit")?;
         assert_eq!(err.exit_code, 2);
         assert!(
             err.message.contains("Failed to read BPF filter file"),
             "got: {}",
             err.message
         );
+        Ok(())
     }
 
     // ── Encapsulation-aware auto BPF filter ────────────────────────────
@@ -6623,7 +6715,11 @@ mod tests {
     /// Hand-rolled rather than pulled from a crate so the fixtures are exactly
     /// the bytes the assertions describe — the whole point here is that the
     /// kernel filter sees a known frame layout.
-    fn write_pcap(path: &std::path::Path, linktype: u32, frames: &[Vec<u8>]) {
+    fn write_pcap(
+        path: &std::path::Path,
+        linktype: u32,
+        frames: &[Vec<u8>],
+    ) -> Result<(), TestError> {
         let mut out: Vec<u8> = Vec::new();
         out.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
         out.extend_from_slice(&2u16.to_le_bytes());
@@ -6639,7 +6735,8 @@ mod tests {
             out.extend_from_slice(&(f.len() as u32).to_le_bytes());
             out.extend_from_slice(f);
         }
-        std::fs::write(path, out).expect("write fixture pcap");
+        std::fs::write(path, out).map_err(|e| format!("write fixture pcap: {e:?}"))?;
+        Ok(())
     }
 
     /// IPv4 (IHL 5, DF, no options) + UDP carrying `payload`.
@@ -6896,15 +6993,16 @@ mod tests {
     /// Goes through libpcap itself, not a re-implementation: this is the same
     /// `pcap_compile`/`pcap_setfilter` pair the capture thread hands the
     /// kernel, so a filter that passes here is one the kernel will run.
-    fn count_matching(path: &std::path::Path, filter: &str) -> usize {
-        let mut cap = pcap::Capture::from_file(path).expect("open fixture");
-        cap.filter(filter, true).expect("filter must compile");
+    fn count_matching(path: &std::path::Path, filter: &str) -> Result<usize, TestError> {
+        let mut cap = pcap::Capture::from_file(path).map_err(|e| format!("open fixture: {e:?}"))?;
+        cap.filter(filter, true)
+            .map_err(|e| format!("filter must compile: {e:?}"))?;
         let mut n = 0usize;
         loop {
             match cap.next_packet() {
                 Ok(_) => n += 1,
-                Err(pcap::Error::NoMorePackets) => return n,
-                Err(e) => panic!("reading {}: {e}", path.display()),
+                Err(pcap::Error::NoMorePackets) => return Ok(n),
+                Err(e) => return Err(format!("reading {}: {e}", path.display()).into()),
             }
         }
     }
@@ -6916,10 +7014,10 @@ mod tests {
         linktype: u32,
         frames: &[Vec<u8>],
         filter: &str,
-    ) -> usize {
+    ) -> Result<usize, TestError> {
         let path = dir.join(format!("{name}.pcap"));
-        write_pcap(&path, linktype, frames);
-        count_matching(&path, filter)
+        write_pcap(&path, linktype, frames)?;
+        Ok(count_matching(&path, filter)?)
     }
 
     /// The checked-in PPPoE capture that proved the defect: 32 frames, every
@@ -6942,54 +7040,58 @@ mod tests {
     /// and the filter this change generates matches all 32. The drop happened
     /// in the kernel, so no userspace counter could ever have shown it.
     #[test]
-    fn auto_filter_sees_pppoe_encapsulated_sip_that_portrange_alone_drops() {
+    fn auto_filter_sees_pppoe_encapsulated_sip_that_portrange_alone_drops() -> Result<(), TestError>
+    {
         let fixture = pppoe_fixture();
         assert_eq!(
-            count_matching(&fixture, "portrange 5060-5061"),
+            count_matching(&fixture, "portrange 5060-5061")?,
             0,
             "the old auto-filter is supposed to be blind here; if this is \
              non-zero the fixture changed and the rest of this test proves \
              nothing"
         );
         assert_eq!(
-            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[])),
+            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[]))?,
             32,
             "the auto-filter must see every PPPoE-encapsulated SIP frame"
         );
+        Ok(())
     }
 
     /// Adding encapsulation coverage must not cost the untagged case.
     #[test]
-    fn auto_filter_still_matches_plain_ethernet_exactly() {
+    fn auto_filter_still_matches_plain_ethernet_exactly() -> Result<(), TestError> {
         let fixture = plain_fixture();
-        assert_eq!(count_matching(&fixture, "portrange 5060-5061"), 23);
+        assert_eq!(count_matching(&fixture, "portrange 5060-5061")?, 23);
         assert_eq!(
-            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[])),
+            count_matching(&fixture, &auto_bpf_filter(5060, 5061, &[]))?,
             23,
             "a union that loses the untagged case is the naive `vlan and ...` \
              bug in the other direction"
         );
+        Ok(())
     }
 
     /// Every encapsulation the filter claims, one frame each, all matched.
     #[test]
-    fn auto_filter_matches_every_claimed_encapsulation() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_matches_every_claimed_encapsulation() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (label, frame) in encapsulated_sip_frames() {
             assert_eq!(
-                count_frames(dir.path(), "one", DLT_EN10MB, &[frame], &filter),
+                count_frames(dir.path(), "one", DLT_EN10MB, &[frame], &filter)?,
                 1,
                 "{label}: SIP in this encapsulation is invisible to the kernel"
             );
         }
+        Ok(())
     }
 
     /// And the whole set at once, so a filter that matched only the last
     /// disjunct built cannot pass.
     #[test]
-    fn auto_filter_matches_the_whole_encapsulation_set_in_one_capture() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_matches_the_whole_encapsulation_set_in_one_capture() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let frames: Vec<Vec<u8>> = encapsulated_sip_frames()
             .into_iter()
             .map(|(_, f)| f)
@@ -7002,9 +7104,10 @@ mod tests {
                 DLT_EN10MB,
                 &frames,
                 &auto_bpf_filter(5060, 5061, &[])
-            ),
+            )?,
             11
         );
+        Ok(())
     }
 
     /// Not a firehose: encapsulated NON-SIP traffic stays out of the ring.
@@ -7012,23 +7115,24 @@ mod tests {
     /// The failure this guards is the tempting fix — `portrange ... or vlan or
     /// mpls or pppoes` — which on a trunk port delivers the entire link.
     #[test]
-    fn auto_filter_matches_no_encapsulated_non_sip_traffic() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_matches_no_encapsulated_non_sip_traffic() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (label, frame) in encapsulated_non_sip_frames() {
             assert_eq!(
-                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &filter),
+                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &filter)?,
                 0,
                 "{label}: the filter is delivering traffic that is not SIP"
             );
         }
+        Ok(())
     }
 
     /// The IPv6 arm is load-bearing, not decoration: SIP over IPv6 inside a
     /// VLAN is matched, and the IPv4-only offsets would miss it.
     #[test]
-    fn auto_filter_matches_encapsulated_ipv6_sip() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_matches_encapsulated_ipv6_sip() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let mut frame = eth(0x8100);
         frame.extend_from_slice(&tag(100, 0x86dd));
         frame.extend_from_slice(&ipv6_udp(5060, 5060, SIP_BODY));
@@ -7039,9 +7143,10 @@ mod tests {
                 DLT_EN10MB,
                 &[frame],
                 &auto_bpf_filter(5060, 5061, &[])
-            ),
+            )?,
             1
         );
+        Ok(())
     }
 
     /// Both port fields are checked, not just one.
@@ -7051,8 +7156,8 @@ mod tests {
     /// source (or only the destination) loses half of every call, which on a
     /// dialog view looks like one-way signaling rather than a filter bug.
     #[test]
-    fn encapsulated_arms_check_both_the_source_and_the_destination_port() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn encapsulated_arms_check_both_the_source_and_the_destination_port() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (sport, dport, expected, what) in [
             (40000u16, 5060u16, 1usize, "request to the proxy"),
@@ -7067,11 +7172,12 @@ mod tests {
             frame.extend_from_slice(&tag(100, 0x0800));
             frame.extend_from_slice(&ipv4_udp(sport, dport, SIP_BODY));
             assert_eq!(
-                count_frames(dir.path(), "pair", DLT_EN10MB, &[frame], &filter),
+                count_frames(dir.path(), "pair", DLT_EN10MB, &[frame], &filter)?,
                 expected,
                 "{sport} -> {dport} inside a VLAN ({what})"
             );
         }
+        Ok(())
     }
 
     /// An IPv4 header with `proto`, fragment word `frag`, and a payload whose
@@ -7109,8 +7215,8 @@ mod tests {
     ///
     /// The three frames differ in exactly one byte — the protocol field.
     #[test]
-    fn encapsulated_arms_match_udp_and_tcp_and_nothing_else() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn encapsulated_arms_match_udp_and_tcp_and_nothing_else() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (proto, expected) in [(17u8, 1usize), (6, 1), (47, 0), (50, 0), (1, 0)] {
             assert_eq!(
@@ -7120,11 +7226,12 @@ mod tests {
                     DLT_EN10MB,
                     &[vlan_wrap(&ipv4_with(proto, 0x4000))],
                     &filter
-                ),
+                )?,
                 expected,
                 "IP protocol {proto} inside a VLAN"
             );
         }
+        Ok(())
     }
 
     /// A trailing fragment carries no ports, so the bytes at the port offsets
@@ -7132,8 +7239,8 @@ mod tests {
     ///
     /// These frames differ from the matching one only in the fragment word.
     #[test]
-    fn encapsulated_arms_skip_trailing_fragments() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn encapsulated_arms_skip_trailing_fragments() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (frag, expected, what) in [
             (0x0000u16, 1usize, "no flags, offset 0"),
@@ -7153,11 +7260,12 @@ mod tests {
                     DLT_EN10MB,
                     &[vlan_wrap(&ipv4_with(17, frag))],
                     &filter
-                ),
+                )?,
                 expected,
                 "fragment word {frag:#06x} ({what})"
             );
         }
+        Ok(())
     }
 
     /// A KNOWN GAP, pinned so it cannot change silently: on the encapsulated
@@ -7169,8 +7277,9 @@ mod tests {
     /// for encapsulated traffic — which the second half of this test proves,
     /// so the limitation is never mistaken for a whole-filter one.
     #[test]
-    fn encapsulated_arms_do_not_match_ipv4_options_but_the_untagged_arm_does() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn encapsulated_arms_do_not_match_ipv4_options_but_the_untagged_arm_does()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
 
         // IHL 6: 20 bytes of header + one 4-byte option (RFC 791 NOP padding).
@@ -7188,7 +7297,7 @@ mod tests {
                 DLT_EN10MB,
                 &[vlan_wrap(&ip)],
                 &filter
-            ),
+            )?,
             0,
             "known gap: IPv4 options inside an encapsulation are not reached"
         );
@@ -7196,12 +7305,13 @@ mod tests {
         let mut untagged = eth(0x0800);
         untagged.extend_from_slice(&ip);
         assert_eq!(
-            count_frames(dir.path(), "opt-plain", DLT_EN10MB, &[untagged], &filter),
+            count_frames(dir.path(), "opt-plain", DLT_EN10MB, &[untagged], &filter)?,
             1,
             "untagged IPv4-with-options must still match — the gap is the \
              encapsulated arms only, and if this ever returns 0 the base \
              `portrange` arm has been broken"
         );
+        Ok(())
     }
 
     /// The filter must COMPILE on every link type a live capture can open.
@@ -7214,8 +7324,8 @@ mod tests {
     /// cooked v1". A filter that fails to compile does not merely miss
     /// traffic, it stops the capture from starting at all.
     #[test]
-    fn auto_filter_compiles_on_every_link_type_a_live_capture_can_open() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_compiles_on_every_link_type_a_live_capture_can_open() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[2152]);
         let ip = ipv4_udp(5060, 5060, SIP_BODY);
 
@@ -7250,12 +7360,13 @@ mod tests {
             // Compiles (count_matching panics if it does not) AND still
             // delivers the plain SIP frame on that link type.
             assert_eq!(
-                count_frames(dir.path(), "dlt", linktype, &[frame], &filter),
+                count_frames(dir.path(), "dlt", linktype, &[frame], &filter)?,
                 1,
                 "{label}: the auto-filter must compile and still pass untagged \
                  SIP on this link type"
             );
         }
+        Ok(())
     }
 
     // ── Cooked (Linux `any`) captures ──────────────────────────────────
@@ -7276,8 +7387,8 @@ mod tests {
     /// it, so between them they are the default invocation on every Linux
     /// host sipnab runs on.
     #[test]
-    fn auto_filter_sees_encapsulated_sip_behind_a_cooked_link_header() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_sees_encapsulated_sip_behind_a_cooked_link_header() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (label, linktype, link) in LINK_HEADERS {
             let frames = encapsulated_sip_frames_on(*link);
@@ -7290,18 +7401,19 @@ mod tests {
                         *linktype,
                         std::slice::from_ref(frame),
                         &filter
-                    ),
+                    )?,
                     1,
                     "{label}: SIP in {what} is invisible to the kernel"
                 );
             }
             let all: Vec<Vec<u8>> = frames.into_iter().map(|(_, f)| f).collect();
             assert_eq!(
-                count_frames(dir.path(), "cooked-all", *linktype, &all, &filter),
+                count_frames(dir.path(), "cooked-all", *linktype, &all, &filter)?,
                 11,
                 "{label}: the whole encapsulation set in one capture"
             );
         }
+        Ok(())
     }
 
     /// And the cooked arms are not a firehose either: the same RTP set that
@@ -7311,18 +7423,20 @@ mod tests {
     /// offsets that belong to a DIFFERENT link header, so a widened arm would
     /// show up here first.
     #[test]
-    fn auto_filter_matches_no_encapsulated_non_sip_traffic_on_any_link_header() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn auto_filter_matches_no_encapsulated_non_sip_traffic_on_any_link_header()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
         for (label, linktype, link) in LINK_HEADERS {
             for (what, frame) in encapsulated_non_sip_frames_on(*link) {
                 assert_eq!(
-                    count_frames(dir.path(), "cooked-neg", *linktype, &[frame], &filter),
+                    count_frames(dir.path(), "cooked-neg", *linktype, &[frame], &filter)?,
                     0,
                     "{label}: {what} is being delivered and it is not SIP"
                 );
             }
         }
+        Ok(())
     }
 
     /// The outer test is the LINK-AWARE `ether proto`, not the Ethernet-only
@@ -7336,7 +7450,8 @@ mod tests {
     /// bring back the `vlan` / `mpls` / `pppoes` defect the byte offsets were
     /// chosen to avoid.
     #[test]
-    fn auto_filter_selects_encapsulation_with_the_link_aware_ether_proto() {
+    fn auto_filter_selects_encapsulation_with_the_link_aware_ether_proto() -> Result<(), TestError>
+    {
         let f = auto_bpf_filter(5060, 5061, &[]);
         for ethertype in ["0x8100", "0x88a8", "0x9100", "0x8864", "0x8847", "0x8848"] {
             assert_eq!(
@@ -7351,6 +7466,7 @@ mod tests {
             "`ether[12:2]` is the EtherType on Ethernet ONLY; on a cooked \
              capture it reads the link-layer address and the arm sits inert: {f}"
         );
+        Ok(())
     }
 
     /// The inner IP header is probed at every (link-header length, encapsulation
@@ -7361,7 +7477,8 @@ mod tests {
     /// MPLS labels) and 12 (one VLAN tag over PPPoE). Nine pairs, seven
     /// distinct offsets — 24 and 28 each arise twice.
     #[test]
-    fn auto_filter_probes_every_link_header_length_and_encapsulation_depth() {
+    fn auto_filter_probes_every_link_header_length_and_encapsulation_depth() -> Result<(), TestError>
+    {
         let f = auto_bpf_filter(5060, 5061, &[]);
         let mut want: Vec<usize> = LINK_HEADER_LENS
             .iter()
@@ -7387,6 +7504,7 @@ mod tests {
             7,
             "exactly seven IPv4 probes, one per distinct offset: {f}"
         );
+        Ok(())
     }
 
     /// The exact outer type test is what keeps the offset union honest.
@@ -7405,8 +7523,9 @@ mod tests {
     /// same bytes it must be delivered, which proves the bytes really are what
     /// the encapsulated arms accept.
     #[test]
-    fn the_outer_link_type_test_keeps_untagged_traffic_out_of_the_encapsulated_arms() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_outer_link_type_test_keeps_untagged_traffic_out_of_the_encapsulated_arms()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_bpf_filter(5060, 5061, &[]);
 
         let mut decoy: Vec<u8> = vec![0x45, 0x00, 0x00, 0x2a];
@@ -7425,7 +7544,7 @@ mod tests {
         let mut untagged = eth(0x0800);
         untagged.extend_from_slice(&decoy);
         assert_eq!(
-            count_frames(dir.path(), "decoy-plain", DLT_EN10MB, &[untagged], &filter),
+            count_frames(dir.path(), "decoy-plain", DLT_EN10MB, &[untagged], &filter)?,
             0,
             "an untagged datagram must never be read at an encapsulated offset"
         );
@@ -7433,11 +7552,12 @@ mod tests {
         let mut tagged = eth(0x8100);
         tagged.extend_from_slice(&decoy);
         assert_eq!(
-            count_frames(dir.path(), "decoy-tagged", DLT_EN10MB, &[tagged], &filter),
+            count_frames(dir.path(), "decoy-tagged", DLT_EN10MB, &[tagged], &filter)?,
             1,
             "the same bytes behind a tag EtherType must match, or the frame \
              above proves nothing about the outer test"
         );
+        Ok(())
     }
 
     /// The stateful qualifiers must never appear in a generated filter.
@@ -7447,7 +7567,7 @@ mod tests {
     /// machine may not have — and because these three words are exactly what
     /// the next person will reach for.
     #[test]
-    fn auto_filter_uses_no_stateful_libpcap_qualifier() {
+    fn auto_filter_uses_no_stateful_libpcap_qualifier() -> Result<(), TestError> {
         for (lo, hi) in [(5060u16, 5061u16), (5060, 5060)] {
             let f = auto_bpf_filter(lo, hi, &[2152, 4789, 6081]);
             for word in ["vlan", "mpls", "pppoes"] {
@@ -7460,22 +7580,24 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A single-port range spells the base term `port N`, not `portrange N-N`,
     /// and narrows every encapsulated arm to the same single port.
     #[test]
-    fn auto_filter_single_port_range_uses_port() {
+    fn auto_filter_single_port_range_uses_port() -> Result<(), TestError> {
         let f = auto_bpf_filter(5060, 5060, &[]);
         assert!(f.starts_with("port 5060 or "), "got: {f}");
         assert!(!f.contains("portrange"), "got: {f}");
         assert!(!f.contains(">= 5060"), "got: {f}");
         assert!(f.contains("ether[38:2] = 5060"), "got: {f}");
+        Ok(())
     }
 
     /// The base term is the untagged `portrange`, first and unchanged.
     #[test]
-    fn auto_filter_leads_with_the_plain_portrange() {
+    fn auto_filter_leads_with_the_plain_portrange() -> Result<(), TestError> {
         assert!(
             auto_bpf_filter(5060, 5061, &[]).starts_with("portrange 5060-5061 or "),
             "the untagged case must stay a plain libpcap portrange — it is the \
@@ -7483,12 +7605,13 @@ mod tests {
              correctly"
         );
         assert!(auto_bpf_filter(5080, 5090, &[]).starts_with("portrange 5080-5090 or "));
+        Ok(())
     }
 
     /// A non-default portrange reaches every encapsulated arm, not just the
     /// base term.
     #[test]
-    fn auto_filter_carries_a_custom_portrange_into_every_arm() {
+    fn auto_filter_carries_a_custom_portrange_into_every_arm() -> Result<(), TestError> {
         let f = auto_bpf_filter(5080, 5090, &[]);
         assert_eq!(
             f.matches("5080").count(),
@@ -7499,17 +7622,18 @@ mod tests {
         assert!(!f.contains("5060"), "the default range leaked in: {f}");
 
         // And it behaves: SIP on 5080 inside a VLAN is matched, 5060 is not.
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         for (port, expected) in [(5080u16, 1usize), (5090, 1), (5060, 0), (5091, 0)] {
             let mut frame = eth(0x8100);
             frame.extend_from_slice(&tag(100, 0x0800));
             frame.extend_from_slice(&ipv4_udp(port, port, SIP_BODY));
             assert_eq!(
-                count_frames(dir.path(), "range", DLT_EN10MB, &[frame], &f),
+                count_frames(dir.path(), "range", DLT_EN10MB, &[frame], &f)?,
                 expected,
                 "port {port} inside a VLAN"
             );
         }
+        Ok(())
     }
 
     // ── Opt-in UDP tunnel ports ────────────────────────────────────────
@@ -7520,7 +7644,7 @@ mod tests {
     /// covering these means capturing EVERYTHING on the port. On a mobile core
     /// that is the whole user plane.
     #[test]
-    fn auto_filter_omits_udp_tunnel_ports_by_default() {
+    fn auto_filter_omits_udp_tunnel_ports_by_default() -> Result<(), TestError> {
         let f = auto_bpf_filter(5060, 5061, &[]);
         for port in TUNNEL_PORTS_DEFAULT {
             assert!(
@@ -7528,29 +7652,30 @@ mod tests {
                 "port {port} is in the default filter: {f}"
             );
         }
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         for (label, frame) in udp_tunnel_frames() {
             assert_eq!(
-                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f),
+                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f)?,
                 0,
                 "{label} traffic must not reach the ring unless asked for"
             );
         }
+        Ok(())
     }
 
     /// Asking for them adds exactly one `udp port` term per port, and they
     /// then match.
     #[test]
-    fn requested_udp_tunnel_ports_are_appended_and_match() {
+    fn requested_udp_tunnel_ports_are_appended_and_match() -> Result<(), TestError> {
         let f = auto_bpf_filter(5060, 5061, TUNNEL_PORTS_DEFAULT);
         assert!(
             f.ends_with(" or udp port 2152 or udp port 4789 or udp port 6081"),
             "got: {f}"
         );
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         for (label, frame) in udp_tunnel_frames() {
             assert_eq!(
-                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f),
+                count_frames(dir.path(), "tun", DLT_EN10MB, &[frame], &f)?,
                 1,
                 "{label} was requested and must be captured"
             );
@@ -7559,52 +7684,55 @@ mod tests {
         // non-tunnel port stays out.
         for (label, frame) in encapsulated_non_sip_frames() {
             assert_eq!(
-                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &f),
+                count_frames(dir.path(), "neg", DLT_EN10MB, &[frame], &f)?,
                 0,
                 "{label}"
             );
         }
+        Ok(())
     }
 
     /// The three defaults are the IANA-assigned tunnel ports.
     #[test]
-    fn default_tunnel_ports_are_the_iana_assignments() {
+    fn default_tunnel_ports_are_the_iana_assignments() -> Result<(), TestError> {
         assert_eq!(TUNNEL_PORTS_DEFAULT, &[2152u16, 4789, 6081]);
+        Ok(())
     }
 
     /// `--capture-tunnels` with no value means the three defaults; with a
     /// value it means exactly the ports named, in order, de-duplicated.
     #[test]
-    fn capture_tunnels_flag_resolves_to_ports() {
+    fn capture_tunnels_flag_resolves_to_ports() -> Result<(), TestError> {
         let mut cli = base_cli();
         assert_eq!(
-            resolve_tunnel_ports(&cli).expect("no flag"),
+            resolve_tunnel_ports(&cli).map_err(|e| format!("no flag: {e:?}"))?,
             Vec::<u16>::new()
         );
 
         cli.capture_args.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
         assert_eq!(
-            resolve_tunnel_ports(&cli).expect("bare flag"),
+            resolve_tunnel_ports(&cli).map_err(|e| format!("bare flag: {e:?}"))?,
             TUNNEL_PORTS_DEFAULT.to_vec()
         );
 
         cli.capture_args.capture_tunnels = Some("8472, 4789 ,8472".to_string());
         assert_eq!(
-            resolve_tunnel_ports(&cli).expect("explicit list"),
+            resolve_tunnel_ports(&cli).map_err(|e| format!("explicit list: {e:?}"))?,
             vec![8472u16, 4789],
             "order is the operator's, duplicates collapse"
         );
+        Ok(())
     }
 
     /// A malformed port list is an argument error, not a silently empty set.
     #[test]
-    fn capture_tunnels_rejects_a_malformed_port_list() {
+    fn capture_tunnels_rejects_a_malformed_port_list() -> Result<(), TestError> {
         let mut cli = base_cli();
         for bad in ["", "http", "70000", "2152,", "0"] {
             cli.capture_args.capture_tunnels = Some(bad.to_string());
             let err = resolve_tunnel_ports(&cli)
                 .err()
-                .unwrap_or_else(|| panic!("'{bad}' must be refused"));
+                .ok_or_else(|| format!("'{bad}' must be refused"))?;
             assert_eq!(err.exit_code, 2, "'{bad}'");
             assert!(
                 err.message.contains("--capture-tunnels"),
@@ -7612,6 +7740,7 @@ mod tests {
                 err.message
             );
         }
+        Ok(())
     }
 
     // ── The notices ────────────────────────────────────────────────────
@@ -7620,7 +7749,7 @@ mod tests {
     /// way out; one the command line replaced, or one on a live capture where
     /// it is the point, says nothing (issue #343).
     #[test]
-    fn config_filter_on_a_file_says_where_it_came_from() {
+    fn config_filter_on_a_file_says_where_it_came_from() -> Result<(), TestError> {
         let config = |f: Option<&str>| {
             let mut c = Config::default();
             c.capture.bpf_filter = f.map(str::to_string);
@@ -7628,7 +7757,7 @@ mod tests {
         };
         let file =
             config_filter_file_notice(&base_cli(), &config(Some("udp dst port 9063")), false)
-                .expect("a file run filtered by the config must say so");
+                .ok_or("a file run filtered by the config must say so")?;
         assert!(
             file.contains("[capture] bpf_filter") && file.contains("udp dst port 9063"),
             "the notice must name the key and quote the filter: {file}"
@@ -7661,13 +7790,14 @@ mod tests {
             None,
             "--bpf-file replaced the key, so the key did nothing"
         );
+        Ok(())
     }
 
     /// The default path SAYS it does not cover UDP-tunneled SIP, and names
     /// the flag that does. A silent omission recreates the bug one level up.
     #[test]
-    fn tunnel_omission_notice_fires_by_default_and_names_the_flag() {
-        let msg = tunnel_omission_notice(&[]).expect("the default path must say so");
+    fn tunnel_omission_notice_fires_by_default_and_names_the_flag() -> Result<(), TestError> {
+        let msg = tunnel_omission_notice(&[]).ok_or("the default path must say so")?;
         assert!(msg.contains("--capture-tunnels"), "got: {msg}");
         for name in ["GTP-U", "VXLAN", "GENEVE"] {
             assert!(msg.contains(name), "the notice must name {name}: {msg}");
@@ -7677,14 +7807,15 @@ mod tests {
             None,
             "nothing to warn about once the ports are covered"
         );
+        Ok(())
     }
 
     /// An operator's own filter is never rewritten, but one that cannot see
     /// past an encapsulation gets a sentence about it.
     #[test]
-    fn explicit_filter_encap_notice_fires_only_on_a_blind_port_filter() {
+    fn explicit_filter_encap_notice_fires_only_on_a_blind_port_filter() -> Result<(), TestError> {
         let msg = explicit_filter_encap_notice("udp port 5060", &["eth0"])
-            .expect("a bare port filter is encapsulation-blind");
+            .ok_or("a bare port filter is encapsulation-blind")?;
         assert!(msg.contains("not modified"), "got: {msg}");
         assert!(msg.contains("--capture-tunnels"), "got: {msg}");
 
@@ -7711,6 +7842,7 @@ mod tests {
             explicit_filter_encap_notice("host 192.0.2.1", &["eth0"]),
             None
         );
+        Ok(())
     }
 
     /// On a loopback interface the notice would be wrong: `lo` carries no
@@ -7719,7 +7851,7 @@ mod tests {
     /// `udp dst port 9063`. Any non-loopback member, `any`, or an unknown
     /// device keeps the notice.
     #[test]
-    fn explicit_filter_encap_notice_is_silent_on_loopback_only() {
+    fn explicit_filter_encap_notice_is_silent_on_loopback_only() -> Result<(), TestError> {
         let filter = "udp dst port 9063";
         assert_eq!(explicit_filter_encap_notice(filter, &["lo"]), None);
         assert_eq!(explicit_filter_encap_notice(filter, &["lo0"]), None);
@@ -7730,6 +7862,7 @@ mod tests {
                 "{devices:?} can carry encapsulated SIP, so the notice stays"
             );
         }
+        Ok(())
     }
 
     // ── media in the default live filter (LIVE-MEDIA-1) ─────────────────
@@ -7752,8 +7885,8 @@ mod tests {
     /// admit RTP on any port: here a relay port to a phone's, on the cooked
     /// header `-d any` uses, over IPv4 and IPv6, and on plain Ethernet.
     #[test]
-    fn a_default_live_filter_admits_rtp_on_any_port() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_default_live_filter_admits_rtp_on_any_port() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_capture_filter(5060, 5061, &[], true);
         let mut v4 = sll2(0x0800);
         v4.extend_from_slice(&ipv4_udp(31452, 7000, &rtp_payload()));
@@ -7762,63 +7895,67 @@ mod tests {
         let mut ether = eth(0x0800);
         ether.extend_from_slice(&ipv4_udp(6000, 34356, &rtp_payload()));
         assert_eq!(
-            count_frames(dir.path(), "rtp-any", DLT_LINUX_SLL2, &[v4, v6], &filter),
+            count_frames(dir.path(), "rtp-any", DLT_LINUX_SLL2, &[v4, v6], &filter)?,
             2,
             "RTP on a negotiated port must reach sipnab on the any device"
         );
         assert_eq!(
-            count_frames(dir.path(), "rtp-eth", DLT_EN10MB, &[ether], &filter),
+            count_frames(dir.path(), "rtp-eth", DLT_EN10MB, &[ether], &filter)?,
             1,
             "RTP on a negotiated port must reach sipnab on an Ethernet device"
         );
+        Ok(())
     }
 
     /// Admitting media is not admitting everything: a datagram whose first
     /// byte is not RTP version 2 stays out, so a DNS query to port 53 costs
     /// the process nothing.
     #[test]
-    fn the_media_arm_leaves_other_udp_out() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn the_media_arm_leaves_other_udp_out() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_capture_filter(5060, 5061, &[], true);
         let mut dns = sll2(0x0800);
         dns.extend_from_slice(&ipv4_udp(40000, 53, &[0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0]));
         assert_eq!(
-            count_frames(dir.path(), "dns", DLT_LINUX_SLL2, &[dns], &filter),
+            count_frames(dir.path(), "dns", DLT_LINUX_SLL2, &[dns], &filter)?,
             0
         );
+        Ok(())
     }
 
     /// SIP still gets in with media admitted.
     #[test]
-    fn the_media_filter_still_admits_sip() {
+    fn the_media_filter_still_admits_sip() -> Result<(), TestError> {
         let with_media = auto_capture_filter(5060, 5061, &[], true);
         assert_eq!(
-            count_matching(&plain_fixture(), &with_media),
-            count_matching(&plain_fixture(), &auto_bpf_filter(5060, 5061, &[])),
+            count_matching(&plain_fixture(), &with_media)?,
+            count_matching(&plain_fixture(), &auto_bpf_filter(5060, 5061, &[]))?,
         );
+        Ok(())
     }
 
     /// With RTP analysis off (`--no-rtp`), the default stays signaling-only:
     /// nothing would read the media, so the kernel should not copy it.
     #[test]
-    fn with_rtp_off_the_default_stays_signaling_only() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn with_rtp_off_the_default_stays_signaling_only() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let filter = auto_capture_filter(5060, 5061, &[], false);
         assert_eq!(filter, auto_bpf_filter(5060, 5061, &[]));
         let mut v4 = sll2(0x0800);
         v4.extend_from_slice(&ipv4_udp(31452, 7000, &rtp_payload()));
         assert_eq!(
-            count_frames(dir.path(), "rtp-off", DLT_LINUX_SLL2, &[v4], &filter),
+            count_frames(dir.path(), "rtp-off", DLT_LINUX_SLL2, &[v4], &filter)?,
             0
         );
+        Ok(())
     }
 
     /// The plan gives a live capture the media-admitting default.
     #[test]
-    fn plan_admits_media_in_a_live_capture_by_default() {
+    fn plan_admits_media_in_a_live_capture_by_default() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("any".into());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_capture_filter(5060, 5061, &[], true).as_str())
@@ -7828,19 +7965,21 @@ mod tests {
             Some(auto_bpf_filter(5060, 5061, &[]).as_str()),
             "the signaling-only filter is the defect"
         );
+        Ok(())
     }
 
     /// `--no-rtp` keeps the plan's default signaling-only.
     #[test]
-    fn plan_keeps_the_default_signaling_only_with_no_rtp() {
+    fn plan_keeps_the_default_signaling_only_with_no_rtp() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("any".into());
         cli.capture_args.no_rtp = true;
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_bpf_filter(5060, 5061, &[]).as_str())
         );
+        Ok(())
     }
 
     // ── plan() wiring ──────────────────────────────────────────────────
@@ -7849,64 +7988,69 @@ mod tests {
     /// signaling filter plus the media arm — the exact string, not something
     /// like it.
     #[test]
-    fn plan_generates_the_encapsulation_aware_filter_for_a_live_capture() {
+    fn plan_generates_the_encapsulation_aware_filter_for_a_live_capture() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_capture_filter(5060, 5061, &[], true).as_str())
         );
+        Ok(())
     }
 
     /// `--capture-tunnels` reaches the generated filter.
     #[test]
-    fn plan_adds_requested_tunnel_ports_to_the_generated_filter() {
+    fn plan_adds_requested_tunnel_ports_to_the_generated_filter() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.capture_args.capture_tunnels = Some(TUNNEL_PORTS_DEFAULT_LIST.to_string());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_capture_filter(5060, 5061, TUNNEL_PORTS_DEFAULT, true).as_str())
         );
+        Ok(())
     }
 
     /// `--portrange` reaches the generated filter.
     #[test]
-    fn plan_generates_the_filter_for_a_custom_portrange() {
+    fn plan_generates_the_filter_for_a_custom_portrange() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.capture_args.portrange = Some("5080-5090".into());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_capture_filter(5080, 5090, &[], true).as_str())
         );
+        Ok(())
     }
 
     /// An explicit filter goes to the kernel verbatim. Never rewritten,
     /// never extended, whatever sipnab thinks of it.
     #[test]
-    fn plan_never_rewrites_an_explicit_filter() {
+    fn plan_never_rewrites_an_explicit_filter() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.bpf_filter = vec!["udp".into(), "port".into(), "5060".into()];
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some("udp port 5060"),
             "the operator's expression must reach the kernel unmodified"
         );
+        Ok(())
     }
 
     /// Reading a file still gets no auto-filter at all.
     #[test]
-    fn plan_generates_no_filter_when_reading_a_file() {
+    fn plan_generates_no_filter_when_reading_a_file() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.input = vec![FIXTURE_FILE.to_string()];
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(plan.capture_config.bpf_filter, None);
+        Ok(())
     }
 
     /// A real capture, for the `-I` paths that resolve their input.
@@ -7946,7 +8090,8 @@ mod tests {
     /// genuinely dropped. Dropping it in SILENCE is the SRC1 defect, and this
     /// is the one place it can still happen.
     #[test]
-    fn hep_listen_warning_fires_where_a_uprobe_run_swallows_the_listener() {
+    fn hep_listen_warning_fires_where_a_uprobe_run_swallows_the_listener() -> Result<(), TestError>
+    {
         let mut cli = base_cli();
         cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
         let uprobe = CaptureSource::Uprobe {
@@ -7954,20 +8099,21 @@ mod tests {
             backend: capture::UprobeBackend::Tracefs,
         };
         let msg = hep_listen_ignored_warning(&cli, Some(&uprobe))
-            .expect("a dropped listener must never be silent");
+            .ok_or("a dropped listener must never be silent")?;
         assert!(msg.contains("--hep-listen/-L"), "name the flag: {msg}");
         assert!(msg.contains("127.0.0.1:19060"), "name the address: {msg}");
         assert!(
             msg.contains("--uprobe-tls"),
             "name what took precedence, so the operator knows what to drop: {msg}"
         );
+        Ok(())
     }
 
     /// Silent wherever the listener is actually bound — alone, or as a
     /// composite member. Keyed on the RESOLVED source, so a new arm in the
     /// chain cannot reintroduce a silent drop without tripping the test above.
     #[test]
-    fn hep_listen_warning_is_silent_wherever_the_listener_is_bound() {
+    fn hep_listen_warning_is_silent_wherever_the_listener_is_bound() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
 
@@ -7995,13 +8141,15 @@ mod tests {
             hep_listen_ignored_warning(&bare, Some(&hep_src("127.0.0.1:19060"))),
             None
         );
+        Ok(())
     }
 
     /// A composite with no BPF filter and RTP off measures no media and
     /// doubles every dialog, and the auto-generated filter is what makes that happen — so
     /// the warning has to arrive with it, not instead of it.
     #[test]
-    fn composite_filter_warning_fires_when_nothing_names_the_media_ports() {
+    fn composite_filter_warning_fires_when_nothing_names_the_media_ports() -> Result<(), TestError>
+    {
         let composite = CaptureSource::Composite(vec![
             CaptureSource::Live {
                 device: "eth0".into(),
@@ -8009,7 +8157,7 @@ mod tests {
             hep_src("127.0.0.1:19060"),
         ]);
         let msg = composite_filter_warning(Some(&composite), false, false)
-            .expect("a composite with no filter and no media captures no media");
+            .ok_or("a composite with no filter and no media captures no media")?;
         assert!(
             msg.contains("no media"),
             "say what will be missing, not merely that a filter is absent: {msg}"
@@ -8030,12 +8178,13 @@ mod tests {
             "with media on, the default is media-only: nothing is missing and \
              nothing is doubled"
         );
+        Ok(())
     }
 
     /// Never fires on a single source. A `-d`-only run with the signaling
     /// filter is the long-standing, correct default and must stay quiet.
     #[test]
-    fn composite_filter_warning_is_silent_on_a_single_source() {
+    fn composite_filter_warning_is_silent_on_a_single_source() -> Result<(), TestError> {
         let live = CaptureSource::Live {
             device: "eth0".into(),
         };
@@ -8045,6 +8194,7 @@ mod tests {
             None
         );
         assert_eq!(composite_filter_warning(None, false, false), None);
+        Ok(())
     }
 
     /// The composite's NIC member gets a generated filter, and it is the media.
@@ -8056,11 +8206,11 @@ mod tests {
     /// delivers the signaling, so every message arrived twice, and the RTP the
     /// interface member is there for never arrived at all (LIVE-MEDIA-1).
     #[test]
-    fn a_composite_interface_gets_the_media_only_default() {
+    fn a_composite_interface_gets_the_media_only_default() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert!(
             matches!(plan.source, Some(CaptureSource::Composite(_))),
             "the pair must compose: {:?}",
@@ -8072,21 +8222,23 @@ mod tests {
             "the interface member needs a filter, and it is the media: the \
              mirror carries the signaling"
         );
+        Ok(())
     }
 
     /// With `--no-rtp`, a composite's interface keeps the signaling default:
     /// there is no media to take, and the warning says what that costs.
     #[test]
-    fn a_composite_with_rtp_off_keeps_the_signaling_default() {
+    fn a_composite_with_rtp_off_keeps_the_signaling_default() -> Result<(), TestError> {
         let mut cli = base_cli();
         cli.capture_args.device = Some("eth0".into());
         cli.capture_args.no_rtp = true;
         cli.hep_args.hep_listen = Some("127.0.0.1:19060".into());
-        let plan = plan(&cli, &Config::default()).expect("plan");
+        let plan = plan(&cli, &Config::default()).map_err(|e| format!("plan: {e:?}"))?;
         assert_eq!(
             plan.capture_config.bpf_filter.as_deref(),
             Some(auto_bpf_filter(5060, 5061, &[]).as_str())
         );
+        Ok(())
     }
 
     /// A run mixing a HEP member with a locally-captured one mixes two clocks
@@ -8097,17 +8249,17 @@ mod tests {
     /// so a reader can discount a duration that looks wrong instead of
     /// treating it as measured.
     #[test]
-    fn two_clocks_warning_fires_on_a_hep_member_beside_a_local_one() {
+    fn two_clocks_warning_fires_on_a_hep_member_beside_a_local_one() -> Result<(), TestError> {
         let composite = CaptureSource::Composite(vec![
             CaptureSource::Live {
                 device: "eth0".into(),
             },
             hep_src("127.0.0.1:19060"),
         ]);
-        let msg = two_clocks_warning(Some(&composite)).expect(
+        let msg = two_clocks_warning(Some(&composite)).ok_or(
             "a HEP member beside a live one is two clocks with no discipline \
              between them",
-        );
+        )?;
         assert!(
             msg.contains("clock"),
             "name the thing that disagrees: {msg}"
@@ -8117,25 +8269,28 @@ mod tests {
             "name BOTH members, so an operator reading a log knows which run \
              they are looking at: {msg}"
         );
+        Ok(())
     }
 
     /// Silent on one clock. A `-L`-only run reads every timestamp from the
     /// same senders it always did, and a `-d`-only run from the local kernel;
     /// a warning that fires on every run is one operators skim past.
     #[test]
-    fn two_clocks_warning_is_silent_on_a_single_source() {
+    fn two_clocks_warning_is_silent_on_a_single_source() -> Result<(), TestError> {
         let live = CaptureSource::Live {
             device: "eth0".into(),
         };
         assert_eq!(two_clocks_warning(Some(&live)), None);
         assert_eq!(two_clocks_warning(Some(&hep_src("127.0.0.1:19060"))), None);
         assert_eq!(two_clocks_warning(None), None);
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod cores_live_meaning_tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A live `--cores` run must NOT be told the flag is ignored.
     ///
@@ -8145,7 +8300,7 @@ mod cores_live_meaning_tests {
     /// and a warning that says a working flag does nothing is worse than none,
     /// because the operator turns it off.
     #[test]
-    fn a_live_cores_run_is_not_told_the_flag_is_ignored() {
+    fn a_live_cores_run_is_not_told_the_flag_is_ignored() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.limits_args.cores = 4;
         assert_eq!(
@@ -8153,37 +8308,40 @@ mod cores_live_meaning_tests {
             None,
             "live --cores now fans the interface out; saying it is ignored is wrong"
         );
+        Ok(())
     }
 
     /// `--multi-device` still ignores it, and still says so: that path already
     /// opens one capture per interface, so there is nothing for fanout to add.
     #[test]
-    fn multi_device_still_reports_cores_as_ignored() {
+    fn multi_device_still_reports_cores_as_ignored() -> Result<(), TestError> {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.limits_args.cores = 4;
         cli.capture_args.multi_device = true;
-        let msg = cores_ignored_warning(&cli).expect("multi-device still warns");
+        let msg = cores_ignored_warning(&cli).ok_or("multi-device still warns")?;
         assert!(
             msg.contains("--multi-device"),
             "warning names the reason: {msg}"
         );
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod capture_profile_tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// The profile must actually reach the capture, and an explicit number
     /// must beat it. A profile that resolves correctly in isolation but never
     /// reaches `CaptureConfig` is the same as no profile at all.
     #[test]
-    fn the_profile_reaches_the_capture_and_an_explicit_snaplen_wins() {
+    fn the_profile_reaches_the_capture_and_an_explicit_snaplen_wins() -> Result<(), TestError> {
         let config = Config::default();
 
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.capture_args.capture_profile = Some(crate::cli::CaptureProfile::Signaling);
-        let cc = build_capture_config(&cli, &config).expect("builds");
+        let cc = build_capture_config(&cli, &config).map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(
             cc.snaplen,
             crate::cli::CaptureProfile::Signaling.snaplen(),
@@ -8191,19 +8349,22 @@ mod capture_profile_tests {
         );
 
         cli.capture_args.snaplen = Some(9000);
-        let cc = build_capture_config(&cli, &config).expect("builds");
+        let cc = build_capture_config(&cli, &config).map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(
             cc.snaplen, 9000,
             "an explicit --snaplen must beat the profile"
         );
+        Ok(())
     }
 
     /// No profile and no flag is unchanged: the whole frame, as always.
     #[test]
-    fn without_a_profile_the_default_is_still_the_full_frame() {
+    fn without_a_profile_the_default_is_still_the_full_frame() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab"]);
-        let cc = build_capture_config(&cli, &Config::default()).expect("builds");
+        let cc =
+            build_capture_config(&cli, &Config::default()).map_err(|e| format!("builds: {e:?}"))?;
         assert_eq!(cc.snaplen, 65535);
+        Ok(())
     }
 }
 
@@ -8214,6 +8375,7 @@ mod capture_profile_tests {
 #[cfg(test)]
 mod startup_refusal_tests {
     use super::*;
+    type TestError = Box<dyn std::error::Error>;
 
     /// A CLI parsed from `args`, `sipnab` included as argv[0].
     fn cli_from(args: &[&str]) -> Cli {
@@ -8228,7 +8390,8 @@ mod startup_refusal_tests {
     /// DIRECTORY: the writer opens lazily and `--split` invents siblings, so a
     /// rule on the file would deny both.
     #[test]
-    fn the_sandbox_grants_each_input_and_the_output_directory_not_the_file() {
+    fn the_sandbox_grants_each_input_and_the_output_directory_not_the_file() -> Result<(), TestError>
+    {
         let cli = cli_from(&["-I", "a.pcap", "-I", "caps/", "-O", "/srv/out/run.pcap"]);
         let paths = sandbox_paths(&cli, &Config::default(), &[]);
         assert_eq!(
@@ -8243,6 +8406,7 @@ mod startup_refusal_tests {
             vec![std::path::PathBuf::from("/srv/out")],
             "the output's parent directory, never the file itself"
         );
+        Ok(())
     }
 
     /// A bare output filename has an empty parent, and an empty path is not a
@@ -8250,7 +8414,7 @@ mod startup_refusal_tests {
     /// Where `-I` unpacked an archive is granted as a writable directory: the
     /// capture thread reads the members there, and the run deletes them.
     #[test]
-    fn the_sandbox_grants_the_archive_extraction_directory() {
+    fn the_sandbox_grants_the_archive_extraction_directory() -> Result<(), TestError> {
         let extracted = std::path::PathBuf::from("/tmp/sipnab-archive-test");
         let paths = sandbox_paths(
             &cli_from(&["-I", "set.tgz"]),
@@ -8259,19 +8423,21 @@ mod startup_refusal_tests {
         );
         assert_eq!(paths.inputs, vec![std::path::PathBuf::from("set.tgz")]);
         assert_eq!(paths.output_dirs, vec![extracted]);
+        Ok(())
     }
 
     #[test]
-    fn a_bare_output_filename_adds_no_output_directory() {
+    fn a_bare_output_filename_adds_no_output_directory() -> Result<(), TestError> {
         let paths = sandbox_paths(&cli_from(&["-O", "run.pcap"]), &Config::default(), &[]);
         assert!(paths.output_dirs.is_empty(), "got {:?}", paths.output_dirs);
+        Ok(())
     }
 
     /// The keylog and the TLS private key are read for the life of the run,
     /// so both are granted as read-only files.
     #[cfg(feature = "tls")]
     #[test]
-    fn the_keylog_and_the_tls_key_are_granted_as_files_to_read() {
+    fn the_keylog_and_the_tls_key_are_granted_as_files_to_read() -> Result<(), TestError> {
         let cli = cli_from(&["--keylog", "keys.log", "--tls-key", "server.pem"]);
         let paths = sandbox_paths(&cli, &Config::default(), &[]);
         assert_eq!(
@@ -8281,12 +8447,13 @@ mod startup_refusal_tests {
                 std::path::PathBuf::from("server.pem")
             ]
         );
+        Ok(())
     }
 
     /// The crash directory granted is the one the panic hook writes to,
     /// resolved from the same `[crash]` section.
     #[test]
-    fn the_crash_directory_granted_is_the_configured_report_directory() {
+    fn the_crash_directory_granted_is_the_configured_report_directory() -> Result<(), TestError> {
         let mut config = Config::default();
         config.crash.report_dir = Some(std::path::PathBuf::from("/var/crash/sipnab"));
         let paths = sandbox_paths(&cli_from(&[]), &config, &[]);
@@ -8294,12 +8461,13 @@ mod startup_refusal_tests {
             paths.crash_dir,
             Some(std::path::PathBuf::from("/var/crash/sipnab"))
         );
+        Ok(())
     }
 
     /// Each `--sandbox` spelling reaches the mode the sandbox module models,
     /// and no flag is `Off` — the default no existing run changes under.
     #[test]
-    fn each_sandbox_flag_value_maps_to_its_own_mode() {
+    fn each_sandbox_flag_value_maps_to_its_own_mode() -> Result<(), TestError> {
         use crate::sandbox::SandboxMode;
         assert_eq!(sandbox_mode(&cli_from(&[])), SandboxMode::Off);
         assert_eq!(
@@ -8310,12 +8478,13 @@ mod startup_refusal_tests {
             sandbox_mode(&cli_from(&["--sandbox", "required"])),
             SandboxMode::Required
         );
+        Ok(())
     }
 
     /// Each `--seccomp` spelling reaches its own mode; `enforce` is the one
     /// that can end a run, so it must never read as `log`.
     #[test]
-    fn each_seccomp_flag_value_maps_to_its_own_mode() {
+    fn each_seccomp_flag_value_maps_to_its_own_mode() -> Result<(), TestError> {
         use crate::seccomp::SeccompMode;
         assert_eq!(seccomp_mode(&cli_from(&[])), SeccompMode::Off);
         assert_eq!(
@@ -8326,6 +8495,7 @@ mod startup_refusal_tests {
             seccomp_mode(&cli_from(&["--seccomp", "enforce"])),
             SeccompMode::Enforce
         );
+        Ok(())
     }
 
     // ── HEP and uprobe planning ───────────────────────────────────────
@@ -8333,22 +8503,24 @@ mod startup_refusal_tests {
     /// Planning a HEP source with no `--hep-listen` is refused rather than
     /// resolved to a bind address nobody asked for.
     #[test]
-    fn a_hep_source_with_no_listen_address_is_refused_not_defaulted() {
+    fn a_hep_source_with_no_listen_address_is_refused_not_defaulted() -> Result<(), TestError> {
         let err = plan_hep_source(&cli_from(&[]), &Config::default())
-            .expect_err("no -L must not plan a listener");
+            .err()
+            .ok_or("no -L must not plan a listener")?;
         assert_eq!(err.exit_code, 2);
         assert!(err.message.contains("--hep-listen"), "{}", err.message);
+        Ok(())
     }
 
     /// A malformed `--hep-allow` entry is an argument error naming the entry,
     /// not an allowlist that silently admits everyone.
     #[cfg(feature = "hep")]
     #[test]
-    fn a_malformed_hep_allow_entry_refuses_the_plan_and_names_it() {
+    fn a_malformed_hep_allow_entry_refuses_the_plan_and_names_it() -> Result<(), TestError> {
         let cli = cli_from(&["-N", "-L", "127.0.0.1:9060", "--hep-allow", "not-a-cidr"]);
         let err = plan(&cli, &Config::default())
             .err()
-            .expect("a malformed CIDR must refuse the run");
+            .ok_or("a malformed CIDR must refuse the run")?;
         assert_eq!(err.exit_code, 2);
         assert!(
             err.message
@@ -8356,6 +8528,7 @@ mod startup_refusal_tests {
             "{}",
             err.message
         );
+        Ok(())
     }
 
     /// An unknown uprobe flavor stops `--uprobe-list` with exit 2 before
@@ -8363,40 +8536,43 @@ mod startup_refusal_tests {
     /// is the second line of the same refusal.
     #[cfg(all(target_os = "linux", feature = "native"))]
     #[test]
-    fn an_unknown_uprobe_flavor_is_an_argument_error_for_the_listing() {
+    fn an_unknown_uprobe_flavor_is_an_argument_error_for_the_listing() -> Result<(), TestError> {
         let mut cli = cli_from(&["--uprobe-list"]);
         cli.tls_args.uprobe_flavor = vec!["gnutls".to_string()];
         assert_eq!(uprobe_list(&cli), 2);
+        Ok(())
     }
 
     /// The same unknown flavor refuses a `--uprobe-tls` plan, rather than
     /// probing every library as if no flavor had been named.
     #[cfg(all(target_os = "linux", feature = "native"))]
     #[test]
-    fn an_unknown_uprobe_flavor_refuses_the_uprobe_plan() {
+    fn an_unknown_uprobe_flavor_refuses_the_uprobe_plan() -> Result<(), TestError> {
         let mut cli = cli_from(&["-N", "--uprobe-tls"]);
         cli.tls_args.uprobe_flavor = vec!["gnutls".to_string()];
         let err = plan(&cli, &Config::default())
             .err()
-            .expect("an unknown flavor must refuse the plan");
+            .ok_or("an unknown flavor must refuse the plan")?;
         assert_eq!(err.exit_code, 2);
         assert!(err.message.contains("gnutls"), "{}", err.message);
+        Ok(())
     }
 
     // ── One-shot commands ─────────────────────────────────────────────
 
     /// `--strip-secrets` with nothing to read is refused with exit 1.
     #[test]
-    fn strip_secrets_without_an_input_is_refused() {
+    fn strip_secrets_without_an_input_is_refused() -> Result<(), TestError> {
         assert_eq!(
             run_startup_commands(&cli_from(&["--strip-secrets", "clean.pcapng"])),
             Some(1)
         );
+        Ok(())
     }
 
     /// The smallest pcapng a reader accepts: a Section Header Block and one
     /// Ethernet Interface Description Block, no packets, no secrets.
-    fn empty_pcapng(path: &std::path::Path) {
+    fn empty_pcapng(path: &std::path::Path) -> Result<(), TestError> {
         let mut b: Vec<u8> = Vec::new();
         // SHB: type, length 28, byte-order magic, version 1.0, unknown
         // section length, length again.
@@ -8414,83 +8590,90 @@ mod startup_refusal_tests {
         b.extend_from_slice(&0u16.to_le_bytes());
         b.extend_from_slice(&65535u32.to_le_bytes());
         b.extend_from_slice(&20u32.to_le_bytes());
-        std::fs::write(path, b).expect("write pcapng");
+        std::fs::write(path, b).map_err(|e| format!("write pcapng: {e:?}"))?;
+        Ok(())
     }
 
     /// The anti-vacuity partner of the refusals below: the same command on a
     /// readable pcapng, with no config in the way, succeeds and writes the
     /// sanitized copy.
     #[test]
-    fn strip_secrets_on_a_readable_pcapng_writes_the_copy() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn strip_secrets_on_a_readable_pcapng_writes_the_copy() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let input = dir.path().join("in.pcapng");
-        empty_pcapng(&input);
+        empty_pcapng(&input)?;
         let out = dir.path().join("clean.pcapng");
         let cli = cli_from(&[
             "--no-config",
             "-I",
-            input.to_str().expect("utf-8 path"),
+            input.to_str().ok_or("utf-8 path")?,
             "--strip-secrets",
-            out.to_str().expect("utf-8 path"),
+            out.to_str().ok_or("utf-8 path")?,
         ]);
         assert_eq!(run_startup_commands(&cli), Some(0));
         assert!(out.exists(), "the sanitized copy is written");
+        Ok(())
     }
 
     /// A config file that does not exist stops `--strip-secrets` with the
     /// config loader's own exit code, before the capture is read -- on an
     /// input the command would otherwise strip successfully.
     #[test]
-    fn strip_secrets_stops_on_a_config_file_that_does_not_exist() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn strip_secrets_stops_on_a_config_file_that_does_not_exist() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let input = dir.path().join("in.pcapng");
-        empty_pcapng(&input);
+        empty_pcapng(&input)?;
         let missing = dir.path().join("absent.toml");
         let out = dir.path().join("clean.pcapng");
         let cli = cli_from(&[
             "--config",
-            missing.to_str().expect("utf-8 path"),
+            missing.to_str().ok_or("utf-8 path")?,
             "-I",
-            input.to_str().expect("utf-8 path"),
+            input.to_str().ok_or("utf-8 path")?,
             "--strip-secrets",
-            out.to_str().expect("utf-8 path"),
+            out.to_str().ok_or("utf-8 path")?,
         ]);
         assert_eq!(run_startup_commands(&cli), Some(1));
         assert!(!out.exists(), "nothing may be written after a refusal");
+        Ok(())
     }
 
     /// An input that does not resolve stops `--strip-secrets` with exit 1 and
     /// writes nothing.
     #[test]
-    fn strip_secrets_stops_on_an_input_that_does_not_resolve() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn strip_secrets_stops_on_an_input_that_does_not_resolve() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let missing = dir.path().join("absent.pcapng");
         let out = dir.path().join("clean.pcapng");
         let cli = cli_from(&[
             "--no-config",
             "-I",
-            missing.to_str().expect("utf-8 path"),
+            missing.to_str().ok_or("utf-8 path")?,
             "--strip-secrets",
-            out.to_str().expect("utf-8 path"),
+            out.to_str().ok_or("utf-8 path")?,
         ]);
         assert_eq!(run_startup_commands(&cli), Some(1));
         assert!(!out.exists(), "nothing may be written after a refusal");
+        Ok(())
     }
 
     // ── Config sections load_config refuses ───────────────────────────
 
     /// `load_config` over a config file holding `body`.
-    fn load_body(body: &str) -> Result<LoadedConfig, PlanError> {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn load_body(body: &str) -> Result<Result<LoadedConfig, PlanError>, TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("sipnabrc.toml");
-        std::fs::write(&path, body).expect("write config");
-        load_config(&cli_from(&["--config", path.to_str().expect("utf-8 path")]))
+        std::fs::write(&path, body).map_err(|e| format!("write config: {e:?}"))?;
+        Ok(load_config(&cli_from(&[
+            "--config",
+            path.to_str().ok_or("utf-8 path")?,
+        ])))
     }
 
     /// Assert `body` is refused with exit 1 and a message containing `needle`.
-    fn assert_refused(body: &str, needle: &str) {
-        match load_body(body) {
-            Ok(_) => panic!("config {body:?} must be refused"),
+    fn assert_refused(body: &str, needle: &str) -> Result<(), TestError> {
+        match load_body(body)? {
+            Ok(_) => return Err(format!("config {body:?} must be refused").into()),
             Err(e) => {
                 assert_eq!(e.exit_code, 1, "{body:?}");
                 assert!(
@@ -8500,56 +8683,63 @@ mod startup_refusal_tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// A zero `[sip]` correlation window is refused, as the flag refuses 0.
     #[test]
-    fn a_zero_sip_correlation_window_in_the_config_is_refused() {
+    fn a_zero_sip_correlation_window_in_the_config_is_refused() -> Result<(), TestError> {
         assert_refused(
             "[sip]\nleg_correlation_window_ms = 0\n",
             "leg_correlation_window_ms",
-        );
+        )?;
+        Ok(())
     }
 
     /// A zero `[security]` registration-flood threshold is refused.
     #[test]
-    fn a_zero_security_reg_flood_threshold_in_the_config_is_refused() {
+    fn a_zero_security_reg_flood_threshold_in_the_config_is_refused() -> Result<(), TestError> {
         assert_refused(
             "[security]\nreg_flood_threshold = 0\n",
             "reg_flood_threshold",
-        );
+        )?;
+        Ok(())
     }
 
     /// A negative `[diagnosis]` threshold would report every call as broken.
     #[test]
-    fn a_negative_diagnosis_threshold_in_the_config_is_refused() {
+    fn a_negative_diagnosis_threshold_in_the_config_is_refused() -> Result<(), TestError> {
         assert_refused(
             "[diagnosis]\npost_dial_delay_secs = -1.0\n",
             "post_dial_delay_secs",
-        );
+        )?;
+        Ok(())
     }
 
     /// A codec impairment at or above the E-model's ceiling is refused rather
     /// than clamped to a number the operator did not write.
     #[test]
-    fn an_out_of_range_codec_impairment_in_the_config_is_refused() {
-        assert_refused("[media.codec_ie]\nPCMU = 1000.0\n", "[media.codec_ie] PCMU");
+    fn an_out_of_range_codec_impairment_in_the_config_is_refused() -> Result<(), TestError> {
+        assert_refused("[media.codec_ie]\nPCMU = 1000.0\n", "[media.codec_ie] PCMU")?;
+        Ok(())
     }
 
     /// A zero `[names]` DNS cache would evict on every insert.
     #[test]
-    fn a_zero_names_dns_cache_in_the_config_is_refused() {
-        assert_refused("[names]\ndns_cache_entries = 0\n", "dns_cache_entries");
+    fn a_zero_names_dns_cache_in_the_config_is_refused() -> Result<(), TestError> {
+        assert_refused("[names]\ndns_cache_entries = 0\n", "dns_cache_entries")?;
+        Ok(())
     }
 
     /// A `[quality]` warn boundary above its bad boundary leaves no value that
     /// could ever be a warning, and the refusal says which section it is.
     #[test]
-    fn an_unreachable_quality_band_in_the_config_is_refused() {
+    fn an_unreachable_quality_band_in_the_config_is_refused() -> Result<(), TestError> {
         assert_refused(
             "[quality]\njitter_warn_ms = 80.0\njitter_bad_ms = 20.0\n",
             "[quality] jitter_warn_ms",
-        );
+        )?;
+        Ok(())
     }
 
     // ── The privileged keylog opener ──────────────────────────────────
@@ -8563,73 +8753,79 @@ mod startup_refusal_tests {
     /// in `tests/privilege_drop_test.rs`.
     #[cfg(all(feature = "tls", unix))]
     #[test]
-    fn an_ordinary_keylog_file_is_opened_while_still_privileged() {
+    fn an_ordinary_keylog_file_is_opened_while_still_privileged() -> Result<(), TestError> {
         use std::os::unix::fs::PermissionsExt as _;
-        let mut file = tempfile::NamedTempFile::new().expect("tempfile");
-        std::io::Write::write_all(&mut file, b"CLIENT_RANDOM aa bb\n").expect("write");
-        let cli = cli_from(&["--keylog", file.path().to_str().expect("utf-8 path")]);
+        let mut file = tempfile::NamedTempFile::new().map_err(|e| format!("tempfile: {e:?}"))?;
+        std::io::Write::write_all(&mut file, b"CLIENT_RANDOM aa bb\n")
+            .map_err(|e| format!("write: {e:?}"))?;
+        let cli = cli_from(&["--keylog", file.path().to_str().ok_or("utf-8 path")?]);
         let mut source =
-            open_privileged_keylog_source(&cli).expect("an ordinary keylog is opened now");
+            open_privileged_keylog_source(&cli).ok_or("an ordinary keylog is opened now")?;
         std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o000))
-            .expect("revoke access");
-        let lines = source.poll().expect("poll").lines;
+            .map_err(|e| format!("revoke access: {e:?}"))?;
+        let lines = source.poll().map_err(|e| format!("poll: {e:?}"))?.lines;
         std::fs::set_permissions(file.path(), std::fs::Permissions::from_mode(0o600))
-            .expect("restore access");
+            .map_err(|e| format!("restore access: {e:?}"))?;
         assert_eq!(
             lines, "CLIENT_RANDOM aa bb\n",
             "read through the held handle"
         );
+        Ok(())
     }
 
     /// A keylog file that does not exist yields no source here; the decryptor
     /// reports it, with its cause, so the operator reads one error.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_missing_keylog_file_is_left_for_the_decryptor_to_report() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_missing_keylog_file_is_left_for_the_decryptor_to_report() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let missing = dir.path().join("absent.keys");
-        let cli = cli_from(&["--keylog", missing.to_str().expect("utf-8 path")]);
+        let cli = cli_from(&["--keylog", missing.to_str().ok_or("utf-8 path")?]);
         assert!(open_privileged_keylog_source(&cli).is_none());
+        Ok(())
     }
 
     /// A keylog FIFO is opened now, while still privileged, as a live stream
     /// — and opening it does not wait for a writer.
     #[cfg(all(feature = "tls", unix))]
     #[test]
-    fn a_keylog_fifo_is_opened_as_a_live_stream_without_a_writer() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_keylog_fifo_is_opened_as_a_live_stream_without_a_writer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let fifo = dir.path().join("keys.fifo");
         // mkfifo(1) rather than libc::mkfifo: no `unsafe` block for a fixture.
         let made = std::process::Command::new("mkfifo")
             .arg(&fifo)
             .status()
-            .expect("run mkfifo");
+            .map_err(|e| format!("run mkfifo: {e:?}"))?;
         assert!(made.success(), "mkfifo failed: {made}");
-        let cli = cli_from(&["--keylog", fifo.to_str().expect("utf-8 path")]);
-        let source = open_privileged_keylog_source(&cli).expect("a FIFO is a stream");
+        let cli = cli_from(&["--keylog", fifo.to_str().ok_or("utf-8 path")?]);
+        let source = open_privileged_keylog_source(&cli).ok_or("a FIFO is a stream")?;
         assert!(!source.is_exhausted(), "a fresh stream has not reached EOF");
+        Ok(())
     }
 
     /// An inherited descriptor is read as a live stream.
     #[cfg(all(feature = "tls", unix))]
     #[test]
-    fn an_inherited_keylog_descriptor_is_read_as_a_live_stream() {
+    fn an_inherited_keylog_descriptor_is_read_as_a_live_stream() -> Result<(), TestError> {
         use std::os::fd::AsRawFd;
-        let file = tempfile::tempfile().expect("tempfile");
+        let file = tempfile::tempfile().map_err(|e| format!("tempfile: {e:?}"))?;
         let mut cli = cli_from(&[]);
         cli.tls_args.keylog_fd = Some(file.as_raw_fd());
         assert!(open_privileged_keylog_source(&cli).is_some());
+        Ok(())
     }
 
     /// A descriptor that is not open is reported and downgraded to "no
     /// stream" rather than killing a run that can still capture.
     #[cfg(all(feature = "tls", unix))]
     #[test]
-    fn a_keylog_descriptor_that_is_not_open_yields_no_stream() {
+    fn a_keylog_descriptor_that_is_not_open_yields_no_stream() -> Result<(), TestError> {
         let mut cli = cli_from(&[]);
         // Far beyond any open-file limit, so it cannot name a live descriptor.
         cli.tls_args.keylog_fd = Some(i32::MAX);
         assert!(open_privileged_keylog_source(&cli).is_none());
+        Ok(())
     }
 
     // ── Token minting refusals ────────────────────────────────────────
@@ -8637,9 +8833,9 @@ mod startup_refusal_tests {
     /// `--mint-token` with no signing key names the flags that supply one.
     #[cfg(any(feature = "api", feature = "mcp"))]
     #[test]
-    fn minting_without_a_signing_key_names_the_flags_that_supply_one() {
+    fn minting_without_a_signing_key_names_the_flags_that_supply_one() -> Result<(), TestError> {
         let cli = cli_from(&["--mint-token"]);
-        let err = mint_token(&cli).expect_err("no key, no token");
+        let err = mint_token(&cli).err().ok_or("no key, no token")?;
         // Not echoed on failure: the refusal is built beside the token TTL,
         // and CodeQL reads a panic message as a log (rust/cleartext-logging).
         assert!(
@@ -8647,12 +8843,13 @@ mod startup_refusal_tests {
             "the refusal does not name --api-signing-key"
         );
         assert_eq!(run_mint_token(&cli), Some(2));
+        Ok(())
     }
 
     /// A TTL of zero would mint a token that expired as it was printed.
     #[cfg(feature = "api")]
     #[test]
-    fn minting_with_a_zero_ttl_is_refused() {
+    fn minting_with_a_zero_ttl_is_refused() -> Result<(), TestError> {
         let cli = cli_from(&[
             "--mint-token",
             "--api-signing-key",
@@ -8661,9 +8858,10 @@ mod startup_refusal_tests {
             "0",
         ]);
         assert_eq!(
-            mint_token(&cli).expect_err("a zero TTL is refused"),
+            mint_token(&cli).err().ok_or("a zero TTL is refused")?,
             "token TTL must be positive, got 0"
         );
+        Ok(())
     }
 
     // ── The two-clocks notice ─────────────────────────────────────────
@@ -8696,18 +8894,19 @@ mod startup_refusal_tests {
     /// Two HEP members take every timestamp from remote senders: one kind of
     /// clock, so there is no mixing to warn about.
     #[test]
-    fn a_composite_of_hep_listeners_alone_mixes_no_clocks() {
+    fn a_composite_of_hep_listeners_alone_mixes_no_clocks() -> Result<(), TestError> {
         let both = CaptureSource::Composite(vec![
             hep_member("127.0.0.1:19060"),
             hep_member("127.0.0.1:19061"),
         ]);
         assert_eq!(two_clocks_warning(Some(&both)), None);
+        Ok(())
     }
 
     /// Two local interfaces share this host's kernel clock, so they mix
     /// nothing either.
     #[test]
-    fn a_composite_of_local_interfaces_alone_mixes_no_clocks() {
+    fn a_composite_of_local_interfaces_alone_mixes_no_clocks() -> Result<(), TestError> {
         let both = CaptureSource::Composite(vec![
             CaptureSource::Live {
                 device: "eth0".into(),
@@ -8717,6 +8916,7 @@ mod startup_refusal_tests {
             },
         ]);
         assert_eq!(two_clocks_warning(Some(&both)), None);
+        Ok(())
     }
 }
 
@@ -8796,7 +8996,7 @@ mod decision_tests {
 
     /// The offline kill refusal names the flags the operator actually typed.
     #[test]
-    fn the_kill_refusal_names_the_flags_given() {
+    fn the_kill_refusal_names_the_flags_given() -> Result<(), TestError> {
         assert_eq!(
             kill_flags_named(&cli_from(&["--kill-scanner"])),
             "--kill-scanner"
@@ -8809,6 +9009,7 @@ mod decision_tests {
             kill_flags_named(&cli_from(&["--kill-scanner", "-K", "10.0.0.1"])),
             "--kill-scanner / -K"
         );
+        Ok(())
     }
 
     /// `--capture-tunnels` beside an explicit filter is reported as ignored;
@@ -8839,7 +9040,7 @@ mod decision_tests {
 
     /// The `--cores` refusal lists every per-message output asked for.
     #[test]
-    fn cores_lists_each_output_it_cannot_produce() {
+    fn cores_lists_each_output_it_cannot_produce() -> Result<(), TestError> {
         let cli = cli_from(&[
             "--cores",
             "4",
@@ -8856,6 +9057,7 @@ mod decision_tests {
         );
         let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE, "--json"]);
         assert!(cores_unsupported_outputs(&single).is_empty());
+        Ok(())
     }
 
     /// The capacity check accepts exactly enough slots and names HEP senders
@@ -8875,12 +9077,13 @@ mod decision_tests {
 
     /// Each source of key material counts, `--keylog-fd` included.
     #[test]
-    fn every_key_source_counts_as_decryption_keys() {
+    fn every_key_source_counts_as_decryption_keys() -> Result<(), TestError> {
         assert!(!has_decrypt_keys(&cli_from(&[])));
         let mut cli = cli_from(&[]);
         cli.tls_args.keylog_fd = Some(3);
         assert!(has_decrypt_keys(&cli), "--keylog-fd carries secrets too");
         assert!(has_decrypt_keys(&cli_from(&["--keylog", "k.log"])));
+        Ok(())
     }
 
     /// `--allow-coredump` leaves the process dumpable; without it the process
@@ -8938,7 +9141,7 @@ mod decision_tests {
     /// A permission error names the interfaces to grant rights on, never a
     /// HEP listener; any other failure is reported as it came.
     #[test]
-    fn a_capture_open_failure_names_what_to_grant() {
+    fn a_capture_open_failure_names_what_to_grant() -> Result<(), TestError> {
         let composite = CaptureSource::Composite(vec![
             CaptureSource::Live {
                 device: "eth0".into(),
@@ -8952,11 +9155,12 @@ mod decision_tests {
             capture_open_failure("No such device", &composite),
             "Capture source failed to open: No such device"
         );
+        Ok(())
     }
 
     /// Runtime filter re-apply is wired for a single live device only.
     #[test]
-    fn runtime_reconfigure_is_wired_for_a_single_live_device_only() {
+    fn runtime_reconfigure_is_wired_for_a_single_live_device_only() -> Result<(), TestError> {
         let live = CaptureSource::Live {
             device: "eth0".into(),
         };
@@ -8967,6 +9171,7 @@ mod decision_tests {
             paths: vec![FIXTURE_FILE.into()],
         };
         assert!(RuntimeReconfigure::for_source(&cli_from(&[]), &file).is_none());
+        Ok(())
     }
 
     // ── startup commands ───────────────────────────────────────────────
@@ -8974,35 +9179,41 @@ mod decision_tests {
     /// A single-output command refuses a set of inputs, and an output that
     /// names its input.
     #[test]
-    fn a_single_output_command_takes_exactly_one_capture() {
+    fn a_single_output_command_takes_exactly_one_capture() -> Result<(), TestError> {
         let command = OneCopyCommand {
             flag: "--write-annotated",
             writes: "one copy",
             advice: "Run it once per capture.",
         };
         let two = cli_from(&["-I", FIXTURE_FILE, "-I", OTHER_FIXTURE]);
-        let e = resolve_one_capture(&two, &command, "out.pcapng").expect_err("two inputs");
+        let e = resolve_one_capture(&two, &command, "out.pcapng")
+            .err()
+            .ok_or("two inputs")?;
         assert_eq!(e.exit_code, 1);
         assert!(e.message.contains("resolved to 2 files"), "{}", e.message);
         let one = cli_from(&["-I", FIXTURE_FILE]);
-        let e = resolve_one_capture(&one, &command, FIXTURE_FILE).expect_err("over its input");
+        let e = resolve_one_capture(&one, &command, FIXTURE_FILE)
+            .err()
+            .ok_or("over its input")?;
         assert_eq!(e.exit_code, 2);
         assert!(resolve_one_capture(&one, &command, "out.pcapng").is_ok());
+        Ok(())
     }
 
     /// Two spellings of one file name the same file; two files do not.
     #[test]
-    fn names_the_same_file_follows_the_file_not_the_spelling() {
+    fn names_the_same_file_follows_the_file_not_the_spelling() -> Result<(), TestError> {
         let a = std::path::Path::new(FIXTURE_FILE);
         let dotted = format!("./{FIXTURE_FILE}");
         assert!(names_the_same_file(a, a));
         assert!(names_the_same_file(a, std::path::Path::new(&dotted)));
         assert!(!names_the_same_file(a, std::path::Path::new(OTHER_FIXTURE)));
+        Ok(())
     }
 
     /// `--write-annotated` refuses to write over the notes file it reads.
     #[test]
-    fn write_annotated_refuses_to_overwrite_its_notes() {
+    fn write_annotated_refuses_to_overwrite_its_notes() -> Result<(), TestError> {
         let notes = "target/decision-tests-notes-that-do-not-exist.txt";
         let cli = cli_from(&[
             "-I",
@@ -9012,19 +9223,20 @@ mod decision_tests {
             "--write-annotated",
             notes,
         ]);
-        let e = annotated_copy(&cli, notes).expect_err("refused");
+        let e = annotated_copy(&cli, notes).err().ok_or("refused")?;
         assert_eq!(e.exit_code, 2);
         assert!(
             e.message.contains("would overwrite the notes file"),
             "{}",
             e.message
         );
+        Ok(())
     }
 
     /// A malformed pointer is an argument error (2); every other refusal is
     /// one the pointer could not be honored for (1).
     #[test]
-    fn frame_refusals_carry_their_exit_codes() {
+    fn frame_refusals_carry_their_exit_codes() -> Result<(), TestError> {
         use crate::capture::resolve::ResolveError;
         assert_eq!(
             frame_refusal(ResolveError::Malformed("x".into())).exit_code,
@@ -9036,5 +9248,6 @@ mod decision_tests {
         });
         assert_eq!(e.exit_code, 1);
         assert_eq!(e.message, "refusing: cannot read a.pcap: gone");
+        Ok(())
     }
 }

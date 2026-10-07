@@ -2193,7 +2193,7 @@ mod tests {
     /// after the receiver is gone every send returns its weight (1 for a
     /// packet, the batch length for a batch).
     #[test]
-    fn dead_worker_shard_send_is_counted() {
+    fn dead_worker_shard_send_is_counted() -> Result<(), TestError> {
         use crossbeam_channel::bounded;
         let (tx, rx) = bounded::<u32>(4);
         // Live worker: send succeeds, nothing lost.
@@ -2207,6 +2207,7 @@ mod tests {
             128,
             "a lost batch counts every packet in it"
         );
+        Ok(())
     }
 
     // ── Shard-fallback observability ──────────────────────────────────
@@ -2220,9 +2221,10 @@ mod tests {
     /// A run where every packet sharded says nothing at all — a clean run stays
     /// quiet, the same rule the retention and undecodable notices follow.
     #[test]
-    fn shard_fallback_summary_is_silent_when_every_packet_sharded() {
+    fn shard_fallback_summary_is_silent_when_every_packet_sharded() -> Result<(), TestError> {
         assert_eq!(shard_fallback_summary(0, 4_000_000, 8), None);
         assert_eq!(shard_fallback_summary(0, 0, 2), None);
+        Ok(())
     }
 
     /// With one worker (or none) the number is a tautology: `shard_for` sends
@@ -2230,7 +2232,7 @@ mod tests {
     /// nothing about the capture. Printing it on the single-threaded path is
     /// noise, and this is the gate that keeps it off.
     #[test]
-    fn shard_fallback_summary_is_silent_on_the_single_threaded_path() {
+    fn shard_fallback_summary_is_silent_on_the_single_threaded_path() -> Result<(), TestError> {
         assert_eq!(shard_fallback_summary(4_000_000, 4_000_000, 1), None);
         assert_eq!(shard_fallback_summary(4_000_000, 4_000_000, 0), None);
         // …and the very same numbers DO produce a notice once a second worker
@@ -2240,13 +2242,14 @@ mod tests {
             None,
             "two workers must report what one worker suppresses"
         );
+        Ok(())
     }
 
     /// A handful of unreadable frames among millions is background — ARP, LLDP,
     /// a stray non-IP frame. The notice names the exact count and share and
     /// stops there: no emphasis, because nothing emphatic happened.
     #[test]
-    fn shard_fallback_summary_names_the_exact_count_and_share() {
+    fn shard_fallback_summary_names_the_exact_count_and_share() -> Result<(), TestError> {
         assert_eq!(
             shard_fallback_summary(12, 4_000_000, 4).as_deref(),
             Some(
@@ -2255,13 +2258,14 @@ mod tests {
                  being spread across the 4 workers."
             )
         );
+        Ok(())
     }
 
     /// The case this whole notice exists for: nothing sharded, so `--cores 4`
     /// ran one busy worker and three idle ones and reported the throughput
     /// story of a perfectly balanced run.
     #[test]
-    fn shard_fallback_summary_is_emphatic_when_nothing_sharded() {
+    fn shard_fallback_summary_is_emphatic_when_nothing_sharded() -> Result<(), TestError> {
         assert_eq!(
             shard_fallback_summary(4_000_000, 4_000_000, 4).as_deref(),
             Some(
@@ -2273,12 +2277,13 @@ mod tests {
                  cannot follow this capture's encapsulation; report its link type."
             )
         );
+        Ok(())
     }
 
     /// A majority on the fallback worker is its own finding: the run was mostly
     /// single-threaded, which is not the same claim as "entirely".
     #[test]
-    fn shard_fallback_summary_flags_a_mostly_single_threaded_run() {
+    fn shard_fallback_summary_flags_a_mostly_single_threaded_run() -> Result<(), TestError> {
         assert_eq!(
             shard_fallback_summary(3, 4, 2).as_deref(),
             Some(
@@ -2290,36 +2295,38 @@ mod tests {
                  encapsulation; report its link type."
             )
         );
+        Ok(())
     }
 
     /// The emphasis threshold is exactly half, and the two tiers do not bleed
     /// into each other: 49% is quiet, 50% is "mostly", 100% is "bought
     /// nothing" and never "mostly".
     #[test]
-    fn shard_fallback_emphasis_thresholds_are_exact() {
+    fn shard_fallback_emphasis_thresholds_are_exact() -> Result<(), TestError> {
         let mostly = "MOST OF THIS RUN WAS SINGLE-THREADED";
         let nothing = "--cores BOUGHT NOTHING ON THIS CAPTURE";
 
-        let just_under = shard_fallback_summary(49, 100, 8).expect("49 fell back");
+        let just_under = shard_fallback_summary(49, 100, 8).ok_or("49 fell back")?;
         assert!(!just_under.contains(mostly), "49% is not a majority");
         assert!(!just_under.contains(nothing), "49% is not all of it");
 
-        let at_half = shard_fallback_summary(50, 100, 8).expect("50 fell back");
+        let at_half = shard_fallback_summary(50, 100, 8).ok_or("50 fell back")?;
         assert!(at_half.contains(mostly), "50% is exactly the threshold");
         assert!(!at_half.contains(nothing), "50% is not all of it");
 
-        let all = shard_fallback_summary(100, 100, 8).expect("100 fell back");
+        let all = shard_fallback_summary(100, 100, 8).ok_or("100 fell back")?;
         assert!(all.contains(nothing), "100% is all of it");
         assert!(
             !all.contains(mostly),
             "the total case must not also claim the majority case"
         );
+        Ok(())
     }
 
     /// A zero denominator suppresses the share instead of dividing by it: a
     /// percentage of infinity printed beside a real count would discredit both.
     #[test]
-    fn shard_fallback_summary_guards_the_zero_denominator() {
+    fn shard_fallback_summary_guards_the_zero_denominator() -> Result<(), TestError> {
         assert_eq!(
             shard_fallback_summary(5, 0, 4).as_deref(),
             Some(
@@ -2328,19 +2335,21 @@ mod tests {
                  the 4 workers."
             )
         );
+        Ok(())
     }
 
     /// `jobs <= 1` always routes to worker 0 (the single-threaded path).
     #[test]
-    fn jobs_one_is_always_shard_zero() {
+    fn jobs_one_is_always_shard_zero() -> Result<(), TestError> {
         assert_eq!(shard_for(ip(10, 0, 0, 1), ip(10, 0, 0, 2), 1), 0);
         assert_eq!(shard_for(ip(1, 2, 3, 4), ip(5, 6, 7, 8), 0), 0);
+        Ok(())
     }
 
     /// Both directions of a host pair hash to the same worker, so a flow never
     /// splits across workers.
     #[test]
-    fn direction_independent() {
+    fn direction_independent() -> Result<(), TestError> {
         // Both directions of a flow must hash to the same worker.
         for n in [2usize, 4, 8, 12, 16] {
             let a = ip(10, 20, 30, 40);
@@ -2351,22 +2360,24 @@ mod tests {
                 "src/dst order must not change the shard (n={n})"
             );
         }
+        Ok(())
     }
 
     /// Every shard index stays within `0..jobs` across many inputs.
     #[test]
-    fn shard_in_range() {
+    fn shard_in_range() -> Result<(), TestError> {
         for n in [2usize, 4, 7, 12] {
             for i in 0..500u32 {
                 let s = shard_for(ip(10, 20, (i >> 8) as u8, i as u8), ip(10, 30, 0, 1), n);
                 assert!(s < n, "shard {s} out of range for n={n}");
             }
         }
+        Ok(())
     }
 
     /// Distinct host pairs spread across all workers (no empty bucket).
     #[test]
-    fn distributes_across_workers() {
+    fn distributes_across_workers() -> Result<(), TestError> {
         // Distinct host pairs should spread over the workers (not all in one).
         let n = 8;
         let mut buckets = [0usize; 8];
@@ -2378,6 +2389,7 @@ mod tests {
         for (w, &c) in buckets.iter().enumerate() {
             assert!(c > 0, "worker {w} got nothing — sharding not distributing");
         }
+        Ok(())
     }
 
     /// Minimal Ethernet + IPv4 + UDP frame carrying `payload` (10.0.0.1 →
@@ -2435,7 +2447,7 @@ mod tests {
     /// message held behind a hole the capture never filled -- the same as the
     /// single-threaded reader and the file-set path.
     #[test]
-    fn the_streamed_parallel_path_releases_a_message_held_behind_a_hole() {
+    fn the_streamed_parallel_path_releases_a_message_held_behind_a_hole() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
         let (tx, rx) = crate::capture::channel::packet_channel(1024);
         let head = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: never-whole\r\n";
@@ -2450,12 +2462,13 @@ mod tests {
         for frame in frames {
             let n = frame.len();
             tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .expect("worker pool must accept packets");
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
         }
         drop(tx);
         let r = run_offline_parallel(rx, pcfg(2));
         let ids: Vec<String> = r.dialog_store.iter().map(|d| d.call_id.clone()).collect();
         assert_eq!(ids, vec!["held-reply".to_string()], "released at the end");
+        Ok(())
     }
 
     /// Minimal Ethernet ARP request — a frame `peek_host_pair` reads no host
@@ -2490,8 +2503,12 @@ mod tests {
     /// fallback tests assert an EXACT unshardable count, which needs an exact
     /// known mix of readable and unreadable frames.
     #[cfg(feature = "native")]
-    fn write_eth_pcap(dir: &std::path::Path, name: &str, frames: &[Vec<u8>]) -> std::path::PathBuf {
-        write_eth_pcap_at(dir, name, frames, 1_700_000_000)
+    fn write_eth_pcap(
+        dir: &std::path::Path,
+        name: &str,
+        frames: &[Vec<u8>],
+    ) -> Result<std::path::PathBuf, TestError> {
+        Ok(write_eth_pcap_at(dir, name, frames, 1_700_000_000)?)
     }
 
     /// The same, with the first record's timestamp chosen by the caller.
@@ -2506,10 +2523,11 @@ mod tests {
         name: &str,
         frames: &[Vec<u8>],
         first_ts: u32,
-    ) -> std::path::PathBuf {
+    ) -> Result<std::path::PathBuf, TestError> {
         use std::io::Write;
         let path = dir.join(name);
-        let mut f = std::fs::File::create(&path).expect("create the temp pcap");
+        let mut f =
+            std::fs::File::create(&path).map_err(|e| format!("create the temp pcap: {e:?}"))?;
         let mut hdr = Vec::new();
         hdr.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes()); // magic (µs, LE)
         hdr.extend_from_slice(&2u16.to_le_bytes()); // version major
@@ -2518,18 +2536,22 @@ mod tests {
         hdr.extend_from_slice(&0u32.to_le_bytes()); // sigfigs
         hdr.extend_from_slice(&65535u32.to_le_bytes()); // snaplen
         hdr.extend_from_slice(&1u32.to_le_bytes()); // DLT_EN10MB
-        f.write_all(&hdr).expect("write the pcap file header");
+        f.write_all(&hdr)
+            .map_err(|e| format!("write the pcap file header: {e:?}"))?;
         for (i, frame) in frames.iter().enumerate() {
-            let len = u32::try_from(frame.len()).expect("test frame fits a u32");
+            let len =
+                u32::try_from(frame.len()).map_err(|e| format!("test frame fits a u32: {e:?}"))?;
             let mut rec = Vec::new();
             rec.extend_from_slice(&(first_ts + i as u32).to_le_bytes()); // ts_sec
             rec.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
             rec.extend_from_slice(&len.to_le_bytes()); // incl_len
             rec.extend_from_slice(&len.to_le_bytes()); // orig_len
-            f.write_all(&rec).expect("write the record header");
-            f.write_all(frame).expect("write the frame");
+            f.write_all(&rec)
+                .map_err(|e| format!("write the record header: {e:?}"))?;
+            f.write_all(frame)
+                .map_err(|e| format!("write the frame: {e:?}"))?;
         }
-        path
+        Ok(path)
     }
 
     /// The channel-fed `--cores` path must COUNT every packet that fell back to
@@ -2547,14 +2569,14 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn channel_fed_cores_path_counts_every_unshardable_packet() {
+    fn channel_fed_cores_path_counts_every_unshardable_packet() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
         let (tx, rx) = crate::capture::channel::packet_channel(1024);
         for i in 0..7u8 {
             let frame = eth_arp([10, 0, 0, i], [10, 0, 0, 200]);
             let n = frame.len();
             tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .expect("worker pool must accept packets");
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
         }
         for seq in 1u16..=6 {
             let mut payload = vec![0x80, 0x00];
@@ -2565,7 +2587,7 @@ mod tests {
             let frame = eth_ipv4_udp(41000, 42000, &payload);
             let n = frame.len();
             tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .expect("worker pool must accept packets");
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
         }
         drop(tx);
 
@@ -2587,6 +2609,7 @@ mod tests {
                  encapsulation; report its link type."
             )
         );
+        Ok(())
     }
 
     /// The file-fed `--cores` path — the one `-I` reaches, and the one an
@@ -2598,9 +2621,9 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     #[serial_test::serial(undecodable_tally)]
-    fn file_fed_cores_path_counts_every_unshardable_packet() {
+    fn file_fed_cores_path_counts_every_unshardable_packet() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let mut frames = vec![
             eth_arp([10, 0, 0, 1], [10, 0, 0, 200]),
             eth_arp([10, 0, 0, 2], [10, 0, 0, 200]),
@@ -2614,10 +2637,10 @@ mod tests {
             payload.extend_from_slice(&[0xaa; 60]);
             frames.push(eth_ipv4_udp(41000, 42000, &payload));
         }
-        let path = write_eth_pcap(dir.path(), "arp-and-ip.pcap", &frames);
+        let path = write_eth_pcap(dir.path(), "arp-and-ip.pcap", &frames)?;
 
         let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(4))
-            .expect("the fixture reads");
+            .map_err(|e| format!("the fixture reads: {e:?}"))?;
         assert_eq!(r.packets_read, 5, "five raw packets were sharded");
         assert_eq!(r.unshardable_count, 3, "the three ARP frames fell back");
         assert_eq!(r.workers, 4, "pcfg(4) runs four workers");
@@ -2632,6 +2655,7 @@ mod tests {
                  encapsulation; report its link type."
             )
         );
+        Ok(())
     }
 
     /// A capture whose every frame the peek CAN read reports nothing at all.
@@ -2642,13 +2666,13 @@ mod tests {
     /// the core-count-invariance test uses.
     #[cfg(feature = "native")]
     #[test]
-    fn a_fully_shardable_capture_reports_no_fallback() {
+    fn a_fully_shardable_capture_reports_no_fallback() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = [std::path::PathBuf::from(
             "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
         )];
         let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
-            .expect("the corpus fixture reads");
+            .map_err(|e| format!("the corpus fixture reads: {e:?}"))?;
         assert_eq!(
             r.packets_read, 1042,
             "the fixture holds 1042 frames, every one of them sharded"
@@ -2662,6 +2686,7 @@ mod tests {
             None,
             "a fully sharded run must stay quiet, or the notice means nothing"
         );
+        Ok(())
     }
 
     /// The `--cores` path must discover heuristic-only RTP exactly like the
@@ -2670,7 +2695,7 @@ mod tests {
     /// heuristic, so it must land in the merged stream store.
     #[cfg(feature = "native")]
     #[test]
-    fn cores_path_discovers_heuristic_rtp() {
+    fn cores_path_discovers_heuristic_rtp() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
         let (tx, rx) = crate::capture::channel::packet_channel(1024);
         for seq in 1u16..=6 {
@@ -2682,7 +2707,7 @@ mod tests {
             let frame = eth_ipv4_udp(41000, 42000, &payload);
             let n = frame.len();
             tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .expect("worker pool must accept packets");
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
         }
         drop(tx);
         let r = run_offline_parallel(rx, pcfg(2));
@@ -2695,6 +2720,7 @@ mod tests {
             r.rtp_count >= 1,
             "promoted heuristic packets must count as RTP"
         );
+        Ok(())
     }
 
     /// The channel-fed entry point reports orphans from its merged stores too.
@@ -2708,9 +2734,9 @@ mod tests {
     /// time, and merging cannot lose a flag that does not exist.
     #[cfg(feature = "native")]
     #[test]
-    fn channel_fed_cores_path_sweeps_after_the_merge() {
+    fn channel_fed_cores_path_sweeps_after_the_merge() -> Result<(), TestError> {
         use crate::capture::packet::Packet;
-        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp");
+        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
         let (tx, rx) = crate::capture::channel::packet_channel(1024);
         for n in 0..20u16 {
             let mut payload = vec![0x80, 0x00];
@@ -2723,7 +2749,7 @@ mod tests {
             // Six seconds apart, so the capture spans just under two minutes.
             let ts = base + chrono::TimeDelta::seconds(i64::from(n) * 6);
             tx.send(Packet::new(ts, frame, len, len, None, 1))
-                .expect("worker pool must accept packets");
+                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
         }
         drop(tx);
         let r = run_offline_parallel(rx, pcfg(2));
@@ -2734,6 +2760,7 @@ mod tests {
             "a stream no dialog claimed must be reported as an orphan by the \
              merged store"
         );
+        Ok(())
     }
 
     /// A permissive `ParallelConfig` for tests: large capacities, reassembly
@@ -2779,7 +2806,7 @@ mod tests {
     /// which is a tautology and says nothing about what the worker does.
     #[cfg(feature = "native")]
     #[test]
-    fn cores_honor_the_audio_retention_setting() {
+    fn cores_honor_the_audio_retention_setting() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = [std::path::PathBuf::from(
             "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
@@ -2788,9 +2815,9 @@ mod tests {
 
         let mut on = pcfg(4);
         on.retain_audio = true;
-        let kept = run_offline_parallel_file(&paths, &cc, on).unwrap();
+        let kept = run_offline_parallel_file(&paths, &cc, on)?;
 
-        let off = run_offline_parallel_file(&paths, &cc, pcfg(4)).unwrap();
+        let off = run_offline_parallel_file(&paths, &cc, pcfg(4))?;
 
         // The fixture has to carry decodable audio, or both runs are empty and
         // the comparison below is vacuous.
@@ -2820,6 +2847,7 @@ mod tests {
             "retention is opt-in and must stay off by default; keeping payload \
              unasked costs memory per worker"
         );
+        Ok(())
     }
 
     /// Batching the reader→worker hand-off must not change what gets
@@ -2830,7 +2858,7 @@ mod tests {
     /// (dropped tail batch, off-by-one) would desync the counts here.
     #[cfg(feature = "native")]
     #[test]
-    fn batched_dispatch_is_core_count_invariant() {
+    fn batched_dispatch_is_core_count_invariant() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = [std::path::PathBuf::from(
             "tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap",
@@ -2839,8 +2867,8 @@ mod tests {
 
         let runs: Vec<(usize, ReconResult)> = [2usize, 4, 8]
             .into_iter()
-            .map(|c| (c, run_offline_parallel_file(&paths, &cc, pcfg(c)).unwrap()))
-            .collect();
+            .map(|c| Ok::<_, TestError>((c, run_offline_parallel_file(&paths, &cc, pcfg(c))?)))
+            .collect::<Result<_, _>>()?;
 
         let (base_c, base) = &runs[0];
         // Sanity: the corpus actually exercised the pipeline (not an empty read).
@@ -2862,6 +2890,7 @@ mod tests {
                 "SIP/RTP/total counts differ: cores {c} vs {base_c}"
             );
         }
+        Ok(())
     }
 
     /// End-to-end codec-negotiation fixture: the INVITE offered PCMU/PCMA/G722,
@@ -2872,13 +2901,13 @@ mod tests {
     /// codec rather than the SDP offer list.
     #[cfg(feature = "native")]
     #[test]
-    fn codec_negotiation_fixture_reconstructs_used_codecs() {
+    fn codec_negotiation_fixture_reconstructs_used_codecs() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = [std::path::PathBuf::from(
             "tests/pcap-samples/codec-negotiation.pcap",
         )];
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(&paths, &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&paths, &cc, pcfg(2))?;
         let codecs: std::collections::HashSet<String> = r
             .stream_store
             .iter()
@@ -2896,6 +2925,7 @@ mod tests {
             !codecs.contains("PCMA"),
             "PCMA was offered but never used — must not appear: {codecs:?}"
         );
+        Ok(())
     }
 
     /// Opus is a dynamic RTP payload type (here PT 96) with no entry in the
@@ -2905,19 +2935,20 @@ mod tests {
     /// codec resolution works end to end through the offline engine.
     #[cfg(feature = "native")]
     #[test]
-    fn opus_fixture_reconstructs_dynamic_codec_from_sdp() {
+    fn opus_fixture_reconstructs_dynamic_codec_from_sdp() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = [std::path::PathBuf::from(
             "tests/pcap-samples/invite-opus-bye.pcap",
         )];
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(&paths, &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&paths, &cc, pcfg(2))?;
         let opus = r
             .stream_store
             .iter()
             .find(|s| s.codec.as_deref() == Some("opus"));
-        let opus = opus.expect("expected an opus stream resolved from the SDP rtpmap");
+        let opus = opus.ok_or("expected an opus stream resolved from the SDP rtpmap")?;
         assert_eq!(opus.payload_type, 96, "opus carried on dynamic PT 96");
+        Ok(())
     }
 
     /// The parallel reader stamps packet provenance exactly as the
@@ -2929,11 +2960,11 @@ mod tests {
     /// verifiable pointer into that file — the effect, not the assignment.
     #[cfg(feature = "native")]
     #[test]
-    fn parallel_read_stamps_a_verifiable_frame_pointer_on_every_dialog() {
+    fn parallel_read_stamps_a_verifiable_frame_pointer_on_every_dialog() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let path = "tests/pcap-samples/invite-opus-bye.pcap";
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2))?;
 
         let dialogs: Vec<_> = r.dialog_store.iter().collect();
         assert!(
@@ -2941,10 +2972,10 @@ mod tests {
             "the fixture must reconstruct at least one dialog to prove anything"
         );
         for d in &dialogs {
-            let frame = d.first_frame.as_ref().expect(
+            let frame = d.first_frame.as_ref().ok_or(
                 "a --cores dialog with no frame pointer is the exact silent gap \
                  this stamps: first_frame must be Some, not None",
-            );
+            )?;
             assert_eq!(
                 frame.source.as_ref(),
                 path,
@@ -2956,6 +2987,7 @@ mod tests {
                  single-threaded path does, or the pointer resolves UNVERIFIED"
             );
         }
+        Ok(())
     }
 
     /// The digest a `--cores` run stamps must be the value the bytes hash to,
@@ -2971,17 +3003,18 @@ mod tests {
     /// pointing at bytes that never moved. Cheap to assert, and the failure it
     /// catches is one that looks like a corrupted capture rather than a bug.
     #[test]
-    fn a_parallel_digest_is_the_digest_of_that_frames_bytes() {
+    fn a_parallel_digest_is_the_digest_of_that_frames_bytes() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         use crate::capture::packet::frame_digest;
 
         let path = "tests/pcap-samples/invite-opus-bye.pcap";
         let cc = CaptureConfig::default();
-        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2)).unwrap();
+        let r = run_offline_parallel_file(&[std::path::PathBuf::from(path)], &cc, pcfg(2))?;
 
         // Read the same file straight through, so ordinal -> bytes is known
         // independently of anything the parallel path did.
-        let mut cap = pcap::Capture::from_file(path).expect("fixture opens");
+        let mut cap =
+            pcap::Capture::from_file(path).map_err(|e| format!("fixture opens: {e:?}"))?;
         let mut by_ordinal: std::collections::HashMap<u64, Vec<u8>> =
             std::collections::HashMap::new();
         let mut n = 0u64;
@@ -3001,7 +3034,7 @@ mod tests {
             };
             let bytes = by_ordinal
                 .get(&frame.origin.ordinal)
-                .unwrap_or_else(|| panic!("ordinal {} is past the file", frame.origin.ordinal));
+                .ok_or_else(|| format!("ordinal {} is past the file", frame.origin.ordinal))?;
             assert_eq!(
                 got,
                 frame_digest(bytes),
@@ -3015,6 +3048,7 @@ mod tests {
             "no dialog carried a digest, so this asserted nothing — the \
              comparison, not the capture, is what failed"
         );
+        Ok(())
     }
 
     /// Read `paths` with the serial reader ([`shard_set`]) under
@@ -3049,9 +3083,9 @@ mod tests {
         let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3100_0001, s + 1)).collect();
         let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3100_0002, s + 1)).collect();
         let paths = vec![
-            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000)?,
             dir.path().join("rot.pcap1-vanished"),
-            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000)?,
         ];
         let (read, tally, count) = serial_read(&paths, &crate::capture::CaptureConfig::default());
         assert!(
@@ -3080,7 +3114,7 @@ mod tests {
         let frames: Vec<Vec<u8>> = (0..3).map(|s| rtp_frame(0x3200_0001, s + 1)).collect();
         let paths = vec![
             dir.path().join("rot.pcap0-vanished"),
-            write_eth_pcap_at(dir.path(), "rot.pcap1", &frames, 1_700_000_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap1", &frames, 1_700_000_000)?,
         ];
         let (read, tally, count) = serial_read(&paths, &crate::capture::CaptureConfig::default());
         assert!(
@@ -3100,8 +3134,8 @@ mod tests {
         let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3300_0001, s + 1)).collect();
         let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3300_0002, s + 1)).collect();
         let paths = vec![
-            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
-            write_eth_pcap_at(dir.path(), "rot.pcap1", &last, 1_700_001_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000)?,
+            write_eth_pcap_at(dir.path(), "rot.pcap1", &last, 1_700_001_000)?,
         ];
         let cc = crate::capture::CaptureConfig {
             count: Some(4),
@@ -3126,7 +3160,7 @@ mod tests {
     /// A filter that will not compile against a later member refuses the set
     /// and counts that member as a lost skip, after the members before it.
     #[test]
-    fn a_filter_refused_by_a_later_member_is_counted_as_lost() {
+    fn a_filter_refused_by_a_later_member_is_counted_as_lost() -> Result<(), TestError> {
         let paths = set_whose_second_file_rejects_an_ether_filter();
         let cc = crate::capture::CaptureConfig {
             bpf_filter: Some("ether host 00:00:00:00:00:01".to_string()),
@@ -3139,6 +3173,7 @@ mod tests {
             (1, 1, true),
             "{tally:?}"
         );
+        Ok(())
     }
 
     /// A two-file set whose SECOND member has a link type the filter cannot
@@ -3178,7 +3213,8 @@ mod tests {
     /// files needs to know which one refused.
     #[cfg(feature = "native")]
     #[test]
-    fn both_readers_refuse_a_filter_that_will_not_compile_against_a_later_file() {
+    fn both_readers_refuse_a_filter_that_will_not_compile_against_a_later_file()
+    -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
         let paths = set_whose_second_file_rejects_an_ether_filter();
         for p in &paths {
@@ -3192,20 +3228,25 @@ mod tests {
         // The single-threaded reader is the reference: it has refused here
         // since the two arms were reconciled.
         let (tx, _rx) = crate::capture::channel::packet_channel(1024);
-        let single = crate::capture::file::capture_files(&paths, &cc, tx, None).expect_err(
-            "the single-threaded reader must refuse a filter that cannot compile \
+        let single = crate::capture::file::capture_files(&paths, &cc, tx, None)
+            .err()
+            .ok_or(
+                "the single-threaded reader must refuse a filter that cannot compile \
              against file 2",
-        );
+            )?;
         // Matched rather than `expect_err`: `ReconResult` is not `Debug`, and a
         // successful run is exactly the failure this test exists to catch, so
         // it gets the sentence rather than a derive.
         let parallel = match run_offline_parallel_file(&paths, &cc, pcfg(4)) {
             Err(e) => e,
-            Ok(_) => panic!(
-                "--cores must refuse the same input the same way; reading on \
+            Ok(_) => {
+                return Err(
+                    "--cores must refuse the same input the same way; reading on \
                  drops file 2's entire traffic and still answers as though it \
                  had read it"
-            ),
+                        .into(),
+                );
+            }
         };
 
         let (single, parallel) = (format!("{single:#}"), format!("{parallel:#}"));
@@ -3219,6 +3260,7 @@ mod tests {
             "the refusal must name the file it refused on, or a forty-file set \
              leaves the operator nothing to act on: {parallel}"
         );
+        Ok(())
     }
 
     /// A member whose link type sipnab does not decode is skipped by BOTH
@@ -3228,9 +3270,9 @@ mod tests {
     /// anyway — an LTE MAC capture inside an archive of SIP captures.
     #[cfg(feature = "native")]
     #[test]
-    fn both_readers_skip_an_undecodable_member_under_a_filter() {
+    fn both_readers_skip_an_undecodable_member_under_a_filter() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let mac = dir.path().join("mac.pcap");
         let mut f = Vec::new();
         f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes());
@@ -3240,7 +3282,7 @@ mod tests {
             f.extend_from_slice(&v.to_le_bytes());
         }
         f.extend_from_slice(&[1, 2, 3, 4]);
-        std::fs::write(&mac, f).expect("write");
+        std::fs::write(&mac, f).map_err(|e| format!("write: {e:?}"))?;
         let eth = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples/sip-rtp-g711.pcap");
         let paths = vec![eth, mac];
@@ -3252,11 +3294,12 @@ mod tests {
             };
             let (tx, _rx) = crate::capture::channel::packet_channel(1024);
             crate::capture::file::capture_files(&paths, &cc, tx, None)
-                .expect("the single-threaded reader skips it");
+                .map_err(|e| format!("the single-threaded reader skips it: {e:?}"))?;
             if run_offline_parallel_file(&paths, &cc, pcfg(4)).is_err() {
-                panic!("--cores must skip it too (count {count:?})");
+                return Err(format!("--cores must skip it too (count {count:?})").into());
             }
         }
+        Ok(())
     }
 
     // ── One reader thread per file ─────────────────────────────────
@@ -3287,9 +3330,9 @@ mod tests {
     /// like a fast one.
     #[cfg(feature = "native")]
     #[test]
-    fn every_file_of_a_multi_file_set_is_read_and_counted() {
+    fn every_file_of_a_multi_file_set_is_read_and_counted() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let lengths = [7usize, 11, 13, 17, 19];
         let mut paths = Vec::new();
         for (i, len) in lengths.iter().enumerate() {
@@ -3300,11 +3343,11 @@ mod tests {
                 &format!("rot.pcap{i}"),
                 &frames,
                 1_700_000_000 + (i as u32 * 1000),
-            ));
+            )?);
         }
 
         let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
-            .expect("a set of five readable files must read");
+            .map_err(|e| format!("a set of five readable files must read: {e:?}"))?;
 
         let total: usize = lengths.iter().sum();
         assert_eq!(
@@ -3324,12 +3367,12 @@ mod tests {
                 let source = s
                     .first_frame
                     .as_ref()
-                    .expect("every stream must carry the file it was read from")
+                    .ok_or("every stream must carry the file it was read from")?
                     .source
                     .to_string();
-                (source, s.packet_count)
+                Ok::<_, TestError>((source, s.packet_count))
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         seen.sort();
         let mut want: Vec<(String, u64)> = paths
             .iter()
@@ -3342,6 +3385,7 @@ mod tests {
             "each file must contribute exactly its own packets, attributed to \
              itself"
         );
+        Ok(())
     }
 
     /// A stream split across the files of a rotated set is delivered to its
@@ -3361,9 +3405,9 @@ mod tests {
     /// being selected the way this test selects them.
     #[cfg(feature = "native")]
     #[test]
-    fn a_stream_split_across_files_is_delivered_in_capture_order() {
+    fn a_stream_split_across_files_is_delivered_in_capture_order() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let per_file = 50u16;
         let files = 4u16;
         let mut paths = Vec::new();
@@ -3376,12 +3420,12 @@ mod tests {
                 &format!("rot.pcap{f}"),
                 &frames,
                 1_700_000_000 + u32::from(f) * u32::from(per_file),
-            ));
+            )?);
         }
         let total = u64::from(per_file) * u64::from(files);
 
         let parallel = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
-            .expect("the set must read");
+            .map_err(|e| format!("the set must read: {e:?}"))?;
         // `--count` keeps the serial reader, because a budget shared across a
         // set only means anything read in order. A budget nothing can spend
         // therefore reads the same bytes the same way, one file after another,
@@ -3390,15 +3434,15 @@ mod tests {
             count: Some(u64::MAX),
             ..CaptureConfig::default()
         };
-        let serial =
-            run_offline_parallel_file(&paths, &serial_cc, pcfg(4)).expect("the set must read");
+        let serial = run_offline_parallel_file(&paths, &serial_cc, pcfg(4))
+            .map_err(|e| format!("the set must read: {e:?}"))?;
 
         for (label, r) in [("parallel", &parallel), ("serial", &serial)] {
             let s = r
                 .stream_store
                 .iter()
                 .next()
-                .unwrap_or_else(|| panic!("{label}: the fixture holds one RTP stream"));
+                .ok_or_else(|| format!("{label}: the fixture holds one RTP stream"))?;
             assert_eq!(
                 s.packet_count, total,
                 "{label}: every packet of the split stream must arrive"
@@ -3416,8 +3460,8 @@ mod tests {
             );
         }
         let (p, s) = (
-            parallel.stream_store.iter().next().expect("one stream"),
-            serial.stream_store.iter().next().expect("one stream"),
+            parallel.stream_store.iter().next().ok_or("one stream")?,
+            serial.stream_store.iter().next().ok_or("one stream")?,
         );
         assert_eq!(
             (
@@ -3435,6 +3479,7 @@ mod tests {
             "reading the set in parallel must produce the serial reader's \
              answer, bit for bit, for every metric the packet ORDER decides"
         );
+        Ok(())
     }
 
     /// A member of the set that cannot be opened is skipped and the rest of
@@ -3445,19 +3490,19 @@ mod tests {
     /// underneath the run is bad; losing the other two because of it is worse.
     #[cfg(feature = "native")]
     #[test]
-    fn a_missing_file_mid_set_does_not_take_the_rest_of_the_set_with_it() {
+    fn a_missing_file_mid_set_does_not_take_the_rest_of_the_set_with_it() -> Result<(), TestError> {
         use crate::capture::CaptureConfig;
-        let dir = tempfile::tempdir().expect("temp dir");
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let first: Vec<Vec<u8>> = (0..9).map(|s| rtp_frame(0x3000_0001, s + 1)).collect();
         let last: Vec<Vec<u8>> = (0..5).map(|s| rtp_frame(0x3000_0002, s + 1)).collect();
         let paths = vec![
-            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap0", &first, 1_700_000_000)?,
             dir.path().join("rot.pcap1-vanished"),
-            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000),
+            write_eth_pcap_at(dir.path(), "rot.pcap2", &last, 1_700_001_000)?,
         ];
 
         let r = run_offline_parallel_file(&paths, &CaptureConfig::default(), pcfg(4))
-            .expect("one unreadable member must not fail the whole set");
+            .map_err(|e| format!("one unreadable member must not fail the whole set: {e:?}"))?;
         assert_eq!(
             r.packets_read, 14,
             "the two readable files must be read in full"
@@ -3467,6 +3512,7 @@ mod tests {
             2,
             "both readable files' traffic must reach the workers"
         );
+        Ok(())
     }
 
     // ── The read-ahead ledger ──────────────────────────────────────
@@ -3509,7 +3555,7 @@ mod tests {
     /// run.
     #[cfg(feature = "native")]
     #[test]
-    fn the_dispatched_files_reader_is_never_charged_the_runway() {
+    fn the_dispatched_files_reader_is_never_charged_the_runway() -> Result<(), TestError> {
         let runway = std::sync::Arc::new(Runway::new(3, 0));
         let r = std::sync::Arc::clone(&runway);
         assert!(
@@ -3517,6 +3563,7 @@ mod tests {
             "the file being dispatched must be admitted with an empty runway, \
              or the run deadlocks the moment the readers ahead spend it"
         );
+        Ok(())
     }
 
     /// It is bounded all the same: it draws on the dispatch reserve, and waits
@@ -3530,7 +3577,7 @@ mod tests {
     /// 65535-byte snaplen the same queue is tens of gigabytes.
     #[cfg(feature = "native")]
     #[test]
-    fn the_dispatched_files_reader_waits_when_its_reserve_is_spent() {
+    fn the_dispatched_files_reader_waits_when_its_reserve_is_spent() -> Result<(), TestError> {
         let runway = std::sync::Arc::new(Runway::new(2, 0));
         assert!(
             runway.acquire(0, DISPATCH_RESERVE_BYTES),
@@ -3557,6 +3604,7 @@ mod tests {
             Ok(true),
             "forwarding a batch must hand its bytes back and wake the reader"
         );
+        Ok(())
     }
 
     /// The whole runway goes to the file the dispatcher will reach NEXT, and
@@ -3567,7 +3615,7 @@ mod tests {
     /// read stage 0.677s instead of 0.583s.
     #[cfg(feature = "native")]
     #[test]
-    fn only_the_next_file_in_line_may_spend_the_runway() {
+    fn only_the_next_file_in_line_may_spend_the_runway() -> Result<(), TestError> {
         let runway = std::sync::Arc::new(Runway::new(4, 1000));
         assert!(runway.acquire(1, 400), "file 1 is next in line");
 
@@ -3586,6 +3634,7 @@ mod tests {
             finishes_promptly(move || assert!(claiming.acquire(2, 100))),
             "the claim must pass on the moment file 1 is finished"
         );
+        Ok(())
     }
 
     /// A batch bigger than the whole budget is admitted rather than refused
@@ -3596,7 +3645,7 @@ mod tests {
     /// snaplen is the ordinary way to reach this.
     #[cfg(feature = "native")]
     #[test]
-    fn a_batch_larger_than_the_whole_runway_is_still_admitted() {
+    fn a_batch_larger_than_the_whole_runway_is_still_admitted() -> Result<(), TestError> {
         let runway = std::sync::Arc::new(Runway::new(2, 100));
         let r = std::sync::Arc::clone(&runway);
         assert!(
@@ -3604,6 +3653,7 @@ mod tests {
             "one oversized batch must go through, or a jumbo capture stops \
              dead"
         );
+        Ok(())
     }
 
     /// Every byte the reserve lends comes back when the batch is forwarded.
@@ -3614,7 +3664,7 @@ mod tests {
     /// every file; one that gave back more would stop being a bound.
     #[cfg(feature = "native")]
     #[test]
-    fn every_byte_the_dispatch_reserve_lends_comes_back() {
+    fn every_byte_the_dispatch_reserve_lends_comes_back() -> Result<(), TestError> {
         let runway = Runway::new(2, 0);
         assert!(runway.acquire(0, 4096));
         assert!(runway.acquire(0, 8192));
@@ -3630,6 +3680,7 @@ mod tests {
             DISPATCH_RESERVE_BYTES,
             "forwarding both must restore the reserve exactly — no more, no less"
         );
+        Ok(())
     }
 
     /// Canceling releases a reader that is waiting for the runway.
@@ -3639,7 +3690,7 @@ mod tests {
     /// threads. A waiter nobody wakes turns a reported error into a hang.
     #[cfg(feature = "native")]
     #[test]
-    fn canceling_the_runway_releases_a_waiting_reader() {
+    fn canceling_the_runway_releases_a_waiting_reader() -> Result<(), TestError> {
         let runway = std::sync::Arc::new(Runway::new(4, 0));
         let waiting = std::sync::Arc::clone(&runway);
         let (tx, rx) = crossbeam_channel::bounded(1);
@@ -3662,5 +3713,6 @@ mod tests {
             "a canceled runway must release its waiters, and tell them the \
              run is over rather than admitting them"
         );
+        Ok(())
     }
 }
