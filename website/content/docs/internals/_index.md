@@ -233,7 +233,9 @@ process, so the floor is not optional.
   The same arrangement covers the operator
   pages: [`build-site-pages.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-site-pages.py) renders
   each entry in its `PAGES` registry from `docs/` into [`website/content/docs/`](https://github.com/NormB/sipnab/blob/main/website/content/docs),
-  gated by `site_pages_mirror_is_current`. That same script also writes
+  gated by `site_pages_mirror_is_current`. Two entries' sources sit outside
+  `docs/` ([`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) and [`contrib/README.md`](https://github.com/NormB/sipnab/blob/main/contrib/README.md)), and the script resolves each page's relative
+  links from that page's own directory. That same script also writes
   `llms.txt` and `llms-full.txt` into `website/static/`, from ALL the published
   pages — `docs/internals/` included — and `llms_aggregates_are_current` gates
   them.

@@ -60,6 +60,8 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Run sipnab beside Kamailio](https://sipnab.com/docs/kamailio-sipnab/): Install sipnab on the Kamailio machine and watch a call through the proxy as one call, from both its legs, with or without OpenSIPS beside it.
 - [Ban SIP scanners with fail2ban](https://sipnab.com/docs/fail2ban/): Have OpenSIPS log scanners and wrong passwords, and fail2ban ban them with nftables, while a phone keeps registering and calling. No sipnab involved.
 - [Feed fail2ban from sipnab](https://sipnab.com/docs/fail2ban-sipnab/): Run sipnab's scanner and registration-flood detectors as a service and have fail2ban ban what they find, with the filter and jail that ship with sipnab.
+- [Contribute to sipnab](https://sipnab.com/docs/contributing/): Build from source, run the tests and git hooks, sign the contributor agreement, and take a change through review to merge.
+- [Use the optional integrations in contrib](https://sipnab.com/docs/contrib/): The starter config, MCP tracing script, observability stack, Grafana dashboard, alert rules and fail2ban files that ship in the repo but not in the packages.
 
 ## Internals
 

@@ -334,6 +334,7 @@ pages = [
   { path = "docs/integrations.md", menu = true },
   { path = "docs/metrics.md", menu = true },
   { path = "docs/vcon.md", menu = true },
+  { path = "docs/contrib.md", menu = true },
   { path = "api-reference.md", menu = false },
   { path = "docs/api-clients.md", menu = false },
   { path = "docs/auth.md", menu = false },
@@ -384,4 +385,5 @@ title = "Build and measure"
 pages = [
   { path = "docs/build.md", menu = true },
   { path = "docs/benchmarks.md", menu = true },
+  { path = "docs/contributing.md", menu = true },
 ]

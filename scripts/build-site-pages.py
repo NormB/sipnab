@@ -23,6 +23,7 @@ Default OUTPUT_DIR is `website/content/docs`.
 from __future__ import annotations
 
 import importlib.util
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -636,6 +637,30 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "have fail2ban ban what they find, with the filter and jail that ship "
         "with sipnab.",
     ),
+    # The two contributor documents that live outside docs/ (SITE-CONTRIB).
+    # Their sources sit at the repo root and in contrib/, where GitHub shows
+    # them to a contributor, so their relative links resolve from those
+    # directories (see `render`), not from docs/. 59 and 60 were free once
+    # docs/vcon-store.md took 58.
+    (
+        "CONTRIBUTING.md",
+        "contributing.md",
+        "Contributing to sipnab",
+        "Contribute to sipnab",
+        60,
+        "Build from source, run the tests and git hooks, sign the contributor "
+        "agreement, and take a change through review to merge.",
+    ),
+    (
+        "contrib/README.md",
+        "contrib.md",
+        "contrib",
+        "Use the optional integrations in contrib",
+        59,
+        "The starter config, MCP tracing script, observability stack, Grafana "
+        "dashboard, alert rules and fail2ban files that ship in the repo but "
+        "not in the packages.",
+    ),
 ]
 
 BANNER = (
@@ -678,11 +703,20 @@ ANCHORS: dict[str, dict[str, str]] = {}
 
 
 def _load_anchors(root: Path) -> None:
-    """Index every `docs/` page's headings under both slug algorithms."""
+    """Index every `docs/` page's headings under both slug algorithms.
+
+    A page whose source sits outside `docs/` (CONTRIBUTING.md) is indexed too,
+    under the same `docs/`-relative key `docs_rel` gives it, so its same-page
+    anchors translate like every other page's.
+    """
     docs = root / "docs"
     for path in docs.rglob("*.md"):
         rel = path.relative_to(docs).as_posix()
         ANCHORS[rel] = _INT.anchor_map(path.read_text(encoding="utf-8"))
+    for src, *_ in PAGES:
+        rel = docs_rel(src)
+        if rel not in ANCHORS:
+            ANCHORS[rel] = _INT.anchor_map((root / src).read_text(encoding="utf-8"))
 
 
 def _xlate(target: str, anchor: str) -> str:
@@ -698,23 +732,55 @@ def _xlate(target: str, anchor: str) -> str:
 CODE_LINK_RE = code_link_re()
 
 
-def rewrite_link(m: re.Match) -> str:
+def repo_path(src_dir: str, target: str) -> str:
+    """The repo-relative path a relative link in a page under `src_dir` names.
+
+    A link is relative to the directory of the page it sits in. Every page
+    used to come from `docs/`, so `docs/` was assumed; CONTRIBUTING.md (at the
+    root) and contrib/README.md break that assumption, and resolved against
+    `docs/` their `MAINTAINERS.md` and `observability/README.md` became blob
+    URLs for files that do not exist.
+    """
+    path = posixpath.normpath(posixpath.join(src_dir, target))
+    if path == ".." or path.startswith("../"):
+        raise SystemExit(f"link {target!r} in {src_dir or '.'}/ points outside the repo")
+    return path
+
+
+def docs_rel(path: str) -> str:
+    """`path` relative to `docs/`, the form `DOCS_TO_SITE` and ANCHORS key on."""
+    return posixpath.relpath(path, "docs")
+
+
+def rewrite_link(src_dir: str, m: re.Match) -> str:
     target, anchor = m.group(1), (m.group(2) or "")
     if target.startswith(("http://", "https://")):
         return m.group(0)
-    site = DOCS_TO_SITE.get(target)
+    path = repo_path(src_dir, target)
+    site = DOCS_TO_SITE.get(docs_rel(path))
     if site:
         # Only a site page needs the Zola spelling. A blob URL is read on
         # GitHub, where the anchor is already correct.
-        return f"](@/docs/{site}{_xlate(target, anchor)})"
-    return f"]({BLOB}/docs/{target}{anchor})"
+        return f"](@/docs/{site}{_xlate(docs_rel(path), anchor)})"
+    return f"]({BLOB}/{path}{anchor})"
 
 
-def rewrite_code_link(m: re.Match) -> str:
-    parts = [p for p in m.group(1).split("/") if p not in ("", ".")]
-    while parts and parts[0] == "..":
-        parts.pop(0)
-    return f"]({BLOB}/{'/'.join(parts)})"
+def rewrite_code_link(src_dir: str, m: re.Match) -> str:
+    return f"]({BLOB}/{repo_path(src_dir, m.group(1))})"
+
+
+# Any other relative link: a repo file that is neither a `.md` page nor under
+# a code tree, such as `deny.toml`, `Cargo.lock` or `.github/CODEOWNERS`.
+# LINK_RE and CODE_LINK_RE leave these as they are, and on the site a relative
+# target resolves under /docs/ to nothing. The target must not start with a
+# URL scheme, `@/` (already rewritten), `/` (site-absolute) or `#`.
+OTHER_LINK_RE = re.compile(
+    r"\]\(\s*(?![a-zA-Z][a-zA-Z0-9+.-]*:|@/|/|#)([^)\s#]+)(#[^)\s]*)?\s*\)"
+)
+
+
+def rewrite_other_link(src_dir: str, m: re.Match) -> str:
+    return f"]({BLOB}/{repo_path(src_dir, m.group(1))}{m.group(2) or ''})"
 
 
 def render(src: str, text: str, want_h1: str, title: str, weight: int,
@@ -722,13 +788,17 @@ def render(src: str, text: str, want_h1: str, title: str, weight: int,
     h1, body = _INT.strip_leading_h1(text)
     if h1 != want_h1:
         raise SystemExit(f"{src} H1 is {h1!r}, expected {want_h1!r}")
-    body = LINK_RE.sub(rewrite_link, body)
+    # Links resolve from the source page's own directory: `docs/` for most
+    # pages, the repo root for CONTRIBUTING.md, `contrib/` for its README.
+    src_dir = posixpath.dirname(src)
+    body = LINK_RE.sub(lambda m: rewrite_link(src_dir, m), body)
     # Same-page anchors resolve against this page's own headings.
-    rel = src[len("docs/"):]
+    rel = docs_rel(src)
     body = SELF_ANCHOR_RE.sub(
         lambda m: f"]({_xlate(rel, m.group(1))})", body
     )
-    body = sub_outside_code(CODE_LINK_RE, rewrite_code_link, body)
+    body = sub_outside_code(CODE_LINK_RE, lambda m: rewrite_code_link(src_dir, m), body)
+    body = sub_outside_code(OTHER_LINK_RE, lambda m: rewrite_other_link(src_dir, m), body)
 
     # Mermaid, converted with the SAME function the internals generator uses.
     #

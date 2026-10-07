@@ -1165,7 +1165,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1297 -> 1312: the vCon forwarder (VCON-FWD). Measured per file from
     // the diff: vcon-sipnab.md +5, vcon-store.md +4 (new), vcon.md +3,
     // cli-reference.md +2, README.md (the docs index) +1.
-    const EXPECTED_WIKI_LINKS: usize = 1312;
+    // 1312 -> 1313: docs/internals/README.md links contrib/README.md, the
+    // one site page source outside docs/ (SITE-CONTRIB).
+    // 1313 -> 1314: the same sentence links CONTRIBUTING.md, now a site page
+    // source too.
+    const EXPECTED_WIKI_LINKS: usize = 1314;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
