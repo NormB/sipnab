@@ -638,6 +638,7 @@ pub fn run_tui_mode(
         (&dialog_store, &stream_store),
         &actions,
         capture_meter,
+        policy.portrange,
     );
 
     // Build resolved theme and keymap from config
@@ -945,6 +946,10 @@ fn start_relay_reconciler(
 /// Start the REST API server if --api is specified. The TUI owns stdio, so
 /// MCP stdio is never selected here.
 ///
+/// `portrange` is the run's resolved `--portrange`: the API reads capture
+/// files (`GET /v1/captures/compare`) with the run's options, gate included,
+/// as `-I` reads them.
+///
 /// # Side effects
 ///
 /// Exits the process (code 2) when a server cannot start.
@@ -954,6 +959,7 @@ fn start_tui_servers(
     (dialog_store, stream_store): (&Arc<RwLock<DialogStore>>, &Arc<RwLock<StreamStore>>),
     actions: &crate::security::actions::Actions,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
+    portrange: (u16, u16),
 ) -> Option<crate::app::servers::ServerHandles> {
     crate::app::servers::start_servers(
         cli,
@@ -988,6 +994,7 @@ fn start_tui_servers(
             // MCP is never selected here, and `security_findings` is the only
             // consumer, so there is nothing to declare.
             armed_detections: Vec::new(),
+            pipeline_options: crate::app::server_pipeline_options(cli, config, portrange),
         },
         // `mcp: false` above: this door serves no MCP tools, so there is no
         // `query_relay` here to hold a permit for. The reconciler's own permit
@@ -1529,14 +1536,16 @@ pub fn tui_pipeline_options(
     config: &crate::config::Config,
     no_rtp: bool,
 ) -> crate::pipeline::PipelineOptions {
-    crate::pipeline::PipelineOptions {
-        no_dialog: cli.dialog_args.no_dialog,
-        no_rtp,
-        sip_portrange: None,
-        rtpproxy_control: cli.rtp_args.rtpproxy_control,
-        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
-        hep_parse: cli.hep_parse(config),
-    }
+    crate::app::pipeline_options(
+        cli,
+        crate::app::PipelineDecisions {
+            no_rtp,
+            hep_parse: cli.hep_parse(config),
+            // No SIP port gate: the live capture's BPF filter, generated from
+            // `--portrange`, already applied it.
+            sip_portrange: None,
+        },
+    )
 }
 
 #[cfg(test)]

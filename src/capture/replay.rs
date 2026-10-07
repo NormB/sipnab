@@ -5,11 +5,17 @@
 //! One reader, shared: the MCP `open_capture` background loader and the
 //! `compare_captures` tool both read a pcap into a `DialogStore`/`StreamStore`
 //! this way, and so does the REST `GET /v1/captures/compare` route. It routes
-//! every packet through [`crate::pipeline::process_packet`] — the same applier
-//! the live path uses — so a file read here is analyzed exactly as an `-I` one.
+//! every packet through [`crate::pipeline::apply_hep_parse`] and then
+//! [`crate::pipeline::process_packet`] — the same applier the live path uses —
+//! with the caller's [`crate::pipeline::PipelineOptions`].
 //!
-//! The SIP port gate is off, which is what the TUI's interactive open does: it
-//! is the direction that cannot under-report, because every port is considered.
+//! The options are the caller's, not this module's. The servers pass the run's
+//! (built by `crate::app::server_pipeline_options`), so a file read here
+//! applies the run's `--hep-parse`, `--portrange`, `--no-rtp`, `--no-dialog`,
+//! `--rtpproxy-control` and `--quiet-bad-parse` as `-I` on the same command
+//! line does. Before they were threaded through, this reader used the
+//! defaults, and a HEP copy opened through MCP or REST showed no SIP while the
+//! same file given to `-I -E` decoded in full.
 //!
 //! It REPORTS whether it stopped early rather than acting on that itself. A
 //! truncated dump is the normal state of a rotating capture's newest member, so
@@ -39,11 +45,17 @@ pub struct ReadOutcome {
     pub stopped_early: bool,
 }
 
-/// Read every packet of `path` into the two stores.
+/// Read every packet of `path` into the two stores, classified with `opts`.
 ///
-/// Routes through [`crate::pipeline::process_packet`] — the same applier the
-/// live path uses — rather than a second classify-and-store loop, so an opened
-/// capture is analyzed exactly as an `-I` one is.
+/// Each packet is unwrapped by [`crate::pipeline::apply_hep_parse`] when
+/// `opts.hep_parse` is set, then routed through
+/// [`crate::pipeline::process_packet`] — the same applier the live path uses —
+/// rather than a second classify-and-store loop. `opts.sip_portrange` gates
+/// signaling, and `no_rtp`, `no_dialog`, `rtpproxy_control` and
+/// `quiet_bad_parse` apply as they do on the live path. Given the run's
+/// options, an opened capture is analyzed as the same file given to `-I` with
+/// the same flags; what this reader does not do is decrypt (it holds no keys)
+/// or ask a relay about the media (the calls in a file ended in the past).
 ///
 /// # Returns
 ///
@@ -60,13 +72,14 @@ pub struct ReadOutcome {
 #[must_use]
 pub fn read_into_stores(
     path: &Path,
+    opts: &crate::pipeline::PipelineOptions,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
 ) -> ReadOutcome {
     let holds_members = super::archive::holds_members(path);
     if !holds_members {
-        return read_one(path, dialog_store, stream_store, progress);
+        return read_one(path, opts, dialog_store, stream_store, progress);
     }
     let set = match super::input_set::resolve_set(
         &[path.display().to_string()],
@@ -89,7 +102,13 @@ pub fn read_into_stores(
     for input in set.iter() {
         let before = total.packets;
         let member_progress = AtomicU64::new(0);
-        let one = read_one(&input.path, dialog_store, stream_store, &member_progress);
+        let one = read_one(
+            &input.path,
+            opts,
+            dialog_store,
+            stream_store,
+            &member_progress,
+        );
         total.packets = before + one.packets;
         progress.store(total.packets, Ordering::Relaxed);
         total.stopped_early |= one.stopped_early;
@@ -104,6 +123,7 @@ pub fn read_into_stores(
 /// Read one capture file into the stores. See [`read_into_stores`].
 fn read_one(
     path: &Path,
+    opts: &crate::pipeline::PipelineOptions,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     progress: &AtomicU64,
@@ -123,7 +143,6 @@ fn read_one(
     };
     let link_type = cap.get_datalink().0;
     let mut rtp_heuristic = crate::rtp::heuristic::RtpHeuristic::new();
-    let opts = crate::pipeline::PipelineOptions::default();
     let mut packets = 0u64;
 
     loop {
@@ -180,6 +199,13 @@ fn read_one(
         if parsed.payload.is_empty() {
             continue;
         }
+        // `--hep-parse`, by the rule every packet router applies. `None` is a
+        // HEP datagram whose transport no rule names, already counted. This is
+        // the only unwrap: neither `process_packet` nor the classifier it calls
+        // reads `opts.hep_parse`.
+        let Some(parsed) = crate::pipeline::apply_hep_parse(&parsed, opts.hep_parse) else {
+            continue;
+        };
         // No decryption keys on this path, so no substituted plaintext.
         let mut decrypt = crate::pipeline::MediaDecrypt::default();
         crate::pipeline::process_packet(
@@ -187,7 +213,7 @@ fn read_one(
             dialog_store,
             stream_store,
             &mut rtp_heuristic,
-            &opts,
+            opts,
             &mut decrypt,
             // RE4 asks a live relay. This path reads a FILE, whose calls ended
             // in the past, so there is nothing here to ask about.
@@ -204,7 +230,91 @@ fn read_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::PipelineOptions;
     use crate::sip::dialog_store::DialogStore;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Read `bytes`, written to a temporary capture file, with `opts`.
+    fn read_bytes_with(
+        bytes: &[u8],
+        opts: &PipelineOptions,
+    ) -> Result<(ReadOutcome, Arc<RwLock<DialogStore>>), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("capture.pcap");
+        std::fs::write(&path, bytes)?;
+        let ds = Arc::new(RwLock::new(DialogStore::new(16, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(16)));
+        let outcome = read_into_stores(&path, opts, &ds, &ss, &AtomicU64::new(0));
+        Ok((outcome, ds))
+    }
+
+    /// `--hep-parse` reaches this reader. With it, a HEP copy reads as the SIP
+    /// inside: the dialog carries the INNER addresses and the time the HEP
+    /// header carries, not the loopback datagram's. Without it the same file
+    /// holds no SIP, because the payload is a HEP header. Both directions are
+    /// asserted, so the test is of the option and not of the parser.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn the_callers_hep_parse_reads_a_hep_copy_as_the_sip_inside() -> Result<(), TestError> {
+        let hep_time = chrono::DateTime::from_timestamp(1_718_000_000, 250_000_000)
+            .ok_or("a valid HEP time")?;
+        let pcap = crate::test_utils::hep_invite_pcap("replay-hep@x", hep_time);
+
+        let on = PipelineOptions {
+            hep_parse: true,
+            ..PipelineOptions::default()
+        };
+        let (outcome, ds) = read_bytes_with(&pcap, &on)?;
+        assert_eq!(outcome.packets, 1, "the one HEP datagram is read");
+        let store = ds.read();
+        let dialog = store
+            .get("replay-hep@x")
+            .ok_or("with hep_parse the INVITE inside the HEP copy must be a dialog")?;
+        assert_eq!(dialog.src_addr, std::net::IpAddr::from([10, 1, 0, 1]));
+        assert_eq!(dialog.dst_addr, std::net::IpAddr::from([10, 2, 0, 1]));
+        assert_eq!(dialog.src_port, 5060, "the inner source port, not 40000");
+        assert_eq!(
+            dialog.created_at, hep_time,
+            "the HEP header's time, not the pcap record's"
+        );
+        drop(store);
+
+        let (outcome, ds) = read_bytes_with(&pcap, &PipelineOptions::default())?;
+        assert_eq!(outcome.packets, 1);
+        assert!(
+            ds.read().is_empty(),
+            "without hep_parse the HEP payload stays opaque, so no dialog"
+        );
+        Ok(())
+    }
+
+    /// The caller's SIP port gate reaches this reader, as `--portrange` does on
+    /// `-I`: a range that excludes the fixture's signaling port leaves no
+    /// dialog, and no gate leaves the fixture's dialogs.
+    #[test]
+    #[serial_test::serial(portrange_skips)]
+    fn the_callers_port_range_gates_signaling_on_this_reader() -> Result<(), TestError> {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/pcap-samples/sip-rtp-g711.pcap"),
+        )?;
+        let (_, open) = read_bytes_with(&bytes, &PipelineOptions::default())?;
+        assert!(!open.read().is_empty(), "the fixture holds dialogs");
+
+        let gated = PipelineOptions {
+            sip_portrange: Some((5999, 5999)),
+            ..PipelineOptions::default()
+        };
+        let (outcome, ds) = read_bytes_with(&bytes, &gated)?;
+        assert!(outcome.packets > 0, "the packets are still read");
+        assert!(
+            ds.read().is_empty(),
+            "a range that excludes 5060 must drop the signaling, as on -I"
+        );
+        crate::pipeline::reset_portrange_skips();
+        Ok(())
+    }
 
     /// A real capture reads into the stores and reports a clean, complete read.
     #[test]
@@ -215,7 +325,7 @@ mod tests {
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples/sip-rtp-g711.pcap");
 
-        let outcome = read_into_stores(&path, &ds, &ss, &progress);
+        let outcome = read_into_stores(&path, &PipelineOptions::default(), &ds, &ss, &progress);
 
         assert!(outcome.packets > 0, "the fixture has packets");
         assert!(outcome.error.is_none(), "a readable file is not an error");
@@ -235,7 +345,7 @@ mod tests {
         let progress = AtomicU64::new(0);
         let path = std::path::Path::new("/nonexistent/definitely-not-here.pcap");
 
-        let outcome = read_into_stores(path, &ds, &ss, &progress);
+        let outcome = read_into_stores(path, &PipelineOptions::default(), &ds, &ss, &progress);
 
         assert_eq!(outcome.packets, 0);
         assert!(outcome.error.is_some(), "an unreadable file is an error");
@@ -261,7 +371,13 @@ mod tests {
         let count = |path: &std::path::Path| {
             let ds = Arc::new(RwLock::new(DialogStore::new(1000, false)));
             let ss = Arc::new(RwLock::new(StreamStore::new(1000)));
-            let outcome = read_into_stores(path, &ds, &ss, &AtomicU64::new(0));
+            let outcome = read_into_stores(
+                path,
+                &PipelineOptions::default(),
+                &ds,
+                &ss,
+                &AtomicU64::new(0),
+            );
             assert!(outcome.error.is_none(), "{:?}", outcome.error);
             (outcome.packets, ds.read().len(), ss.read().len())
         };
@@ -294,7 +410,7 @@ mod tests {
         let ss = Arc::new(RwLock::new(StreamStore::new(16)));
         let progress = AtomicU64::new(0);
 
-        let outcome = read_into_stores(&path, &ds, &ss, &progress);
+        let outcome = read_into_stores(&path, &PipelineOptions::default(), &ds, &ss, &progress);
 
         assert_eq!(outcome.packets, 1, "the one record is read");
         assert_eq!(

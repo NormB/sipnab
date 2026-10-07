@@ -45,6 +45,82 @@ pub fn one_record_pcap(caplen: u32, origlen: u32) -> Vec<u8> {
     f
 }
 
+/// The HEP copy of one INVITE, as a proxy sends it, in a classic pcap.
+///
+/// The OUTER frame is one Ethernet/IPv4/UDP datagram on loopback,
+/// 127.0.0.1:40000 -> 127.0.0.1:9063, stamped `1_700_000_000` seconds. The
+/// INNER message, encoded by the production HEP encoder, is the INVITE
+/// `call_id` from 10.1.0.1:5060 to 10.2.0.1:5060, stamped `hep_time`. Read
+/// without `--hep-parse` the frame holds no SIP at all (its payload starts
+/// `HEP3`); unwrapped, it is one dialog with the inner addresses and the HEP
+/// time, so a test can tell which of the two a reader used.
+#[cfg(feature = "hep")]
+pub fn hep_invite_pcap(call_id: &str, hep_time: chrono::DateTime<chrono::Utc>) -> Vec<u8> {
+    use crate::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
+    let invite = build_sip_message(
+        "INVITE sip:bob@example.com SIP/2.0",
+        &[
+            "Via: SIP/2.0/UDP 10.1.0.1:5060;branch=z9hG4bKhepcopy",
+            "Max-Forwards: 70",
+            "From: Alice <sip:alice@example.com>;tag=hepcopy",
+            "To: <sip:bob@example.com>",
+            &format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE",
+            "Content-Length: 0",
+        ],
+        b"",
+    );
+    let inner = HepEndpoint {
+        src_addr: [10, 1, 0, 1].into(),
+        dst_addr: [10, 2, 0, 1].into(),
+        src_port: 5060,
+        dst_port: 5060,
+        transport: crate::net::TransportProto::Udp,
+    };
+    let hep = build_hep_v3(&inner, hep_time, HepProtocol::Sip, 1, None, &invite);
+
+    // IPv4 header with its checksum, then UDP (checksum 0 = not computed).
+    let udp_len = 8 + hep.len();
+    let total_len = 20 + udp_len;
+    let mut ip = Vec::with_capacity(20);
+    ip.extend_from_slice(&[0x45, 0x00]);
+    ip.extend_from_slice(&(total_len as u16).to_be_bytes());
+    ip.extend_from_slice(&[0x00, 0x00, 0x40, 0x00, 64, 17, 0x00, 0x00]);
+    ip.extend_from_slice(&[127, 0, 0, 1]);
+    ip.extend_from_slice(&[127, 0, 0, 1]);
+    let mut sum: u32 = ip
+        .chunks(2)
+        .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
+        .sum();
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    ip[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+    let mut frame = Vec::with_capacity(14 + total_len);
+    frame.extend_from_slice(&[0x02, 0, 0, 0, 0, 2, 0x02, 0, 0, 0, 0, 1, 0x08, 0x00]);
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&40_000u16.to_be_bytes());
+    frame.extend_from_slice(&9_063u16.to_be_bytes());
+    frame.extend_from_slice(&(udp_len as u16).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]);
+    frame.extend_from_slice(&hep);
+
+    let mut f = Vec::new();
+    f.extend_from_slice(&0xa1b2_c3d4u32.to_le_bytes()); // microsecond magic
+    f.extend_from_slice(&2u16.to_le_bytes()); // version major
+    f.extend_from_slice(&4u16.to_le_bytes()); // version minor
+    f.extend_from_slice(&0i32.to_le_bytes()); // thiszone
+    f.extend_from_slice(&0u32.to_le_bytes()); // sigfigs
+    f.extend_from_slice(&65_535u32.to_le_bytes()); // snaplen
+    f.extend_from_slice(&1u32.to_le_bytes()); // LINKTYPE_ETHERNET
+    f.extend_from_slice(&1_700_000_000u32.to_le_bytes()); // ts_sec
+    f.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
+    f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    f.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+    f.extend_from_slice(&frame);
+    f
+}
+
 /// Keep one more dispatcher registered for the rest of the process.
 ///
 /// tracing-core registers a call site the first time any thread reaches it,

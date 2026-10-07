@@ -49,6 +49,65 @@ use std::sync::Arc;
 use crate::cli::Cli;
 use crate::config::Config;
 
+/// What a caller resolved before its pipeline options are built: the two
+/// switches a config file can also set, and the SIP port gate, whose answer
+/// depends on the path (see [`pipeline_options`]).
+///
+/// Named fields rather than three positional arguments, two of them `bool`, so
+/// a call site cannot swap `no_rtp` and `hep_parse` without saying so.
+#[derive(Debug, Clone, Copy)]
+pub struct PipelineDecisions {
+    /// `--no-rtp` / `--rtp` / `[capture] no_rtp`, from [`Cli::no_rtp`].
+    pub no_rtp: bool,
+    /// Whether this path unwraps HEP: [`Cli::hep_parse`] where the packet
+    /// still carries its wrapper, `false` where the loop already unwrapped it.
+    pub hep_parse: bool,
+    /// The SIP port gate: the run's `--portrange` where a file is read, `None`
+    /// on the TUI's live capture, whose BPF filter already applied it.
+    pub sip_portrange: Option<(u16, u16)>,
+}
+
+/// The pipeline options a run classifies packets with, from its command line
+/// and the decisions its caller resolved.
+///
+/// The one place the run's flags become [`crate::pipeline::PipelineOptions`]:
+/// the headless packet loop, the TUI, and the servers' capture-file readers
+/// all build theirs here, so a flag added to one reaches the others.
+#[must_use]
+pub fn pipeline_options(cli: &Cli, decided: PipelineDecisions) -> crate::pipeline::PipelineOptions {
+    crate::pipeline::PipelineOptions {
+        no_dialog: cli.dialog_args.no_dialog,
+        no_rtp: decided.no_rtp,
+        sip_portrange: decided.sip_portrange,
+        rtpproxy_control: cli.rtp_args.rtpproxy_control,
+        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
+        hep_parse: decided.hep_parse,
+    }
+}
+
+/// The pipeline options the REST and MCP servers read capture files with.
+///
+/// A file opened through a server is read as the same file given to `-I` on
+/// this command line: `--hep-parse` unwraps HEP, `--portrange` gates
+/// signaling, and the run's `--no-rtp`, `--no-dialog`, `--rtpproxy-control`
+/// and `--quiet-bad-parse` apply. It is a FILE, so the port gate applies even
+/// in a TUI run, whose live capture leaves the gate to its BPF filter.
+#[must_use]
+pub fn server_pipeline_options(
+    cli: &Cli,
+    config: &Config,
+    portrange: (u16, u16),
+) -> crate::pipeline::PipelineOptions {
+    pipeline_options(
+        cli,
+        PipelineDecisions {
+            no_rtp: cli.no_rtp(config),
+            hep_parse: cli.hep_parse(config),
+            sip_portrange: Some(portrange),
+        },
+    )
+}
+
 /// Build a name resolver and the active name mode from CLI flags + config,
 /// usable in any mode (TUI or headless). Loads the system hosts table, any
 /// operator `--names` mapping files, the configured hosts file, and the inline
@@ -159,6 +218,83 @@ mod tests {
     /// A headless CLI with no flags.
     fn cli() -> Cli {
         Cli::parse_from_args(["sipnab", "-N"])
+    }
+
+    /// Every run option a classifier reads comes from the command line or the
+    /// caller's decisions, field by field, so none is left at its default.
+    #[test]
+    fn pipeline_options_carry_every_run_option() -> Result<(), TestError> {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-N",
+            "--no-dialog",
+            "--quiet-bad-parse",
+            "--rtpproxy-control",
+            "192.0.2.40:7722",
+        ]);
+        let opts = pipeline_options(
+            &cli,
+            PipelineDecisions {
+                no_rtp: true,
+                hep_parse: true,
+                sip_portrange: Some((5070, 5080)),
+            },
+        );
+        assert!(opts.no_dialog, "--no-dialog");
+        assert!(opts.quiet_bad_parse, "--quiet-bad-parse");
+        assert_eq!(opts.rtpproxy_control, Some("192.0.2.40:7722".parse()?));
+        assert!(opts.no_rtp, "the caller's no_rtp");
+        assert!(opts.hep_parse, "the caller's hep_parse");
+        assert_eq!(opts.sip_portrange, Some((5070, 5080)));
+
+        let plain = pipeline_options(
+            &cli_from(&[]),
+            PipelineDecisions {
+                no_rtp: false,
+                hep_parse: false,
+                sip_portrange: None,
+            },
+        );
+        assert!(!plain.no_dialog && !plain.quiet_bad_parse && !plain.no_rtp);
+        assert!(!plain.hep_parse);
+        assert_eq!((plain.rtpproxy_control, plain.sip_portrange), (None, None));
+        Ok(())
+    }
+
+    /// The servers read a FILE with the run's options: `-E`, the resolved port
+    /// range, `--no-rtp`, and the `[capture]` keys a config file sets.
+    #[test]
+    fn server_pipeline_options_read_a_file_as_dash_i_does() {
+        let flagged = server_pipeline_options(
+            &cli_from(&["-E", "--no-rtp", "--no-dialog"]),
+            &Config::default(),
+            (5070, 5080),
+        );
+        assert!(flagged.hep_parse, "-E reaches the servers");
+        assert!(flagged.no_rtp, "--no-rtp reaches the servers");
+        assert!(flagged.no_dialog, "--no-dialog reaches the servers");
+        assert_eq!(
+            flagged.sip_portrange,
+            Some((5070, 5080)),
+            "a file is gated by the run's port range, as on -I"
+        );
+
+        let mut keyed = Config::default();
+        keyed.capture.hep_parse = Some(true);
+        keyed.capture.no_rtp = Some(true);
+        let from_config = server_pipeline_options(&cli_from(&[]), &keyed, (5060, 5061));
+        assert!(
+            from_config.hep_parse,
+            "[capture] hep_parse reaches the servers"
+        );
+        assert!(from_config.no_rtp, "[capture] no_rtp reaches the servers");
+    }
+
+    /// A headless CLI with `args` after `-N`.
+    fn cli_from(args: &[&str]) -> Cli {
+        let mut argv = vec!["sipnab", "-N"];
+        argv.extend_from_slice(args);
+        Cli::parse_from_args(argv)
     }
 
     /// An inline `[names.manual]` entry with a valid name is applied; one

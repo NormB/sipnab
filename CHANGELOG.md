@@ -132,6 +132,18 @@ entry that carries them.
   flags, `[vcon_forward]` and every forwarder exit status, and lists exit `3`.
 - The command reference and configuration reference state the range each
   setting accepts, for every value listed under Changed above.
+- **Captures read through MCP and REST apply the run's options.** MCP
+  `open_capture` and `compare_captures`, and REST `GET /v1/captures/compare`,
+  read capture files with the pipeline defaults, so `-E` / `--hep-parse`
+  (and `[capture] hep_parse`) did not apply there: a HEP copy that
+  `-I file -E` decoded showed no SIP when opened through a server. The
+  servers now read every capture file with the run's options, built by the
+  same function the packet loop and the TUI use: `--hep-parse`,
+  `--portrange` (or `[capture] portrange`), `--no-rtp`, `--no-dialog`,
+  `--rtpproxy-control` and `--quiet-bad-parse`. MCP `find_in_captures` reads
+  with them too. `--portrange` gates a file as it does on `-I`: sipnab skips SIP
+  outside the range and `capture_status` reports what it skipped. Pass
+  `--portrange 1-65535` to read every port.
 
 ## [0.5.205] - 2026-10-07
 

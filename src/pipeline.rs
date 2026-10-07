@@ -1957,8 +1957,10 @@ pub struct PipelineOptions {
     /// `--hep-parse` / `[capture] hep_parse`: unwrap HEP-encapsulated packets
     /// (a proxy's HEP copy sniffed off an interface or read from a file) and
     /// read the SIP inside them. Applied by [`apply_hep_parse`] at every
-    /// router's entry: the headless loop, `--cores`, the TUI's capture thread
-    /// and a capture opened inside the TUI.
+    /// router's entry: the headless loop, `--cores`, the TUI's capture thread,
+    /// a capture opened inside the TUI, and the capture-file reader MCP
+    /// `open_capture`, `compare_captures`, `find_in_captures` and REST
+    /// `GET /v1/captures/compare` share (`crate::capture::replay`).
     pub hep_parse: bool,
 }
 

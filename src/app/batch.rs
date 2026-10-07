@@ -3056,10 +3056,13 @@ fn build_configured_alert_engine(cli: &Cli, config: &Config) -> AlertEngine {
 }
 
 /// The selection of tools, budgets and surfaces the companion servers start
-/// with, resolved from the CLI and the configuration.
+/// with, resolved from the CLI and the configuration. `portrange` is the
+/// run's resolved `--portrange`, which the servers' capture-file readers gate
+/// signaling with, as `-I` does.
 fn server_selection(
     cli: &Cli,
     config: &Config,
+    portrange: (u16, u16),
     evidence_ring: Option<Arc<RwLock<crate::capture::evidence_ring::EvidenceRing>>>,
     actions: &crate::security::actions::Actions,
     engines: &DetectionEngines,
@@ -3092,6 +3095,7 @@ fn server_selection(
         // findings list can tell "nothing was watching" from "the
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
+        pipeline_options: crate::app::server_pipeline_options(cli, config, portrange),
     }
 }
 
@@ -3575,7 +3579,14 @@ impl BatchRunner {
             &dialog_store,
             &stream_store,
             Some(&engines.alerts),
-            server_selection(&cli, config, evidence_ring.clone(), &actions, &engines),
+            server_selection(
+                &cli,
+                config,
+                policy.portrange,
+                evidence_ring.clone(),
+                &actions,
+                &engines,
+            ),
             // Captured above, before the reconciler moved to its own thread.
             // `None` here is what makes `query_relay` (and GET /v1/relay/...)
             // refuse: on a file-backed run no permit exists to capture.
@@ -5236,16 +5247,16 @@ fn process_parsed_packet(
     // extraction, SDES/DTLS key learning, RTCP/RTP/heuristic detection), then
     // apply the action with the batch extras: counters, matcher/DSL filter,
     // output dispatch, security detectors, events, DTMF.
-    let opts = crate::pipeline::PipelineOptions {
-        no_dialog: cli.dialog_args.no_dialog,
-        no_rtp: ctx.no_rtp,
-        sip_portrange: Some(ctx.portrange),
-        rtpproxy_control: cli.rtp_args.rtpproxy_control,
-        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
-        // The packet loop already applied `--hep-parse` before this packet
-        // reached here; unwrapping SIP a second time would find no HEP.
-        hep_parse: false,
-    };
+    let opts = crate::app::pipeline_options(
+        cli,
+        crate::app::PipelineDecisions {
+            no_rtp: ctx.no_rtp,
+            // The packet loop already applied `--hep-parse` before this packet
+            // reached here; unwrapping SIP a second time would find no HEP.
+            hep_parse: false,
+            sip_portrange: Some(ctx.portrange),
+        },
+    );
     #[cfg(feature = "tls")]
     let mut decrypt = crate::pipeline::MediaDecrypt {
         srtp: state.srtp.as_deref_mut(),

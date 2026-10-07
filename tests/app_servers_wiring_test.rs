@@ -30,6 +30,8 @@ use sipnab::sip::dialog_store::DialogStore;
 
 include!("support/timeout.rs");
 include!("support/teardown.rs");
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -59,6 +61,7 @@ fn metrics_only() -> Selection {
         mcp: false,
         metrics: true,
         armed_detections: Vec::new(),
+        pipeline_options: Default::default(),
     }
 }
 
@@ -436,5 +439,126 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() -> Result<(
         std::thread::sleep(Duration::from_millis(50));
     };
     assert_eq!(code, Some(0), "a client that leaves is a clean exit");
+    Ok(())
+}
+
+// ── The run's pipeline options reach the servers' capture-file readers ────
+
+/// A file root holding `hep.pcap`, a HEP copy of one call on loopback, and
+/// `plain.pcap`, the capture every binary-driven case reads.
+fn hep_file_root() -> Result<tempfile::TempDir, TestError> {
+    let root = tempfile::tempdir()?;
+    pcap_build::write_pcap(
+        &root.path().join("hep.pcap"),
+        &pcap_build::hep_call_frames("wiring-hep@example.com"),
+    )?;
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(CAPTURE),
+        root.path().join("plain.pcap"),
+    )?;
+    Ok(root)
+}
+
+/// `-E` on the command line reaches `GET /v1/captures/compare` through
+/// `start_servers`: with it the HEP copy holds the call, without it no SIP.
+#[test]
+fn the_runs_hep_parse_reaches_the_rest_compare_route() -> Result<(), TestError> {
+    let root = hep_file_root()?;
+    let root_arg = root.path().to_str().ok_or("root is not UTF-8")?;
+    for (flag, dialogs) in [(Some("-E"), 1), (None, 0)] {
+        let home = tempfile::tempdir()?;
+        let mut args = vec![
+            "-N",
+            "-I",
+            CAPTURE,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+            "--api-file-root",
+            root_arg,
+        ];
+        args.extend(flag);
+        let mut run = Spawned::start(&args, home.path(), Stdio::null(), Stdio::null())?;
+        let addr = run
+            .after("REST API listening on ", Duration::from_secs(30))
+            .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+        let (status, body) = http_get(
+            &addr,
+            "/v1/captures/compare?a=hep.pcap&b=plain.pcap&dimensions=state",
+            "k",
+        )?;
+        assert_eq!(status, 200, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            v["a"]["dialogs"], dialogs,
+            "{flag:?}: the HEP copy's call count over REST: {body}"
+        );
+        let (code, log) = run.terminate();
+        assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    }
+    Ok(())
+}
+
+/// `-E` on the command line reaches MCP `compare_captures` through
+/// `start_servers`: with it the HEP copy holds the call, without it no SIP.
+#[test]
+fn the_runs_hep_parse_reaches_mcp_compare_captures() -> Result<(), TestError> {
+    let root = hep_file_root()?;
+    let root_arg = root.path().to_str().ok_or("root is not UTF-8")?;
+    for (flag, dialogs) in [(Some("-E"), 1), (None, 0)] {
+        let home = tempfile::tempdir()?;
+        let mut args = vec![
+            "--mcp",
+            "-N",
+            "-I",
+            CAPTURE,
+            "--quiet",
+            "--mcp-file-root",
+            root_arg,
+        ];
+        args.extend(flag);
+        let mut run = Spawned::start(&args, home.path(), Stdio::piped(), Stdio::piped())?;
+        let mut stdin = run.child.stdin.take().ok_or("stdin")?;
+        let mut reader = BufReader::new(run.child.stdout.take().ok_or("stdout")?);
+        send(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                           "clientInfo": {"name": "t", "version": "1"}}
+            }),
+        )?;
+        let _ = reply(&mut reader, 1);
+        send(
+            &mut stdin,
+            &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        )?;
+        send(
+            &mut stdin,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "compare_captures",
+                           "arguments": {"a": "hep.pcap", "b": "plain.pcap",
+                                         "dimensions": ["state"]}}
+            }),
+        )?;
+        let answer = reply(&mut reader, 2);
+        let payload = answer["result"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["text"].as_str())
+            .filter_map(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .find(|v| v.get("a").is_some())
+            .ok_or_else(|| format!("compare_captures returned no comparison: {answer}"))?;
+        assert_eq!(
+            payload["a"]["dialogs"], dialogs,
+            "{flag:?}: the HEP copy's call count over MCP: {payload}"
+        );
+        drop(stdin);
+        let (code, log) = run.terminate();
+        assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
+    }
     Ok(())
 }
