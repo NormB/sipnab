@@ -1323,20 +1323,27 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("the timestamp is a single valid UTC instant")?,
+        )
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Parse a minimal bodyless INVITE with a User-Agent header.
-    fn make_invite() -> SipMessage {
+    fn make_invite() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1349,20 +1356,20 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// A 200 OK to the `make_invite` transaction, so a dialog has an outcome.
-    fn make_ok() -> SipMessage {
+    fn make_ok() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1374,16 +1381,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// Build a fresh single-packet PCMU RTP stream with SSRC 0x12345678.
@@ -1395,10 +1402,10 @@ mod tests {
     /// finding that exists and reaches nobody -- which is exactly how the
     /// `Via` header came to be missing from the vCon redactor's host lists.
     #[test]
-    fn a_dead_air_finding_reaches_the_serialized_dialog() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        let mut stream = make_stream();
+    fn a_dead_air_finding_reaches_the_serialized_dialog() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
+        let mut stream = make_stream()?;
         // Thirty seconds of mu-law 0xFF, which decodes to 0. Full-rate frames
         // of digital silence: every packet present, in sequence, at the right
         // rate, and the call is silent.
@@ -1416,7 +1423,7 @@ mod tests {
         let amplitude = diagnosis
             .amplitude
             .as_ref()
-            .expect("audio was retained, so it must have been measured");
+            .ok_or("audio was retained, so it must have been measured")?;
         assert!(amplitude.dead_air, "thirty seconds of zeros read as audio");
 
         let v: serde_json::Value = serde_json::from_str(&dialog_to_json(
@@ -1425,7 +1432,7 @@ mod tests {
             &diagnosis,
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(
             v["diagnosis"]["amplitude"]["dead_air"],
             serde_json::Value::Bool(true),
@@ -1438,6 +1445,7 @@ mod tests {
             serde_json::json!(crate::rtp::amplitude::DEAD_AIR_FLOOR_DBFS),
             "the floor that produced the finding is not in the payload"
         );
+        Ok(())
     }
 
     /// A run that kept no audio publishes NO amplitude object.
@@ -1446,10 +1454,10 @@ mod tests {
     /// "checked, and fine", so absence is the only honest answer -- and a
     /// consumer written before this existed sees no change.
     #[test]
-    fn a_run_without_retained_audio_publishes_no_amplitude_object() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        let stream = make_stream();
+    fn a_run_without_retained_audio_publishes_no_amplitude_object() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
+        let stream = make_stream()?;
         assert!(
             stream.payload_buffer.is_empty(),
             "the fixture must have kept no audio"
@@ -1467,15 +1475,16 @@ mod tests {
             &diagnosis,
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(
             v["diagnosis"].get("amplitude").is_none(),
             "an unmeasured call published an amplitude object: {}",
             v["diagnosis"]
         );
+        Ok(())
     }
 
-    fn make_stream() -> RtpStream {
+    fn make_stream() -> Result<RtpStream, TestError> {
         let key = StreamKey {
             ssrc: 0x12345678,
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
@@ -1493,7 +1502,7 @@ mod tests {
             ssrc: 0x12345678,
             payload_offset: 12,
         };
-        RtpStream::new(key, &hdr, ts())
+        Ok(RtpStream::new(key, &hdr, ts()?))
     }
 
     // Perf path (batch `-N --json`): the writer variant must produce bytes
@@ -1502,7 +1511,7 @@ mod tests {
     /// The writer variant is byte-identical to `message_to_json` for
     /// plain, SDP-carrying, and malformed messages.
     #[test]
-    fn write_message_json_matches_message_to_json() {
+    fn write_message_json_matches_message_to_json() -> Result<(), TestError> {
         let body = b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 6000 RTP/AVP 8\r\na=label:a\\b\"c\r\n";
         let cl = format!("Content-Length: {}", body.len());
         let with_sdp = parse_sip(
@@ -1518,30 +1527,32 @@ mod tests {
                 ],
                 body,
             ),
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         // A malformed message (missing mandatory headers) exercises the
         // `malformed` array path.
-        let malformed = req_with_headers(&["CSeq: 1 REGISTER", "Content-Length: 0"]);
-        for msg in [make_invite(), with_sdp, malformed] {
+        let malformed = req_with_headers(&["CSeq: 1 REGISTER", "Content-Length: 0"])?;
+        for msg in [make_invite()?, with_sdp, malformed] {
             let mut buf = Vec::new();
-            write_message_json(&msg, &mut buf).expect("write should succeed");
+            write_message_json(&msg, &mut buf)
+                .map_err(|e| format!("write should succeed: {e:?}"))?;
             assert_eq!(
-                String::from_utf8(buf).expect("utf8"),
+                String::from_utf8(buf).map_err(|e| format!("utf8: {e:?}"))?,
                 message_to_json(&msg),
                 "writer variant must be byte-identical"
             );
         }
+        Ok(())
     }
 
     /// A message with a header the projection does not carry.
-    fn make_message_with(extra: &[&str]) -> SipMessage {
+    fn make_message_with(extra: &[&str]) -> Result<SipMessage, TestError> {
         let mut headers = vec![
             "Via: SIP/2.0/UDP 198.51.100.1:5060;branch=z9hG4bKone",
             "From: \"Alice\" <sip:1001@example.com>;tag=t1",
@@ -1554,16 +1565,16 @@ mod tests {
         ];
         headers.extend_from_slice(extra);
         let raw = build_sip("INVITE sip:bob@example.com SIP/2.0", &headers, b"");
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     fn extension_headers_of(msg: &SipMessage) -> Vec<String> {
@@ -1580,12 +1591,12 @@ mod tests {
     /// field list, and until this there was no route to one of them short of
     /// re-reading the original capture a frame at a time.
     #[test]
-    fn a_message_carries_the_headers_the_projection_leaves_out() {
+    fn a_message_carries_the_headers_the_projection_leaves_out() -> Result<(), TestError> {
         let msg = make_message_with(&[
             "P-Asserted-Identity: <sip:+15551234567@carrier.example>",
             "Diversion: <sip:1003@example.com>;reason=user-busy",
             "X-Asterisk-HangupCauseCode: 17",
-        ]);
+        ])?;
         let got = extension_headers_of(&msg);
         for expected in [
             "P-Asserted-Identity: <sip:+15551234567@carrier.example>",
@@ -1597,6 +1608,7 @@ mod tests {
                 "expected {expected:?} among {got:?}"
             );
         }
+        Ok(())
     }
 
     /// Nothing the projection already carries is repeated here.
@@ -1607,8 +1619,8 @@ mod tests {
     /// for a header the projection does not carry makes the value vanish from
     /// the answer entirely.
     #[test]
-    fn no_projected_header_is_repeated_in_the_extension_list() {
-        let msg = make_message_with(&[]);
+    fn no_projected_header_is_repeated_in_the_extension_list() -> Result<(), TestError> {
+        let msg = make_message_with(&[])?;
         let value = message_to_json_value(&msg);
         let extensions = extension_headers_of(&msg);
         for (header, field) in [
@@ -1630,17 +1642,18 @@ mod tests {
                  repeated; got {extensions:?}"
             );
         }
+        Ok(())
     }
 
     /// Duplicates and order are preserved. `Via` is a stack: the order is the
     /// route the request took, and collapsing three lines into one entry (or
     /// reordering them) destroys the only record of the path.
     #[test]
-    fn duplicate_headers_keep_their_order_and_multiplicity() {
+    fn duplicate_headers_keep_their_order_and_multiplicity() -> Result<(), TestError> {
         let msg = make_message_with(&[
             "Via: SIP/2.0/UDP 198.51.100.2:5060;branch=z9hG4bKtwo",
             "Via: SIP/2.0/UDP 198.51.100.3:5060;branch=z9hG4bKthree",
-        ]);
+        ])?;
         let vias: Vec<String> = extension_headers_of(&msg)
             .into_iter()
             .filter(|h| h.starts_with("Via: "))
@@ -1649,13 +1662,14 @@ mod tests {
         assert!(vias[0].contains("z9hG4bKone"), "{vias:?}");
         assert!(vias[1].contains("z9hG4bKtwo"), "{vias:?}");
         assert!(vias[2].contains("z9hG4bKthree"), "{vias:?}");
+        Ok(())
     }
 
     /// A message whose every header is projected omits the key entirely,
     /// rather than carrying an empty array — the rule every optional field on
     /// this shape follows.
     #[test]
-    fn a_message_with_nothing_left_over_omits_the_extension_list() {
+    fn a_message_with_nothing_left_over_omits_the_extension_list() -> Result<(), TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -1668,14 +1682,14 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(
             message_to_json_value(&msg)
                 .get("extension_headers")
@@ -1683,6 +1697,7 @@ mod tests {
             "expected the key to be absent, got {:?}",
             message_to_json_value(&msg).get("extension_headers")
         );
+        Ok(())
     }
 
     /// The per-message half of packet provenance: a message carrying a
@@ -1693,10 +1708,10 @@ mod tests {
     /// pointer `SipMessage.frame` was holding, so a per-message answer could
     /// not be traced to its bytes.
     #[test]
-    fn message_json_surfaces_the_frame_pointer_when_present() {
+    fn message_json_surfaces_the_frame_pointer_when_present() -> Result<(), TestError> {
         use crate::capture::packet::{FrameOrigin, FrameRef};
 
-        let mut msg = make_invite();
+        let mut msg = make_invite()?;
         assert!(
             message_to_json_value(&msg).get("frame").is_none(),
             "a message with no frame must omit the key, not emit null"
@@ -1721,6 +1736,7 @@ mod tests {
             "the frame pointer must be the resolvable <source>#<ordinal>@<digest> \
              string that --show-frame accepts"
         );
+        Ok(())
     }
 
     /// The per-message half of capture-source provenance.
@@ -1739,10 +1755,10 @@ mod tests {
     /// came from no captured packet, because "sipnab saw this on a wire" is a
     /// claim a synthesized message must not make.
     #[test]
-    fn message_json_names_the_capture_source_that_delivered_it() {
+    fn message_json_names_the_capture_source_that_delivered_it() -> Result<(), TestError> {
         use crate::capture::parse::InputOrigin;
 
-        let mut msg = make_invite();
+        let mut msg = make_invite()?;
         msg.input_origin = None;
         assert!(
             message_to_json_value(&msg).get("input_origin").is_none(),
@@ -1761,6 +1777,7 @@ mod tests {
                  the one spelling InputOrigin::as_str decides"
             );
         }
+        Ok(())
     }
 
     // Perf path (MCP get_dialog/get_message): the Value variant must equal
@@ -1769,7 +1786,7 @@ mod tests {
     /// The `Value` variant equals the parsed NDJSON line for request and
     /// response messages.
     #[test]
-    fn message_to_json_value_matches_parsed_string() {
+    fn message_to_json_value_matches_parsed_string() -> Result<(), TestError> {
         let resp = parse_sip(
             &build_sip(
                 "SIP/2.0 200 OK",
@@ -1782,35 +1799,37 @@ mod tests {
                 ],
                 b"",
             ),
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
-        for msg in [make_invite(), resp] {
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        for msg in [make_invite()?, resp] {
             let via_string: serde_json::Value =
-                serde_json::from_str(message_to_json(&msg).trim_end()).expect("valid JSON");
+                serde_json::from_str(message_to_json(&msg).trim_end())
+                    .map_err(|e| format!("valid JSON: {e:?}"))?;
             assert_eq!(
                 message_to_json_value(&msg),
                 via_string,
                 "Value variant must match the parsed NDJSON line"
             );
         }
+        Ok(())
     }
 
     /// An INVITE serializes to valid JSON with schema, method, call_id,
     /// and UA fields.
     #[test]
-    fn message_to_json_valid() {
-        let msg = make_invite();
+    fn message_to_json_valid() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let json_str = message_to_json(&msg);
 
         // Must be valid JSON
-        let parsed: serde_json::Value =
-            serde_json::from_str(json_str.trim()).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(json_str.trim())
+            .map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["method"], "INVITE");
@@ -1818,12 +1837,13 @@ mod tests {
         assert_eq!(parsed["is_request"], true);
         assert!(parsed["timestamp"].is_string());
         assert!(parsed["ua"].is_string());
+        Ok(())
     }
 
     /// A 200 OK serializes with status_code, is_request=false, and
     /// response_context.
     #[test]
-    fn message_to_json_response() {
+    fn message_to_json_response() -> Result<(), TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -1837,28 +1857,29 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         let json_str = message_to_json(&msg);
-        let parsed: serde_json::Value =
-            serde_json::from_str(json_str.trim()).expect("should be valid JSON");
+        let parsed: serde_json::Value = serde_json::from_str(json_str.trim())
+            .map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["status_code"], 200);
         assert_eq!(parsed["is_request"], false);
         assert!(parsed["response_context"].is_string());
+        Ok(())
     }
 
     /// Contact and the raw SDP body (incl. rtpmap lines) are emitted for
     /// cross-checking.
     #[test]
-    fn message_to_json_includes_contact_and_sdp() {
+    fn message_to_json_includes_contact_and_sdp() -> Result<(), TestError> {
         // Field-digest cross-check (item 1): sipnab must EMIT Contact + the SDP
         // body so the comparator can verify them against tshark — without these
         // a dropped/mangled rtpmap or a corrupt Contact is invisible.
@@ -1879,17 +1900,17 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
-        let parsed = parsed_json(&msg);
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        let parsed = parsed_json(&msg)?;
         assert_eq!(parsed["contact"], "<sip:1001@127.0.0.1:5062>");
-        let sdp = parsed["sdp"].as_str().expect("sdp body present");
+        let sdp = parsed["sdp"].as_str().ok_or("sdp body present")?;
         assert!(
             sdp.contains("m=audio 6000 RTP/AVP 8 96"),
             "sdp body emitted: {sdp}"
@@ -1898,19 +1919,21 @@ mod tests {
             sdp.contains("a=rtpmap:96 telephone-event/8000"),
             "rtpmap present: {sdp}"
         );
+        Ok(())
     }
 
     /// Without a Contact header or SDP body, both keys are omitted.
     #[test]
-    fn message_to_json_omits_contact_and_sdp_when_absent() {
-        let parsed = parsed_json(&make_invite()); // no Contact, empty body
+    fn message_to_json_omits_contact_and_sdp_when_absent() -> Result<(), TestError> {
+        let parsed = parsed_json(&make_invite()?)?; // no Contact, empty body
         assert!(parsed.get("contact").is_none(), "no Contact header => omit");
         assert!(parsed.get("sdp").is_none(), "no SDP body => omit");
+        Ok(())
     }
 
     /// A text/plain body is not surfaced as `sdp`.
     #[test]
-    fn message_to_json_sdp_omitted_for_non_sdp_body() {
+    fn message_to_json_sdp_omitted_for_non_sdp_body() -> Result<(), TestError> {
         let body = b"plain text body";
         let cl = format!("Content-Length: {}", body.len());
         let raw = build_sip(
@@ -1927,23 +1950,24 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
         assert!(
-            parsed_json(&msg).get("sdp").is_none(),
+            parsed_json(&msg)?.get("sdp").is_none(),
             "a non-application/sdp body must not be emitted as sdp"
         );
+        Ok(())
     }
 
     /// Backslash and embedded quote in the SDP survive JSON escaping.
     #[test]
-    fn message_to_json_sdp_preserves_adversarial_bytes() {
+    fn message_to_json_sdp_preserves_adversarial_bytes() -> Result<(), TestError> {
         // backslash + embedded quote in the SDP must round-trip through JSON
         // string escaping intact (not corrupt the line or get dropped).
         let body = b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 6000 RTP/AVP 8\r\na=label:a\\b\"c\r\n";
@@ -1962,56 +1986,59 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
-        let parsed = parsed_json(&msg); // must still be valid JSON
-        let sdp = parsed["sdp"].as_str().expect("sdp present");
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        let parsed = parsed_json(&msg)?; // must still be valid JSON
+        let sdp = parsed["sdp"].as_str().ok_or("sdp present")?;
         assert!(
             sdp.contains("a=label:a\\b\"c"),
             "adversarial bytes preserved: {sdp:?}"
         );
+        Ok(())
     }
 
     /// Parse a REGISTER request carrying exactly `headers`.
-    fn req_with_headers(headers: &[&str]) -> SipMessage {
+    fn req_with_headers(headers: &[&str]) -> Result<SipMessage, TestError> {
         let raw = build_sip("REGISTER sip:example.com SIP/2.0", headers, b"");
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse")
+        .map_err(|e| format!("should parse: {e:?}"))?)
     }
 
     /// Serialize `msg` via `message_to_json` and parse it back to a Value.
-    fn parsed_json(msg: &SipMessage) -> serde_json::Value {
-        serde_json::from_str(message_to_json(msg).trim()).expect("valid JSON")
+    fn parsed_json(msg: &SipMessage) -> Result<serde_json::Value, TestError> {
+        Ok(serde_json::from_str(message_to_json(msg).trim())
+            .map_err(|e| format!("valid JSON: {e:?}"))?)
     }
 
     /// Requests carry the structured `cseq` object (SNB-0002).
     #[test]
-    fn message_to_json_request_includes_cseq() {
+    fn message_to_json_request_includes_cseq() -> Result<(), TestError> {
         // SNB-0002: requests MUST carry CSeq so re-requests within a dialog are
         // distinguishable — previously only responses got it (response_context).
-        let parsed = parsed_json(&make_invite()); // CSeq: 1 INVITE
+        let parsed = parsed_json(&make_invite()?)?; // CSeq: 1 INVITE
         assert_eq!(parsed["is_request"], true);
         assert_eq!(parsed["cseq"]["number"], 1);
         assert_eq!(parsed["cseq"]["method"], "INVITE");
+        Ok(())
     }
 
     /// Responses carry both `cseq` and the legacy `response_context`.
     #[test]
-    fn message_to_json_response_includes_cseq() {
+    fn message_to_json_response_includes_cseq() -> Result<(), TestError> {
         let raw = build_sip(
             "SIP/2.0 200 OK",
             &[
@@ -2023,25 +2050,26 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
-        let parsed = parsed_json(&msg);
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        let parsed = parsed_json(&msg)?;
         assert_eq!(parsed["is_request"], false);
         assert_eq!(parsed["cseq"]["number"], 7);
         assert_eq!(parsed["cseq"]["method"], "INVITE");
         // response_context retained for backward compatibility (schema_version 1).
         assert_eq!(parsed["response_context"], "7 INVITE");
+        Ok(())
     }
 
     /// Two REGISTERs differing only by CSeq number stay distinguishable.
     #[test]
-    fn message_to_json_re_requests_are_distinguishable() {
+    fn message_to_json_re_requests_are_distinguishable() -> Result<(), TestError> {
         // The exact SNB-0002 regression: two REGISTERs in one dialog differ only
         // by CSeq number; their JSON must reflect that, not collapse.
         let mk = |cseq: &str| {
@@ -2051,30 +2079,32 @@ mod tests {
                 "Content-Length: 0",
             ])
         };
-        let a = parsed_json(&mk("1 REGISTER"));
-        let b = parsed_json(&mk("2 REGISTER"));
+        let a = parsed_json(&mk("1 REGISTER")?)?;
+        let b = parsed_json(&mk("2 REGISTER")?)?;
         assert_ne!(a["cseq"], b["cseq"], "distinct CSeq must not collapse");
         assert_eq!(a["cseq"]["number"], 1);
         assert_eq!(b["cseq"]["number"], 2);
         assert_eq!(a["cseq"]["method"], "REGISTER");
+        Ok(())
     }
 
     /// `cseq` is omitted entirely when the CSeq header is absent.
     #[test]
-    fn message_to_json_cseq_absent_when_header_missing() {
-        let msg = req_with_headers(&["Call-ID: no-cseq@example.com", "Content-Length: 0"]);
-        let parsed = parsed_json(&msg);
+    fn message_to_json_cseq_absent_when_header_missing() -> Result<(), TestError> {
+        let msg = req_with_headers(&["Call-ID: no-cseq@example.com", "Content-Length: 0"])?;
+        let parsed = parsed_json(&msg)?;
         assert!(
             parsed.get("cseq").is_none(),
             "cseq omitted when CSeq header absent, got {:?}",
             parsed.get("cseq")
         );
+        Ok(())
     }
 
     /// Malformed/boundary CSeq values (garbage, missing method, empty,
     /// overflow) omit `cseq` instead of emitting garbage.
     #[test]
-    fn message_to_json_cseq_omitted_when_malformed_or_boundary() {
+    fn message_to_json_cseq_omitted_when_malformed_or_boundary() -> Result<(), TestError> {
         // Adversarial / boundary: non-numeric seq, number-without-method, empty,
         // whitespace-only, and a u32-overflowing sequence are all unparseable per
         // RFC 3261 — the field is omitted entirely, never emitted garbled.
@@ -2085,34 +2115,36 @@ mod tests {
             "CSeq: \t",                // whitespace-only value
             "CSeq: 4294967296 INVITE", // u32::MAX + 1 → overflow
         ] {
-            let msg = req_with_headers(&[bad, "Call-ID: bad@example.com", "Content-Length: 0"]);
-            let parsed = parsed_json(&msg);
+            let msg = req_with_headers(&[bad, "Call-ID: bad@example.com", "Content-Length: 0"])?;
+            let parsed = parsed_json(&msg)?;
             assert!(
                 parsed.get("cseq").is_none(),
                 "cseq must be omitted for malformed {bad:?}, got {:?}",
                 parsed.get("cseq")
             );
         }
+        Ok(())
     }
 
     /// A `u32::MAX` CSeq sequence round-trips intact.
     #[test]
-    fn message_to_json_cseq_max_u32_boundary() {
+    fn message_to_json_cseq_max_u32_boundary() -> Result<(), TestError> {
         // u32::MAX is a valid CSeq sequence and must round-trip.
         let msg = req_with_headers(&[
             "CSeq: 4294967295 OPTIONS",
             "Call-ID: max-cseq@example.com",
             "Content-Length: 0",
-        ]);
-        let parsed = parsed_json(&msg);
+        ])?;
+        let parsed = parsed_json(&msg)?;
         assert_eq!(parsed["cseq"]["number"], 4294967295u32);
         assert_eq!(parsed["cseq"]["method"], "OPTIONS");
+        Ok(())
     }
 
     /// A message missing Call-ID carries a `malformed` array naming it
     /// (SNB-0003).
     #[test]
-    fn message_to_json_flags_malformed() {
+    fn message_to_json_flags_malformed() -> Result<(), TestError> {
         // SNB-0003: a malformed message (missing mandatory Call-ID) carries a
         // `malformed` diagnostic array naming the defect.
         let msg = req_with_headers(&[
@@ -2121,21 +2153,22 @@ mod tests {
             "To: <sip:b@x>",
             "CSeq: 1 REGISTER",
             "Content-Length: 0",
-        ]);
-        let parsed = parsed_json(&msg);
+        ])?;
+        let parsed = parsed_json(&msg)?;
         let m = parsed["malformed"]
             .as_array()
-            .expect("malformed should be an array");
+            .ok_or("malformed should be an array")?;
         assert!(
             m.iter()
                 .any(|r| r.as_str().unwrap_or("").contains("Call-ID")),
             "expected a Call-ID reason, got {m:?}"
         );
+        Ok(())
     }
 
     /// A well-formed message omits the `malformed` key.
     #[test]
-    fn message_to_json_well_formed_omits_malformed() {
+    fn message_to_json_well_formed_omits_malformed() -> Result<(), TestError> {
         let msg = req_with_headers(&[
             "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
             "From: <sip:a@x>;tag=1",
@@ -2143,22 +2176,23 @@ mod tests {
             "Call-ID: clean@x",
             "CSeq: 1 REGISTER",
             "Content-Length: 0",
-        ]);
-        let parsed = parsed_json(&msg);
+        ])?;
+        let parsed = parsed_json(&msg)?;
         assert!(
             parsed.get("malformed").is_none(),
             "well-formed message must omit `malformed`, got {:?}",
             parsed.get("malformed")
         );
+        Ok(())
     }
 
     /// Dialog JSON carries schema, timing, sdp_timeline, diagnosis,
     /// streams, call_id, and state.
     #[test]
-    fn dialog_to_json_contains_required_fields() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
-        let stream = make_stream();
+    fn dialog_to_json_contains_required_fields() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
@@ -2169,7 +2203,7 @@ mod tests {
             crate::rtp::quality::MosDelay::unknown(),
         );
         let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("should be valid JSON");
+            serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         assert_eq!(parsed["schema_version"], 1);
         assert!(parsed["timing"].is_object(), "should have timing object");
@@ -2191,6 +2225,7 @@ mod tests {
             "a clean dialog must omit signaling_diagnosis, got {:?}",
             parsed.get("signaling_diagnosis")
         );
+        Ok(())
     }
 
     /// A recorded call carries its SIPREC metadata to the JSON surface.
@@ -2207,9 +2242,9 @@ mod tests {
     /// media descriptions -- the audio and video case -- can say which
     /// participant each belongs to.
     #[test]
-    fn dialog_json_carries_siprec_metadata_when_the_call_is_recorded() {
-        let msg = make_invite();
-        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+    fn dialog_json_carries_siprec_metadata_when_the_call_is_recorded() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
         dialog.siprec_metadata = Some(crate::sip::siprec::SirecMetadata {
             session_id: Some("rs-1".to_string()),
             mode: Some("complete".to_string()),
@@ -2224,7 +2259,7 @@ mod tests {
                 participant_id: Some("p1".to_string()),
             }],
         });
-        let stream = make_stream();
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
@@ -2234,7 +2269,7 @@ mod tests {
             &diagnosis,
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("should be valid JSON");
+        .map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         let sr = &parsed["siprec"];
         assert_eq!(sr["session_id"], "rs-1");
@@ -2252,15 +2287,16 @@ mod tests {
             sr["streams"][0]["participant_id"], "p1",
             "and the participant it belongs to"
         );
+        Ok(())
     }
 
     /// A call that is not recorded omits the key rather than emitting an empty
     /// object, matching every other optional block on this surface.
     #[test]
-    fn dialog_json_omits_siprec_when_the_call_is_not_recorded() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
-        let stream = make_stream();
+    fn dialog_json_omits_siprec_when_the_call_is_not_recorded() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let diagnosis = MediaDiagnosis::default();
 
@@ -2270,13 +2306,14 @@ mod tests {
             &diagnosis,
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("should be valid JSON");
+        .map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         assert!(
             parsed.get("siprec").is_none(),
             "an ordinary call must omit siprec entirely, got {:?}",
             parsed.get("siprec")
         );
+        Ok(())
     }
 
     /// A normally-cleared call carries its termination cause.
@@ -2286,9 +2323,9 @@ mod tests {
     /// the half that was missing, because `Reason` was already parsed and was
     /// read in exactly one place that a `BYE` never reaches.
     #[test]
-    fn dialog_json_carries_the_termination_cause_from_a_bye() {
-        let msg = make_invite();
-        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+    fn dialog_json_carries_the_termination_cause_from_a_bye() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
         let raw = "BYE sip:b@example.com SIP/2.0\r\n\
                    Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK9\r\n\
                    From: <sip:a@example.com>;tag=1\r\n\
@@ -2306,10 +2343,10 @@ mod tests {
             5060,
             crate::net::TransportProto::Udp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
         dialog.messages.push(bye);
 
-        let stream = make_stream();
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let json_str = dialog_to_json(
             &dialog,
@@ -2318,7 +2355,7 @@ mod tests {
             crate::rtp::quality::MosDelay::unknown(),
         );
         let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("should be valid JSON");
+            serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         let t = &parsed["termination"];
         assert!(t.is_object(), "expected termination, got {json_str}");
@@ -2328,6 +2365,7 @@ mod tests {
         assert_eq!(t["source_header"], "Reason");
         // frame_ref points into dialog.messages: the BYE is index 1.
         assert_eq!(t["frame_ref"], 1);
+        Ok(())
     }
 
     /// A call that never said why it ended omits the block entirely, rather
@@ -2335,10 +2373,10 @@ mod tests {
     /// and `icmp_media` above, and it keeps a clean dialog's JSON the size it
     /// was before this existed.
     #[test]
-    fn dialog_json_omits_termination_when_nothing_named_a_cause() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
-        let stream = make_stream();
+    fn dialog_json_omits_termination_when_nothing_named_a_cause() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let json_str = dialog_to_json(
             &dialog,
@@ -2347,12 +2385,13 @@ mod tests {
             crate::rtp::quality::MosDelay::unknown(),
         );
         let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("should be valid JSON");
+            serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?;
         assert!(
             parsed.get("termination").is_none(),
             "a call with no stated cause must omit termination, got {:?}",
             parsed.get("termination")
         );
+        Ok(())
     }
 
     /// A failed dialog carries `signaling_diagnosis` with its evidence indices.
@@ -2361,9 +2400,9 @@ mod tests {
     /// detections. What it proves is that the diagnosis reaches the surface at
     /// all, which a module with passing unit tests and no caller would not.
     #[test]
-    fn dialog_json_carries_signaling_diagnosis_when_the_call_failed() {
-        let msg = make_invite();
-        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("should create dialog");
+    fn dialog_json_carries_signaling_diagnosis_when_the_call_failed() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("should create dialog")?;
 
         // A 503 on the same dialog: detection 1.
         let raw = "SIP/2.0 503 Service Unavailable\r\n\
@@ -2383,10 +2422,10 @@ mod tests {
             5060,
             crate::net::TransportProto::Udp,
         )
-        .expect("fixture parses");
+        .map_err(|e| format!("fixture parses: {e:?}"))?;
         dialog.messages.push(resp);
 
-        let stream = make_stream();
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let json_str = dialog_to_json(
             &dialog,
@@ -2395,7 +2434,7 @@ mod tests {
             crate::rtp::quality::MosDelay::unknown(),
         );
         let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("should be valid JSON");
+            serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         let sd = &parsed["signaling_diagnosis"];
         assert!(
@@ -2411,6 +2450,7 @@ mod tests {
             "hint should name the code, got {:?}",
             sd["hints"]
         );
+        Ok(())
     }
 
     /// Stream JSON carries schema, hex SSRC, and numeric quality fields.
@@ -2422,11 +2462,11 @@ mod tests {
     /// was `--json` plus jq, joining `status_code` back to `call_id` by hand
     /// across a per-message stream that also carries every provisional response.
     #[test]
-    fn dialog_ndjson_is_one_compact_line() {
-        let msg = make_invite();
-        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        dialog.messages.push(make_ok());
-        let stream = make_stream();
+    fn dialog_ndjson_is_one_compact_line() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
+        dialog.messages.push(make_ok()?);
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let line = dialog_to_ndjson(
             &dialog,
@@ -2441,15 +2481,17 @@ mod tests {
             1,
             "one dialog is one line, or a reader cannot split on newlines"
         );
-        let compact: serde_json::Value = serde_json::from_str(line.trim_end()).expect("valid JSON");
+        let compact: serde_json::Value =
+            serde_json::from_str(line.trim_end()).map_err(|e| format!("valid JSON: {e:?}"))?;
         let pretty: serde_json::Value = serde_json::from_str(&dialog_to_json(
             &dialog,
             &streams,
             &MediaDiagnosis::default(),
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert_eq!(compact, pretty, "same document, different whitespace");
+        Ok(())
     }
 
     /// The dialog document carries the code that decided the outcome.
@@ -2458,11 +2500,11 @@ mod tests {
     /// the message stream to learn whether that was a 486, a 503 or a 404 —
     /// which is the whole reason the per-message workaround existed.
     #[test]
-    fn dialog_json_carries_the_final_status() {
-        let msg = make_invite();
-        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        dialog.messages.push(make_ok());
-        let stream = make_stream();
+    fn dialog_json_carries_the_final_status() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let mut dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
+        dialog.messages.push(make_ok()?);
+        let stream = make_stream()?;
         let streams: Vec<&RtpStream> = vec![&stream];
         let v: serde_json::Value = serde_json::from_str(&dialog_to_json(
             &dialog,
@@ -2470,7 +2512,7 @@ mod tests {
             &MediaDiagnosis::default(),
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         // The fixture answers with a 200, so the outcome is 200 and the reason
         // is whatever the fixture's response carried.
         assert_eq!(
@@ -2483,14 +2525,15 @@ mod tests {
             v.get("final_status_reason").is_some(),
             "a code with no reason phrase beside it makes a ticket harder to read"
         );
+        Ok(())
     }
 
     #[test]
-    fn stream_to_json_contains_required_fields() {
-        let stream = make_stream();
+    fn stream_to_json_contains_required_fields() -> Result<(), TestError> {
+        let stream = make_stream()?;
         let json_str = stream_to_json(&stream, crate::rtp::quality::MosDelay::unknown());
         let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).expect("should be valid JSON");
+            serde_json::from_str(&json_str).map_err(|e| format!("should be valid JSON: {e:?}"))?;
 
         assert_eq!(parsed["schema_version"], 1);
         assert!(parsed["ssrc"].is_string());
@@ -2498,41 +2541,44 @@ mod tests {
         assert!(parsed["loss_pct"].is_number());
         assert!(parsed["packets"].is_number());
         assert_eq!(parsed["ssrc"], "0x12345678");
+        Ok(())
     }
 
     /// The stream object carries the headline MOS figures `GET /v1/streams`
     /// carries, from the same projection, so `--json-dialogs`, a single-stream
     /// REST read, the exec hooks and MCP cannot disagree with the list.
     #[test]
-    fn the_stream_object_carries_the_headline_mos_figures() {
-        let mut stream = make_stream();
+    fn the_stream_object_carries_the_headline_mos_figures() -> Result<(), TestError> {
+        let mut stream = make_stream()?;
         stream.codec = Some("PCMU".to_string());
         let delay = crate::rtp::quality::MosDelay::unknown();
         let summary = crate::output::model::StreamSummary::of(&stream, delay);
-        let v: serde_json::Value =
-            serde_json::from_str(&stream_to_json(&stream, delay)).expect("JSON");
+        let v: serde_json::Value = serde_json::from_str(&stream_to_json(&stream, delay))
+            .map_err(|e| format!("JSON: {e:?}"))?;
         assert_eq!(v["mos"].as_f64(), Some(summary.mos), "{v}");
         assert_eq!(v["r_factor"].as_f64(), Some(summary.r_factor), "{v}");
         assert_eq!(v["mos_grounded"], true, "{v}");
         assert_eq!(v["mos_grounding"], summary.mos_grounding, "{v}");
         assert!(v.get("mos_wideband").is_none(), "narrowband: {v}");
+        Ok(())
     }
 
     /// An AMR-WB stream's object carries the wideband score too.
     #[test]
     #[serial_test::serial(listening_context)]
-    fn an_amr_wb_stream_object_carries_its_wideband_score() {
-        let mut stream = make_stream();
+    fn an_amr_wb_stream_object_carries_its_wideband_score() -> Result<(), TestError> {
+        let mut stream = make_stream()?;
         stream.codec = Some("AMR-WB".to_string());
         stream.amr_frame_types_seen = 1u16 << 2;
         let delay = crate::rtp::quality::MosDelay::unknown();
         let summary = crate::output::model::StreamSummary::of(&stream, delay);
-        let v: serde_json::Value =
-            serde_json::from_str(&stream_to_json(&stream, delay)).expect("JSON");
+        let v: serde_json::Value = serde_json::from_str(&stream_to_json(&stream, delay))
+            .map_err(|e| format!("JSON: {e:?}"))?;
         assert_eq!(v["mos_wideband"].as_f64(), summary.mos_wideband, "{v}");
         assert_eq!(v["mos_wideband_context"], "monotic", "{v}");
         assert_eq!(v["mos_grounded"], false, "{v}");
         assert!(v["mos_note"].is_string(), "the placeholder says so: {v}");
+        Ok(())
     }
 
     // ── ICMP media on the per-dialog document ──────────────────────────
@@ -2597,22 +2643,22 @@ mod tests {
     /// both with the same confidence, which is worse than emitting neither —
     /// so a finding without `attribution` must never be representable.
     #[test]
-    fn every_emitted_media_finding_names_its_attribution_tier() {
+    fn every_emitted_media_finding_names_its_attribution_tier() -> Result<(), TestError> {
         let resolved = resolved_one_per_tier("call-1@example.com");
         let block = build_icmp_media_json(&resolved, "call-1@example.com")
-            .expect("a capture with errors must emit the block");
-        let v = serde_json::to_value(&block).expect("serializes");
+            .ok_or("a capture with errors must emit the block")?;
+        let v = serde_json::to_value(&block).map_err(|e| format!("serializes: {e:?}"))?;
 
-        let findings = v["findings"].as_array().expect("findings array");
+        let findings = v["findings"].as_array().ok_or("findings array")?;
         assert_eq!(findings.len(), 4, "four tiers named this call");
         let mut tiers: Vec<&str> = Vec::new();
         for (i, f) in findings.iter().enumerate() {
             let tier = f
                 .get("attribution")
                 .and_then(serde_json::Value::as_str)
-                .unwrap_or_else(|| {
-                    panic!("finding {i} reached a consumer with no attribution tier: {f}")
-                });
+                .ok_or_else(|| {
+                    format!("finding {i} reached a consumer with no attribution tier: {f}")
+                })?;
             assert!(
                 ["flow", "ssrc", "endpoint", "sdp_endpoint", "none"].contains(&tier),
                 "finding {i} names an unknown tier {tier:?}"
@@ -2621,6 +2667,7 @@ mod tests {
         }
         tiers.sort_unstable();
         assert_eq!(tiers, ["endpoint", "flow", "sdp_endpoint", "ssrc"]);
+        Ok(())
     }
 
     /// The three outcomes stay three: `unkeyed` is not folded into anything.
@@ -2631,29 +2678,30 @@ mod tests {
     /// `sum(flow errors) + unkeyed + untracked == errors`) are only checkable
     /// while the counters stay apart.
     #[test]
-    fn the_capture_block_keeps_unkeyed_as_its_own_outcome() {
+    fn the_capture_block_keeps_unkeyed_as_its_own_outcome() -> Result<(), TestError> {
         let resolved = resolved_one_per_tier("call-1@example.com");
-        let block = build_icmp_media_json(&resolved, "call-1@example.com").expect("block");
-        let v = serde_json::to_value(&block).expect("serializes");
+        let block = build_icmp_media_json(&resolved, "call-1@example.com").ok_or("block")?;
+        let v = serde_json::to_value(&block).map_err(|e| format!("serializes: {e:?}"))?;
         let c = &v["capture"];
 
         let n = |k: &str| {
             c.get(k)
                 .and_then(serde_json::Value::as_u64)
-                .unwrap_or_else(|| panic!("capture block dropped `{k}`: {c}"))
+                .ok_or_else(|| format!("capture block dropped `{k}`: {c}"))
         };
-        assert_eq!(n("unkeyed"), 3, "unkeyed must survive as its own count");
+        assert_eq!(n("unkeyed")?, 3, "unkeyed must survive as its own count");
         assert_eq!(
-            n("attributed") + n("unattributed"),
-            n("errors"),
+            n("attributed")? + n("unattributed")?,
+            n("errors")?,
             "every error is attributed or unattributed, never neither nor both"
         );
         let per_flow: u64 = resolved.report().flows.iter().map(|f| f.errors).sum();
         assert_eq!(
-            per_flow + n("unkeyed") + n("untracked_flows"),
-            n("errors"),
+            per_flow + n("unkeyed")? + n("untracked_flows")?,
+            n("errors")?,
             "every error reaches a flow, or is counted as unkeyed or untracked"
         );
+        Ok(())
     }
 
     /// A dialog no finding named still learns that evidence exists.
@@ -2662,17 +2710,18 @@ mod tests {
     /// indistinguishable from a capture that drew no ICMP at all — "looks
     /// clean because the surface cannot show it" is the defect being removed.
     #[test]
-    fn a_dialog_no_finding_named_still_carries_the_capture_counters() {
+    fn a_dialog_no_finding_named_still_carries_the_capture_counters() -> Result<(), TestError> {
         let resolved = resolved_one_per_tier("call-1@example.com");
         let block = build_icmp_media_json(&resolved, "someone-else@example.com")
-            .expect("the capture drew errors, so the block is emitted");
-        let v = serde_json::to_value(&block).expect("serializes");
+            .ok_or("the capture drew errors, so the block is emitted")?;
+        let v = serde_json::to_value(&block).map_err(|e| format!("serializes: {e:?}"))?;
 
         assert_eq!(v["capture"]["errors"], 23);
         assert!(
             v.get("findings").is_none(),
             "no finding named this dialog, so none may be attached: {v}"
         );
+        Ok(())
     }
 
     /// A capture that drew no media ICMP emits no block at all.
@@ -2687,10 +2736,10 @@ mod tests {
 
     /// The payload kind travels beside the tier, not instead of it.
     #[test]
-    fn a_finding_reports_the_quoted_payload_beside_its_tier() {
+    fn a_finding_reports_the_quoted_payload_beside_its_tier() -> Result<(), TestError> {
         let resolved = resolved_one_per_tier("call-1@example.com");
-        let block = build_icmp_media_json(&resolved, "call-1@example.com").expect("block");
-        let v = serde_json::to_value(&block).expect("serializes");
+        let block = build_icmp_media_json(&resolved, "call-1@example.com").ok_or("block")?;
+        let v = serde_json::to_value(&block).map_err(|e| format!("serializes: {e:?}"))?;
         let f = &v["findings"][0];
 
         assert_eq!(f["payload"], "rtp", "the quote was an RTP header: {f}");
@@ -2700,6 +2749,7 @@ mod tests {
             f.get("rtcp_packet_type").is_none(),
             "an RTP quote has no RTCP packet type: {f}"
         );
+        Ok(())
     }
 
     /// The whole dialog document carries the block, not just the projection.
@@ -2708,9 +2758,9 @@ mod tests {
     /// consumer actually reads, which was the state this task started from.
     #[test]
     #[serial_test::serial(icmp_evidence)]
-    fn the_dialog_document_carries_the_media_block() {
-        let msg = make_invite();
-        let dialog = crate::sip::dialog::SipDialog::new(&msg).expect("dialog");
+    fn the_dialog_document_carries_the_media_block() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let dialog = crate::sip::dialog::SipDialog::new(&msg).ok_or("dialog")?;
 
         crate::pipeline::reset_icmp_evidence();
         let before: serde_json::Value = serde_json::from_str(&dialog_to_json(
@@ -2719,7 +2769,7 @@ mod tests {
             &MediaDiagnosis::default(),
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         assert!(
             before.get("icmp_media").is_none(),
             "a capture with no media ICMP must not grow a block: {before}"
@@ -2732,16 +2782,17 @@ mod tests {
             &MediaDiagnosis::default(),
             crate::rtp::quality::MosDelay::unknown(),
         ))
-        .expect("valid JSON");
+        .map_err(|e| format!("valid JSON: {e:?}"))?;
         crate::pipeline::reset_icmp_evidence();
 
         let block = after
             .get("icmp_media")
-            .unwrap_or_else(|| panic!("the dialog document dropped the media block: {after}"));
+            .ok_or_else(|| format!("the dialog document dropped the media block: {after}"))?;
         assert_eq!(block["capture"]["errors"], 23);
         assert_eq!(
-            block["findings"].as_array().expect("findings array").len(),
+            block["findings"].as_array().ok_or("findings array")?.len(),
             4
         );
+        Ok(())
     }
 }

@@ -2717,7 +2717,7 @@ mod tests {
 
     /// Constructing a decryptor with no keylog path succeeds with zero entries.
     #[test]
-    fn new_without_keylog() {
+    fn new_without_keylog() -> Result<(), TestError> {
         let decryptor = TlsDecryptor::new(
             None,
             Box::new(MockCrypto {
@@ -2725,45 +2725,44 @@ mod tests {
             }),
         );
         assert!(decryptor.is_ok());
-        let d = decryptor.unwrap();
+        let d = decryptor?;
         assert_eq!(d.keylog_entry_count(), 0);
+        Ok(())
     }
 
     /// A keylog file with two traffic-secret lines loads two entries.
     #[test]
-    fn load_keylog_file() {
+    fn load_keylog_file() -> Result<(), TestError> {
         use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut tmp = tempfile::NamedTempFile::new()?;
         writeln!(
             tmp,
             "CLIENT_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "bb".repeat(32),
-        )
-        .unwrap();
+        )?;
         writeln!(
             tmp,
             "SERVER_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "cc".repeat(32),
-        )
-        .unwrap();
-        tmp.flush().unwrap();
+        )?;
+        tmp.flush()?;
 
         let d = TlsDecryptor::new(
             Some(tmp.path()),
             Box::new(MockCrypto {
                 decrypt_result: None,
             }),
-        )
-        .unwrap();
+        )?;
         assert_eq!(d.keylog_entry_count(), 2);
+        Ok(())
     }
 
     /// A client/server traffic-secret pair populates exactly one AES-128-GCM
     /// session.
     #[test]
-    fn sessions_populated_from_entries() {
+    fn sessions_populated_from_entries() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
             keylog_entries: make_keylog_entries(),
             sessions: HashMap::new(),
@@ -2796,8 +2795,9 @@ mod tests {
         let key = TlsSessionKey {
             client_random: [0xAAu8; 32],
         };
-        let session = d.sessions.get(&key).unwrap();
+        let session = d.sessions.get(&key).ok_or("the session is stored")?;
         assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
+        Ok(())
     }
 
     /// When a client_random has more than one CLIENT_TRAFFIC_SECRET_0/
@@ -2809,7 +2809,7 @@ mod tests {
     /// first. Uses the real crypto backend (not the mock) so two different
     /// secret inputs are verifiably distinguishable in the derived key.
     #[test]
-    fn sessions_populated_uses_latest_matching_secret_not_first() {
+    fn sessions_populated_uses_latest_matching_secret_not_first() -> Result<(), TestError> {
         let cr = [0xBBu8; 32];
         let stale_client = vec![0x01u8; 32];
         let stale_server = vec![0x02u8; 32];
@@ -2863,16 +2863,12 @@ mod tests {
 
         d.ensure_sessions_populated();
         let key = TlsSessionKey { client_random: cr };
-        let session = d.sessions.get(&key).expect("session derived");
+        let session = d.sessions.get(&key).ok_or("session derived")?;
 
         let expected_client_key =
-            derive_key_iv(d.crypto.as_ref(), &real_client, CipherSuite::Aes128Gcm)
-                .unwrap()
-                .0;
+            derive_key_iv(d.crypto.as_ref(), &real_client, CipherSuite::Aes128Gcm)?.0;
         let expected_server_key =
-            derive_key_iv(d.crypto.as_ref(), &real_server, CipherSuite::Aes128Gcm)
-                .unwrap()
-                .0;
+            derive_key_iv(d.crypto.as_ref(), &real_server, CipherSuite::Aes128Gcm)?.0;
         assert_eq!(
             session.client_write_key, expected_client_key,
             "must derive from the LAST client secret, not the first"
@@ -2881,12 +2877,13 @@ mod tests {
             session.server_write_key, expected_server_key,
             "must derive from the LAST server secret, not the first"
         );
+        Ok(())
     }
 
     /// With no sessions loaded, decrypting an ApplicationData record yields
     /// `None`.
     #[test]
-    fn try_decrypt_no_matching_session() {
+    fn try_decrypt_no_matching_session() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
             keylog_entries: Vec::new(),
             sessions: HashMap::new(),
@@ -2920,18 +2917,15 @@ mod tests {
             payload: vec![0u8; 10],
         };
 
-        let result = d.try_decrypt(
-            &record,
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.2".parse().unwrap(),
-        );
+        let result = d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?);
         assert!(result.is_none());
+        Ok(())
     }
 
     /// A matching session decrypts an ApplicationData record (mock plaintext),
     /// strips the TLS 1.3 inner type, and increments `decrypted_count`.
     #[test]
-    fn try_decrypt_with_matching_session() {
+    fn try_decrypt_with_matching_session() -> Result<(), TestError> {
         // The mock returns a fixed plaintext with TLS 1.3 content type appended
         let mut plaintext = b"INVITE sip:test@example.com SIP/2.0\r\n\r\n".to_vec();
         plaintext.push(23); // inner content type = ApplicationData
@@ -2969,15 +2963,12 @@ mod tests {
             payload: vec![0xEE; 64],
         };
 
-        let result = d.try_decrypt(
-            &record,
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.2".parse().unwrap(),
-        );
+        let result = d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?);
         assert!(result.is_some());
-        let decrypted = result.unwrap();
+        let decrypted = result.ok_or("the record decrypts")?;
         assert!(decrypted.starts_with(b"INVITE sip:"));
         assert_eq!(d.decrypted_count, 1);
+        Ok(())
     }
 
     /// A decrypt publishes to the process-wide tally, not only to the
@@ -2994,7 +2985,7 @@ mod tests {
     /// this module that decrypts anything moves it, so an absolute figure would
     /// be true only until the next test ran.
     #[test]
-    fn a_decrypt_reaches_the_published_tally() {
+    fn a_decrypt_reaches_the_published_tally() -> Result<(), TestError> {
         let offered_before =
             crate::capture::published_tls_decrypt().map_or(0, |r| r.app_data_records);
         let opened_before =
@@ -3039,17 +3030,13 @@ mod tests {
         // keys were supplied" and is a different finding from any count.
         crate::capture::note_tls_decryptor_installed(d.keylog_entry_count(), 0);
         assert!(
-            d.try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            )
-            .is_some(),
+            d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?,)
+                .is_some(),
             "the fixture must decrypt, or this test proves nothing"
         );
 
         let published = crate::capture::published_tls_decrypt()
-            .expect("an installed decryptor must publish a report");
+            .ok_or("an installed decryptor must publish a report")?;
         assert!(
             published.app_data_records > offered_before,
             "the record offered did not reach the published tally \
@@ -3062,11 +3049,12 @@ mod tests {
              ({opened_before} -> {})",
             published.decrypted_records
         );
+        Ok(())
     }
 
     /// A non-ApplicationData (Handshake) record is never decrypted.
     #[test]
-    fn non_application_data_returns_none() {
+    fn non_application_data_returns_none() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
             keylog_entries: make_keylog_entries(),
             sessions: HashMap::new(),
@@ -3100,12 +3088,9 @@ mod tests {
             payload: vec![0u8; 10],
         };
 
-        let result = d.try_decrypt(
-            &record,
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.2".parse().unwrap(),
-        );
+        let result = d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?);
         assert!(result.is_none());
+        Ok(())
     }
 
     /// Stripping removes the trailing content-type byte and zero padding.
@@ -3177,7 +3162,7 @@ mod tests {
     /// decrypts a sealed SIP ApplicationData record back to plaintext.
     #[cfg(feature = "tls")]
     #[test]
-    fn tls_key_rsa_handshake_decrypts_tls12_gcm_appdata() {
+    fn tls_key_rsa_handshake_decrypts_tls12_gcm_appdata() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
         use ring::aead;
 
@@ -3198,10 +3183,9 @@ mod tests {
             &seed,
             48,
             HashAlg::Sha256,
-        )
-        .unwrap();
+        )?;
         let (client_write_key, _swk, client_write_iv, _swiv) =
-            derive_tls12_keys(&backend, &master, &client_random, &server_random, suite).unwrap();
+            derive_tls12_keys(&backend, &master, &client_random, &server_random, suite)?;
         assert_eq!(client_write_iv.len(), 4, "TLS 1.2 GCM fixed IV is 4 bytes");
 
         // Encrypt a SIP message as a TLS 1.2 AES-128-GCM ApplicationData record
@@ -3213,7 +3197,8 @@ mod tests {
         nonce[4..].copy_from_slice(&explicit_nonce);
         let aad = build_tls12_gcm_aad(0, 23, 0x0303, sip.len() as u16);
 
-        let unbound = aead::UnboundKey::new(&aead::AES_128_GCM, &client_write_key).unwrap();
+        let unbound = aead::UnboundKey::new(&aead::AES_128_GCM, &client_write_key)
+            .map_err(|e| format!("{e:?}"))?;
         let sealing = aead::LessSafeKey::new(unbound);
         let mut in_out = sip.clone();
         sealing
@@ -3222,7 +3207,7 @@ mod tests {
                 aead::Aad::from(&aad),
                 &mut in_out,
             )
-            .unwrap();
+            .map_err(|e| format!("{e:?}"))?;
         let mut rec_payload = explicit_nonce.to_vec();
         rec_payload.extend_from_slice(&in_out);
         let appdata = TlsRecord {
@@ -3233,33 +3218,34 @@ mod tests {
         };
 
         // Build the decryptor with the RSA private key and feed the handshake.
-        let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
-        d.set_rsa_key(RsaKey::from_pem(RSA_KEY_PEM).unwrap());
+        let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
+        d.set_rsa_key(RsaKey::from_pem(RSA_KEY_PEM)?);
         assert!(d.has_rsa_key());
 
         d.process_record(
             &client_hello_record(&client_random),
-            client_sock(),
-            server_sock(),
+            client_sock()?,
+            server_sock()?,
         );
-        d.process_record(&server_hello_record(0x009C), server_sock(), client_sock());
+        d.process_record(&server_hello_record(0x009C), server_sock()?, client_sock()?);
         d.process_record(
             &client_key_exchange_record(RSA_PREMASTER_CT),
-            client_sock(),
-            server_sock(),
+            client_sock()?,
+            server_sock()?,
         );
 
         // The RSA session must now decrypt the application data back to the SIP.
-        let client = "10.0.0.1".parse().unwrap();
-        let server = "10.0.0.2".parse().unwrap();
+        let client = "10.0.0.1".parse()?;
+        let server = "10.0.0.2".parse()?;
         let out = d
             .try_decrypt(&appdata, client, server)
-            .expect("RSA-derived decrypt");
+            .ok_or("RSA-derived decrypt")?;
         assert_eq!(
             out, sip,
             "decrypted ApplicationData must equal the SIP message"
         );
         assert_eq!(d.decrypted_count, 1);
+        Ok(())
     }
 
     /// Seal `plaintext` as a TLS 1.3 ApplicationData record at record
@@ -3268,8 +3254,13 @@ mod tests {
     /// Real AEAD, so the resulting record can only be opened with the right
     /// key AND the right sequence number — which is the property under test.
     #[cfg(feature = "tls")]
-    fn seal_tls13_record(key: &[u8], iv: &[u8], seq: u64, plaintext: &[u8]) -> TlsRecord {
-        seal_tls13_inner(key, iv, seq, plaintext, 23)
+    fn seal_tls13_record(
+        key: &[u8],
+        iv: &[u8],
+        seq: u64,
+        plaintext: &[u8],
+    ) -> Result<TlsRecord, TestError> {
+        Ok(seal_tls13_inner(key, iv, seq, plaintext, 23)?)
     }
 
     /// Seal with an explicit INNER content type. A post-handshake KeyUpdate is
@@ -3281,7 +3272,7 @@ mod tests {
         seq: u64,
         plaintext: &[u8],
         inner_type: u8,
-    ) -> TlsRecord {
+    ) -> Result<TlsRecord, TestError> {
         use ring::aead;
 
         // TLS 1.3 inner plaintext: content ‖ real content type.
@@ -3302,7 +3293,8 @@ mod tests {
         aad[1..3].copy_from_slice(&0x0303u16.to_be_bytes());
         aad[3..5].copy_from_slice(&ct_len.to_be_bytes());
 
-        let unbound = aead::UnboundKey::new(&aead::AES_128_GCM, key).unwrap();
+        let unbound =
+            aead::UnboundKey::new(&aead::AES_128_GCM, key).map_err(|e| format!("{e:?}"))?;
         let sealing = aead::LessSafeKey::new(unbound);
         let mut in_out = inner;
         sealing
@@ -3311,31 +3303,30 @@ mod tests {
                 aead::Aad::from(&aad),
                 &mut in_out,
             )
-            .unwrap();
+            .map_err(|e| format!("{e:?}"))?;
 
-        TlsRecord {
+        Ok(TlsRecord {
             content_type: TlsContentType::ApplicationData,
             version: TlsVersion::Tls12,
             length: ct_len,
             payload: in_out,
-        }
+        })
     }
 
     /// A decryptor holding the TLS 1.3 traffic secrets of `make_keylog_entries`
     /// together with the client write key and IV those secrets derive to.
     #[cfg(feature = "tls")]
-    fn tls13_decryptor_and_client_keys() -> (TlsDecryptor, Vec<u8>, Vec<u8>) {
+    fn tls13_decryptor_and_client_keys() -> Result<(TlsDecryptor, Vec<u8>, Vec<u8>), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
         // it is for a plain `--keylog` file that can never grow.
         d.set_keys_may_still_arrive(true);
         d.keylog_entries = make_keylog_entries();
-        (d, key, iv)
+        Ok((d, key, iv))
     }
 
     /// A capture started against a connection that was ALREADY running joins
@@ -3350,23 +3341,20 @@ mod tests {
     /// cannot forge a passing tag.
     #[cfg(feature = "tls")]
     #[test]
-    fn tls13_decrypts_a_record_whose_stream_began_before_the_capture() {
+    fn tls13_decrypts_a_record_whose_stream_began_before_the_capture() -> Result<(), TestError> {
         // Eight records went by before the capture was started.
         const JOINED_AT: u64 = 8;
 
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
-        let record = seal_tls13_record(&key, &iv, JOINED_AT, sip);
+        let record = seal_tls13_record(&key, &iv, JOINED_AT, sip)?;
 
         let out = d
-            .try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            )
-            .expect("a record captured mid-stream must still decrypt");
+            .try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?)
+            .ok_or("a record captured mid-stream must still decrypt")?;
         assert_eq!(out, sip, "plaintext must be the SIP that was sealed");
         assert_eq!(d.decrypted_count, 1);
+        Ok(())
     }
 
     /// A carrier trunk held open for hours is far past a few thousand records,
@@ -3377,7 +3365,8 @@ mod tests {
     /// only how far into the record stream the capture began.
     #[cfg(feature = "tls")]
     #[test]
-    fn tls13_locks_on_to_a_trunk_that_has_been_up_far_longer_than_a_few_thousand_records() {
+    fn tls13_locks_on_to_a_trunk_that_has_been_up_far_longer_than_a_few_thousand_records()
+    -> Result<(), TestError> {
         // Well beyond the old 4096 ceiling, and not a round power of two.
         const JOINED_AT: u64 = 100_003;
         // A trunk carrying traffic offers records continuously; this is the
@@ -3387,27 +3376,28 @@ mod tests {
         // point of escalating rather than spending it all on the first packet.
         const PATIENCE: u64 = 24;
 
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         let mut opened = None;
         for n in 0..PATIENCE {
-            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip);
+            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip)?;
             if let Some(out) = d.try_decrypt(&record, client, server) {
                 opened = Some((n, out));
                 break;
             }
         }
         let (after, out) = opened
-            .expect("a long-lived trunk must lock on from its own traffic, without restarting it");
+            .ok_or("a long-lived trunk must lock on from its own traffic, without restarting it")?;
         assert_eq!(out, sip, "plaintext must be the SIP that was sealed");
         assert!(
             after > 0,
             "escalation is what reaches this depth; locking on the first record \
              would mean the ceiling is being spent up front again"
         );
+        Ok(())
     }
 
     /// A trunk up for months is past any single search, however wide.
@@ -3425,28 +3415,28 @@ mod tests {
     /// test, not the constant: 5000 is unreachable in any one search of 1000.
     #[cfg(feature = "tls")]
     #[test]
-    fn tls13_reaches_a_sequence_no_single_search_could_cover() {
+    fn tls13_reaches_a_sequence_no_single_search_could_cover() -> Result<(), TestError> {
         const JOINED_AT: u64 = 5_000;
         const CEILING: u64 = 1_000;
         const PATIENCE: u64 = 30;
 
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         d.set_lockon_window(CEILING);
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         let mut opened = None;
         for n in 0..PATIENCE {
-            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip);
+            let record = seal_tls13_record(&key, &iv, JOINED_AT + n, sip)?;
             if let Some(out) = d.try_decrypt(&record, client, server) {
                 opened = Some((n, out));
                 break;
             }
         }
-        let (after, out) = opened.expect(
+        let (after, out) = opened.ok_or(
             "the search must accumulate across records, or a ceiling is a reachability limit",
-        );
+        )?;
         assert_eq!(out, sip, "plaintext must be the SIP that was sealed");
         // No single search can span this: every window is capped at CEILING,
         // and the first starts at zero. Opening a record at JOINED_AT at all
@@ -3457,6 +3447,7 @@ mod tests {
             "locking on the first record would mean the ceiling was never the \
              limit, so this fixture would prove nothing"
         );
+        Ok(())
     }
 
     /// A warning is behavior with a contract, so it gets a test.
@@ -3473,9 +3464,12 @@ mod tests {
     /// a `tls`-only leg with `--tests`.
     #[cfg(all(feature = "tls", feature = "native"))]
     #[test]
-    fn disagreeing_traffic_secrets_are_reported_not_silently_chosen() {
-        fn capture(f: impl FnOnce()) -> String {
-            crate::test_utils::capture_logs(tracing::Level::DEBUG, f)
+    fn disagreeing_traffic_secrets_are_reported_not_silently_chosen() -> Result<(), TestError> {
+        fn capture(f: impl FnOnce() -> Result<(), TestError>) -> Result<String, TestError> {
+            let mut out = Ok(());
+            let logs = crate::test_utils::capture_logs(tracing::Level::DEBUG, || out = f());
+            out?;
+            Ok(logs)
         }
 
         let entry = |label: &str, cr: &[u8], secret: u8| KeyLogEntry {
@@ -3487,14 +3481,15 @@ mod tests {
 
         // Two generations of the same label for one client_random.
         let logged = capture(|| {
-            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
+            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
             d.keylog_entries = vec![
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
                 entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x33),
             ];
             d.ensure_sessions_populated();
-        });
+            Ok(())
+        })?;
         assert!(
             logged.contains("more than once with different values"),
             "a disagreement must be reported, not resolved in silence:\n{logged}"
@@ -3503,17 +3498,19 @@ mod tests {
         // NEGATIVE CONTROL: one generation must stay quiet, or the warning
         // fires on every ordinary capture and stops meaning anything.
         let quiet = capture(|| {
-            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend()).unwrap();
+            let mut d = TlsDecryptor::new(None, crate::crypto::default_backend())?;
             d.keylog_entries = vec![
                 entry("CLIENT_TRAFFIC_SECRET_0", &cr, 0x11),
                 entry("SERVER_TRAFFIC_SECRET_0", &cr, 0x22),
             ];
             d.ensure_sessions_populated();
-        });
+            Ok(())
+        })?;
         assert!(
             !quiet.contains("more than once with different values"),
             "an ordinary key log must not warn:\n{quiet}"
         );
+        Ok(())
     }
 
     /// A zero ceiling must be refused, not obeyed.
@@ -3526,15 +3523,15 @@ mod tests {
     /// the setter is not simply inert.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_zero_lockon_window_is_refused_while_a_real_one_is_honored() {
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+    fn a_zero_lockon_window_is_refused_while_a_real_one_is_honored() -> Result<(), TestError> {
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
         // Zero is ignored, so a mid-stream record is still reachable.
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         d.set_lockon_window(0);
-        let record = seal_tls13_record(&key, &iv, 12, sip);
+        let record = seal_tls13_record(&key, &iv, 12, sip)?;
         assert_eq!(
             d.try_decrypt(&record, client, server).as_deref(),
             Some(&sip[..]),
@@ -3543,13 +3540,14 @@ mod tests {
 
         // CONTROL: a real ceiling does take effect, so the setter is not inert.
         // One record at 5000 cannot be reached through a 4-wide search.
-        let (mut narrow, key2, iv2) = tls13_decryptor_and_client_keys();
+        let (mut narrow, key2, iv2) = tls13_decryptor_and_client_keys()?;
         narrow.set_lockon_window(4);
-        let far = seal_tls13_record(&key2, &iv2, 5_000, sip);
+        let far = seal_tls13_record(&key2, &iv2, 5_000, sip)?;
         assert!(
             narrow.try_decrypt(&far, client, server).is_none(),
             "a 4-wide ceiling must genuinely bound one record's search"
         );
+        Ok(())
     }
 
     /// Dan Jenkins's reported flow, end to end, as a regression gate.
@@ -3565,7 +3563,7 @@ mod tests {
     /// Uses ephemeral secrets generated here — a key log is never committed.
     #[cfg(all(feature = "tls", feature = "native"))]
     #[test]
-    fn a_keylog_on_disk_opens_a_connection_that_predates_the_capture() {
+    fn a_keylog_on_disk_opens_a_connection_that_predates_the_capture() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
         use std::io::Write;
 
@@ -3575,10 +3573,11 @@ mod tests {
         let client_random = [0xABu8; 32];
         let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("sip.keylog");
         {
-            let mut f = std::fs::File::create(&path).expect("create keylog");
+            let mut f =
+                std::fs::File::create(&path).map_err(|e| format!("create keylog: {e:?}"))?;
             // Order is deliberately server-first: an extractor emits these
             // from a hash map, so a consumer must not depend on line order.
             writeln!(
@@ -3586,22 +3585,21 @@ mod tests {
                 "SERVER_TRAFFIC_SECRET_0 {} {}",
                 hex(&client_random),
                 hex(&server_secret)
-            )
-            .unwrap();
+            )?;
             writeln!(
                 f,
                 "CLIENT_TRAFFIC_SECRET_0 {} {}",
                 hex(&client_random),
                 hex(&client_secret)
-            )
-            .unwrap();
+            )?;
         }
 
         let mut d = TlsDecryptor::new(Some(&path), Box::new(RingCryptoBackend))
-            .expect("decryptor from a keylog path");
+            .map_err(|e| format!("decryptor from a keylog path: {e:?}"))?;
         // `new` loads what is already there, so a poll straight after reports
         // no NEW lines. Assert on what was loaded, not on the delta.
-        d.poll_keylog_file().expect("keylog must be readable");
+        d.poll_keylog_file()
+            .map_err(|e| format!("keylog must be readable: {e:?}"))?;
         assert_eq!(
             d.keylog_entries.len(),
             2,
@@ -3609,24 +3607,24 @@ mod tests {
         );
 
         // The connection was already running: this record is not record zero.
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &client_secret, CipherSuite::Aes128Gcm).unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &client_secret, CipherSuite::Aes128Gcm)?;
         let sip = b"INVITE sip:carrier@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // A trunk offers records continuously, and the search widens as they
         // fail, so the stream is what reaches the counter — not one packet.
         let mut opened = None;
         for n in 0..24 {
-            let record = seal_tls13_record(&key, &iv, 137 + n, sip);
+            let record = seal_tls13_record(&key, &iv, 137 + n, sip)?;
             if let Some(out) = d.try_decrypt(&record, client, server) {
                 opened = Some(out);
                 break;
             }
         }
-        let out = opened.expect("a keylog read from disk must open a mid-stream connection");
+        let out = opened.ok_or("a keylog read from disk must open a mid-stream connection")?;
         assert_eq!(out, sip, "the SIP the record carried must come back whole");
+        Ok(())
     }
 
     /// DEFECT 2 regression: the search base must be identical for both key
@@ -3641,28 +3639,29 @@ mod tests {
     /// silently never opens) is indistinguishable from ordinary failure.
     #[cfg(feature = "tls")]
     #[test]
-    fn one_failed_record_advances_the_floor_once_not_once_per_key_guess() {
+    fn one_failed_record_advances_the_floor_once_not_once_per_key_guess() -> Result<(), TestError> {
         const W: u64 = 16; // the first window, before any widening
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // One record, far out of reach, so both key guesses fail.
-        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
         assert!(d.try_decrypt(&far, client, server).is_none());
 
-        let sess = d.sessions.values().next().expect("a session must exist");
+        let sess = d.sessions.values().next().ok_or("a session must exist")?;
         let floor = sess
             .lockon_floor
             .iter()
             .find(|(pair, _)| *pair == (client, server))
             .map(|(_, f)| *f)
-            .expect("the failed record must have set a floor");
+            .ok_or("the failed record must have set a floor")?;
         assert_eq!(
             floor, W,
             "one record must advance the floor by ONE window ({W}), not by one \
              per key guess — {floor} means the guesses swept different spans"
         );
+        Ok(())
     }
 
     /// DEFECT 3 regression: both key guesses within one record must get the
@@ -3676,11 +3675,11 @@ mod tests {
     /// record at 137 unreachable while the floor ran to 2,796,190.
     #[cfg(feature = "tls")]
     #[test]
-    fn one_failed_record_widens_the_search_once_not_once_per_key_guess() {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
-        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+    fn one_failed_record_widens_the_search_once_not_once_per_key_guess() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
 
         for expected in 1..=3u32 {
             assert!(d.try_decrypt(&far, client, server).is_none());
@@ -3688,7 +3687,7 @@ mod tests {
                 .sessions
                 .values()
                 .next()
-                .expect("a session must exist")
+                .ok_or("a session must exist")?
                 .lockon_attempts;
             assert_eq!(
                 attempts, expected,
@@ -3697,6 +3696,7 @@ mod tests {
                  searched different widths"
             );
         }
+        Ok(())
     }
 
     /// A TLS 1.3 KeyUpdate rotates the traffic secret and resets the record
@@ -3715,16 +3715,16 @@ mod tests {
     /// which the KeyUpdate message of [section 4.6.3](https://www.rfc-editor.org/rfc/rfc8446#section-4.6.3) points to).
     #[cfg(feature = "tls")]
     #[test]
-    fn a_key_update_ratchets_the_secret_and_resets_the_counter() {
+    fn a_key_update_ratchets_the_secret_and_resets_the_counter() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
         // Ordinary traffic first, so the direction is locked on and counting.
-        let first = seal_tls13_record(&key, &iv, 0, sip);
+        let first = seal_tls13_record(&key, &iv, 0, sip)?;
         assert!(
             d.try_decrypt(&first, client, server).is_some(),
             "the pre-rekey record must decrypt"
@@ -3732,7 +3732,7 @@ mod tests {
 
         // KeyUpdate: handshake type 24, length 1, update_not_requested(0),
         // carried as inner type 22 inside an application_data record.
-        let ku = seal_tls13_inner(&key, &iv, 1, &[24, 0, 0, 1, 0], 22);
+        let ku = seal_tls13_inner(&key, &iv, 1, &[24, 0, 0, 1, 0], 22)?;
         d.try_decrypt(&ku, client, server);
 
         // The peer now seals under the ratcheted secret, from sequence zero.
@@ -3740,17 +3740,17 @@ mod tests {
             let info = hkdf_expand_label_info(b"traffic upd", &[], 32);
             RingCryptoBackend
                 .hkdf_expand(&[0x11u8; 32], &info, 32, HashAlg::Sha256)
-                .expect("ratchet must derive")
+                .map_err(|e| format!("ratchet must derive: {e:?}"))?
         };
-        let (nk, niv) =
-            derive_key_iv(&RingCryptoBackend, &next_secret, CipherSuite::Aes128Gcm).unwrap();
-        let after = seal_tls13_inner(&nk, &niv, 0, sip, 23);
+        let (nk, niv) = derive_key_iv(&RingCryptoBackend, &next_secret, CipherSuite::Aes128Gcm)?;
+        let after = seal_tls13_inner(&nk, &niv, 0, sip, 23)?;
 
         assert_eq!(
             d.try_decrypt(&after, client, server).as_deref(),
             Some(&sip[..]),
             "after a KeyUpdate the ratcheted secret at sequence zero must open"
         );
+        Ok(())
     }
 
     /// NEGATIVE CONTROL: ordinary application data must NOT ratchet.
@@ -3760,14 +3760,14 @@ mod tests {
     /// feature exists to prevent, caused by the feature itself.
     #[cfg(feature = "tls")]
     #[test]
-    fn ordinary_application_data_does_not_ratchet_the_secret() {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+    fn ordinary_application_data_does_not_ratchet_the_secret() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
         for seq in 0..3u64 {
-            let r = seal_tls13_record(&key, &iv, seq, sip);
+            let r = seal_tls13_record(&key, &iv, seq, sip)?;
             assert_eq!(
                 d.try_decrypt(&r, client, server).as_deref(),
                 Some(&sip[..]),
@@ -3784,19 +3784,20 @@ mod tests {
             .into_iter()
             .chain(*b" not a keyupdate")
             .collect();
-        let decoy = seal_tls13_record(&key, &iv, 3, &looks_like_ku);
+        let decoy = seal_tls13_record(&key, &iv, 3, &looks_like_ku)?;
         assert_eq!(
             d.try_decrypt(&decoy, client, server).as_deref(),
             Some(&looks_like_ku[..]),
             "a decoy payload must decrypt as data"
         );
-        let after = seal_tls13_record(&key, &iv, 4, sip);
+        let after = seal_tls13_record(&key, &iv, 4, sip)?;
         assert_eq!(
             d.try_decrypt(&after, client, server).as_deref(),
             Some(&sip[..]),
             "the decoy must NOT have ratcheted the secret: inner type 23 is data, \
              whatever its first byte looks like"
         );
+        Ok(())
     }
 
     /// The floor must never outrun the answer.
@@ -3808,18 +3809,16 @@ mod tests {
     /// it would be worse than never reaching a long-lived trunk at all.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_connection_captured_from_its_handshake_still_opens_its_first_record() {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+    fn a_connection_captured_from_its_handshake_still_opens_its_first_record()
+    -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let sip = b"INVITE sip:t@example.com SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
-        let record = seal_tls13_record(&key, &iv, 0, sip);
+        let record = seal_tls13_record(&key, &iv, 0, sip)?;
         let out = d
-            .try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            )
-            .expect("sequence zero must open on the first record, with no search at all");
+            .try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?)
+            .ok_or("sequence zero must open on the first record, with no search at all")?;
         assert_eq!(out, sip);
+        Ok(())
     }
 
     /// A floor raised by one direction must not blind the other.
@@ -3832,11 +3831,11 @@ mod tests {
     /// not SIP.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_floor_raised_by_one_direction_does_not_blind_the_other() {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+    fn a_floor_raised_by_one_direction_does_not_blind_the_other() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         d.set_lockon_window(64);
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
         let sip = b"OPTIONS sip:t@example.com SIP/2.0\r\nCSeq: 1 OPTIONS\r\n\r\n";
 
         // Drive the client direction's floor up with real records whose
@@ -3844,7 +3843,7 @@ mod tests {
         // real framing — the only reason they do not open is distance, which
         // is exactly the condition that raises a floor.
         for n in 0..8 {
-            let far = seal_tls13_record(&key, &iv, 900 + n, sip);
+            let far = seal_tls13_record(&key, &iv, 900 + n, sip)?;
             assert!(
                 d.try_decrypt(&far, client, server).is_none(),
                 "record {n} at 900+ must be out of reach of a 64-wide search from 0"
@@ -3853,12 +3852,13 @@ mod tests {
 
         // The server direction has failed nothing, so its own low sequence
         // must still be reachable.
-        let reply = seal_tls13_record(&key, &iv, 0, sip);
+        let reply = seal_tls13_record(&key, &iv, 0, sip)?;
         assert_eq!(
             d.try_decrypt(&reply, server, client).as_deref(),
             Some(&sip[..]),
             "the untouched direction must still open at its own sequence"
         );
+        Ok(())
     }
 
     /// Once a direction has locked on, a gap in the captured records — a
@@ -3867,24 +3867,25 @@ mod tests {
     /// counter simply stopped advancing and every later record was lost.
     #[cfg(feature = "tls")]
     #[test]
-    fn tls13_resyncs_across_a_gap_in_the_captured_records() {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+    fn tls13_resyncs_across_a_gap_in_the_captured_records() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
-        let first = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:a@x SIP/2.0\r\n\r\n");
+        let first = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:a@x SIP/2.0\r\n\r\n")?;
         assert!(
             d.try_decrypt(&first, client, server).is_some(),
             "record zero locks the direction on"
         );
 
         // Records 1..=3 were never captured; the next one seen is record 4.
-        let later = seal_tls13_record(&key, &iv, 4, b"OPTIONS sip:b@x SIP/2.0\r\n\r\n");
+        let later = seal_tls13_record(&key, &iv, 4, b"OPTIONS sip:b@x SIP/2.0\r\n\r\n")?;
         let out = d
             .try_decrypt(&later, client, server)
-            .expect("a gap must not end decryption for the connection");
+            .ok_or("a gap must not end decryption for the connection")?;
         assert_eq!(out, b"OPTIONS sip:b@x SIP/2.0\r\n\r\n");
         assert_eq!(d.decrypted_count, 2);
+        Ok(())
     }
 
     /// A loopback capture has the same IP on both ends, so the address cannot
@@ -3894,21 +3895,22 @@ mod tests {
     /// decryption, that is half the conversation.
     #[cfg(feature = "tls")]
     #[test]
-    fn both_directions_decrypt_when_the_addresses_cannot_tell_them_apart() {
+    fn both_directions_decrypt_when_the_addresses_cannot_tell_them_apart() -> Result<(), TestError>
+    {
         use crate::crypto::RingCryptoBackend;
 
-        let (mut d, client_key, client_iv) = tls13_decryptor_and_client_keys();
+        let (mut d, client_key, client_iv) = tls13_decryptor_and_client_keys()?;
         let (server_key, server_iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x22u8; 32], CipherSuite::Aes128Gcm).unwrap();
+            derive_key_iv(&RingCryptoBackend, &[0x22u8; 32], CipherSuite::Aes128Gcm)?;
 
-        let lo: IpAddr = "127.0.0.1".parse().unwrap();
+        let lo: IpAddr = "127.0.0.1".parse()?;
         let request = seal_tls13_record(
             &client_key,
             &client_iv,
             0,
             b"OPTIONS sip:a@x SIP/2.0\r\n\r\n",
-        );
-        let reply = seal_tls13_record(&server_key, &server_iv, 0, b"SIP/2.0 200 OK\r\n\r\n");
+        )?;
+        let reply = seal_tls13_record(&server_key, &server_iv, 0, b"SIP/2.0 200 OK\r\n\r\n")?;
 
         assert!(
             d.try_decrypt(&request, lo, lo).is_some(),
@@ -3916,9 +3918,10 @@ mod tests {
         );
         let out = d
             .try_decrypt(&reply, lo, lo)
-            .expect("the reply must decrypt too, on the same loopback addresses");
+            .ok_or("the reply must decrypt too, on the same loopback addresses")?;
         assert_eq!(out, b"SIP/2.0 200 OK\r\n\r\n");
         assert_eq!(d.decrypted_count, 2);
+        Ok(())
     }
 
     /// A record that arrived BEFORE its keys must decrypt once they load.
@@ -3944,11 +3947,11 @@ mod tests {
     /// the answer.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_record_that_arrived_before_its_keys_is_decrypted_once_they_load() {
+    fn a_record_that_arrived_before_its_keys_is_decrypted_once_they_load() -> Result<(), TestError>
+    {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
@@ -3956,9 +3959,9 @@ mod tests {
         d.set_keys_may_still_arrive(true);
 
         let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
-        let record = seal_tls13_record(&key, &iv, 0, invite);
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let record = seal_tls13_record(&key, &iv, 0, invite)?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // The INVITE reaches sipnab with no keys loaded: this is the moment
         // the old code dropped it for good.
@@ -3980,6 +3983,7 @@ mod tests {
             recovered[0].plaintext, invite,
             "and it must decrypt to the INVITE that was actually on the wire"
         );
+        Ok(())
     }
 
     /// A held record whose keys never arrive stays held, not dropped.
@@ -3990,20 +3994,20 @@ mod tests {
     /// still seconds away — reintroducing the defect one retry later.
     #[cfg(feature = "tls")]
     #[test]
-    fn a_record_that_still_has_no_key_stays_held_rather_than_being_dropped() {
+    fn a_record_that_still_has_no_key_stays_held_rather_than_being_dropped() -> Result<(), TestError>
+    {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
         // it is for a plain `--keylog` file that can never grow.
         d.set_keys_may_still_arrive(true);
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
-        let record = seal_tls13_record(&key, &iv, 0, b"INVITE sip:x SIP/2.0\r\n\r\n");
+        let record = seal_tls13_record(&key, &iv, 0, b"INVITE sip:x SIP/2.0\r\n\r\n")?;
         assert!(d.try_decrypt(&record, client, server).is_none());
 
         // A rewind with still no keys recovers nothing and keeps the record.
@@ -4025,6 +4029,7 @@ mod tests {
             "a record held across an empty rewind must still open once its keys load"
         );
         assert_eq!(d.rewind_pending.len(), 0, "and is released once recovered");
+        Ok(())
     }
 
     /// A replay must not raise the lock-on floor past the record it is for.
@@ -4049,18 +4054,18 @@ mod tests {
     /// floor. A failed replay means "not this key", never "later than this".
     #[cfg(feature = "tls")]
     #[test]
-    fn a_replay_that_cannot_open_does_not_bury_the_record_it_was_written_to_recover() {
+    fn a_replay_that_cannot_open_does_not_bury_the_record_it_was_written_to_recover()
+    -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
         // These tests describe a WATCHED keylog: keys arrive after the
         // record does. Without saying so the hold is disabled, exactly as
         // it is for a plain `--keylog` file that can never grow.
         d.set_keys_may_still_arrive(true);
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // Handshake-epoch ApplicationData: right content type, wrong epoch,
         // and nothing in any keylog will ever open it.
@@ -4084,7 +4089,7 @@ mod tests {
         // The INVITE is at sequence 0. It must still decrypt: the failed
         // replay above must not have moved the floor past it.
         let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
-        let record = seal_tls13_record(&key, &iv, 0, invite);
+        let record = seal_tls13_record(&key, &iv, 0, invite)?;
         let out = d.try_decrypt(&record, client, server);
         assert_eq!(
             out.as_deref(),
@@ -4093,6 +4098,7 @@ mod tests {
              raised the lock-on floor, the INVITE is now below it and the whole call \
              goes dark, which is worse than the defect this feature fixes"
         );
+        Ok(())
     }
 
     /// Handshake junk must not bury the INVITE on the LIVE path either.
@@ -4115,14 +4121,14 @@ mod tests {
     /// covers, and it must not regress to buy this.
     #[cfg(feature = "tls")]
     #[test]
-    fn handshake_epoch_junk_does_not_bury_seq_zero_when_the_handshake_was_seen() {
+    fn handshake_epoch_junk_does_not_bury_seq_zero_when_the_handshake_was_seen()
+    -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
-        let (key, iv) =
-            derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm).unwrap();
-        let (mut d, _k, _v) = tls13_decryptor_and_client_keys();
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let (key, iv) = derive_key_iv(&RingCryptoBackend, &[0x11u8; 32], CipherSuite::Aes128Gcm)?;
+        let (mut d, _k, _v) = tls13_decryptor_and_client_keys()?;
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // Populate sessions, then mark this one as having been watched from
         // its ClientHello — the state a live capture of a fresh call is in.
@@ -4144,13 +4150,14 @@ mod tests {
 
         // The INVITE at sequence 0 must still open.
         let invite = b"INVITE sip:iq@example.net SIP/2.0\r\nCSeq: 1 INVITE\r\n\r\n";
-        let record = seal_tls13_record(&key, &iv, 0, invite);
+        let record = seal_tls13_record(&key, &iv, 0, invite)?;
         assert_eq!(
             d.try_decrypt(&record, client, server).as_deref(),
             Some(&invite[..]),
             "with the handshake seen, failed opens must not advance the floor past seq 0 — \
              otherwise junk arriving between the keys and the INVITE takes the call dark"
         );
+        Ok(())
     }
 
     /// The hold is bounded in BYTES, and says what it dropped.
@@ -4164,7 +4171,7 @@ mod tests {
     /// the record away" the same outcome.
     #[cfg(feature = "tls")]
     #[test]
-    fn the_rewind_hold_is_bounded_in_bytes_and_counts_what_it_dropped() {
+    fn the_rewind_hold_is_bounded_in_bytes_and_counts_what_it_dropped() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
         let mut d = decryptor_with(Box::new(RingCryptoBackend));
@@ -4172,8 +4179,8 @@ mod tests {
         // record does. Without saying so the hold is disabled, exactly as
         // it is for a plain `--keylog` file that can never grow.
         d.set_keys_may_still_arrive(true);
-        let client: IpAddr = "10.0.0.1".parse().unwrap();
-        let server: IpAddr = "10.0.0.2".parse().unwrap();
+        let client: IpAddr = "10.0.0.1".parse()?;
+        let server: IpAddr = "10.0.0.2".parse()?;
 
         // Records that will never open, offered until well past the budget.
         let big = vec![0xABu8; 64 * 1024];
@@ -4201,6 +4208,7 @@ mod tests {
             "records dropped for the budget must be counted, or the report cannot \
              distinguish never having the keys from discarding the ciphertext"
         );
+        Ok(())
     }
 
     /// The counters behind the operator-facing report: every ApplicationData
@@ -4209,25 +4217,20 @@ mod tests {
     /// the operator it is holding ciphertext it could not read.
     #[cfg(feature = "tls")]
     #[test]
-    fn undecryptable_application_data_is_counted_not_silently_dropped() {
+    fn undecryptable_application_data_is_counted_not_silently_dropped() -> Result<(), TestError> {
         use crate::crypto::RingCryptoBackend;
 
         let (key, iv) = derive_key_iv(
             &RingCryptoBackend,
             &[0x99u8; 32], // a secret the decryptor does NOT hold
             CipherSuite::Aes128Gcm,
-        )
-        .unwrap();
-        let (mut d, _k, _i) = tls13_decryptor_and_client_keys();
-        let record = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:a@x SIP/2.0\r\n\r\n");
+        )?;
+        let (mut d, _k, _i) = tls13_decryptor_and_client_keys()?;
+        let record = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:a@x SIP/2.0\r\n\r\n")?;
 
         assert!(
-            d.try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap()
-            )
-            .is_none(),
+            d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?)
+                .is_none(),
             "a record sealed under an unknown secret cannot open"
         );
 
@@ -4238,6 +4241,7 @@ mod tests {
             report.sessions_with_keys, 1,
             "a session was built from the keylog, which is why silence misleads"
         );
+        Ok(())
     }
 
     /// A ServerHello carried in a real TLS record (wraps `server_hello`).
@@ -4399,13 +4403,13 @@ mod tests {
     // ── helpers for the added tests ────────────────────────────────────
 
     /// Client-side transport endpoint for single-connection tests.
-    fn client_sock() -> SocketAddr {
-        "10.0.0.1:51000".parse().unwrap()
+    fn client_sock() -> Result<SocketAddr, TestError> {
+        Ok("10.0.0.1:51000".parse()?)
     }
 
     /// Server-side transport endpoint for single-connection tests.
-    fn server_sock() -> SocketAddr {
-        "10.0.0.2:5061".parse().unwrap()
+    fn server_sock() -> Result<SocketAddr, TestError> {
+        Ok("10.0.0.2:5061".parse()?)
     }
 
     /// A decryptor wrapping `crypto` with no keylog file and empty state.
@@ -4469,11 +4473,11 @@ mod tests {
     /// into the decryptor.
     #[cfg(feature = "native")]
     #[test]
-    fn feed_embedded_secrets_loads_dsb_into_decryptor() {
+    fn feed_embedded_secrets_loads_dsb_into_decryptor() -> Result<(), TestError> {
         use crate::capture::{PcapExportMode, PcapWriter};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let keylog = dir.path().join("k.txt");
-        std::fs::write(&keylog, format!("{CLIENT_RANDOM_LINE}\n")).unwrap();
+        std::fs::write(&keylog, format!("{CLIENT_RANDOM_LINE}\n"))?;
         let path = dir.path().join("withdsb.pcapng");
         {
             let mut w = PcapWriter::with_format(
@@ -4483,10 +4487,9 @@ mod tests {
                 None,
                 true,
                 PcapExportMode::EncryptedWithDsb,
-            )
-            .unwrap();
-            w.maybe_write_keylog_dsb(&keylog).unwrap();
-            w.finish().unwrap();
+            )?;
+            w.maybe_write_keylog_dsb(&keylog)?;
+            w.finish()?;
         }
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -4497,24 +4500,23 @@ mod tests {
             "the embedded DSB secret should reach the decryptor"
         );
         assert_eq!(d.keylog_entry_count(), 1);
+        Ok(())
     }
 
     /// A pcapng with no DSB feeds nothing (returns 0).
     #[cfg(feature = "native")]
     #[test]
-    fn feed_embedded_secrets_no_dsb_is_noop() {
+    fn feed_embedded_secrets_no_dsb_is_noop() -> Result<(), TestError> {
         use crate::capture::{PcapExportMode, PcapWriter};
         // A pcapng with no DSB → nothing fed.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("plain.pcapng");
-        PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
-            .unwrap()
-            .finish()
-            .unwrap();
+        PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)?.finish()?;
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
         assert_eq!(super::feed_embedded_secrets(&path, &mut d), 0);
+        Ok(())
     }
 
     /// A minimal but well-formed ServerHello handshake payload advertising
@@ -4565,13 +4567,13 @@ mod tests {
     ///
     /// Vectors computed independently from [RFC 8446 section 7.1](https://www.rfc-editor.org/rfc/rfc8446#section-7.1) HKDF-Expand-Label.
     #[test]
-    fn derive_key_iv_uses_the_hash_the_suite_names() {
+    fn derive_key_iv_uses_the_hash_the_suite_names() -> Result<(), TestError> {
         let crypto = crate::crypto::default_backend();
 
         // SHA-384 suite: 48-byte traffic secret 0x00..0x2f.
         let secret384: Vec<u8> = (0u8..48).collect();
         let (key, iv) = derive_key_iv(crypto.as_ref(), &secret384, CipherSuite::Aes256Gcm)
-            .expect("derive AES-256-GCM key material");
+            .map_err(|e| format!("derive AES-256-GCM key material: {e:?}"))?;
         assert_eq!(
             key,
             vec![
@@ -4596,7 +4598,7 @@ mod tests {
         // fail here.
         let secret256: Vec<u8> = (0u8..32).collect();
         let (key, iv) = derive_key_iv(crypto.as_ref(), &secret256, CipherSuite::Aes128Gcm)
-            .expect("derive AES-128-GCM key material");
+            .map_err(|e| format!("derive AES-128-GCM key material: {e:?}"))?;
         assert_eq!(
             key,
             vec![
@@ -4612,6 +4614,7 @@ mod tests {
             ],
             "TLS_AES_128_GCM_SHA256 must still derive its IV with SHA-256"
         );
+        Ok(())
     }
 
     // ── CipherSuite table ──────────────────────────────────────────────
@@ -4718,14 +4721,17 @@ mod tests {
     /// A valid ServerHello yields its server_random and cipher, including when a
     /// non-empty session id shifts the cipher offset.
     #[test]
-    fn parse_server_hello_valid() {
-        let info = parse_server_hello(&server_hello(0x009C, 0)).unwrap();
+    fn parse_server_hello_valid() -> Result<(), TestError> {
+        let info = parse_server_hello(&server_hello(0x009C, 0))
+            .ok_or("parse_server_hello returned None")?;
         assert_eq!(info.server_random, Some([0x5Au8; 32]));
         assert_eq!(info.cipher_suite_code, Some(0x009C));
 
         // With a non-empty session id, the cipher offset shifts accordingly.
-        let info = parse_server_hello(&server_hello(0x1302, 32)).unwrap();
+        let info = parse_server_hello(&server_hello(0x1302, 32))
+            .ok_or("parse_server_hello returned None")?;
         assert_eq!(info.cipher_suite_code, Some(0x1302));
+        Ok(())
     }
 
     /// Malformed ServerHellos (too short, wrong type, truncated random,
@@ -4747,7 +4753,7 @@ mod tests {
     /// A Handshake ServerHello is recorded in `observed_handshakes`; a
     /// non-Handshake record is ignored.
     #[test]
-    fn process_record_observes_serverhello_and_ignores_others() {
+    fn process_record_observes_serverhello_and_ignores_others() -> Result<(), TestError> {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
@@ -4759,7 +4765,7 @@ mod tests {
             length: 0,
             payload: server_hello(0x009C, 0),
         };
-        d.process_record(&rec, server_sock(), client_sock());
+        d.process_record(&rec, server_sock()?, client_sock()?);
         assert_eq!(d.observed_handshakes.len(), 1);
 
         // A non-Handshake record is ignored.
@@ -4769,8 +4775,9 @@ mod tests {
             length: 0,
             payload: vec![0u8; 8],
         };
-        d.process_record(&rec, server_sock(), client_sock());
+        d.process_record(&rec, server_sock()?, client_sock()?);
         assert_eq!(d.observed_handshakes.len(), 1);
+        Ok(())
     }
 
     /// A TLS 1.3 session, already derived and ready to decrypt, must survive
@@ -4782,7 +4789,7 @@ mod tests {
     /// go from ready to gone before its actual SIP traffic was decrypted,
     /// with nothing in the logs to explain why.
     #[test]
-    fn tls13_session_survives_an_unrelated_serverhello() {
+    fn tls13_session_survives_an_unrelated_serverhello() -> Result<(), TestError> {
         let mut d = TlsDecryptor {
             keylog_entries: make_keylog_entries(),
             ..decryptor_with(Box::new(MockCrypto {
@@ -4801,10 +4808,10 @@ mod tests {
 
         // A second, unrelated handshake's ServerHello arrives on a different
         // connection.
-        let other_client: SocketAddr = "10.0.0.3:51001".parse().unwrap();
+        let other_client: SocketAddr = "10.0.0.3:51001".parse()?;
         d.process_record(
             &handshake_record(server_hello(0x009C, 0)),
-            server_sock(),
+            server_sock()?,
             other_client,
         );
 
@@ -4812,6 +4819,7 @@ mod tests {
             d.sessions.contains_key(&key),
             "an unrelated ServerHello must not wipe an already-ready TLS 1.3 session"
         );
+        Ok(())
     }
 
     // ── TLS 1.2 CLIENT_RANDOM key derivation ───────────────────────────
@@ -4819,7 +4827,7 @@ mod tests {
     /// A TLS 1.2 `CLIENT_RANDOM` master secret plus an observed AES-128-GCM
     /// ServerHello derives a session with a 16-byte key and 4-byte fixed IV.
     #[test]
-    fn tls12_client_random_derives_session() {
+    fn tls12_client_random_derives_session() -> Result<(), TestError> {
         let cr = [0x77u8; 32];
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -4838,24 +4846,25 @@ mod tests {
                 length: 0,
                 payload: server_hello(0x009C, 0),
             },
-            server_sock(),
-            client_sock(),
+            server_sock()?,
+            client_sock()?,
         );
 
         d.ensure_sessions_populated();
         let key = TlsSessionKey { client_random: cr };
-        let session = d.sessions.get(&key).expect("TLS 1.2 session derived");
+        let session = d.sessions.get(&key).ok_or("TLS 1.2 session derived")?;
         assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
         // TLS 1.2 AES-128-GCM: 16-byte key, 4-byte fixed (implicit) IV.
         assert_eq!(session.client_write_key.len(), 16);
         assert_eq!(session.client_write_iv.len(), 4);
+        Ok(())
     }
 
     /// With two concurrent handshakes observed on the wire, a `CLIENT_RANDOM`
     /// keylog entry must bind to the handshake whose ClientHello random matches
     /// the entry — not to the first observed ServerHello.
     #[test]
-    fn tls12_client_random_binds_to_matching_handshake() {
+    fn tls12_client_random_binds_to_matching_handshake() -> Result<(), TestError> {
         let cr1 = [0x11u8; 32];
         let sr1 = [0x5Au8; 32];
         let cr2 = [0x22u8; 32];
@@ -4866,22 +4875,22 @@ mod tests {
 
         // Two interleaved TLS 1.2 handshakes (different connections) in wire
         // order: CH1, SH1, CH2, SH2.
-        let client2: SocketAddr = "10.0.0.3:51001".parse().unwrap();
+        let client2: SocketAddr = "10.0.0.3:51001".parse()?;
         for (payload, src, dst) in [
             (
                 client_hello_record(&cr1).payload,
-                client_sock(),
-                server_sock(),
+                client_sock()?,
+                server_sock()?,
             ),
             (
                 server_hello_with_random(0x009C, 0, &sr1),
-                server_sock(),
-                client_sock(),
+                server_sock()?,
+                client_sock()?,
             ),
-            (client_hello_record(&cr2).payload, client2, server_sock()),
+            (client_hello_record(&cr2).payload, client2, server_sock()?),
             (
                 server_hello_with_random(0x009C, 0, &sr2),
-                server_sock(),
+                server_sock()?,
                 client2,
             ),
         ] {
@@ -4909,7 +4918,7 @@ mod tests {
         let session = d
             .sessions
             .get(&TlsSessionKey { client_random: cr2 })
-            .expect("TLS 1.2 session derived");
+            .ok_or("TLS 1.2 session derived")?;
 
         // The session keys must come from the SECOND handshake's server_random.
         let (expected_ck, _, expected_civ, _) = derive_tls12_keys(
@@ -4918,27 +4927,27 @@ mod tests {
             &cr2,
             &sr2,
             CipherSuite::Aes128Gcm,
-        )
-        .unwrap();
+        )?;
         assert_eq!(
             session.client_write_key, expected_ck,
             "keys must derive from the matching handshake's server_random, not the first observed"
         );
         assert_eq!(session.client_write_iv, expected_civ);
+        Ok(())
     }
 
     /// Cross-connection interleaving must not cross-pair: with the pathological
     /// order CH1(A), CH2(B), SH2(B), SH1(A), each ServerHello pairs with its
     /// OWN connection's ClientHello random.
     #[test]
-    fn serverhello_pairs_with_own_connections_clienthello_only() {
+    fn serverhello_pairs_with_own_connections_clienthello_only() -> Result<(), TestError> {
         let cr_a = [0x11u8; 32];
         let sr_a = [0x5Au8; 32];
         let cr_b = [0x22u8; 32];
         let sr_b = [0xA5u8; 32];
-        let client_a = client_sock();
-        let client_b: SocketAddr = "10.0.0.3:51001".parse().unwrap();
-        let server = server_sock();
+        let client_a = client_sock()?;
+        let client_b: SocketAddr = "10.0.0.3:51001".parse()?;
+        let server = server_sock()?;
 
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -4978,26 +4987,27 @@ mod tests {
             Some(cr_a),
             "SH(A) must pair with connection A's ClientHello random"
         );
+        Ok(())
     }
 
     /// One connection's records as seen on the wire — ClientHello
     /// client→server, ServerHello server→client — normalize to the same
     /// connection key and pair.
     #[test]
-    fn clienthello_serverhello_pair_across_wire_directions() {
+    fn clienthello_serverhello_pair_across_wire_directions() -> Result<(), TestError> {
         let cr = [0x33u8; 32];
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
         d.process_record(
             &handshake_record(client_hello_record(&cr).payload),
-            client_sock(),
-            server_sock(),
+            client_sock()?,
+            server_sock()?,
         );
         d.process_record(
             &handshake_record(server_hello(0x009C, 0)),
-            server_sock(),
-            client_sock(),
+            server_sock()?,
+            client_sock()?,
         );
         assert_eq!(d.observed_handshakes.len(), 1);
         assert_eq!(
@@ -5005,21 +5015,20 @@ mod tests {
             Some(cr),
             "src/dst-swapped directions must normalize to one connection"
         );
+        Ok(())
     }
 
     /// The pending-connection map is bounded: exceeding the cap evicts the
     /// oldest connection's queued ClientHello (no panic) while the newest
     /// connection still pairs.
     #[test]
-    fn pending_connection_map_bounded_evicts_oldest() {
-        let server = server_sock();
+    fn pending_connection_map_bounded_evicts_oldest() -> Result<(), TestError> {
+        let server = server_sock()?;
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        let conn_addr = |i: usize| -> SocketAddr {
-            format!("10.1.{}.{}:49152", i / 256, i % 256)
-                .parse()
-                .unwrap()
+        let conn_addr = |i: usize| -> Result<SocketAddr, TestError> {
+            Ok(format!("10.1.{}.{}:49152", i / 256, i % 256).parse()?)
         };
         let conn_random = |i: usize| -> [u8; 32] {
             let mut cr = [0u8; 32];
@@ -5031,7 +5040,7 @@ mod tests {
         for i in 0..=MAX_PENDING_HANDSHAKE_CONNS {
             d.process_record(
                 &handshake_record(client_hello_record(&conn_random(i)).payload),
-                conn_addr(i),
+                conn_addr(i)?,
                 server,
             );
         }
@@ -5040,7 +5049,7 @@ mod tests {
         d.process_record(
             &handshake_record(server_hello_with_random(0x009C, 0, &[0x5A; 32])),
             server,
-            conn_addr(0),
+            conn_addr(0)?,
         );
         assert_eq!(
             d.observed_handshakes[0].client_random, None,
@@ -5052,17 +5061,18 @@ mod tests {
         d.process_record(
             &handshake_record(server_hello_with_random(0x009C, 0, &[0xA5; 32])),
             server,
-            conn_addr(last),
+            conn_addr(last)?,
         );
         assert_eq!(
             d.observed_handshakes[1].client_random,
             Some(conn_random(last))
         );
+        Ok(())
     }
 
     /// A CBC ServerHello derives a session whose IV is the full 16-byte block.
     #[test]
-    fn tls12_client_random_derives_cbc_session() {
+    fn tls12_client_random_derives_cbc_session() -> Result<(), TestError> {
         let cr = [0x88u8; 32];
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -5080,21 +5090,22 @@ mod tests {
                 length: 0,
                 payload: server_hello(0x002F, 0),
             },
-            server_sock(),
-            client_sock(),
+            server_sock()?,
+            client_sock()?,
         );
         d.ensure_sessions_populated();
         let session = d
             .sessions
             .get(&TlsSessionKey { client_random: cr })
-            .expect("CBC session derived");
+            .ok_or("CBC session derived")?;
         assert_eq!(session.cipher_suite, CipherSuite::Aes128CbcSha);
         assert_eq!(session.client_write_iv.len(), 16);
+        Ok(())
     }
 
     /// An unsupported negotiated cipher (0x0000) derives no session.
     #[test]
-    fn tls12_unsupported_cipher_yields_no_session() {
+    fn tls12_unsupported_cipher_yields_no_session() -> Result<(), TestError> {
         let cr = [0x99u8; 32];
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -5112,11 +5123,12 @@ mod tests {
                 length: 0,
                 payload: server_hello(0x0000, 0),
             },
-            server_sock(),
-            client_sock(),
+            server_sock()?,
+            client_sock()?,
         );
         d.ensure_sessions_populated();
         assert!(d.sessions.is_empty());
+        Ok(())
     }
 
     // ── CBC decryption path ────────────────────────────────────────────
@@ -5170,7 +5182,7 @@ mod tests {
     /// A CBC record is refused (no plaintext emitted, count unchanged) even when
     /// the CBC primitive would return bytes, since the MAC is not verified.
     #[test]
-    fn cbc_record_refused_not_emitted_unauthenticated() {
+    fn cbc_record_refused_not_emitted_unauthenticated() -> Result<(), TestError> {
         // TLS 1.2 CBC is MAC-then-encrypt; without verifying the record MAC we
         // must not surface (possibly forged) plaintext. The decryptor refuses
         // even when the underlying CBC primitive would return bytes.
@@ -5186,22 +5198,19 @@ mod tests {
             length: 48,
             payload: vec![0xABu8; 48],
         };
-        let out = d.try_decrypt(
-            &record,
-            "10.0.0.1".parse().unwrap(),
-            "10.0.0.2".parse().unwrap(),
-        );
+        let out = d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?);
         assert!(
             out.is_none(),
             "CBC plaintext must not be emitted unverified"
         );
         assert_eq!(d.decrypted_count, 0, "no record counted as decrypted");
+        Ok(())
     }
 
     /// A CBC record shorter than the 16-byte IV returns `None` on both
     /// directions.
     #[test]
-    fn cbc_record_too_short_for_iv_returns_none() {
+    fn cbc_record_too_short_for_iv_returns_none() -> Result<(), TestError> {
         let key = TlsSessionKey {
             client_random: [0x20u8; 32],
         };
@@ -5216,52 +5225,48 @@ mod tests {
             payload: vec![0u8; 8],
         };
         assert!(
-            d.try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            )
-            .is_none()
+            d.try_decrypt(&record, "10.0.0.1".parse()?, "10.0.0.2".parse()?,)
+                .is_none()
         );
+        Ok(())
     }
 
     // ── poll_keylog_file ───────────────────────────────────────────────
 
     /// Polling with no keylog path configured returns 0.
     #[test]
-    fn poll_keylog_without_path_is_noop() {
+    fn poll_keylog_without_path_is_noop() -> Result<(), TestError> {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
-        assert_eq!(d.poll_keylog_file().unwrap(), 0);
+        assert_eq!(d.poll_keylog_file()?, 0);
+        Ok(())
     }
 
     /// Polling loads newly appended valid lines (skipping junk) once the file
     /// grows, and is a no-op when it has not.
     #[test]
-    fn poll_keylog_loads_appended_entries() {
+    fn poll_keylog_loads_appended_entries() -> Result<(), TestError> {
         use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut tmp = tempfile::NamedTempFile::new()?;
         writeln!(
             tmp,
             "CLIENT_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "bb".repeat(32)
-        )
-        .unwrap();
-        tmp.flush().unwrap();
+        )?;
+        tmp.flush()?;
 
         let mut d = TlsDecryptor::new(
             Some(tmp.path()),
             Box::new(MockCrypto {
                 decrypt_result: None,
             }),
-        )
-        .unwrap();
+        )?;
         assert_eq!(d.keylog_entry_count(), 1);
 
         // No growth yet -> nothing new.
-        assert_eq!(d.poll_keylog_file().unwrap(), 0);
+        assert_eq!(d.poll_keylog_file()?, 0);
 
         // Append a valid line and a junk line (the junk is skipped).
         writeln!(
@@ -5269,13 +5274,13 @@ mod tests {
             "SERVER_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "cc".repeat(32)
-        )
-        .unwrap();
-        writeln!(tmp, "this is not a valid keylog line").unwrap();
-        tmp.flush().unwrap();
+        )?;
+        writeln!(tmp, "this is not a valid keylog line")?;
+        tmp.flush()?;
 
-        assert_eq!(d.poll_keylog_file().unwrap(), 1, "one new valid key");
+        assert_eq!(d.poll_keylog_file()?, 1, "one new valid key");
         assert_eq!(d.keylog_entry_count(), 2);
+        Ok(())
     }
 
     /// A TLS 1.3 session already derived and ready must survive a later poll
@@ -5286,32 +5291,29 @@ mod tests {
     /// milliseconds of becoming ready, often before its own call's SIP
     /// INVITE had arrived to be decrypted against it.
     #[test]
-    fn poll_keylog_does_not_wipe_an_already_ready_tls13_session() {
+    fn poll_keylog_does_not_wipe_an_already_ready_tls13_session() -> Result<(), TestError> {
         use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        let mut tmp = tempfile::NamedTempFile::new()?;
         writeln!(
             tmp,
             "CLIENT_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "bb".repeat(32)
-        )
-        .unwrap();
+        )?;
         writeln!(
             tmp,
             "SERVER_TRAFFIC_SECRET_0 {} {}",
             "aa".repeat(32),
             "cc".repeat(32)
-        )
-        .unwrap();
-        tmp.flush().unwrap();
+        )?;
+        tmp.flush()?;
 
         let mut d = TlsDecryptor::new(
             Some(tmp.path()),
             Box::new(MockCrypto {
                 decrypt_result: None,
             }),
-        )
-        .unwrap();
+        )?;
         d.ensure_sessions_populated();
         let first_call = TlsSessionKey {
             client_random: [0xAAu8; 32],
@@ -5328,43 +5330,39 @@ mod tests {
             "CLIENT_TRAFFIC_SECRET_0 {} {}",
             "dd".repeat(32),
             "ee".repeat(32)
-        )
-        .unwrap();
+        )?;
         writeln!(
             tmp,
             "SERVER_TRAFFIC_SECRET_0 {} {}",
             "dd".repeat(32),
             "ff".repeat(32)
-        )
-        .unwrap();
-        tmp.flush().unwrap();
+        )?;
+        tmp.flush()?;
 
-        assert_eq!(
-            d.poll_keylog_file().unwrap(),
-            2,
-            "second call's two entries"
-        );
+        assert_eq!(d.poll_keylog_file()?, 2, "second call's two entries");
         assert!(
             d.sessions.contains_key(&first_call),
             "the first call's already-ready session must survive the second call's keylog poll"
         );
+        Ok(())
     }
 
     // ── load_dtls_keylog ───────────────────────────────────────────────
 
     /// `load_dtls_keylog` counts 0 for an empty file and 1 for a one-entry file.
     #[test]
-    fn load_dtls_keylog_empty_and_populated() {
+    fn load_dtls_keylog_empty_and_populated() -> Result<(), TestError> {
         use std::io::Write;
         // Empty file -> 0 entries.
-        let empty = tempfile::NamedTempFile::new().unwrap();
-        assert_eq!(TlsDecryptor::load_dtls_keylog(empty.path()).unwrap(), 0);
+        let empty = tempfile::NamedTempFile::new()?;
+        assert_eq!(TlsDecryptor::load_dtls_keylog(empty.path())?, 0);
 
         // One entry.
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(tmp, "CLIENT_RANDOM {} {}", "aa".repeat(32), "dd".repeat(48)).unwrap();
-        tmp.flush().unwrap();
-        assert_eq!(TlsDecryptor::load_dtls_keylog(tmp.path()).unwrap(), 1);
+        let mut tmp = tempfile::NamedTempFile::new()?;
+        writeln!(tmp, "CLIENT_RANDOM {} {}", "aa".repeat(32), "dd".repeat(48))?;
+        tmp.flush()?;
+        assert_eq!(TlsDecryptor::load_dtls_keylog(tmp.path())?, 1);
+        Ok(())
     }
 
     // ── strip_tls13_padding edge ───────────────────────────────────────
@@ -5422,9 +5420,10 @@ mod tests {
     /// ClientHellos, dropping the oldest, and a ServerHello pairs with the
     /// oldest one still kept.
     #[test]
-    fn a_connections_pending_clienthellos_are_capped_and_paired_oldest_first() {
-        let client = client_sock();
-        let server = server_sock();
+    fn a_connections_pending_clienthellos_are_capped_and_paired_oldest_first()
+    -> Result<(), TestError> {
+        let client = client_sock()?;
+        let server = server_sock()?;
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
@@ -5458,14 +5457,15 @@ mod tests {
                 "ClientHello {want} is the oldest one kept"
             );
         }
+        Ok(())
     }
 
     /// A connection whose every ClientHello has been answered no longer
     /// occupies a slot in the pending map.
     #[test]
-    fn an_answered_connection_leaves_the_pending_map() {
-        let client = client_sock();
-        let server = server_sock();
+    fn an_answered_connection_leaves_the_pending_map() -> Result<(), TestError> {
+        let client = client_sock()?;
+        let server = server_sock()?;
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
@@ -5484,14 +5484,15 @@ mod tests {
                 .contains_key(&conn_key(client, server)),
             "an emptied queue must not hold a slot against the cap"
         );
+        Ok(())
     }
 
     /// Learning that a session's handshake was watched discards every
     /// lock-on floor drawn while that was unknown.
     #[test]
-    fn a_paired_serverhello_clears_the_floors_of_its_session() {
-        let client = client_sock();
-        let server = server_sock();
+    fn a_paired_serverhello_clears_the_floors_of_its_session() -> Result<(), TestError> {
+        let client = client_sock()?;
+        let server = server_sock()?;
         let cr = [0x33u8; 32];
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
@@ -5522,12 +5523,13 @@ mod tests {
         assert!(session.handshake_seen);
         assert!(session.lockon_floor.is_empty(), "every earlier floor goes");
         assert_eq!(session.lockon_attempts, 0);
+        Ok(())
     }
 
     /// A ServerHello gives every TLS 1.2 session a chance to re-derive
     /// against it, and leaves every TLS 1.3 session alone.
     #[test]
-    fn a_serverhello_drops_tls12_sessions_and_keeps_tls13_ones() {
+    fn a_serverhello_drops_tls12_sessions_and_keeps_tls13_ones() -> Result<(), TestError> {
         let mut d = decryptor_with(Box::new(MockCrypto {
             decrypt_result: None,
         }));
@@ -5557,10 +5559,11 @@ mod tests {
             ),
         );
 
-        d.process_record(&server_hello_record(0x009C), server_sock(), client_sock());
+        d.process_record(&server_hello_record(0x009C), server_sock()?, client_sock()?);
 
         assert!(!d.sessions.contains_key(&tls12), "TLS 1.2 is re-derived");
         assert!(d.sessions.contains_key(&tls13), "TLS 1.3 is kept");
+        Ok(())
     }
 
     /// A client_random whose TLS 1.3 client secret has a length no suite
@@ -5696,10 +5699,10 @@ mod tests {
     /// run's lock-on budget.
     #[test]
     fn a_failed_lockon_search_spends_the_runs_budget() -> Result<(), TestError> {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let client: IpAddr = "10.0.0.1".parse()?;
         let server: IpAddr = "10.0.0.2".parse()?;
-        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
 
         assert!(d.try_decrypt(&far, client, server).is_none());
 
@@ -5715,17 +5718,17 @@ mod tests {
     /// search a direction needs starts narrow again.
     #[test]
     fn a_record_that_opens_resets_the_failed_attempt_count() -> Result<(), TestError> {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let client: IpAddr = "10.0.0.1".parse()?;
         let server: IpAddr = "10.0.0.2".parse()?;
-        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        let far = seal_tls13_record(&key, &iv, 900_000, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
         assert!(d.try_decrypt(&far, client, server).is_none());
         assert!(d.try_decrypt(&far, client, server).is_none());
         let session = d.sessions.values().next().ok_or("a session must exist")?;
         assert_eq!(session.lockon_attempts, 2);
         let floor = session.lockon_floor_for((client, server));
 
-        let near = seal_tls13_record(&key, &iv, floor, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        let near = seal_tls13_record(&key, &iv, floor, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
         assert!(d.try_decrypt(&near, client, server).is_some());
 
         let session = d.sessions.values().next().ok_or("a session must exist")?;
@@ -5737,10 +5740,10 @@ mod tests {
     /// is locked on.
     #[test]
     fn a_record_that_opens_advances_its_direction_past_it() -> Result<(), TestError> {
-        let (mut d, key, iv) = tls13_decryptor_and_client_keys();
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
         let client: IpAddr = "10.0.0.1".parse()?;
         let server: IpAddr = "10.0.0.2".parse()?;
-        let first = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n");
+        let first = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:x@y SIP/2.0\r\n\r\n")?;
 
         assert!(d.try_decrypt(&first, client, server).is_some());
 
