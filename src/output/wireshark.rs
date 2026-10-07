@@ -202,68 +202,78 @@ fn shell_single_quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A Call-ID that tries to close the display-filter string and OR in a
     /// catch-all is escaped, so the filter still matches only that call.
     #[test]
-    fn escape_display_filter_value_neutralizes_a_quote_injection() {
+    fn escape_display_filter_value_neutralizes_a_quote_injection() -> Result<(), TestError> {
         assert_eq!(
             escape_display_filter_value("a\" || sip.method != \"b"),
             "a\\\" || sip.method != \\\"b"
         );
         // Backslash is escaped; control characters are dropped.
         assert_eq!(escape_display_filter_value("a\\b\nc"), "a\\\\bc");
+        Ok(())
     }
 
     /// The Call-ID filter escapes each value, so a hostile Call-ID cannot break
     /// out of the quoted string.
     #[test]
-    fn call_id_display_filter_escapes_each_value() {
+    fn call_id_display_filter_escapes_each_value() -> Result<(), TestError> {
         assert_eq!(
             call_id_display_filter(&["a\" || x".to_string()]),
             "sip.Call-ID == \"a\\\" || x\""
         );
+        Ok(())
     }
 
     /// A Call-ID that tries to break out of the `-Y '...'` shell quote is
     /// rendered as the `'\''` idiom, so the emitted command stays one -Y word
     /// and the injected shell command is inert data, not a second command.
     #[test]
-    fn a_tshark_command_shell_quotes_an_injecting_call_id() {
+    fn a_tshark_command_shell_quotes_an_injecting_call_id() -> Result<(), TestError> {
         let filter = call_id_display_filter(&["a'; touch /tmp/pwned; echo '".to_string()]);
         let cmd = generate_tshark_command(None, Some("in.pcap"), None, Some(&filter));
         assert!(
             cmd.contains("'\\''"),
             "the single quote must be shell-escaped so it cannot end the -Y quote, got: {cmd}"
         );
+        Ok(())
     }
 
     /// `method` maps to `sip.Method` with the value untouched.
     #[test]
-    fn translate_simple_field() {
-        let result = dsl_to_wireshark("method == 'INVITE'").unwrap();
+    fn translate_simple_field() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("method == 'INVITE'")?;
         assert_eq!(result, "sip.Method == 'INVITE'");
+        Ok(())
     }
 
     /// Multiple fields in one AND expression each translate.
     #[test]
-    fn translate_compound_filter() {
-        let result = dsl_to_wireshark("from.user == '1001' AND src_ip == '10.0.0.1'").unwrap();
+    fn translate_compound_filter() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("from.user == '1001' AND src_ip == '10.0.0.1'")?;
         assert_eq!(result, "sip.from.user == '1001' AND ip.src == '10.0.0.1'");
+        Ok(())
     }
 
     /// The `=~` operator becomes Wireshark's `matches`.
     #[test]
-    fn translate_regex_operator() {
-        let result = dsl_to_wireshark("ua =~ 'friendly-scanner'").unwrap();
+    fn translate_regex_operator() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("ua =~ 'friendly-scanner'")?;
         assert_eq!(result, "sip.User-Agent matches 'friendly-scanner'");
+        Ok(())
     }
 
     /// An unmapped identifier (`custom_field`) passes through unmangled —
     /// the word-boundary guard keeps `to` from corrupting it.
     #[test]
-    fn no_field_passthrough() {
-        let result = dsl_to_wireshark("custom_field == 'value'").unwrap();
+    fn no_field_passthrough() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("custom_field == 'value'")?;
         assert_eq!(result, "custom_field == 'value'");
+        Ok(())
     }
 
     /// A multibyte char directly preceding a field name is a word boundary:
@@ -271,65 +281,73 @@ mod tests {
     /// boundary check read the trailing UTF-8 continuation byte (0x86) as a
     /// non-field char and wrongly substituted `sip.To`.
     #[test]
-    fn multibyte_char_before_field_is_word_boundary_aware() {
-        let result = dsl_to_wireshark("φto == 'x'").unwrap();
+    fn multibyte_char_before_field_is_word_boundary_aware() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("φto == 'x'")?;
         assert_eq!(result, "φto == 'x'");
+        Ok(())
     }
 
     /// A multibyte char directly following a field name is likewise a word
     /// boundary: `toφ` is one identifier, so `to` must NOT be replaced.
     #[test]
-    fn multibyte_char_after_field_is_word_boundary_aware() {
-        let result = dsl_to_wireshark("toφ == 'x'").unwrap();
+    fn multibyte_char_after_field_is_word_boundary_aware() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("toφ == 'x'")?;
         assert_eq!(result, "toφ == 'x'");
+        Ok(())
     }
 
     /// A standalone field surrounded by multibyte chars still translates:
     /// `é to é` has `to` as its own word, so it maps to `sip.To`.
     #[test]
-    fn field_between_multibyte_separators_translates() {
-        let result = dsl_to_wireshark("é to é").unwrap();
+    fn field_between_multibyte_separators_translates() -> Result<(), TestError> {
+        let result = dsl_to_wireshark("é to é")?;
         assert_eq!(result, "é sip.To é");
+        Ok(())
     }
 
     /// File input yields `-r` plus the display filter and `-V`.
     #[test]
-    fn tshark_from_file() {
+    fn tshark_from_file() -> Result<(), TestError> {
         let cmd =
             generate_tshark_command(None, Some("test.pcap"), None, Some("sip.Method == INVITE"));
         assert_eq!(cmd, "tshark -r 'test.pcap' -Y 'sip.Method == INVITE' -V");
+        Ok(())
     }
 
     /// Device capture yields `-i` plus the BPF filter and `-V`.
     #[test]
-    fn tshark_from_device() {
+    fn tshark_from_device() -> Result<(), TestError> {
         let cmd = generate_tshark_command(Some("eth0"), None, Some("port 5060"), None);
         assert_eq!(cmd, "tshark -i 'eth0' -f 'port 5060' -V");
+        Ok(())
     }
 
     /// With no configuration the command is the bare `tshark -V`.
     #[test]
-    fn tshark_no_args() {
+    fn tshark_no_args() -> Result<(), TestError> {
         let cmd = generate_tshark_command(None, None, None, None);
         assert_eq!(cmd, "tshark -V");
+        Ok(())
     }
 
     /// The POSIX single-quote escaper wraps in quotes and renders embedded
     /// quotes via the `'\''` idiom.
     #[test]
-    fn shell_single_quote_escapes_embedded_quotes() {
+    fn shell_single_quote_escapes_embedded_quotes() -> Result<(), TestError> {
         assert_eq!(shell_single_quote("abc"), "'abc'");
         assert_eq!(shell_single_quote(""), "''");
         assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+        Ok(())
     }
 
     /// A filename containing a single quote cannot break out of the quoting
     /// to inject additional shell words.
     #[test]
-    fn tshark_command_escapes_single_quote_in_filename() {
+    fn tshark_command_escapes_single_quote_in_filename() -> Result<(), TestError> {
         let cmd = generate_tshark_command(None, Some("evil'.pcap"), None, None);
         // The embedded quote is rendered as the escaped idiom, so the shell
         // sees one argument, not a quote-break followed by injected text.
         assert_eq!(cmd, "tshark -r 'evil'\\''.pcap' -V");
+        Ok(())
     }
 }

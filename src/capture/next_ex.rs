@@ -203,6 +203,9 @@ mod tests {
 
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A header as `pcap_next_ex` leaves it after a delivered 512-byte frame.
     /// libpcap keeps this in the `pcap_t` and hands back a pointer to it on the
     /// next read whether or not that read delivers anything.
@@ -220,7 +223,7 @@ mod tests {
     /// The NM1 state: return code 1, header pointing at the previous packet's
     /// header, data pointer never written. It must not read as a packet.
     #[test]
-    fn a_read_that_delivered_no_data_is_not_a_packet() {
+    fn a_read_that_delivered_no_data_is_not_a_packet() -> Result<(), TestError> {
         let header = stale_header();
         assert_eq!(
             classify(1, &header, std::ptr::null()),
@@ -229,18 +232,21 @@ mod tests {
              netmap module does this for every packet its filter rejects, and \
              copying it reads caplen bytes from address 0"
         );
+        Ok(())
     }
 
     /// A null header with a success code is the same defect from the other
     /// side and gets the same answer.
     #[test]
-    fn a_read_without_a_header_is_not_a_packet() {
+    fn a_read_without_a_header_is_not_a_packet() -> Result<(), TestError> {
         let byte = 0u8;
         assert_eq!(classify(1, std::ptr::null(), &byte), NextEx::Undelivered);
+        Ok(())
     }
 
     #[test]
-    fn a_delivered_read_is_a_packet_and_the_other_codes_keep_their_meaning() {
+    fn a_delivered_read_is_a_packet_and_the_other_codes_keep_their_meaning() -> Result<(), TestError>
+    {
         let header = stale_header();
         let byte = 0u8;
         assert_eq!(
@@ -264,13 +270,14 @@ mod tests {
             classify(-3, std::ptr::null(), std::ptr::null()),
             NextEx::Error
         );
+        Ok(())
     }
 
     /// The effect, through the reader the live loop calls: a filter-rejected
     /// netmap read comes back as `Ok(None)`, so no slice is ever built over
     /// address 0.
     #[test]
-    fn the_reader_reports_an_undelivered_read_instead_of_a_packet() {
+    fn the_reader_reports_an_undelivered_read_instead_of_a_packet() -> Result<(), TestError> {
         let header = stale_header();
         let header_ptr = &header as *const PacketHeader as *mut PacketHeader;
         // SAFETY: the closure stores only a pointer to `header`, which outlives
@@ -293,26 +300,29 @@ mod tests {
              {}-byte packet at address 0",
             header.caplen
         );
+        Ok(())
     }
 
     /// The reader against a real libpcap handle agrees with the crate's own
     /// `next_packet` on a capture file, byte for byte, then reports the end.
     #[test]
-    fn the_reader_matches_the_crates_reads_on_a_real_capture() {
+    fn the_reader_matches_the_crates_reads_on_a_real_capture() -> Result<(), TestError> {
         let path = "tests/pcap-samples/invite-opus-bye.pcap";
         let mut expected = Vec::new();
-        let mut cap = pcap::Capture::from_file(path).expect("fixture opens");
+        let mut cap =
+            pcap::Capture::from_file(path).map_err(|e| format!("fixture opens: {e:?}"))?;
         while let Ok(pkt) = cap.next_packet() {
             expected.push((pkt.header.caplen, pkt.data.to_vec()));
         }
         assert!(!expected.is_empty(), "the fixture must hold packets");
 
         let mut got = Vec::new();
-        let mut cap = pcap::Capture::from_file(path).expect("fixture opens");
+        let mut cap =
+            pcap::Capture::from_file(path).map_err(|e| format!("fixture opens: {e:?}"))?;
         let end = loop {
             match next_packet(&mut cap) {
                 Ok(Some(pkt)) => got.push((pkt.header.caplen, pkt.data.to_vec())),
-                Ok(None) => panic!("a savefile read never comes back undelivered"),
+                Ok(None) => return Err("a savefile read never comes back undelivered".into()),
                 Err(e) => break e,
             }
         };
@@ -321,5 +331,6 @@ mod tests {
             matches!(end, pcap::Error::NoMorePackets),
             "a savefile ends with NoMorePackets, got {end:?}"
         );
+        Ok(())
     }
 }

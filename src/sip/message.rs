@@ -540,6 +540,9 @@ fn extract_tag(header_value: &str) -> Option<&str> {
 /// and top-Via branch parsing.
 #[cfg(test)]
 mod tests {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The TOP Via value is the first via-parm, not the first Via row.
     ///
     /// [RFC 3261 section 20.42](https://www.rfc-editor.org/rfc/rfc3261#section-20.42): `Via = ( "Via" / "v" ) HCOLON via-parm *(COMMA
@@ -555,17 +558,18 @@ mod tests {
     /// registration-flood detection, digest-leak detection and three lint
     /// rules.
     #[test]
-    fn the_top_via_branch_comes_from_the_first_via_parm() {
+    fn the_top_via_branch_comes_from_the_first_via_parm() -> Result<(), TestError> {
         // The top via-parm carries no branch; the second one does. Reading the
         // row instead of the value silently borrowed the second's.
         let msg = msg_with_vias(&[
             "Via: SIP/2.0/UDP first.example.com, SIP/2.0/UDP second.example.com;branch=z9hG4bKsecond",
-        ]);
+        ])?;
         assert_eq!(
             msg.top_via_branch(),
             None,
             "the top via-parm has no branch, so there is none to report"
         );
+        Ok(())
     }
 
     /// With a branch on the top via-parm, that one is returned whole.
@@ -574,11 +578,12 @@ mod tests {
     /// past the COMMA into the next via-parm, so the "branch" was not even a
     /// branch value.
     #[test]
-    fn the_top_via_branch_stops_at_the_comma() {
+    fn the_top_via_branch_stops_at_the_comma() -> Result<(), TestError> {
         let msg = msg_with_vias(&[
             "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKfirst, SIP/2.0/UDP b.example.com;branch=z9hG4bKsecond",
-        ]);
+        ])?;
         assert_eq!(msg.top_via_branch(), Some("z9hG4bKfirst"));
+        Ok(())
     }
 
     /// Separate Via rows are unaffected.
@@ -586,12 +591,13 @@ mod tests {
     /// The regression guard: the ordinary shape, where each hop adds its own
     /// row, must keep returning the first row's branch.
     #[test]
-    fn separate_via_rows_still_report_the_first_rows_branch() {
+    fn separate_via_rows_still_report_the_first_rows_branch() -> Result<(), TestError> {
         let msg = msg_with_vias(&[
             "Via: SIP/2.0/UDP a.example.com;branch=z9hG4bKtop",
             "Via: SIP/2.0/UDP b.example.com;branch=z9hG4bKnext",
-        ]);
+        ])?;
         assert_eq!(msg.top_via_branch(), Some("z9hG4bKtop"));
+        Ok(())
     }
 
     // ── RFC 3261 §7.3.1 / §25.1: the tag parameter ──────────────────────
@@ -608,7 +614,7 @@ mod tests {
     /// any conformant spacing lost the tag entirely — and the dialog
     /// identifier is Call-ID plus both tags ([RFC 3261 section 12.1.1](https://www.rfc-editor.org/rfc/rfc3261#section-12.1.1)).
     #[test]
-    fn a_tag_with_conformant_whitespace_is_found() {
+    fn a_tag_with_conformant_whitespace_is_found() -> Result<(), TestError> {
         for value in [
             "<sip:alice@example.com>;tag=1928301774",
             "<sip:alice@example.com> ; tag = 1928301774",
@@ -622,6 +628,7 @@ mod tests {
                 "SEMI and EQUAL admit SWS: {value:?}"
             );
         }
+        Ok(())
     }
 
     /// The parameter name is case-insensitive.
@@ -629,7 +636,7 @@ mod tests {
     /// [RFC 3261 section 7.3.1](https://www.rfc-editor.org/rfc/rfc3261#section-7.3.1): "field values, parameter names, and parameter values
     /// are case-insensitive", with `ExPiReS` given as the worked example.
     #[test]
-    fn the_tag_parameter_name_is_case_insensitive() {
+    fn the_tag_parameter_name_is_case_insensitive() -> Result<(), TestError> {
         for value in [
             "<sip:alice@example.com>;TAG=abc",
             "<sip:alice@example.com>;Tag=abc",
@@ -637,6 +644,7 @@ mod tests {
         ] {
             assert_eq!(extract_tag(value), Some("abc"), "{value:?}");
         }
+        Ok(())
     }
 
     /// A decoy inside a quoted display name does not become the tag.
@@ -651,12 +659,13 @@ mod tests {
     /// `skip_quoted_display_name` already existed for exactly this attack and
     /// was used by `addr_spec`; this function never got it.
     #[test]
-    fn a_decoy_in_a_quoted_display_name_is_not_the_tag() {
+    fn a_decoy_in_a_quoted_display_name_is_not_the_tag() -> Result<(), TestError> {
         assert_eq!(
             extract_tag("\"A>;tag=decoy\" <sip:alice@example.com>;tag=realtag"),
             Some("realtag"),
             "the tag after the real addr-spec wins"
         );
+        Ok(())
     }
 
     /// An escaped DQUOTE does not end the display name.
@@ -664,11 +673,12 @@ mod tests {
     /// `quoted-pair = "\\" (%x00-09 / %x0B-0C / %x0E-7F)`, so `\"` is a
     /// literal quote inside the string. [RFC 4475 section 3.1.1.1](https://www.rfc-editor.org/rfc/rfc4475#section-3.1.1.1) uses this too.
     #[test]
-    fn an_escaped_quote_does_not_end_the_display_name() {
+    fn an_escaped_quote_does_not_end_the_display_name() -> Result<(), TestError> {
         assert_eq!(
             extract_tag("\"J Rosenberg \\\" >;tag=decoy\" <sip:jdrosen@example.com>;tag=98asjd8"),
             Some("98asjd8")
         );
+        Ok(())
     }
 
     /// A parameter merely ENDING in `tag` is not the tag.
@@ -676,44 +686,53 @@ mod tests {
     /// The negative case a substring search gets wrong in the other direction:
     /// `;ttag=` and `;xtag=` contain `tag=` but are different parameters.
     #[test]
-    fn a_parameter_whose_name_merely_ends_in_tag_is_not_the_tag() {
+    fn a_parameter_whose_name_merely_ends_in_tag_is_not_the_tag() -> Result<(), TestError> {
         assert_eq!(extract_tag("<sip:a@b>;ttag=no"), None);
         assert_eq!(extract_tag("<sip:a@b>;xtag=no;tag=yes"), Some("yes"));
+        Ok(())
     }
 
     /// A bare addr-spec with no angle brackets still yields its tag.
     #[test]
-    fn a_bare_addr_spec_still_yields_its_tag() {
+    fn a_bare_addr_spec_still_yields_its_tag() -> Result<(), TestError> {
         assert_eq!(extract_tag("sip:alice@example.com;tag=abc"), Some("abc"));
+        Ok(())
     }
 
     /// No tag means None, not an empty string.
     #[test]
-    fn a_header_with_no_tag_has_no_tag() {
+    fn a_header_with_no_tag_has_no_tag() -> Result<(), TestError> {
         assert_eq!(extract_tag("<sip:alice@example.com>"), None);
         assert_eq!(extract_tag("<sip:alice@example.com>;tag="), None);
+        Ok(())
     }
 
     use super::*;
 
     // ── malformation detection (SNB-0003, spec §5.2) ───────────────────
     /// Fixed capture timestamp (2024-06-15 12:00:00 UTC) used in tests.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("valid fixture timestamp")?,
+        )
     }
 
     /// Build and parse a SIP message from a first line, headers, and body,
     /// with localhost/UDP capture metadata.
-    fn parse_msg(first: &str, headers: &[&str], body: &[u8]) -> SipMessage {
+    fn parse_msg(first: &str, headers: &[&str], body: &[u8]) -> Result<SipMessage, TestError> {
         let raw = crate::test_utils::build_sip_message(first, headers, body);
         let lo = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
-        crate::sip::parser::parse_sip(&raw, ts(), lo, lo, 5060, 5060, TransportProto::Udp)
-            .expect("should parse")
+        Ok(
+            crate::sip::parser::parse_sip(&raw, ts()?, lo, lo, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse: {e:?}"))?,
+        )
     }
 
     /// A complete, well-formed OPTIONS request.
-    fn well_formed() -> SipMessage {
-        parse_msg(
+    fn well_formed() -> Result<SipMessage, TestError> {
+        Ok(parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
             &[
                 "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
@@ -724,14 +743,14 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        )
+        )?)
     }
 
     /// `cseq()` returns only the single method token per RFC 3261, dropping
     /// any trailing garbage after it (e.g. `1 INVITE extra` → method
     /// `INVITE`), so downstream method comparisons in timing.rs still match.
     #[test]
-    fn cseq_method_is_single_token() {
+    fn cseq_method_is_single_token() -> Result<(), TestError> {
         let msg = parse_msg(
             "INVITE sip:b@example.com SIP/2.0",
             &[
@@ -743,19 +762,21 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         assert_eq!(msg.cseq(), Some((1, "INVITE")));
+        Ok(())
     }
 
     /// A complete OPTIONS request reports zero malformations.
     #[test]
-    fn well_formed_has_no_malformations() {
-        assert!(well_formed().malformations().is_empty());
+    fn well_formed_has_no_malformations() -> Result<(), TestError> {
+        assert!(well_formed()?.malformations().is_empty());
+        Ok(())
     }
 
     /// An INVITE with a correct SDP body triggers no false positives.
     #[test]
-    fn well_formed_invite_with_sdp_no_false_positive() {
+    fn well_formed_invite_with_sdp_no_false_positive() -> Result<(), TestError> {
         let sdp = b"v=0\r\no=- 0 0 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n";
         let msg = parse_msg(
             "INVITE sip:b@example.com SIP/2.0",
@@ -769,17 +790,18 @@ mod tests {
                 &format!("Content-Length: {}", sdp.len()),
             ],
             sdp,
-        );
+        )?;
         assert!(
             msg.malformations().is_empty(),
             "got {:?}",
             msg.malformations()
         );
+        Ok(())
     }
 
     /// Dropping any of the five mandatory headers flags that header by name.
     #[test]
-    fn missing_mandatory_headers_flagged() {
+    fn missing_mandatory_headers_flagged() -> Result<(), TestError> {
         for drop in ["Call-ID", "CSeq", "From", "To", "Via"] {
             let hdrs: Vec<&str> = [
                 "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
@@ -792,18 +814,19 @@ mod tests {
             .into_iter()
             .filter(|h| !h.starts_with(drop))
             .collect();
-            let msg = parse_msg("OPTIONS sip:a@example.com SIP/2.0", &hdrs, b"");
+            let msg = parse_msg("OPTIONS sip:a@example.com SIP/2.0", &hdrs, b"")?;
             let m = msg.malformations();
             assert!(
                 m.iter().any(|r| r.contains(drop)),
                 "dropping {drop} should flag it; got {m:?}"
             );
         }
+        Ok(())
     }
 
     /// A Content-Length larger than the actual body is flagged.
     #[test]
-    fn lying_content_length_flagged() {
+    fn lying_content_length_flagged() -> Result<(), TestError> {
         // declares 500 bytes, datagram carries none → truncated/lying length.
         let msg = parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
@@ -816,14 +839,15 @@ mod tests {
                 "Content-Length: 500",
             ],
             b"",
-        );
+        )?;
         let m = msg.malformations();
         assert!(m.iter().any(|r| r.contains("content-length")), "got {m:?}");
+        Ok(())
     }
 
     /// An embedded NUL byte in a header value is flagged as a control char.
     #[test]
-    fn nul_in_header_value_flagged() {
+    fn nul_in_header_value_flagged() -> Result<(), TestError> {
         let msg = parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
             &[
@@ -835,17 +859,18 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         let m = msg.malformations();
         assert!(
             m.iter().any(|r| r.to_lowercase().contains("control")),
             "embedded NUL must be flagged; got {m:?}"
         );
+        Ok(())
     }
 
     /// A non-numeric CSeq sequence number is flagged as malformed.
     #[test]
-    fn malformed_cseq_flagged() {
+    fn malformed_cseq_flagged() -> Result<(), TestError> {
         let msg = parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
             &[
@@ -857,17 +882,18 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         let m = msg.malformations();
         assert!(
             m.iter().any(|r| r.to_lowercase().contains("cseq")),
             "got {m:?}"
         );
+        Ok(())
     }
 
     /// A tab inside a header value is legal LWS and not flagged.
     #[test]
-    fn tab_in_header_value_is_not_flagged() {
+    fn tab_in_header_value_is_not_flagged() -> Result<(), TestError> {
         // a tab is legal linear whitespace inside a header value (not a control bug)
         let msg = parse_msg(
             "OPTIONS sip:a@example.com SIP/2.0",
@@ -881,19 +907,20 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         assert!(
             msg.malformations().is_empty(),
             "tab is LWS, not malformed; got {:?}",
             msg.malformations()
         );
+        Ok(())
     }
 
     /// A quoted display name containing a fake `sip:` URI must not be parsed
     /// as the user: the addressable URI here is `tel:`, so there is no SIP
     /// user, and the display name's `sip:evil@…` must be ignored.
     #[test]
-    fn extract_user_ignores_spoofed_display_name() {
+    fn extract_user_ignores_spoofed_display_name() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user(r#""sip:evil@attacker.test" <tel:+15551234>"#),
             None
@@ -904,22 +931,24 @@ mod tests {
             extract_uri_user(r#""sip:evil@attacker.test" <sip:real@example.com>"#),
             Some("real".to_string())
         );
+        Ok(())
     }
 
     /// User part is extracted despite a quoted display name.
     #[test]
-    fn extract_user_with_display_name() {
+    fn extract_user_with_display_name() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user(r#""Alice" <sip:1001@example.com>;tag=abc"#),
             Some("1001".to_string())
         );
+        Ok(())
     }
 
     /// A display name with an escaped quote (`\"`) is not truncated at the
     /// escaped quote, and the quoted-pair is unescaped. RFC 3261 quoted-string
     /// admits `\"` as a literal quote inside the name.
     #[test]
-    fn extract_display_name_handles_an_escaped_quote() {
+    fn extract_display_name_handles_an_escaped_quote() -> Result<(), TestError> {
         assert_eq!(
             extract_display_name(r#""O\"Brien" <sip:ob@example.com>"#),
             Some("O\"Brien".to_string())
@@ -929,92 +958,103 @@ mod tests {
             extract_display_name(r#""Alice" <sip:a@example.com>"#),
             Some("Alice".to_string())
         );
+        Ok(())
     }
 
     /// User part is extracted from a plain angle-bracket URI.
     #[test]
-    fn extract_user_no_display_name() {
+    fn extract_user_no_display_name() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("<sip:1002@example.com>"),
             Some("1002".to_string())
         );
+        Ok(())
     }
 
     /// The `sips:` scheme is handled like `sip:`.
     #[test]
-    fn extract_user_sips() {
+    fn extract_user_sips() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("<sips:secure@example.com>"),
             Some("secure".to_string())
         );
+        Ok(())
     }
 
     /// A host-only URI (no `@`) yields no user part.
     #[test]
-    fn extract_user_no_at() {
+    fn extract_user_no_at() -> Result<(), TestError> {
         assert_eq!(extract_uri_user("<sip:example.com>"), None);
+        Ok(())
     }
 
     /// A simple `;tag=` parameter after the URI is extracted.
     #[test]
-    fn extract_tag_present() {
+    fn extract_tag_present() -> Result<(), TestError> {
         assert_eq!(
             extract_tag("<sip:1001@example.com>;tag=abc123"),
             Some("abc123")
         );
+        Ok(())
     }
 
     /// The tag value stops at the next `;` when other params follow.
     #[test]
-    fn extract_tag_with_other_params() {
+    fn extract_tag_with_other_params() -> Result<(), TestError> {
         assert_eq!(
             extract_tag("<sip:1001@example.com>;tag=abc;other=xyz"),
             Some("abc")
         );
+        Ok(())
     }
 
     /// A header with no `;tag=` yields `None`.
     #[test]
-    fn extract_tag_absent() {
+    fn extract_tag_absent() -> Result<(), TestError> {
         assert_eq!(extract_tag("<sip:1001@example.com>"), None);
+        Ok(())
     }
 
     // ── Bare URI extraction (no angle brackets) ────────────────────────
 
     /// A bare `sip:` URI without angle brackets yields the user part.
     #[test]
-    fn extract_user_bare_sip_uri() {
+    fn extract_user_bare_sip_uri() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("sip:alice@example.com"),
             Some("alice".to_string())
         );
+        Ok(())
     }
 
     /// A bare `sips:` URI without angle brackets yields the user part.
     #[test]
-    fn extract_user_bare_sips_uri() {
+    fn extract_user_bare_sips_uri() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("sips:bob@example.com"),
             Some("bob".to_string())
         );
+        Ok(())
     }
 
     /// Angle-bracket form continues to work alongside bare-URI support.
     #[test]
-    fn extract_user_angle_bracket_still_works() {
+    fn extract_user_angle_bracket_still_works() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("<sip:charlie@host>"),
             Some("charlie".to_string())
         );
+        Ok(())
     }
 
     /// A bare-token display name before the URI does not confuse extraction.
     #[test]
-    fn extract_user_display_name_with_uri() {
+    fn extract_user_display_name_with_uri() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_user("Alice <sip:alice@host>"),
             Some("alice".to_string())
         );
+        Ok(())
     }
 
     // ── extract_uri_host_port ────────────────────────────────────────
@@ -1024,105 +1064,115 @@ mod tests {
     /// including `<`, `>` and a scheme. Neither the user nor the host may ever
     /// be read from one, or a caller chooses what it is reported as.
     #[test]
-    fn quoted_display_name_cannot_spoof_user_or_host() {
+    fn quoted_display_name_cannot_spoof_user_or_host() -> Result<(), TestError> {
         let crafted = r#""<sip:evil@attacker.test>" <sip:alice@real.test>"#;
         assert_eq!(extract_uri_user(crafted), Some("alice".to_string()));
         assert_eq!(
             extract_uri_host_port(crafted),
             Some("real.test".to_string())
         );
+        Ok(())
     }
 
     /// The same attack with a bare scheme rather than a bracketed decoy.
     #[test]
-    fn quoted_scheme_in_display_name_is_not_the_uri() {
+    fn quoted_scheme_in_display_name_is_not_the_uri() -> Result<(), TestError> {
         let crafted = r#""sip:evil@attacker.test" <sip:bob@real.test>"#;
         assert_eq!(extract_uri_user(crafted), Some("bob".to_string()));
         assert_eq!(
             extract_uri_host_port(crafted),
             Some("real.test".to_string())
         );
+        Ok(())
     }
 
     /// `\"` is a quoted-pair and does not close the display name, so a decoy
     /// placed after one is still inside it.
     #[test]
-    fn escaped_quote_does_not_end_the_display_name() {
+    fn escaped_quote_does_not_end_the_display_name() -> Result<(), TestError> {
         let crafted = r#""he said \"<sip:evil@attacker.test>\"" <sip:carol@real.test>"#;
         assert_eq!(extract_uri_user(crafted), Some("carol".to_string()));
         assert_eq!(
             extract_uri_host_port(crafted),
             Some("real.test".to_string())
         );
+        Ok(())
     }
 
     /// An unterminated display name has no addressable URI. Resuming the scan
     /// past it would read the exact region the quote encloses.
     #[test]
-    fn unterminated_display_name_yields_nothing() {
+    fn unterminated_display_name_yields_nothing() -> Result<(), TestError> {
         let crafted = r#""<sip:evil@attacker.test> <sip:dave@real.test>"#;
         assert_eq!(extract_uri_user(crafted), None);
         assert_eq!(extract_uri_host_port(crafted), None);
+        Ok(())
     }
 
     /// Host and port are extracted past a display name and userinfo.
     #[test]
-    fn host_port_with_user_and_port() {
+    fn host_port_with_user_and_port() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port(r#""Alice" <sip:1001@example.com:5060>;tag=abc"#),
             Some("example.com:5060".to_string())
         );
+        Ok(())
     }
 
     /// A URI without a port yields just the host.
     #[test]
-    fn host_port_no_port() {
+    fn host_port_no_port() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port("<sip:1002@example.com>"),
             Some("example.com".to_string())
         );
+        Ok(())
     }
 
     /// A URI without userinfo yields host:port directly.
     #[test]
-    fn host_port_no_user() {
+    fn host_port_no_user() -> Result<(), TestError> {
         // A URI with no userinfo (e.g. a registrar/domain target).
         assert_eq!(
             extract_uri_host_port("<sip:example.com:5061>"),
             Some("example.com:5061".to_string())
         );
+        Ok(())
     }
 
     /// A bracketed IPv6 host with port survives intact.
     #[test]
-    fn host_port_ipv6_bracketed_with_port() {
+    fn host_port_ipv6_bracketed_with_port() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port("<sip:bob@[2001:db8::1]:5060>;transport=udp"),
             Some("[2001:db8::1]:5060".to_string())
         );
+        Ok(())
     }
 
     /// A bracketed IPv6 host without a port survives intact.
     #[test]
-    fn host_port_ipv6_no_port() {
+    fn host_port_ipv6_no_port() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port("<sip:[2001:db8::1]>"),
             Some("[2001:db8::1]".to_string())
         );
+        Ok(())
     }
 
     /// URI parameters (`;transport=...;lr`) are stripped from the host:port.
     #[test]
-    fn host_port_strips_uri_params() {
+    fn host_port_strips_uri_params() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port("<sip:1001@10.0.0.1:5060;transport=tcp;lr>"),
             Some("10.0.0.1:5060".to_string())
         );
+        Ok(())
     }
 
     /// Bare `sip:`/`sips:` URIs (no angle brackets) yield host:port.
     #[test]
-    fn host_port_bare_uri() {
+    fn host_port_bare_uri() -> Result<(), TestError> {
         assert_eq!(
             extract_uri_host_port("sip:alice@host.example:5070"),
             Some("host.example:5070".to_string())
@@ -1131,18 +1181,20 @@ mod tests {
             extract_uri_host_port("sips:bob@secure.example"),
             Some("secure.example".to_string())
         );
+        Ok(())
     }
 
     /// A `tel:` URI has no host and yields `None`.
     #[test]
-    fn host_port_tel_uri_has_no_host() {
+    fn host_port_tel_uri_has_no_host() -> Result<(), TestError> {
         // tel: URIs carry no host — fall back to None (caller shows user or '-').
         assert_eq!(extract_uri_host_port("<tel:+15551234567>"), None);
+        Ok(())
     }
 
     /// Empty, non-URI, and backslash-laden inputs never panic.
     #[test]
-    fn host_port_empty_or_garbage() {
+    fn host_port_empty_or_garbage() -> Result<(), TestError> {
         assert_eq!(extract_uri_host_port(""), None);
         assert_eq!(extract_uri_host_port("not a uri at all"), None);
         // Backslash / odd chars must not panic.
@@ -1150,12 +1202,13 @@ mod tests {
             extract_uri_host_port(r"<sip:a\b@ho\st>"),
             Some(r"ho\st".to_string())
         );
+        Ok(())
     }
 
     // ── top_via_branch (RFC 3261 transaction identity) ─────────────────
 
     /// Build an OPTIONS request carrying the given Via header lines.
-    fn msg_with_vias(vias: &[&str]) -> SipMessage {
+    fn msg_with_vias(vias: &[&str]) -> Result<SipMessage, TestError> {
         let mut headers: Vec<&str> = vias.to_vec();
         headers.extend([
             "From: <sip:a@example.com>;tag=1",
@@ -1164,44 +1217,52 @@ mod tests {
             "CSeq: 1 OPTIONS",
             "Content-Length: 0",
         ]);
-        parse_msg("OPTIONS sip:b@example.com SIP/2.0", &headers, b"")
+        Ok(parse_msg(
+            "OPTIONS sip:b@example.com SIP/2.0",
+            &headers,
+            b"",
+        )?)
     }
 
     /// A single Via with a branch param yields that branch.
     #[test]
-    fn top_via_branch_basic() {
-        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.abc"]);
+    fn top_via_branch_basic() -> Result<(), TestError> {
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.abc"])?;
         assert_eq!(m.top_via_branch(), Some("z9hG4bK.abc"));
+        Ok(())
     }
 
     /// Only the topmost Via's branch is returned when several are present.
     #[test]
-    fn top_via_branch_takes_first_via_only() {
+    fn top_via_branch_takes_first_via_only() -> Result<(), TestError> {
         let m = msg_with_vias(&[
             "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.top",
             "Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK.below",
-        ]);
+        ])?;
         assert_eq!(m.top_via_branch(), Some("z9hG4bK.top"));
+        Ok(())
     }
 
     /// Extra params and loose spacing around `;` do not break extraction.
     #[test]
-    fn top_via_branch_more_params_and_spacing() {
+    fn top_via_branch_more_params_and_spacing() -> Result<(), TestError> {
         let m =
-            msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060 ; rport ; branch=z9hG4bK.x ; alias"]);
+            msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060 ; rport ; branch=z9hG4bK.x ; alias"])?;
         assert_eq!(m.top_via_branch(), Some("z9hG4bK.x"));
+        Ok(())
     }
 
     /// The `branch` parameter name matches case-insensitively.
     #[test]
-    fn top_via_branch_param_name_case_insensitive() {
-        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;BRANCH=z9hG4bK.up"]);
+    fn top_via_branch_param_name_case_insensitive() -> Result<(), TestError> {
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;BRANCH=z9hG4bK.up"])?;
         assert_eq!(m.top_via_branch(), Some("z9hG4bK.up"));
+        Ok(())
     }
 
     /// A compact `v:` Via still yields the top branch after expansion.
     #[test]
-    fn top_via_branch_compact_form() {
+    fn top_via_branch_compact_form() -> Result<(), TestError> {
         // Parser expands compact `v:` to `Via`.
         let m = parse_msg(
             "OPTIONS sip:b@example.com SIP/2.0",
@@ -1214,14 +1275,15 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         assert_eq!(m.top_via_branch(), Some("z9hG4bK.compact"));
+        Ok(())
     }
 
     /// Missing Via, missing/empty branch, prefix params, and adversarial
     /// quoting all behave as specified (None or literal pass-through).
     #[test]
-    fn top_via_branch_absent_or_degenerate() {
+    fn top_via_branch_absent_or_degenerate() -> Result<(), TestError> {
         // No Via at all.
         let m = parse_msg(
             "OPTIONS sip:b@example.com SIP/2.0",
@@ -1233,19 +1295,20 @@ mod tests {
                 "Content-Length: 0",
             ],
             b"",
-        );
+        )?;
         assert_eq!(m.top_via_branch(), None);
         // Via without a branch param (RFC 2543 style).
-        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060"]);
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060"])?;
         assert_eq!(m.top_via_branch(), None);
         // Empty branch value → treated as absent.
-        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch="]);
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch="])?;
         assert_eq!(m.top_via_branch(), None);
         // `branch` as a prefix of another param must not match.
-        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branchx=nope"]);
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branchx=nope"])?;
         assert_eq!(m.top_via_branch(), None);
         // Adversarial: backslashes and quotes must not panic and pass through.
-        let m = msg_with_vias(&[r#"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9\"h4bK"#]);
+        let m = msg_with_vias(&[r#"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9\"h4bK"#])?;
         assert_eq!(m.top_via_branch(), Some(r#"z9\"h4bK"#));
+        Ok(())
     }
 }

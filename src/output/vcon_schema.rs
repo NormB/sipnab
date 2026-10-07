@@ -682,6 +682,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// The smallest container the schema accepts.
     fn minimal() -> Value {
         json!({
@@ -866,7 +869,7 @@ mod tests {
     /// `jsonschema`, the engine the gates in `tests/` already validate
     /// containers with, run over the same documents.
     #[test]
-    fn the_validator_agrees_with_a_reference_implementation() {
+    fn the_validator_agrees_with_a_reference_implementation() -> Result<(), TestError> {
         // Formats asserted, because this validator asserts them. draft-07
         // leaves `format` annotation-only unless a consumer opts in, and a
         // reference that skipped it would call a container with `start:
@@ -875,7 +878,7 @@ mod tests {
         let reference = jsonschema::options()
             .should_validate_formats(true)
             .build(schema())
-            .expect("the vendored schema compiles");
+            .map_err(|e| format!("the vendored schema compiles: {e:?}"))?;
         let documents = corpus();
         assert!(
             documents.len() >= 25,
@@ -906,6 +909,7 @@ mod tests {
                 mine,
             );
         }
+        Ok(())
     }
 
     /// The vendored schema uses no keyword this validator quietly ignores.
@@ -915,7 +919,7 @@ mod tests {
     /// `patternProperties`, and a validator that skipped them would keep
     /// answering "valid" while checking less than it used to.
     #[test]
-    fn the_vendored_schema_uses_no_keyword_this_validator_ignores() {
+    fn the_vendored_schema_uses_no_keyword_this_validator_ignores() -> Result<(), TestError> {
         let unimplemented = unimplemented_keywords();
         assert!(
             unimplemented.is_empty(),
@@ -934,6 +938,7 @@ mod tests {
                  is not exercising the branch that handles it"
             );
         }
+        Ok(())
     }
 
     /// An unimplemented keyword refuses; it does not pass quietly.
@@ -942,7 +947,8 @@ mod tests {
     /// asserts the file is clean today; this asserts what happens on the day
     /// it is not.
     #[test]
-    fn a_keyword_outside_the_implemented_set_is_named_rather_than_ignored() {
+    fn a_keyword_outside_the_implemented_set_is_named_rather_than_ignored() -> Result<(), TestError>
+    {
         let mut out = BTreeSet::new();
         walk_keywords(
             &json!({
@@ -964,6 +970,7 @@ mod tests {
             "tuple validation changes what `items` MEANS and is not \
              implemented: {tuple:?}"
         );
+        Ok(())
     }
 
     /// A schema this validator has outgrown refuses; it does not pass.
@@ -973,7 +980,7 @@ mod tests {
     /// and it is the assertion that stops a re-vendor from turning every
     /// validation into a green light over constraints nobody read.
     #[test]
-    fn a_schema_this_validator_has_outgrown_refuses_rather_than_passing() {
+    fn a_schema_this_validator_has_outgrown_refuses_rather_than_passing() -> Result<(), TestError> {
         let report = outgrown(
             &[
                 "additionalProperties".to_owned(),
@@ -1007,11 +1014,12 @@ mod tests {
             "and it must say that nothing was checked, because an `invalid` \
              with a list of keywords reads as a container problem: {detail}"
         );
+        Ok(())
     }
 
     /// A container sipnab could write, with no deviation in it, is valid.
     #[test]
-    fn a_container_the_schema_accepts_is_valid() {
+    fn a_container_the_schema_accepts_is_valid() -> Result<(), TestError> {
         let report = validate(&with_dialog(
             json!({"type": "recording", "start": "2026-09-01T12:00:00Z"}),
         ));
@@ -1031,6 +1039,7 @@ mod tests {
             report.schema_id.contains("vcon"),
             "the report must name the schema it read: {report:?}"
         );
+        Ok(())
     }
 
     /// RV6: the empty Dialog Object is NAMED, not waved through.
@@ -1041,7 +1050,7 @@ mod tests {
     /// missing `start` is acceptable, which is precisely the defect the corpus
     /// pass found two of.
     #[test]
-    fn an_empty_dialog_object_is_reported_as_the_documented_deviation() {
+    fn an_empty_dialog_object_is_reported_as_the_documented_deviation() -> Result<(), TestError> {
         let report = validate(&with_dialog(json!({})));
         assert_eq!(
             report.verdict,
@@ -1070,6 +1079,7 @@ mod tests {
             }],
             "and the reasoning travels with it, once: {report:?}"
         );
+        Ok(())
     }
 
     /// The corpus defect stays an ERROR: a typed object missing `start`.
@@ -1078,7 +1088,7 @@ mod tests {
     /// missing `start` would report the 2-in-4,216 real defect as the
     /// documented deviation and hide it forever.
     #[test]
-    fn a_typed_dialog_object_missing_start_is_a_real_error() {
+    fn a_typed_dialog_object_missing_start_is_a_real_error() -> Result<(), TestError> {
         let report = validate(&with_dialog(json!({"type": "transfer", "transferee": 1})));
         assert_eq!(
             report.verdict,
@@ -1096,6 +1106,7 @@ mod tests {
             report.errors[0].detail.contains("start"),
             "the error must name the property: {report:?}"
         );
+        Ok(())
     }
 
     /// A container that is both wrong and deviant reports both, separately.
@@ -1104,7 +1115,7 @@ mod tests {
     /// does not vanish into it: an operator fixing the error must still know
     /// the other object is there.
     #[test]
-    fn an_error_beside_a_deviation_keeps_both() {
+    fn an_error_beside_a_deviation_keeps_both() -> Result<(), TestError> {
         let mut container = minimal();
         container["dialog"] = json!([{}, {"type": "transfer"}]);
         let report = validate(&container);
@@ -1113,6 +1124,7 @@ mod tests {
         assert_eq!(report.deviations[0].instance_path, "/dialog/0");
         assert_eq!(report.errors.len(), 1, "{report:?}");
         assert_eq!(report.errors[0].instance_path, "/dialog/1");
+        Ok(())
     }
 
     /// The ONE place this validator is stricter than the reference, pinned.
@@ -1127,11 +1139,11 @@ mod tests {
     /// reference gains `uuid`, this fails and the case moves back into the
     /// corpus where it belongs.
     #[test]
-    fn the_uuid_format_is_enforced_here_and_annotated_by_the_reference() {
+    fn the_uuid_format_is_enforced_here_and_annotated_by_the_reference() -> Result<(), TestError> {
         let reference = jsonschema::options()
             .should_validate_formats(true)
             .build(schema())
-            .expect("the vendored schema compiles");
+            .map_err(|e| format!("the vendored schema compiles: {e:?}"))?;
         let mut container = minimal();
         container["uuid"] = json!("not-a-uuid");
 
@@ -1146,11 +1158,12 @@ mod tests {
             "a malformed identifier must be refused here: {report:?}"
         );
         assert_eq!(report.errors[0].keyword, "format", "{report:?}");
+        Ok(())
     }
 
     /// The three formats the schema uses are enforced, not annotated away.
     #[test]
-    fn the_formats_the_schema_uses_are_enforced() {
+    fn the_formats_the_schema_uses_are_enforced() -> Result<(), TestError> {
         assert!(format_matches("date-time", "2026-09-01T12:00:00Z"));
         assert!(!format_matches("date-time", "2026-09-01"));
         assert!(format_matches(
@@ -1160,5 +1173,6 @@ mod tests {
         assert!(!format_matches("uuid", "018f3a2b4c5d8e6f90123456789abcde"));
         assert!(format_matches("uri", "https://example.com/x"));
         assert!(!format_matches("uri", "example.com/x"));
+        Ok(())
     }
 }

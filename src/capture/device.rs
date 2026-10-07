@@ -173,11 +173,14 @@ fn no_device_error(names: &[String]) -> anyhow::Error {
 mod tests {
     use super::*;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// `list_devices` returns well-formed, deterministic device names. The
     /// list may be empty in sandboxed CI (no pcap privileges), but whatever it
     /// returns must honor the contract.
     #[test]
-    fn list_devices_returns_vec() {
+    fn list_devices_returns_vec() -> Result<(), TestError> {
         let devs = list_devices();
         tracing::info!("Available devices: {:?}", devs);
 
@@ -195,12 +198,13 @@ mod tests {
         // came back empty on a host that has interfaces).
         let again = list_devices();
         assert_eq!(devs, again, "list_devices must be deterministic");
+        Ok(())
     }
 
     /// `find_default_device` yields a non-empty name, or one of the known
     /// no-device/permission errors when the environment blocks pcap.
     #[test]
-    fn find_default_device_returns_non_empty() {
+    fn find_default_device_returns_non_empty() -> Result<(), TestError> {
         // This test may fail in heavily sandboxed CI (no pcap permissions).
         // That's acceptable — the function itself is correct; the OS blocks it.
         match find_default_device() {
@@ -218,124 +222,149 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The headline contract: with no interface selected, Linux must capture
     /// from ALL interfaces via the "any" pseudo-device (not a single NIC).
     #[cfg(target_os = "linux")]
     #[test]
-    fn default_device_is_all_interfaces_on_linux() {
-        let dev = find_default_device().expect("Linux default is always 'any'");
+    fn default_device_is_all_interfaces_on_linux() -> Result<(), TestError> {
+        let dev =
+            find_default_device().map_err(|e| format!("Linux default is always 'any': {e:?}"))?;
         assert_eq!(
             dev, "any",
             "Linux default capture must be the 'any' pseudo-device (all interfaces)"
         );
+        Ok(())
     }
 
     // ── parse_device_list: selected-interface parsing/validation ─────────
 
     /// A single interface name parses to a one-element list.
     #[test]
-    fn device_list_single() {
-        assert_eq!(parse_device_list("eth0").unwrap(), vec!["eth0"]);
+    fn device_list_single() -> Result<(), TestError> {
+        assert_eq!(parse_device_list("eth0")?, vec!["eth0"]);
+        Ok(())
     }
 
     /// Multiple comma-separated names parse in the order given.
     #[test]
-    fn device_list_multiple_in_order() {
+    fn device_list_multiple_in_order() -> Result<(), TestError> {
         assert_eq!(
-            parse_device_list("eth0,docker0,lo").unwrap(),
+            parse_device_list("eth0,docker0,lo")?,
             vec!["eth0", "docker0", "lo"]
         );
+        Ok(())
     }
 
     /// Spaces and tabs around entries are trimmed away.
     #[test]
-    fn device_list_trims_surrounding_whitespace() {
+    fn device_list_trims_surrounding_whitespace() -> Result<(), TestError> {
         assert_eq!(
-            parse_device_list("  eth0 ,\tdocker0  ").unwrap(),
+            parse_device_list("  eth0 ,\tdocker0  ")?,
             vec!["eth0", "docker0"]
         );
+        Ok(())
     }
 
     /// Repeated names are deduplicated, keeping first-seen order.
     #[test]
-    fn device_list_dedups_preserving_first_seen_order() {
+    fn device_list_dedups_preserving_first_seen_order() -> Result<(), TestError> {
         assert_eq!(
-            parse_device_list("eth0,docker0,eth0,lo,docker0").unwrap(),
+            parse_device_list("eth0,docker0,eth0,lo,docker0")?,
             vec!["eth0", "docker0", "lo"]
         );
+        Ok(())
     }
 
     // ── Failure / adversarial cases ──────────────────────────────────────
 
     /// An empty spec is rejected with an "empty" error message.
     #[test]
-    fn device_list_rejects_empty_string() {
-        let err = parse_device_list("").unwrap_err().to_string();
+    fn device_list_rejects_empty_string() -> Result<(), TestError> {
+        let err = parse_device_list("")
+            .err()
+            .ok_or("expected an error, got Ok")?
+            .to_string();
         assert!(err.contains("empty"), "got: {err}");
+        Ok(())
     }
 
     /// A spec containing only whitespace is rejected.
     #[test]
-    fn device_list_rejects_whitespace_only() {
+    fn device_list_rejects_whitespace_only() -> Result<(), TestError> {
         assert!(parse_device_list("   \t ").is_err());
+        Ok(())
     }
 
     /// A doubled comma ("eth0,,docker0") fails loudly rather than silently
     /// producing an empty interface name.
     #[test]
-    fn device_list_rejects_doubled_comma() {
+    fn device_list_rejects_doubled_comma() -> Result<(), TestError> {
         // The classic typo: "eth0,,docker0" must fail loudly, not silently
         // try to open an interface named "".
-        let err = parse_device_list("eth0,,docker0").unwrap_err().to_string();
+        let err = parse_device_list("eth0,,docker0")
+            .err()
+            .ok_or("expected an error, got Ok")?
+            .to_string();
         assert!(err.contains("empty interface name"), "got: {err}");
+        Ok(())
     }
 
     /// A leading comma yields an empty first entry and is rejected.
     #[test]
-    fn device_list_rejects_leading_comma() {
+    fn device_list_rejects_leading_comma() -> Result<(), TestError> {
         assert!(parse_device_list(",eth0").is_err());
+        Ok(())
     }
 
     /// A trailing comma yields an empty last entry and is rejected.
     #[test]
-    fn device_list_rejects_trailing_comma() {
+    fn device_list_rejects_trailing_comma() -> Result<(), TestError> {
         assert!(parse_device_list("eth0,").is_err());
+        Ok(())
     }
 
     /// A spec that is only a comma has no valid entries and is rejected.
     #[test]
-    fn device_list_rejects_bare_comma() {
+    fn device_list_rejects_bare_comma() -> Result<(), TestError> {
         assert!(parse_device_list(",").is_err());
+        Ok(())
     }
 
     /// A name with an embedded NUL is rejected (it would truncate at the
     /// libpcap C-string boundary).
     #[test]
-    fn device_list_rejects_embedded_nul() {
+    fn device_list_rejects_embedded_nul() -> Result<(), TestError> {
         // A NUL would truncate when passed to libpcap's C API — reject it
         // rather than silently capture on a different (or no) interface.
-        let err = parse_device_list("eth0\0evil").unwrap_err().to_string();
+        let err = parse_device_list("eth0\0evil")
+            .err()
+            .ok_or("expected an error, got Ok")?
+            .to_string();
         assert!(err.contains("NUL"), "got: {err}");
+        Ok(())
     }
 
     /// An entry consisting only of a NUL byte is rejected.
     #[test]
-    fn device_list_rejects_nul_only_entry() {
+    fn device_list_rejects_nul_only_entry() -> Result<(), TestError> {
         assert!(parse_device_list("eth0,\0,docker0").is_err());
+        Ok(())
     }
 
     /// Platform-specific names with backslashes/dots/braces (e.g. Windows
     /// NPF paths) pass through unmodified.
     #[test]
-    fn device_list_preserves_unusual_but_valid_names() {
+    fn device_list_preserves_unusual_but_valid_names() -> Result<(), TestError> {
         // Backslashes/dots/colons appear in real capture device names on some
         // platforms (e.g. Windows "\\Device\\NPF_{...}"); they must pass through.
         assert_eq!(
-            parse_device_list(r"\Device\NPF_{abc},en0.1").unwrap(),
+            parse_device_list(r"\Device\NPF_{abc},en0.1")?,
             vec![r"\Device\NPF_{abc}", "en0.1"]
         );
+        Ok(())
     }
 
     // ── The non-Linux fallback, as data ──────────────────────────────────
@@ -351,7 +380,7 @@ mod tests {
     /// The first device that is not loopback wins, in the order listed;
     /// both loopback spellings (`lo`, `lo0`) are skipped.
     #[test]
-    fn the_fallback_takes_the_first_device_that_is_not_loopback() {
+    fn the_fallback_takes_the_first_device_that_is_not_loopback() -> Result<(), TestError> {
         assert_eq!(
             first_non_loopback(&names(&["lo", "eth0", "wlan0"])),
             Some("eth0")
@@ -359,12 +388,13 @@ mod tests {
         assert_eq!(first_non_loopback(&names(&["lo0", "en0"])), Some("en0"));
         assert_eq!(first_non_loopback(&names(&["lo", "lo0"])), None);
         assert_eq!(first_non_loopback(&[]), None);
+        Ok(())
     }
 
     /// No devices at all points at privileges; only loopback lists what
     /// exists and suggests the first of it.
     #[test]
-    fn the_no_device_error_says_why_and_what_to_try() {
+    fn the_no_device_error_says_why_and_what_to_try() -> Result<(), TestError> {
         let none = no_device_error(&[]).to_string();
         assert!(none.starts_with("No capture device found."), "{none}");
         assert!(none.contains("Try: sudo sipnab"), "{none}");
@@ -379,5 +409,6 @@ mod tests {
             only_loopback.ends_with("Try: sipnab -d lo"),
             "{only_loopback}"
         );
+        Ok(())
     }
 }

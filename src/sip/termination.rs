@@ -327,11 +327,16 @@ pub fn detect_termination(messages: &[SipMessage]) -> Option<Termination> {
 mod tests {
     use super::*;
 
-    fn msg(raw: &str) -> crate::sip::message::SipMessage {
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    fn msg(raw: &str) -> Result<crate::sip::message::SipMessage, TestError> {
         let ts =
-            chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("valid fixture timestamp");
-        let addr: std::net::IpAddr = "198.51.100.1".parse().expect("fixture address");
-        crate::sip::parser::parse_sip(
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid fixture timestamp")?;
+        let addr: std::net::IpAddr = "198.51.100.1"
+            .parse()
+            .map_err(|e| format!("fixture address: {e:?}"))?;
+        Ok(crate::sip::parser::parse_sip(
             raw.replace('\n', "\r\n").as_bytes(),
             ts,
             addr,
@@ -340,25 +345,26 @@ mod tests {
             5060,
             crate::net::TransportProto::Udp,
         )
-        .expect("fixture parses")
+        .map_err(|e| format!("fixture parses: {e:?}"))?)
     }
 
     /// The two protocols [RFC 3326 section 2](https://www.rfc-editor.org/rfc/rfc3326#section-2) names are not interchangeable, and a
     /// `cause_code` without one is ambiguous: `16` is normal clearing in
     /// Q.850 and is not a SIP status code at all.
     #[test]
-    fn a_reason_value_carries_its_protocol() {
+    fn a_reason_value_carries_its_protocol() -> Result<(), TestError> {
         let got = parse_reason_value(r#"Q.850;cause=16;text="Normal Clearing""#);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].protocol, "Q.850");
         assert_eq!(got[0].cause, Some(16));
         assert_eq!(got[0].text.as_deref(), Some("Normal Clearing"));
+        Ok(())
     }
 
     /// [RFC 3326 section 2](https://www.rfc-editor.org/rfc/rfc3326#section-2) permits several reason-values in one header field,
     /// comma-separated, and a message MAY carry more than one `Reason` header.
     #[test]
-    fn several_reason_values_in_one_field_are_all_read() {
+    fn several_reason_values_in_one_field_are_all_read() -> Result<(), TestError> {
         let got =
             parse_reason_value(r#"SIP;cause=200;text="Call completed elsewhere", Q.850;cause=16"#);
         assert_eq!(got.len(), 2, "got {got:?}");
@@ -367,27 +373,30 @@ mod tests {
         assert_eq!(got[1].protocol, "Q.850");
         assert_eq!(got[1].cause, Some(16));
         assert_eq!(got[1].text, None);
+        Ok(())
     }
 
     /// A comma inside the quoted `text` is text, not a value separator.
     /// Splitting on every comma would cut one reason-value in half and invent
     /// a second protocol named after the rest of the sentence.
     #[test]
-    fn a_comma_inside_quoted_text_does_not_split_the_value() {
+    fn a_comma_inside_quoted_text_does_not_split_the_value() -> Result<(), TestError> {
         let got = parse_reason_value(r#"Q.850;cause=31;text="normal, unspecified""#);
         assert_eq!(got.len(), 1, "got {got:?}");
         assert_eq!(got[0].text.as_deref(), Some("normal, unspecified"));
+        Ok(())
     }
 
     /// `protocol` alone is a legal reason-value: RFC 3326's `reason-params`
     /// are optional. It says which side spoke without saying what it said,
     /// and reporting it as a missing cause is more honest than dropping it.
     #[test]
-    fn a_protocol_with_no_parameters_is_still_a_reason() {
+    fn a_protocol_with_no_parameters_is_still_a_reason() -> Result<(), TestError> {
         let got = parse_reason_value("Q.850");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].cause, None);
         assert_eq!(got[0].text, None);
+        Ok(())
     }
 
     /// [RFC 3261 section 25.1](https://www.rfc-editor.org/rfc/rfc3261#section-25.1) allows linear whitespace around `;` and `=`
@@ -395,7 +404,7 @@ mod tests {
     /// case-insensitive. A parser that demands
     /// one spelling reports "no cause" on a message that carries one.
     #[test]
-    fn whitespace_and_parameter_case_do_not_hide_a_cause() {
+    fn whitespace_and_parameter_case_do_not_hide_a_cause() -> Result<(), TestError> {
         for raw in [
             "Q.850 ; cause = 34",
             "Q.850;CAUSE=34",
@@ -406,6 +415,7 @@ mod tests {
             assert_eq!(got.len(), 1, "{raw:?} -> {got:?}");
             assert_eq!(got[0].cause, Some(34), "{raw:?}");
         }
+        Ok(())
     }
 
     /// A cause that is not a number is reported as absent rather than as
@@ -413,7 +423,7 @@ mod tests {
     /// coercing a parse failure into it would invent a value that a reader
     /// cannot tell from a measured one.
     #[test]
-    fn an_unparsable_cause_is_absent_not_zero() {
+    fn an_unparsable_cause_is_absent_not_zero() -> Result<(), TestError> {
         for raw in ["Q.850;cause=abc", "Q.850;cause=", "Q.850;cause=999999999"] {
             let got = parse_reason_value(raw);
             assert_eq!(got.len(), 1, "{raw:?}");
@@ -421,76 +431,81 @@ mod tests {
         }
         // ...while a real zero survives.
         assert_eq!(parse_reason_value("Q.850;cause=0")[0].cause, Some(0));
+        Ok(())
     }
 
     /// A `Reason` on a `BYE` is the case this module exists for: the call
     /// connected, ran and ended, so there is no failure response to hang the
     /// cause on and the old reader found nothing.
     #[test]
-    fn a_reason_on_a_bye_is_found() {
+    fn a_reason_on_a_bye_is_found() -> Result<(), TestError> {
         let messages = vec![
-            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
-            msg("SIP/2.0 200 OK\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
+            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
+            msg("SIP/2.0 200 OK\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
             msg("BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
-                 Reason: Q.850;cause=38;text=\"Network out of order\"\n\n"),
+                 Reason: Q.850;cause=38;text=\"Network out of order\"\n\n")?,
         ];
-        let t = detect_termination(&messages).expect("the BYE carries a cause");
+        let t = detect_termination(&messages).ok_or("the BYE carries a cause")?;
         assert_eq!(t.cause_code, Some(38));
         assert_eq!(t.cause_text.as_deref(), Some("Network out of order"));
         assert_eq!(t.protocol.as_deref(), Some("Q.850"));
         assert_eq!(t.source_header, "Reason");
         assert_eq!(t.frame_ref, 2);
+        Ok(())
     }
 
     /// A `Reason` on a `CANCEL` is the other half of RFC 3326's own motivating
     /// case: `SIP;cause=200;text="Call completed elsewhere"` distinguishes a
     /// fork that lost from a caller who gave up, and both look like `487`.
     #[test]
-    fn a_reason_on_a_cancel_is_found() {
+    fn a_reason_on_a_cancel_is_found() -> Result<(), TestError> {
         let messages = vec![
-            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
+            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
             msg(
                 "CANCEL sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 CANCEL\n\
                  Reason: SIP;cause=200;text=\"Call completed elsewhere\"\n\n",
-            ),
+            )?,
         ];
-        let t = detect_termination(&messages).expect("the CANCEL carries a cause");
+        let t = detect_termination(&messages).ok_or("the CANCEL carries a cause")?;
         assert_eq!(t.protocol.as_deref(), Some("SIP"));
         assert_eq!(t.cause_code, Some(200));
         assert_eq!(t.frame_ref, 1);
+        Ok(())
     }
 
     /// A `Reason` on a failure response still works — that path predates this
     /// module and must not regress.
     #[test]
-    fn a_reason_on_a_failure_response_is_found() {
+    fn a_reason_on_a_failure_response_is_found() -> Result<(), TestError> {
         let messages = vec![
-            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
+            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
             msg(
                 "SIP/2.0 503 Service Unavailable\nCall-ID: c1\nCSeq: 1 INVITE\n\
                  Reason: Q.850;cause=34;text=\"no circuit available\"\n\n",
-            ),
+            )?,
         ];
-        let t = detect_termination(&messages).expect("the response carries a cause");
+        let t = detect_termination(&messages).ok_or("the response carries a cause")?;
         assert_eq!(t.cause_code, Some(34));
+        Ok(())
     }
 
     /// The LAST cause in the dialog wins. A call that was challenged, retried
     /// and finally cleared has more than one, and the one that says why it
     /// ended is the last thing said.
     #[test]
-    fn the_last_cause_in_the_dialog_is_the_termination() {
+    fn the_last_cause_in_the_dialog_is_the_termination() -> Result<(), TestError> {
         let messages = vec![
             msg(
                 "SIP/2.0 503 Service Unavailable\nCall-ID: c1\nCSeq: 1 INVITE\n\
                  Reason: Q.850;cause=34\n\n",
-            ),
+            )?,
             msg("BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
-                 Reason: Q.850;cause=16\n\n"),
+                 Reason: Q.850;cause=16\n\n")?,
         ];
-        let t = detect_termination(&messages).expect("two causes, one termination");
+        let t = detect_termination(&messages).ok_or("two causes, one termination")?;
         assert_eq!(t.cause_code, Some(16));
         assert_eq!(t.frame_ref, 1);
+        Ok(())
     }
 
     /// Where one message carries both protocols, the non-SIP one is reported.
@@ -500,15 +515,16 @@ mod tests {
     /// is not otherwise recoverable. Reporting the duplicate would spend the
     /// one `termination` block on the half a reader already has.
     #[test]
-    fn a_gateway_cause_outranks_a_restatement_of_the_status_code() {
+    fn a_gateway_cause_outranks_a_restatement_of_the_status_code() -> Result<(), TestError> {
         let messages = vec![msg(
             "BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
              Reason: SIP;cause=200;text=\"Call completed elsewhere\"\n\
              Reason: Q.850;cause=16;text=\"Normal Clearing\"\n\n",
-        )];
-        let t = detect_termination(&messages).expect("both protocols present");
+        )?];
+        let t = detect_termination(&messages).ok_or("both protocols present")?;
         assert_eq!(t.protocol.as_deref(), Some("Q.850"));
         assert_eq!(t.cause_code, Some(16));
+        Ok(())
     }
 
     /// Asterisk's pair is read as one cause: the code from
@@ -518,13 +534,13 @@ mod tests {
     /// headers carry NO `Reason` header, so this is the only cause available
     /// on those calls, and `triage_call` reported nothing for all of them.
     #[test]
-    fn the_asterisk_pair_is_read_as_one_cause() {
+    fn the_asterisk_pair_is_read_as_one_cause() -> Result<(), TestError> {
         let messages = vec![msg(
             "BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
              X-Asterisk-HangupCauseCode: 38\n\
              X-Asterisk-HangupCause: Network out of order\n\n",
-        )];
-        let t = detect_termination(&messages).expect("the vendor pair is a cause");
+        )?];
+        let t = detect_termination(&messages).ok_or("the vendor pair is a cause")?;
         assert_eq!(t.cause_code, Some(38));
         assert_eq!(t.cause_text.as_deref(), Some("Network out of order"));
         // Asterisk's codes ARE Q.850 causes, and saying so is what lets a
@@ -532,46 +548,50 @@ mod tests {
         // came from is reported separately, so nothing is laundered.
         assert_eq!(t.protocol.as_deref(), Some("Q.850"));
         assert_eq!(t.source_header, "X-Asterisk-HangupCauseCode");
+        Ok(())
     }
 
     /// The standard header outranks the vendor one where both appear. RFC
     /// 3326 is what every other implementation writes and reads.
     #[test]
-    fn the_standard_header_outranks_the_vendor_one() {
+    fn the_standard_header_outranks_the_vendor_one() -> Result<(), TestError> {
         let messages = vec![msg(
             "BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
              Reason: Q.850;cause=16;text=\"Normal Clearing\"\n\
              X-Asterisk-HangupCauseCode: 38\n\
              X-Asterisk-HangupCause: Network out of order\n\n",
-        )];
-        let t = detect_termination(&messages).expect("both present");
+        )?];
+        let t = detect_termination(&messages).ok_or("both present")?;
         assert_eq!(t.source_header, "Reason");
         assert_eq!(t.cause_code, Some(16));
+        Ok(())
     }
 
     /// A dialog that says nothing about why it ended reports nothing, rather
     /// than a default that a reader cannot tell from a measured cause.
     #[test]
-    fn a_dialog_with_no_cause_reports_none() {
+    fn a_dialog_with_no_cause_reports_none() -> Result<(), TestError> {
         let messages = vec![
-            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
-            msg("SIP/2.0 200 OK\nCall-ID: c1\nCSeq: 1 INVITE\n\n"),
-            msg("BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\n"),
+            msg("INVITE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
+            msg("SIP/2.0 200 OK\nCall-ID: c1\nCSeq: 1 INVITE\n\n")?,
+            msg("BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\n")?,
         ];
         assert!(detect_termination(&messages).is_none());
         assert!(detect_termination(&[]).is_none());
+        Ok(())
     }
 
     /// A `Reason` naming a protocol and nothing else still identifies the
     /// message that ended the call, which is more than the old reader gave.
     #[test]
-    fn a_cause_less_reason_still_locates_the_termination() {
+    fn a_cause_less_reason_still_locates_the_termination() -> Result<(), TestError> {
         let messages = vec![msg(
             "BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\nReason: Q.850\n\n",
-        )];
-        let t = detect_termination(&messages).expect("a protocol was named");
+        )?];
+        let t = detect_termination(&messages).ok_or("a protocol was named")?;
         assert_eq!(t.cause_code, None);
         assert_eq!(t.protocol.as_deref(), Some("Q.850"));
+        Ok(())
     }
 
     /// A control character in the cause text never reaches a renderer.
@@ -581,9 +601,10 @@ mod tests {
     /// stripping at each renderer is three, and the third one is the one
     /// somebody forgets.
     #[test]
-    fn control_characters_are_stripped_from_the_cause_text() {
+    fn control_characters_are_stripped_from_the_cause_text() -> Result<(), TestError> {
         let got = parse_reason_value("Q.850;cause=16;text=\"a\u{1b}[31mb\u{7}c\"");
         assert_eq!(got[0].text.as_deref(), Some("a[31mbc"));
+        Ok(())
     }
 
     /// The one-line rendering says everything it has and nothing it does not.
@@ -594,7 +615,7 @@ mod tests {
     /// wire really produces (a protocol and no cause, a vendor code and no
     /// text) was covered by nothing.
     #[test]
-    fn the_summary_renders_each_shape_the_wire_produces() {
+    fn the_summary_renders_each_shape_the_wire_produces() -> Result<(), TestError> {
         let base = Termination {
             cause_code: None,
             cause_text: None,
@@ -647,6 +668,7 @@ mod tests {
             text_only.summary(),
             "Q.850 \"User busy\" [X-Asterisk-HangupCauseCode]"
         );
+        Ok(())
     }
 
     /// **Second of two.** The source header is in every rendering, always.
@@ -657,7 +679,7 @@ mod tests {
     /// rendering that dropped it on some shape would take that away exactly
     /// where the answer is thinnest.
     #[test]
-    fn every_summary_names_the_header_the_cause_came_from() {
+    fn every_summary_names_the_header_the_cause_came_from() -> Result<(), TestError> {
         for (code, text, protocol) in [
             (Some(16u16), Some("Normal Clearing"), Some("Q.850")),
             (Some(200), None, Some("SIP")),
@@ -680,24 +702,26 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The header value is data a remote wrote. It reaches an agent's context
     /// through `triage_call`, so it is bounded here rather than at each
     /// surface — one rule, applied where the value is read.
     #[test]
-    fn an_enormous_cause_text_is_bounded() {
+    fn an_enormous_cause_text_is_bounded() -> Result<(), TestError> {
         let long = "A".repeat(4096);
         let messages = vec![msg(&format!(
             "BYE sip:b@example.net SIP/2.0\nCall-ID: c1\nCSeq: 2 BYE\n\
              Reason: Q.850;cause=16;text=\"{long}\"\n\n",
-        ))];
-        let t = detect_termination(&messages).expect("a cause is present");
-        let text = t.cause_text.expect("text is present");
+        ))?];
+        let t = detect_termination(&messages).ok_or("a cause is present")?;
+        let text = t.cause_text.ok_or("text is present")?;
         assert!(
             text.chars().count() <= MAX_CAUSE_TEXT_CHARS,
             "cause_text is {} chars, over the {MAX_CAUSE_TEXT_CHARS} bound",
             text.chars().count()
         );
+        Ok(())
     }
 }

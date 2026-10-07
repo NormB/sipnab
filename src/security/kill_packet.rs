@@ -167,6 +167,9 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// Construct an IPv4 socket address from octets and a port.
     fn addr(a: [u8; 4], p: u16) -> SocketAddrV4 {
         SocketAddrV4::new(Ipv4Addr::from(a), p)
@@ -193,11 +196,11 @@ mod tests {
     /// The IPv4 datagram carries the expected version, protocol, length,
     /// spoofed addresses, and ports.
     #[test]
-    fn builds_expected_header_fields() {
+    fn builds_expected_header_fields() -> Result<(), TestError> {
         let src = addr([10, 0, 0, 1], 5060);
         let dst = addr([192, 168, 1, 9], 40000);
         let payload = b"SIP/2.0 403 Forbidden\r\n\r\n";
-        let pkt = build_ipv4_udp(src, dst, payload).expect("should build");
+        let pkt = build_ipv4_udp(src, dst, payload).ok_or("should build")?;
 
         assert_eq!(pkt.len(), 20 + 8 + payload.len());
         assert_eq!(pkt[0], 0x45, "version/IHL");
@@ -217,14 +220,15 @@ mod tests {
             &((8 + payload.len()) as u16).to_be_bytes(),
             "udp len"
         );
+        Ok(())
     }
 
     /// The IPv4 header checksum re-sums to zero and matches an independent
     /// computation.
     #[test]
-    fn ip_header_checksum_is_valid() {
+    fn ip_header_checksum_is_valid() -> Result<(), TestError> {
         let pkt = build_ipv4_udp(addr([10, 0, 0, 1], 5060), addr([10, 0, 0, 2], 5060), b"x")
-            .expect("build");
+            .ok_or("build")?;
         // A correct IPv4 header checksums to zero when re-summed including the
         // checksum field.
         assert_eq!(ref_checksum(&pkt[..20]), 0, "IP header must checksum to 0");
@@ -234,16 +238,17 @@ mod tests {
         hdr[10] = 0;
         hdr[11] = 0;
         assert_eq!(u16::from_be_bytes([pkt[10], pkt[11]]), ref_checksum(&hdr));
+        Ok(())
     }
 
     /// The IPv4 UDP checksum validates to zero over the pseudo-header and is
     /// non-zero on the wire.
     #[test]
-    fn udp_checksum_is_valid() {
+    fn udp_checksum_is_valid() -> Result<(), TestError> {
         let src = addr([10, 0, 0, 1], 5060);
         let dst = addr([10, 0, 0, 2], 5061);
         let payload = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n";
-        let pkt = build_ipv4_udp(src, dst, payload).expect("build");
+        let pkt = build_ipv4_udp(src, dst, payload).ok_or("build")?;
 
         // Rebuild the pseudo-header + UDP segment (with the real checksum in
         // place) and confirm it re-sums to zero — the receiver's validity test.
@@ -257,24 +262,26 @@ mod tests {
         check.extend_from_slice(&pkt[20..]);
         assert_eq!(ref_checksum(&check), 0, "UDP checksum must validate to 0");
         assert_ne!(&pkt[26..28], &[0, 0], "checksum must be present, not zero");
+        Ok(())
     }
 
     /// An empty payload still builds a valid header-only datagram.
     #[test]
-    fn empty_payload_still_builds_valid_headers() {
+    fn empty_payload_still_builds_valid_headers() -> Result<(), TestError> {
         // The worker guards against empty responses, but the builder must not
         // panic or produce a malformed datagram on an empty payload.
         let pkt = build_ipv4_udp(addr([10, 0, 0, 1], 5060), addr([10, 0, 0, 2], 5060), b"")
-            .expect("build");
+            .ok_or("build")?;
         assert_eq!(pkt.len(), 28);
         assert_eq!(&pkt[24..26], &8u16.to_be_bytes(), "udp len is header-only");
         assert_eq!(ref_checksum(&pkt[..20]), 0);
+        Ok(())
     }
 
     /// Binary/adversarial payload bytes are carried verbatim with valid
     /// checksums.
     #[test]
-    fn adversarial_payload_bytes_are_carried_verbatim() {
+    fn adversarial_payload_bytes_are_carried_verbatim() -> Result<(), TestError> {
         // Embedded NUL, high bytes, backslash, CR/LF must appear untouched
         // after the 28-byte header, and both checksums must still validate.
         let payload = vec![0x00u8, 0xff, b'\\', 0x0d, 0x0a, 0x80, 0x7f, 0x00, b'S'];
@@ -283,7 +290,7 @@ mod tests {
             addr([172, 16, 0, 9], 5062),
             &payload,
         )
-        .expect("build");
+        .ok_or("build")?;
         assert_eq!(&pkt[28..], &payload[..], "payload carried byte-for-byte");
         assert_eq!(ref_checksum(&pkt[..20]), 0);
 
@@ -300,11 +307,12 @@ mod tests {
             0,
             "UDP checksum valid for binary payload"
         );
+        Ok(())
     }
 
     /// A payload one byte over the IPv4 maximum is rejected; the maximum builds.
     #[test]
-    fn oversize_payload_rejected() {
+    fn oversize_payload_rejected() -> Result<(), TestError> {
         let too_big = vec![0u8; MAX_UDP_PAYLOAD_V4 + 1];
         assert!(
             build_ipv4_udp(
@@ -319,6 +327,7 @@ mod tests {
         assert!(
             build_ipv4_udp(addr([10, 0, 0, 1], 5060), addr([10, 0, 0, 2], 5060), &max).is_some()
         );
+        Ok(())
     }
 
     // ── IPv6 ──
@@ -353,11 +362,11 @@ mod tests {
     /// The IPv6 datagram carries the expected header fields and a mandatory,
     /// valid UDP checksum.
     #[test]
-    fn builds_ipv6_expected_header_and_checksum() {
+    fn builds_ipv6_expected_header_and_checksum() -> Result<(), TestError> {
         let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];
         let dst = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 2];
         let payload = b"SIP/2.0 403 Forbidden\r\n\r\n";
-        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 40000), payload).expect("build");
+        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 40000), payload).ok_or("build")?;
 
         assert_eq!(pkt.len(), 40 + 8 + payload.len());
         assert_eq!(pkt[0] >> 4, 6, "version 6");
@@ -389,15 +398,16 @@ mod tests {
             "IPv6 UDP checksum is mandatory, never zero"
         );
         ipv6_udp_check(&pkt, src, dst);
+        Ok(())
     }
 
     /// IPv6 empty and binary/adversarial payloads build valid checksummed
     /// datagrams.
     #[test]
-    fn ipv6_empty_and_adversarial_payloads() {
+    fn ipv6_empty_and_adversarial_payloads() -> Result<(), TestError> {
         let src = [0xfe80, 0, 0, 0, 0, 0, 0, 1];
         let dst = [0xfe80, 0, 0, 0, 0, 0, 0, 2];
-        let empty = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), b"").expect("build");
+        let empty = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), b"").ok_or("build")?;
         assert_eq!(empty.len(), 48);
         assert_eq!(
             &empty[4..6],
@@ -407,19 +417,21 @@ mod tests {
         ipv6_udp_check(&empty, src, dst);
 
         let payload = vec![0x00u8, 0xff, b'\\', 0x0d, 0x0a, 0x80, 0x7f, 0x00, b'S'];
-        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5062), &payload).expect("build");
+        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5062), &payload).ok_or("build")?;
         assert_eq!(&pkt[48..], &payload[..], "payload carried byte-for-byte");
         ipv6_udp_check(&pkt, src, dst);
+        Ok(())
     }
 
     /// A payload one byte over the IPv6 maximum is rejected; the maximum builds.
     #[test]
-    fn ipv6_oversize_payload_rejected() {
+    fn ipv6_oversize_payload_rejected() -> Result<(), TestError> {
         let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];
         let dst = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 2];
         let too_big = vec![0u8; MAX_UDP_PAYLOAD_V6 + 1];
         assert!(build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), &too_big).is_none());
         let max = vec![0u8; MAX_UDP_PAYLOAD_V6];
         assert!(build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), &max).is_some());
+        Ok(())
     }
 }

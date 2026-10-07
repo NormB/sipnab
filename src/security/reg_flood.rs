@@ -612,9 +612,16 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
     /// A fixed capture timestamp for the parsed messages.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("valid fixture timestamp")?,
+        )
     }
 
     /// The loopback address used as registrar/destination.
@@ -637,86 +644,94 @@ mod tests {
     /// A registrar that is down answers nothing, and nothing is not evidence:
     /// sixty credentialed REGISTERs with no response at all raise no alert.
     #[test]
-    fn unanswered_registers_are_not_failures() {
+    fn unanswered_registers_are_not_failures() -> Result<(), TestError> {
         let mut detector = RegFloodDetector::new(50);
         for i in 0..60 {
-            let msg = register_at(attacker_ip(), &format!("z9hG4bK-silent-{i}"), true, ts());
+            let msg = register_at(attacker_ip(), &format!("z9hG4bK-silent-{i}"), true, ts()?)?;
             assert!(
                 detector.check(&msg).is_none(),
                 "REGISTER {} fired with no answer from the registrar",
                 i + 1
             );
         }
+        Ok(())
     }
 
     /// Staying under the threshold raises no alert.
     #[test]
-    fn below_threshold_no_alert() {
+    fn below_threshold_no_alert() -> Result<(), TestError> {
         let mut detector = RegFloodDetector::new(50);
         for i in 0..40 {
             let branch = format!("z9hG4bK-ok-{i}");
-            let _ = detector.check(&register_at(attacker_ip(), &branch, true, ts()));
+            let _ = detector.check(&register_at(attacker_ip(), &branch, true, ts()?)?);
             assert!(
                 detector
-                    .check(&response_at(401, attacker_ip(), &branch, ts()))
+                    .check(&response_at(401, attacker_ip(), &branch, ts()?)?)
                     .is_none(),
                 "should not alert at {} failures (threshold 50)",
                 i + 1
             );
         }
+        Ok(())
     }
 
     /// Two sources each below the threshold are tracked independently: thirty
     /// failures apiece do not add up to sixty.
     #[test]
-    fn different_sources_independent() {
+    fn different_sources_independent() -> Result<(), TestError> {
         let mut detector = RegFloodDetector::new(50);
         for i in 0..30 {
             for src in [attacker_ip(), other_ip()] {
                 let branch = format!("z9hG4bK-{src}-{i}");
-                let _ = detector.check(&register_at(src, &branch, true, ts()));
+                let _ = detector.check(&register_at(src, &branch, true, ts()?)?);
                 assert!(
                     detector
-                        .check(&response_at(401, src, &branch, ts()))
+                        .check(&response_at(401, src, &branch, ts()?)?)
                         .is_none(),
                     "failure {} from {src} fired: the two sources are being summed",
                     i + 1
                 );
             }
         }
+        Ok(())
     }
 
     /// A 401 answering a credentialed REGISTER is one failure for its
     /// sender; the same 401 answering a bare REGISTER is none.
     #[test]
-    fn auth_failure_tracking() {
+    fn auth_failure_tracking() -> Result<(), TestError> {
         let mut detector = RegFloodDetector::new(50);
 
-        let _ = detector.check(&register_at(attacker_ip(), "z9hG4bK-cred", true, ts()));
-        let _ = detector.check(&response_at(401, attacker_ip(), "z9hG4bK-cred", ts()));
-        let state = detector.sources.peek(&attacker_ip()).expect("state exists");
+        let _ = detector.check(&register_at(attacker_ip(), "z9hG4bK-cred", true, ts()?)?);
+        let _ = detector.check(&response_at(401, attacker_ip(), "z9hG4bK-cred", ts()?)?);
+        let state = detector
+            .sources
+            .peek(&attacker_ip())
+            .ok_or("state exists")?;
         assert_eq!(
             state.auth_fail_count, 1,
             "should track the challenged failure"
         );
 
-        let _ = detector.check(&register_at(other_ip(), "z9hG4bK-bare", false, ts()));
-        let _ = detector.check(&response_at(401, other_ip(), "z9hG4bK-bare", ts()));
-        let state = detector.sources.peek(&other_ip()).expect("state exists");
+        let _ = detector.check(&register_at(other_ip(), "z9hG4bK-bare", false, ts()?)?);
+        let _ = detector.check(&response_at(401, other_ip(), "z9hG4bK-bare", ts()?)?);
+        let state = detector.sources.peek(&other_ip()).ok_or("state exists")?;
         assert_eq!(
             state.auth_fail_count, 0,
             "a challenge to a REGISTER that carried no credentials is not a failure"
         );
+        Ok(())
     }
 
     /// A threshold of 0 selects the built-in default (50/sec).
     #[test]
-    fn default_threshold() {
+    fn default_threshold() -> Result<(), TestError> {
         let detector = RegFloodDetector::new(0);
         assert_eq!(
             detector.threshold, DEFAULT_THRESHOLD,
             "threshold=0 should use default"
         );
+        Ok(())
     }
 
     /// The customer's SBC, seen from the registrar it re-registers against.
@@ -734,7 +749,7 @@ mod tests {
         branch: &str,
         with_credentials: bool,
         at: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let via = format!("Via: SIP/2.0/UDP 10.0.0.7:5060;branch={branch}");
         let call_id = format!("Call-ID: {branch}@test");
         let mut headers = vec![
@@ -752,12 +767,20 @@ mod tests {
         }
         headers.push("Content-Length: 0");
         let raw = build_sip("REGISTER sip:registrar@example.com SIP/2.0", &headers, b"");
-        parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse")
+        Ok(
+            parse_sip(&raw, at, src, localhost(), 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
+        )
     }
 
     /// The registrar's answer to a REGISTER on transaction `branch`, sent
     /// back to `dst`, stamped `at`.
-    fn response_at(code: u16, dst: IpAddr, branch: &str, at: DateTime<Utc>) -> SipMessage {
+    fn response_at(
+        code: u16,
+        dst: IpAddr,
+        branch: &str,
+        at: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         let reason = match code {
             200 => "OK",
             401 => "Unauthorized",
@@ -778,7 +801,10 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, at, localhost(), dst, 5060, 5060, TransportProto::Udp).expect("parse")
+        Ok(
+            parse_sip(&raw, at, localhost(), dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
+        )
     }
 
     /// The failure this detector shipped with. A registrar restarts, the
@@ -787,19 +813,19 @@ mod tests {
     /// volume, the peer that produces the most of it is the operator's own
     /// SBC, and `--fail2ban` bans whatever this returns.
     #[test]
-    fn a_re_register_storm_answered_200_is_not_a_flood() {
+    fn a_re_register_storm_answered_200_is_not_a_flood() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let mut fired = 0usize;
         for i in 0..200 {
             let branch = format!("z9hG4bK-storm-{i}");
             if det
-                .check(&register_at(sbc_ip(), &branch, true, ts()))
+                .check(&register_at(sbc_ip(), &branch, true, ts()?)?)
                 .is_some()
             {
                 fired += 1;
             }
             if det
-                .check(&response_at(200, sbc_ip(), &branch, ts()))
+                .check(&response_at(200, sbc_ip(), &branch, ts()?)?)
                 .is_some()
             {
                 fired += 1;
@@ -810,6 +836,7 @@ mod tests {
             "{fired} alert(s) for 200 registrations the registrar ACCEPTED: the detector \
              is counting REGISTERs rather than failures, and this source is the customer's SBC"
         );
+        Ok(())
     }
 
     /// The ordinary shape of every registration: a bare REGISTER, a 401
@@ -817,17 +844,17 @@ mod tests {
     /// challenge is the first half of a registration that WORKED, and the
     /// storm is a hundred phones doing it at once.
     #[test]
-    fn an_ordinary_challenged_registration_is_not_a_failure() {
+    fn an_ordinary_challenged_registration_is_not_a_failure() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let mut fired = 0usize;
         for i in 0..100 {
             let first = format!("z9hG4bK-first-{i}");
             let second = format!("z9hG4bK-second-{i}");
             for msg in [
-                register_at(sbc_ip(), &first, false, ts()),
-                response_at(401, sbc_ip(), &first, ts()),
-                register_at(sbc_ip(), &second, true, ts()),
-                response_at(200, sbc_ip(), &second, ts()),
+                register_at(sbc_ip(), &first, false, ts()?)?,
+                response_at(401, sbc_ip(), &first, ts()?)?,
+                register_at(sbc_ip(), &second, true, ts()?)?,
+                response_at(200, sbc_ip(), &second, ts()?)?,
             ] {
                 if det.check(&msg).is_some() {
                     fired += 1;
@@ -839,6 +866,7 @@ mod tests {
             "{fired} alert(s) across 100 registrations that each completed: a challenge \
              answered with working credentials is not a failure"
         );
+        Ok(())
     }
 
     /// The negative control: a credential-stuffing run is fifty-one
@@ -846,19 +874,19 @@ mod tests {
     /// one second. The threshold is crossed by the 51st FAILURE, never by a
     /// REGISTER on its own.
     #[test]
-    fn a_credential_stuffing_run_answered_401_still_fires() {
+    fn a_credential_stuffing_run_answered_401_still_fires() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let mut fired_on_failure = None;
         for i in 0..60 {
             let branch = format!("z9hG4bK-stuff-{i}");
             assert!(
-                det.check(&register_at(attacker_ip(), &branch, true, ts()))
+                det.check(&register_at(attacker_ip(), &branch, true, ts()?)?)
                     .is_none(),
                 "REGISTER {} raised the alert on its own: a request is a volume, and only \
                  the registrar's answer to it is an outcome",
                 i + 1
             );
-            let alert = det.check(&response_at(401, attacker_ip(), &branch, ts()));
+            let alert = det.check(&response_at(401, attacker_ip(), &branch, ts()?)?);
             if let Some(alert) = alert
                 && fired_on_failure.is_none()
             {
@@ -873,18 +901,19 @@ mod tests {
             Some(51),
             "51 challenged failures inside one second must fire at threshold 50"
         );
+        Ok(())
     }
 
     /// A 407 is the proxy's form of the same refusal.
     #[test]
-    fn a_407_to_a_credentialed_register_is_a_failure_too() {
+    fn a_407_to_a_credentialed_register_is_a_failure_too() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(2);
         let mut fired = 0usize;
         for i in 0..3 {
             let branch = format!("z9hG4bK-proxy-{i}");
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, ts()));
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, ts()?)?);
             if det
-                .check(&response_at(407, attacker_ip(), &branch, ts()))
+                .check(&response_at(407, attacker_ip(), &branch, ts()?)?)
                 .is_some()
             {
                 fired += 1;
@@ -894,51 +923,53 @@ mod tests {
             fired, 1,
             "the third 407 to a credentialed REGISTER crosses threshold 2"
         );
+        Ok(())
     }
 
     /// Sixty challenges to REGISTERs that carried no credentials count for
     /// nothing: every phone in the building is challenged before it
     /// registers, and this is what that looks like from the wire.
     #[test]
-    fn a_challenge_to_a_register_without_credentials_is_not_a_failure() {
+    fn a_challenge_to_a_register_without_credentials_is_not_a_failure() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(5);
         for i in 0..60 {
             let branch = format!("z9hG4bK-bare-{i}");
             assert!(
-                det.check(&register_at(sbc_ip(), &branch, false, ts()))
+                det.check(&register_at(sbc_ip(), &branch, false, ts()?)?)
                     .is_none(),
                 "REGISTER {} fired on its own",
                 i + 1
             );
             assert!(
-                det.check(&response_at(401, sbc_ip(), &branch, ts()))
+                det.check(&response_at(401, sbc_ip(), &branch, ts()?)?)
                     .is_none(),
                 "challenge {} to an uncredentialed REGISTER was counted as a failure",
                 i + 1
             );
         }
+        Ok(())
     }
 
     /// A challenge is a failure only for the transaction it answers. A 401
     /// whose top `Via` names no credentialed REGISTER from this source settles
     /// somebody else's request, or a retransmission, and counts for nothing.
     #[test]
-    fn a_challenge_on_another_branch_is_not_this_registers_failure() {
+    fn a_challenge_on_another_branch_is_not_this_registers_failure() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(1);
         for (reg, resp) in [("a", "x"), ("b", "y"), ("c", "z")] {
             let _ = det.check(&register_at(
                 attacker_ip(),
                 &format!("z9hG4bK-{reg}"),
                 true,
-                ts(),
-            ));
+                ts()?,
+            )?);
             assert!(
                 det.check(&response_at(
                     401,
                     attacker_ip(),
                     &format!("z9hG4bK-{resp}"),
-                    ts()
-                ))
+                    ts()?
+                )?)
                 .is_none(),
                 "a 401 on branch {resp} was charged to the REGISTER on branch {reg}"
             );
@@ -950,9 +981,9 @@ mod tests {
         let mut fired = 0usize;
         for b in ["p", "q", "r"] {
             let branch = format!("z9hG4bK-{b}");
-            let _ = control.check(&register_at(attacker_ip(), &branch, true, ts()));
+            let _ = control.check(&register_at(attacker_ip(), &branch, true, ts()?)?);
             if control
-                .check(&response_at(401, attacker_ip(), &branch, ts()))
+                .check(&response_at(401, attacker_ip(), &branch, ts()?)?)
                 .is_some()
             {
                 fired += 1;
@@ -962,6 +993,7 @@ mod tests {
             fired, 2,
             "control: matched branches must fire from the 2nd failure"
         );
+        Ok(())
     }
 
     /// A REGISTER, or the registrar's answer to one, whose top `Via` carries
@@ -975,7 +1007,7 @@ mod tests {
         call_id: &str,
         cseq: u32,
         at: DateTime<Utc>,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let call_id = format!("Call-ID: {call_id}");
         let cseq = format!("CSeq: {cseq} REGISTER");
         let mut headers = vec![
@@ -1004,7 +1036,10 @@ mod tests {
             None => (peer, localhost()),
             Some(_) => (localhost(), peer),
         };
-        parse_sip(&raw, at, src, dst, 5060, 5060, TransportProto::Udp).expect("parse")
+        Ok(
+            parse_sip(&raw, at, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("parse: {e:?}"))?,
+        )
     }
 
     /// A challenge with no `Via` branch still settles the REGISTER it answers.
@@ -1018,11 +1053,11 @@ mod tests {
     /// Branch-only matching let a branchless credential-stuffing run through
     /// without one failure counted.
     #[test]
-    fn a_challenge_without_a_via_branch_matches_on_call_id_and_cseq() {
+    fn a_challenge_without_a_via_branch_matches_on_call_id_and_cseq() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(1);
         let mut fired = 0usize;
         for n in 1..=3 {
-            let reg = branchless(None, attacker_ip(), "old-ua@test", n, ts());
+            let reg = branchless(None, attacker_ip(), "old-ua@test", n, ts()?)?;
             assert_eq!(reg.top_via_branch(), None, "the fixture carries a branch");
             let _ = det.check(&reg);
             if det
@@ -1031,8 +1066,8 @@ mod tests {
                     attacker_ip(),
                     "old-ua@test",
                     n,
-                    ts(),
-                ))
+                    ts()?,
+                )?)
                 .is_some()
             {
                 fired += 1;
@@ -1047,15 +1082,15 @@ mod tests {
         // CSeq number, or another Call-ID, answers some other request.
         let mut det = RegFloodDetector::new(1);
         for n in 1..=3 {
-            let _ = det.check(&branchless(None, attacker_ip(), "other@test", n, ts()));
+            let _ = det.check(&branchless(None, attacker_ip(), "other@test", n, ts()?)?);
             assert!(
                 det.check(&branchless(
                     Some(401),
                     attacker_ip(),
                     "other@test",
                     n + 10,
-                    ts()
-                ))
+                    ts()?
+                )?)
                 .is_none(),
                 "a 401 for CSeq {} was charged to the REGISTER with CSeq {n}",
                 n + 10
@@ -1066,12 +1101,13 @@ mod tests {
                     attacker_ip(),
                     "nobody@test",
                     n,
-                    ts()
-                ))
+                    ts()?
+                )?)
                 .is_none(),
                 "a 401 on another Call-ID was charged to this REGISTER"
             );
         }
+        Ok(())
     }
 
     /// A challenge that arrives after the REGISTER's transaction has timed
@@ -1083,34 +1119,36 @@ mod tests {
     /// charging it would let one stale REGISTER per branch sit in the map for
     /// the life of the source, waiting to be counted.
     #[test]
-    fn a_pending_register_older_than_the_window_is_expired() {
+    fn a_pending_register_older_than_the_window_is_expired() -> Result<(), TestError> {
         // One fresh failure, then the stale REGISTER's challenge in the same
         // second. At threshold 1, counting the stale one fires.
-        let run = |stale_sent: i64| -> bool {
+        let run = |stale_sent: i64| -> Result<bool, TestError> {
             let mut det = RegFloodDetector::new(1);
             let _ = det.check(&register_at(
                 attacker_ip(),
                 "z9hG4bK-stale",
                 true,
-                at(stale_sent),
-            ));
-            let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, at(40)));
+                at(stale_sent)?,
+            )?);
+            let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, at(40)?)?);
             assert!(
-                det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", at(40)))
+                det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", at(40)?)?)
                     .is_none()
             );
-            det.check(&response_at(401, attacker_ip(), "z9hG4bK-stale", at(40)))
-                .is_some()
+            Ok(det
+                .check(&response_at(401, attacker_ip(), "z9hG4bK-stale", at(40)?)?)
+                .is_some())
         };
         assert!(
-            !run(0),
+            !run(0)?,
             "a 401 forty seconds after its REGISTER was counted as a failure: that \
              transaction ended at Timer F, 32 seconds"
         );
         assert!(
-            run(10),
+            run(10)?,
             "control: thirty seconds is inside Timer F, so the same 401 counts"
         );
+        Ok(())
     }
 
     /// Whether a 401 arriving `answered_after` seconds after its credentialed
@@ -1118,22 +1156,23 @@ mod tests {
     ///
     /// One fresh failure is filed first at threshold 1, so the late challenge
     /// fires exactly when it is counted.
-    fn late_challenge_counts(timeout_ms: u64, answered_after: i64) -> bool {
+    fn late_challenge_counts(timeout_ms: u64, answered_after: i64) -> Result<bool, TestError> {
         let mut det = RegFloodDetector::with_policy(RegFloodPolicy {
             threshold: 1,
             transaction_timeout_ms: timeout_ms,
             ..RegFloodPolicy::BUILT_IN
         });
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-late", true, at(0)));
-        let later = at(answered_after);
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, later));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-late", true, at(0)?)?);
+        let later = at(answered_after)?;
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-fresh", true, later)?);
         assert!(
-            det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", later))
+            det.check(&response_at(401, attacker_ip(), "z9hG4bK-fresh", later)?)
                 .is_none(),
             "fixture: one failure is under threshold 1"
         );
-        det.check(&response_at(401, attacker_ip(), "z9hG4bK-late", later))
-            .is_some()
+        Ok(det
+            .check(&response_at(401, attacker_ip(), "z9hG4bK-late", later)?)
+            .is_some())
     }
 
     /// The transaction timeout is the operator's Timer F, not a constant.
@@ -1143,27 +1182,32 @@ mod tests {
     /// REGISTER answers a transaction that is still open, and it is a failure.
     /// Under the shipped 32 seconds the same 401 is a stray.
     #[test]
-    fn the_transaction_timeout_decides_whether_a_late_challenge_counts() {
+    fn the_transaction_timeout_decides_whether_a_late_challenge_counts() -> Result<(), TestError> {
         assert!(
-            late_challenge_counts(64_000, 40),
+            late_challenge_counts(64_000, 40)?,
             "a 401 forty seconds after its REGISTER was not counted under a 64 s \
              transaction timeout (T1 = 1 s): the configured Timer F is not reaching \
              the detector"
         );
         assert!(
-            !late_challenge_counts(32_000, 40),
+            !late_challenge_counts(32_000, 40)?,
             "a 401 forty seconds after its REGISTER was counted under a 32 s \
              transaction timeout: that transaction had already ended"
         );
         assert!(
-            !late_challenge_counts(RegFloodPolicy::BUILT_IN.transaction_timeout_ms, 40),
+            !late_challenge_counts(RegFloodPolicy::BUILT_IN.transaction_timeout_ms, 40)?,
             "the built-in transaction timeout must stay at 32 s"
         );
+        Ok(())
     }
 
     /// Whether three challenged failures, `spacing_ms` apart, fire under
     /// `threshold` and a `window_secs` counting window.
-    fn three_failures_fire(threshold: u32, window_secs: u64, spacing_ms: i64) -> bool {
+    fn three_failures_fire(
+        threshold: u32,
+        window_secs: u64,
+        spacing_ms: i64,
+    ) -> Result<bool, TestError> {
         let mut det = RegFloodDetector::with_policy(RegFloodPolicy {
             threshold,
             window_secs,
@@ -1171,41 +1215,47 @@ mod tests {
         });
         let mut fired = false;
         for i in 0..3 {
-            let when = ts() + chrono::TimeDelta::milliseconds(i * spacing_ms);
+            let when = ts()? + chrono::TimeDelta::milliseconds(i * spacing_ms);
             let branch = format!("z9hG4bK-policy-{i}");
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, when));
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, when)?);
             fired |= det
-                .check(&response_at(401, attacker_ip(), &branch, when))
+                .check(&response_at(401, attacker_ip(), &branch, when)?)
                 .is_some();
         }
-        fired
+        Ok(fired)
     }
 
     /// The counting window is the operator's, in both directions: three
     /// failures two seconds apart never share the shipped one-second window,
     /// and all share a ten-second one.
     #[test]
-    fn the_counting_window_decides_how_concentrated_the_failures_must_be() {
+    fn the_counting_window_decides_how_concentrated_the_failures_must_be() -> Result<(), TestError>
+    {
         assert!(
-            !three_failures_fire(2, 1, 2_000),
+            !three_failures_fire(2, 1, 2_000)?,
             "three failures two seconds apart fired under a one-second window"
         );
         assert!(
-            three_failures_fire(2, 10, 2_000),
+            three_failures_fire(2, 10, 2_000)?,
             "three failures two seconds apart did not fire under a ten-second window: \
              the configured window is not reaching the detector"
         );
+        Ok(())
     }
 
     /// The threshold from the policy decides, in both directions: three
     /// failures inside one second cross 2 and do not cross 3.
     #[test]
-    fn the_policy_threshold_decides_how_many_failures_are_a_flood() {
-        assert!(three_failures_fire(2, 1, 10), "three failures must cross 2");
+    fn the_policy_threshold_decides_how_many_failures_are_a_flood() -> Result<(), TestError> {
         assert!(
-            !three_failures_fire(3, 1, 10),
+            three_failures_fire(2, 1, 10)?,
+            "three failures must cross 2"
+        );
+        assert!(
+            !three_failures_fire(3, 1, 10)?,
             "three failures crossed threshold 3: the policy threshold is not applied"
         );
+        Ok(())
     }
 
     // ── Outcome gaps: when the capture cannot show a failure ─────────────
@@ -1215,35 +1265,36 @@ mod tests {
     /// direction the capture does not hold. Silence here reads as "nobody was
     /// guessing passwords", which the capture never showed.
     #[test]
-    fn registers_with_no_answer_cannot_establish_credential_failures() {
+    fn registers_with_no_answer_cannot_establish_credential_failures() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         for i in 0..10 {
             let branch = format!("z9hG4bK-oneway-{i}");
-            let _ = det.check(&register_at(attacker_ip(), &branch, i % 2 == 0, at(i)));
+            let _ = det.check(&register_at(attacker_ip(), &branch, i % 2 == 0, at(i)?)?);
         }
         assert_eq!(
             det.outcome_gap(true),
             Some(OutcomeGap::NoAnswers { registers: 10 }),
             "ten REGISTERs with no response captured must be reported as unestablished"
         );
+        Ok(())
     }
 
     /// The control: when the capture shows the challenges and the acceptances,
     /// every outcome is established and nothing is reported.
     #[test]
-    fn observed_challenges_leave_nothing_unestablished() {
+    fn observed_challenges_leave_nothing_unestablished() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         for i in 0..5 {
             let first = format!("z9hG4bK-bare-{i}");
             let second = format!("z9hG4bK-cred-{i}");
             let refused = format!("z9hG4bK-refused-{i}");
             for msg in [
-                register_at(sbc_ip(), &first, false, at(i)),
-                response_at(401, sbc_ip(), &first, at(i)),
-                register_at(sbc_ip(), &second, true, at(i)),
-                response_at(200, sbc_ip(), &second, at(i)),
-                register_at(attacker_ip(), &refused, true, at(i)),
-                response_at(401, attacker_ip(), &refused, at(i)),
+                register_at(sbc_ip(), &first, false, at(i)?)?,
+                response_at(401, sbc_ip(), &first, at(i)?)?,
+                register_at(sbc_ip(), &second, true, at(i)?)?,
+                response_at(200, sbc_ip(), &second, at(i)?)?,
+                register_at(attacker_ip(), &refused, true, at(i)?)?,
+                response_at(401, attacker_ip(), &refused, at(i)?)?,
             ] {
                 let _ = det.check(&msg);
             }
@@ -1253,23 +1304,24 @@ mod tests {
             None,
             "every REGISTER here drew an answer, so nothing is unestablished"
         );
+        Ok(())
     }
 
     /// Credentialed REGISTERs that drew no answer are counted, once each: a
     /// retransmission is the same transaction, not a second REGISTER.
     #[test]
-    fn unanswered_credentialed_registers_are_counted_once_each() {
+    fn unanswered_credentialed_registers_are_counted_once_each() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         for i in 0..3 {
             let branch = format!("z9hG4bK-answered-{i}");
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
-            let _ = det.check(&response_at(401, attacker_ip(), &branch, at(i)));
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)?)?);
+            let _ = det.check(&response_at(401, attacker_ip(), &branch, at(i)?)?);
         }
         for i in 0..2 {
             let branch = format!("z9hG4bK-lost-{i}");
             // Sent, then retransmitted at T1: one transaction.
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)));
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)?)?);
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, at(i)?)?);
         }
         assert_eq!(
             det.outcome_gap(true),
@@ -1278,15 +1330,17 @@ mod tests {
                 credentialed: 5
             })
         );
+        Ok(())
     }
 
     /// A final response after the transaction timeout answers nothing that was
     /// still open, so that REGISTER's outcome is unestablished too.
     #[test]
-    fn an_answer_after_the_transaction_timeout_leaves_the_outcome_unestablished() {
+    fn an_answer_after_the_transaction_timeout_leaves_the_outcome_unestablished()
+    -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-slow", true, at(0)));
-        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-slow", at(40)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-slow", true, at(0)?)?);
+        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-slow", at(40)?)?);
         assert_eq!(
             det.outcome_gap(true),
             Some(OutcomeGap::Unanswered {
@@ -1294,22 +1348,23 @@ mod tests {
                 credentialed: 1
             })
         );
+        Ok(())
     }
 
     /// On a live run a REGISTER inside its transaction timeout may still be
     /// answered, so it is not reported yet. Once the capture clock passes the
     /// timeout, it is.
     #[test]
-    fn a_live_run_reports_only_what_the_transaction_timeout_has_decided() {
+    fn a_live_run_reports_only_what_the_transaction_timeout_has_decided() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-live", true, at(0)));
-        let _ = det.check(&register_at(other_ip(), "z9hG4bK-other", false, at(10)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-live", true, at(0)?)?);
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-other", false, at(10)?)?);
         assert_eq!(
             det.outcome_gap(false),
             None,
             "ten seconds in, inside Timer F, the REGISTERs may still be answered"
         );
-        let _ = det.check(&register_at(other_ip(), "z9hG4bK-later", false, at(40)));
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-later", false, at(40)?)?);
         assert_eq!(
             det.outcome_gap(false),
             Some(OutcomeGap::NoAnswers { registers: 3 }),
@@ -1319,12 +1374,12 @@ mod tests {
         // With answers flowing, a single credentialed REGISTER left behind is
         // reported once its own timeout passes.
         let mut det = RegFloodDetector::new(50);
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-behind", true, at(0)));
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-ok", true, at(10)));
-        let _ = det.check(&response_at(200, attacker_ip(), "z9hG4bK-ok", at(10)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-behind", true, at(0)?)?);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-ok", true, at(10)?)?);
+        let _ = det.check(&response_at(200, attacker_ip(), "z9hG4bK-ok", at(10)?)?);
         assert_eq!(det.outcome_gap(false), None, "inside Timer F");
-        let _ = det.check(&register_at(other_ip(), "z9hG4bK-tick", false, at(40)));
-        let _ = det.check(&response_at(401, other_ip(), "z9hG4bK-tick", at(40)));
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-tick", false, at(40)?)?);
+        let _ = det.check(&response_at(401, other_ip(), "z9hG4bK-tick", at(40)?)?);
         assert_eq!(
             det.outcome_gap(false),
             Some(OutcomeGap::Unanswered {
@@ -1332,23 +1387,24 @@ mod tests {
                 credentialed: 2
             })
         );
+        Ok(())
     }
 
     /// The statement filed for the findings surfaces names the detector, the
     /// reason, both counts and the remedy, and says no source was reported on
     /// volume alone.
     #[test]
-    fn the_observation_gap_says_what_is_missing_and_what_to_change() {
+    fn the_observation_gap_says_what_is_missing_and_what_to_change() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         for i in 0..4 {
             let _ = det.check(&register_at(
                 attacker_ip(),
                 &format!("z9hG4bK-o{i}"),
                 true,
-                at(i),
-            ));
+                at(i)?,
+            )?);
         }
-        let gap = det.observation_gap(true).expect("no answers captured");
+        let gap = det.observation_gap(true).ok_or("no answers captured")?;
         assert_eq!(
             (
                 gap.rule_name.as_str(),
@@ -1370,10 +1426,10 @@ mod tests {
             transaction_timeout_ms: 64_000,
             ..RegFloodPolicy::BUILT_IN
         });
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-a", true, at(0)));
-        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-a", at(0)));
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-b", true, at(1)));
-        let gap = det.observation_gap(true).expect("one left unanswered");
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-a", true, at(0)?)?);
+        let _ = det.check(&response_at(401, attacker_ip(), "z9hG4bK-a", at(0)?)?);
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-b", true, at(1)?)?);
+        let gap = det.observation_gap(true).ok_or("one left unanswered")?;
         assert_eq!(
             (gap.reason.as_str(), gap.seen, gap.unestablished),
             ("unanswered", 2, 1)
@@ -1385,34 +1441,36 @@ mod tests {
                 gap.detail
             );
         }
+        Ok(())
     }
 
     /// A 2xx to a REGISTER is the registrar saying this source belongs here.
     /// It clears the failure count: a phone that mistyped its password twice
     /// and then got in is not halfway to a ban.
     #[test]
-    fn a_2xx_to_a_register_clears_the_failure_count() {
+    fn a_2xx_to_a_register_clears_the_failure_count() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(5);
-        let fail = |det: &mut RegFloodDetector, branch: &str| -> bool {
-            let _ = det.check(&register_at(attacker_ip(), branch, true, ts()));
-            det.check(&response_at(401, attacker_ip(), branch, ts()))
-                .is_some()
+        let fail = |det: &mut RegFloodDetector, branch: &str| -> Result<bool, TestError> {
+            let _ = det.check(&register_at(attacker_ip(), branch, true, ts()?)?);
+            Ok(det
+                .check(&response_at(401, attacker_ip(), branch, ts()?)?)
+                .is_some())
         };
         // Five failures: at the threshold, not over it.
         for i in 0..5 {
-            assert!(!fail(&mut det, &format!("z9hG4bK-before-{i}")));
+            assert!(!fail(&mut det, &format!("z9hG4bK-before-{i}"))?);
         }
         // Then the registrar accepts one.
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-ok", true, ts()));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-ok", true, ts()?)?);
         assert!(
-            det.check(&response_at(200, attacker_ip(), "z9hG4bK-ok", ts()))
+            det.check(&response_at(200, attacker_ip(), "z9hG4bK-ok", ts()?)?)
                 .is_none()
         );
         // Five more inside the same second must not cross the threshold,
         // because the count restarted at the 200.
         for i in 0..5 {
             assert!(
-                !fail(&mut det, &format!("z9hG4bK-after-{i}")),
+                !fail(&mut det, &format!("z9hG4bK-after-{i}"))?,
                 "failure {} after a successful registration fired: the 200 did not clear \
                  the count",
                 i + 1
@@ -1420,15 +1478,16 @@ mod tests {
         }
         // Control: the count is live again -- one more crosses it.
         assert!(
-            fail(&mut det, "z9hG4bK-after-5"),
+            fail(&mut det, "z9hG4bK-after-5")?,
             "control: a sixth failure after the clear must fire, else the clear is \
              indistinguishable from never counting"
         );
+        Ok(())
     }
 
     /// Capture time `secs` seconds after the fixed base timestamp.
-    fn at(secs: i64) -> DateTime<Utc> {
-        ts() + chrono::TimeDelta::seconds(secs)
+    fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(ts()? + chrono::TimeDelta::seconds(secs))
     }
 
     /// The window counts what the CAPTURE says, not how long sipnab took to
@@ -1441,15 +1500,15 @@ mod tests {
     /// wall-clock second, which is a ban, when the window is paced by
     /// `Instant::now()`.
     #[test]
-    fn window_is_measured_in_packet_time() {
+    fn window_is_measured_in_packet_time() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let mut fired = 0usize;
         for i in 0..60 {
             let branch = format!("z9hG4bK-stale-{i}");
-            let when = at(i * 60);
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, when));
+            let when = at(i * 60)?;
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, when)?);
             if det
-                .check(&response_at(401, attacker_ip(), &branch, when))
+                .check(&response_at(401, attacker_ip(), &branch, when)?)
                 .is_some()
             {
                 fired += 1;
@@ -1461,21 +1520,22 @@ mod tests {
              50 -- {fired} alert(s) means the window is paced by how fast the file was \
              read, not by the capture"
         );
+        Ok(())
     }
 
     /// A genuine burst inside one packet-time second still fires: the
     /// packet-time window must not become a way to never detect anything.
     #[test]
-    fn a_real_burst_inside_one_packet_time_window_still_fires() {
+    fn a_real_burst_inside_one_packet_time_window_still_fires() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let mut fired_on = None;
         for i in 0..60 {
             let branch = format!("z9hG4bK-burst-{i}");
             // Ten milliseconds apart: sixty land inside 600 ms of capture.
-            let when = ts() + chrono::TimeDelta::milliseconds(i * 10);
-            let _ = det.check(&register_at(attacker_ip(), &branch, true, when));
+            let when = ts()? + chrono::TimeDelta::milliseconds(i * 10);
+            let _ = det.check(&register_at(attacker_ip(), &branch, true, when)?);
             if det
-                .check(&response_at(401, attacker_ip(), &branch, when))
+                .check(&response_at(401, attacker_ip(), &branch, when)?)
                 .is_some()
                 && fired_on.is_none()
             {
@@ -1487,16 +1547,17 @@ mod tests {
             Some(51),
             "51 challenged failures inside one packet-time second must fire at 50"
         );
+        Ok(())
     }
 
     /// A source that stops sending is aged out on capture time. Two sources:
     /// one last seen at the base timestamp, one five minutes later. A sweep
     /// of two minutes measured from the newest packet keeps only the second.
     #[test]
-    fn sweep_ages_entries_out_on_packet_time() {
+    fn sweep_ages_entries_out_on_packet_time() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
-        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-old", true, at(0)));
-        let _ = det.check(&register_at(other_ip(), "z9hG4bK-new", true, at(300)));
+        let _ = det.check(&register_at(attacker_ip(), "z9hG4bK-old", true, at(0)?)?);
+        let _ = det.check(&register_at(other_ip(), "z9hG4bK-new", true, at(300)?)?);
         assert_eq!(det.sources.len(), 2);
         det.sweep(std::time::Duration::from_secs(120));
         assert!(
@@ -1508,6 +1569,7 @@ mod tests {
             det.sources.contains_key(&other_ip()),
             "the source seen at the newest packet must survive the sweep"
         );
+        Ok(())
     }
 
     /// A response never creates a source entry; it only settles an existing
@@ -1519,14 +1581,17 @@ mod tests {
     /// created an entry per destination, millions before the first sweep,
     /// and none of them evidence of anything.
     #[test]
-    fn a_response_never_creates_a_source_entry() {
+    fn a_response_never_creates_a_source_entry() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let n = MAX_SOURCE_ENTRIES + 1;
         for i in 0..n {
             let dst = IpAddr::V4(Ipv4Addr::from(0x0a10_0000 + i as u32));
             let branch = format!("z9hG4bK-unseen-{i}");
             for code in [401, 200] {
-                assert!(det.check(&response_at(code, dst, &branch, ts())).is_none());
+                assert!(
+                    det.check(&response_at(code, dst, &branch, ts()?)?)
+                        .is_none()
+                );
             }
         }
         assert_eq!(
@@ -1537,6 +1602,7 @@ mod tests {
              {MAX_SOURCE_ENTRIES} without a REGISTER in sight",
             det.sources.len()
         );
+        Ok(())
     }
 
     /// A source address in the 12.0.0.0/8 test range, distinct per `i`.
@@ -1546,18 +1612,18 @@ mod tests {
 
     /// A detector holding exactly `MAX_SOURCE_ENTRIES` sources, none of them
     /// in the probe range.
-    fn full_detector() -> RegFloodDetector {
+    fn full_detector() -> Result<RegFloodDetector, TestError> {
         let mut det = RegFloodDetector::new(50);
         for i in 0..MAX_SOURCE_ENTRIES {
             let src = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i as u32));
-            let _ = det.check(&register_at(src, "z9hG4bK-fill", false, ts()));
+            let _ = det.check(&register_at(src, "z9hG4bK-fill", false, ts()?)?);
         }
         assert_eq!(
             det.sources.len(),
             MAX_SOURCE_ENTRIES,
             "fixture: the map is full"
         );
-        det
+        Ok(det)
     }
 
     /// The failure this shipped with. A spoofed-source flood fills the map,
@@ -1573,11 +1639,12 @@ mod tests {
     /// two costs alike (measured at 1.3x); the shipped scan made the full one
     /// 371x dearer.
     #[test]
-    fn admitting_a_source_at_cap_costs_no_more_than_admitting_one_to_an_empty_map() {
+    fn admitting_a_source_at_cap_costs_no_more_than_admitting_one_to_an_empty_map()
+    -> Result<(), TestError> {
         use std::time::{Duration, Instant};
         let probe: Vec<SipMessage> = (0..1_000)
-            .map(|i| register_at(probe_ip(i), &format!("z9hG4bK-probe-{i}"), false, ts()))
-            .collect();
+            .map(|i| register_at(probe_ip(i), &format!("z9hG4bK-probe-{i}"), false, ts()?))
+            .collect::<Result<_, _>>()?;
         let time_probe = |det: &mut RegFloodDetector| {
             let started = Instant::now();
             for msg in &probe {
@@ -1591,7 +1658,7 @@ mod tests {
         for _ in 0..3 {
             let mut fresh = RegFloodDetector::new(50);
             empty_cost = empty_cost.min(time_probe(&mut fresh));
-            let mut full = full_detector();
+            let mut full = full_detector()?;
             full_cost = full_cost.min(time_probe(&mut full));
             assert_eq!(
                 full.sources.len(),
@@ -1606,6 +1673,7 @@ mod tests {
              an empty map cost ({full_cost:?} against {empty_cost:?} for 1,000 \
              REGISTERs): eviction is scanning the map"
         );
+        Ok(())
     }
 
     /// At the cap the source evicted is the one touched least recently, not
@@ -1613,22 +1681,22 @@ mod tests {
     /// it. The oldest-inserted source is touched again before the map fills,
     /// and it is the second-inserted, untouched since, that goes.
     #[test]
-    fn at_cap_the_least_recently_touched_source_is_evicted() {
+    fn at_cap_the_least_recently_touched_source_is_evicted() -> Result<(), TestError> {
         let mut det = RegFloodDetector::new(50);
         let first = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1));
         let second = IpAddr::V4(Ipv4Addr::new(10, 1, 0, 2));
-        let _ = det.check(&register_at(first, "z9hG4bK-first", true, ts()));
-        let _ = det.check(&register_at(second, "z9hG4bK-second", true, ts()));
+        let _ = det.check(&register_at(first, "z9hG4bK-first", true, ts()?)?);
+        let _ = det.check(&register_at(second, "z9hG4bK-second", true, ts()?)?);
         for i in 2..MAX_SOURCE_ENTRIES {
             let src = IpAddr::V4(Ipv4Addr::from(0x0a02_0000 + i as u32));
-            let _ = det.check(&register_at(src, "z9hG4bK-fill", false, ts()));
+            let _ = det.check(&register_at(src, "z9hG4bK-fill", false, ts()?)?);
         }
         assert_eq!(det.sources.len(), MAX_SOURCE_ENTRIES, "fixture: at the cap");
         // Touch `first` with a response, which is the other path that
         // refreshes a source.
-        let _ = det.check(&response_at(401, first, "z9hG4bK-first", ts()));
+        let _ = det.check(&response_at(401, first, "z9hG4bK-first", ts()?)?);
 
-        let _ = det.check(&register_at(probe_ip(0), "z9hG4bK-new", false, ts()));
+        let _ = det.check(&register_at(probe_ip(0), "z9hG4bK-new", false, ts()?)?);
 
         assert_eq!(det.sources.len(), MAX_SOURCE_ENTRIES, "the cap holds");
         assert!(
@@ -1644,28 +1712,30 @@ mod tests {
             det.sources.contains_key(&probe_ip(0)),
             "the new source is admitted"
         );
+        Ok(())
     }
 
     /// The emitted alert carries the failure count that crossed the
     /// threshold, the REGISTER count for context, the threshold, and the
     /// source.
     #[test]
-    fn alert_includes_counts() {
+    fn alert_includes_counts() -> Result<(), TestError> {
         let mut detector = RegFloodDetector::new(5);
 
         let mut alert = None;
         for i in 0..6 {
             let branch = format!("z9hG4bK-count-{i}");
-            let _ = detector.check(&register_at(attacker_ip(), &branch, true, ts()));
-            if let Some(a) = detector.check(&response_at(401, attacker_ip(), &branch, ts())) {
+            let _ = detector.check(&register_at(attacker_ip(), &branch, true, ts()?)?);
+            if let Some(a) = detector.check(&response_at(401, attacker_ip(), &branch, ts()?)?) {
                 alert = Some(a);
             }
         }
 
-        let alert = alert.expect("should have triggered");
+        let alert = alert.ok_or("should have triggered")?;
         assert_eq!(alert.auth_fail_count, 6);
         assert_eq!(alert.register_count, 6);
         assert_eq!(alert.threshold, 5);
         assert_eq!(alert.src_ip, attacker_ip());
+        Ok(())
     }
 }
