@@ -267,8 +267,13 @@ Next: [REST API and metrics](docs/rest-api.md),
   back to its call, and reads rtpengine's own counters over its control port
   (`--rtpengine-control`), labeled as the relay's report rather than
   sipnab's measurement
-- **vCon export.** Writes one observed call as a vCon, a conversation
-  container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md))
+- **vCon export and delivery.** Writes each observed call as a vCon, a
+  conversation container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
+  `--vcon-forward`, a separate process, delivers them to a vCon store such as
+  vcon.store or a self-hosted conserver; `--vcon-forward-compat vcon-store`
+  changes only the copy it sends, because vcon.store's validator rejects the
+  string-array `extensions` both vCon drafts define
+  ([Send sipnab's vCons to vcon.store](docs/vcon-store.md))
 - **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
   the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and

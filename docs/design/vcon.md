@@ -480,6 +480,11 @@ Note what is **not** declined: emitting an observer vCon at all. Phase 0 says
 the shape is honest and the caveat problem is unsolved, not that the feature is
 dead.
 
+Nor is delivering containers to somebody else's store. `sipnab --vcon-forward`
+is a separate process that POSTs the spool to a store and keeps nothing but
+the files it moved; the store is still the store's. The capture process makes
+no outbound connection for a container, and the forwarder reads no packet.
+
 ## 6. What would falsify this
 
 Stated so the feature can lose, on the model of

@@ -3263,26 +3263,6 @@ fn server_name_of(target: &str) -> Option<String> {
     )
 }
 
-/// CA bundles a host may keep, tried in order when no `--hep-tls-ca` is named.
-///
-/// Reading the host's own bundle rather than compiling Mozilla's list in has
-/// two consequences worth stating: an operator who adds their collector's
-/// issuer to the system store does not also have to name it here, and a host
-/// whose bundle sipnab cannot find is told to pass `--hep-tls-ca` rather than
-/// silently trusting nothing.
-const HEP_SYSTEM_CA_BUNDLES: &[&str] = &[
-    // Debian, Ubuntu, Arch
-    "/etc/ssl/certs/ca-certificates.crt",
-    // RHEL, Fedora, CentOS
-    "/etc/pki/tls/certs/ca-bundle.crt",
-    // openSUSE
-    "/etc/ssl/ca-bundle.pem",
-    // Alpine, and the OpenSSL default on the BSDs
-    "/etc/ssl/cert.pem",
-    // Homebrew's OpenSSL on macOS
-    "/opt/homebrew/etc/openssl@3/cert.pem",
-];
-
 /// The roots a collector's certificate is checked against.
 ///
 /// With `--hep-tls-ca` named, ONLY that file. A private collector's issuer is
@@ -3297,7 +3277,7 @@ const HEP_SYSTEM_CA_BUNDLES: &[&str] = &[
 /// about by default. The file must hold at least one certificate, and the
 /// host must have a bundle to add it to.
 ///
-/// With neither, the host's CA bundle ([`host_ca_bundle`]). Individual
+/// With neither, the host's CA bundle ([`crate::tls_files::host_ca_bundle`]). Individual
 /// certificates a system bundle carries that rustls declines are skipped,
 /// because one unsupported root in a 140-certificate bundle must not take the
 /// other 139 with it; a bundle from which nothing at all loads is an error.
@@ -3321,21 +3301,7 @@ fn hep_tls_roots(
     ca: Option<&std::path::Path>,
     extra: Option<&std::path::Path>,
 ) -> Result<rustls::RootCertStore> {
-    hep_tls_roots_from(ca, extra, host_ca_bundle().as_deref())
-}
-
-/// The host's CA bundle: `$SSL_CERT_FILE` if it names a file, else the first
-/// of [`HEP_SYSTEM_CA_BUNDLES`] that exists, else `None`.
-fn host_ca_bundle() -> Option<std::path::PathBuf> {
-    std::env::var_os("SSL_CERT_FILE")
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            HEP_SYSTEM_CA_BUNDLES
-                .iter()
-                .map(std::path::PathBuf::from)
-                .find(|p| p.is_file())
-        })
+    hep_tls_roots_from(ca, extra, crate::tls_files::host_ca_bundle().as_deref())
 }
 
 /// [`hep_tls_roots`] with the host's bundle passed in, so the rule can be
@@ -5399,7 +5365,7 @@ mod tests {
                 ..HepSenderOpts::default()
             },
         );
-        match host_ca_bundle() {
+        match crate::tls_files::host_ca_bundle() {
             Some(_) => {
                 let sender = sent.expect("the extra CA issued the collector's certificate");
                 sender

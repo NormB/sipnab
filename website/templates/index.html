@@ -244,10 +244,11 @@
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16v12H7l-3 3z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="12" x2="13" y2="12"/></svg>
         </div>
         <h3>Call records</h3>
-        <p>A vCon server keeps every call as a vCon. OpenSIPS records calls into it over SIPREC, and sipnab can send its own vCons, built from what it saw on the wire. Kamailio has no SIPREC module, so on a Kamailio stack sipnab's vCons are the ones the server gets.</p>
+        <p>A vCon server keeps every call as a vCon. OpenSIPS records calls into it over SIPREC, and sipnab can send its own vCons, built from what it saw on the wire. Kamailio has no SIPREC module, so on a Kamailio stack sipnab's vCons are the ones the server gets. <code>sipnab --vcon-forward</code> delivers them, to the server or to vcon.store (in the gnu and macOS builds, which carry the <code>vcon</code> feature).</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/vcon-server.md') }}">Use a vCon server</a></li>
           <li><a href="{{ get_url(path='@/docs/vcon-sipnab.md') }}">Run sipnab beside it</a></li>
+          <li><a href="{{ get_url(path='@/docs/vcon-store.md') }}">Send to vcon.store</a></li>
         </ul>
       </div>
       <div class="feature-card feature-card--blue fade-in-up">
@@ -566,7 +567,7 @@ Issues Detected:
           <tr><td><a href="{{ get_url(path='@/docs/metrics.md') }}">Prometheus metrics</a></td><td>Counters about sipnab itself: what it captured, what it lost and what it could not read.</td></tr>
           <tr><td><a href="{{ get_url(path='@/docs/mcp.md') }}">MCP server</a></td><td>Lets an AI agent such as Claude Code query captures over stdio or HTTP. 70 tools cover dialogs, RTP, diagnostics, and security findings. 57 are read-only, and the thirteen that write stay off until you enable them on the server.</td></tr>
           <tr><td><a href="{{ get_url(path='@/analyze/_index.md') }}">Browser analysis</a></td><td>Opens a pcap in your browser with WebAssembly. Nothing is uploaded or installed.</td></tr>
-          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 11049 automated tests. Under 18 MB static binary.</td></tr>
+          <tr><td><a href="{{ get_url(path='@/docs/build.md') }}">Built in Rust</a></td><td>Rust everywhere except the OS boundary: 110 <code>unsafe</code> blocks, all of them FFI, and the build rejects any block that does not state its own soundness argument. 11107 automated tests. Under 18 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -607,7 +608,7 @@ Issues Detected:
         <span class="arch-label">Packets per second reading a capture file on four cores: room for the HEP feed of many proxies on one box (measured v0.5.160)</span>
       </a>
       <a class="arch-item fade-in-up" href="{{ config.extra.github_url }}/actions/workflows/ci.yml">
-        <span class="arch-stat" data-count="11049" data-suffix="">11049</span>
+        <span class="arch-stat" data-count="11107" data-suffix="">11107</span>
         <span class="arch-label">Automated tests</span>
       </a>
     </div>

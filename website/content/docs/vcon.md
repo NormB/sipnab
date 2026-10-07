@@ -109,10 +109,13 @@ writes a container per matching dialog and the other writes exactly one.
 sipnab -N -d eth0 --export-vcon-when "state == 'Failed'" --export-vcon-dir /var/spool/vcon
 ```
 
-Nothing in sipnab ships the containers anywhere — the export path writes files
-and makes no outbound connection — so whatever forwards them to a store is a
-separate program watching that directory. These are the guarantees it may rely
-on.
+The capture process never sends a container anywhere: the export path writes
+files and makes no outbound connection. Delivering them to a store is the job
+of a separate process that watches the directory. sipnab includes one,
+`sipnab --vcon-forward`, which
+[Deliver the spool to a store](#deliver-the-spool-to-a-store) describes, and any
+other program can do the same job. These are the guarantees a forwarder may
+rely on.
 
 **When a container appears depends on where the calls come from.**
 
@@ -155,7 +158,7 @@ it is safe to delete.
 
 **Names are stable, and sipnab reuses them.** A container's file name comes
 from its Call-ID, with an underscore replacing every character outside
-`[A-Za-z0-9._-]`. Re-exporting
+`[A-Za-z0-9._-]` and a leading dot, so no container name starts with one. Re-exporting
 the same dialog to the same directory overwrites its file rather than
 accumulating a second one, which is what makes the directory a queue and not a
 log.
@@ -176,6 +179,105 @@ SHA-256 of every container written, in `sha256sum` format, so
 both work with no glue. Deliberately not a signature and deliberately outside
 the container: a store adds fields on ingest, so a signature over sipnab's bytes
 would fail against the object the store holds and tell an operator nothing.
+
+## Deliver the spool to a store
+
+`sipnab --vcon-forward` is a second sipnab process, started on its own, that
+delivers the containers in an `--export-vcon-dir` spool to a vCon store over
+HTTP or HTTPS. It needs the `vcon` feature, like the export. It captures
+nothing: sipnab refuses `--vcon-forward` beside `-d`, `-I`, `--hep-listen`, a
+capture filter, a listener or an export flag, so the capture process keeps
+making no outbound connection.
+
+Captures carry personal data, and a store belongs to another party. Decide
+what may leave the machine before you forward anything: `--redact` on the
+export replaces identities and addresses with keyed tokens, and
+[What may you conclude](#someone-handed-you-a-sipnab-vcon-what-may-you-conclude)
+lists what a container carries.
+
+### Run it
+
+Put the one header that authenticates you in a file that only you can read.
+The forwarder refuses the file when your group or other users can read it, by
+the same rule sipnab applies to its other secret files. The file holds one
+line, `Header-Name: value`:
+
+```sh
+# Run all of these, in order.
+umask 077
+printf 'x-conserver-api-token: %s\n' "$KEY" > vcon-forward.auth
+sipnab --vcon-forward ./spool \
+  --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' \
+  --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once
+echo "exit $?"
+```
+
+`$KEY` is the key the store gave you. For a store that takes a bearer token,
+the line is `Authorization: Bearer <token>` instead. The value never appears in
+a log line, an error message or a failure record: the forwarder removes it from
+any store answer it keeps, even one that echoes the request back.
+
+`--vcon-forward-once` makes one pass and exits: `0` when the store accepted
+every container, or the spool held none, `1` when the store refused one or
+one is still waiting, and `3` when the store refused the credentials or the
+client. Without it the forwarder makes a pass every `--vcon-forward-interval`
+seconds (default 5) until SIGTERM or SIGINT. Stopping it means stopping: it
+sends nothing more after the signal, and a container it had not reached stays
+in the spool for the next run.
+
+### What it does with each container
+
+The forwarder POSTs the file's bytes unchanged, with
+`Content-Type: application/json`, `User-Agent: sipnab/<version>` and the header
+from the file, and then moves the file by the answer:
+
+| The store answers | The forwarder |
+|---|---|
+| `2xx` | moves the file to `--vcon-forward-done`, `delivered/` in the spool by default, under its own name, and logs a `delivered` line |
+| `401` or `403` | stops. The answer refuses the credentials or the client, so every container would draw it: the forwarder sends nothing more, moves no file, logs one error line naming the status and the first 200 bytes of the answer, and exits `3`, with or without `--vcon-forward-once` |
+| `409`, with `--vcon-forward-replace-url` | PUTs the same bytes to that URL, with `{uuid}` replaced by the container's `uuid`, and acts on that answer |
+| any other `4xx`, `409` included without a replace URL | moves the file to `--vcon-forward-failed`, `failed/` in the spool by default, beside `<name>.error.json`, and logs one line naming the file and the status |
+| `5xx`, a timeout, or no connection | leaves the file in the spool and tries it again after 2 s, then 4 s, 8 s and so on up to 5 minutes. The other containers are not held up |
+
+`<name>.error.json` holds the status, the method and URL, and the first 8 KiB
+of the store's answer. The delivered and failed directories must be on the
+spool's file system, so that every move is a rename.
+
+The forwarder reads the spool by the contract above. It skips dot-prefixed
+names and names that do not end in `.json`, so it never reads a staging file.
+When sipnab rewrites a container under the same name because the call changed,
+the rewritten file is a new container to the forwarder, and it goes out again.
+That holds when the rewrite lands after delivery and when it lands while the
+send is in flight: the forwarder checks that the file it moves is the file it
+sent, and leaves a newer one in the spool for the next pass.
+
+### What it guarantees, and what it does not
+
+- **A `2xx` means the store accepted the container, not that it kept it.** The
+  forwarder logs `delivered`, never `stored`. A self-hosted conserver once
+  answered `204` for a container it then failed to write, and nothing in the
+  answer said so. To know the store kept a container, look in the store.
+- **The bytes are sipnab's.** Without `--vcon-forward-compat` the forwarder
+  never changes a container. With it, only the copy it sends changes, and the
+  file on disk keeps the form the drafts define.
+  [Send sipnab's vCons to vcon.store](@/docs/vcon-store.md) explains the one compat
+  mode there is.
+- **It does not retry a refusal.** A `4xx` other than a `401`, a `403` or a
+  `409` it can replace stays in the failed directory until a person reads the
+  record and decides.
+- **A refused credential stops it, and moves nothing.** A wrong key draws a
+  `401` or `403` for every container, so the forwarder stops at the first one
+  and leaves the whole spool where it is. The log line quotes the start of the
+  answer: a Cloudflare front that refuses the client answers `403` with
+  `error code: 1010`. Fix the auth file or the client, and start the
+  forwarder again.
+- **It does not delete anything.** The delivered directory keeps a copy of
+  every container, and every copy is call data. Delete them on a schedule
+  that suits you.
+- **It adds no signature and no consent.** A store may sign what it receives.
+  That signature is the store's, over an observation, and sipnab records no
+  consent.
+- **It sends one container at a time**, in name order, one connection each.
 
 ## Walk through one, end to end
 
@@ -657,6 +759,11 @@ Stated here rather than discovered later.
   roughly 12 MB, wrote it to its database, and had its own file spool refuse the
   payload with neither side reporting the partial write. `0` refuses every
   inline body without turning the exporter off.
+
+  A `--redact` export carries no audio at all, because redaction deletes
+  audio rather than replacing it with a token. Its Dialog Object is the signaling one,
+  typed by the rule above, and `capture_completeness.media` says
+  `withheld-by-redaction`.
 
   Every door — batch export, REST
   and MCP — reads the one value, so the same call cannot come back carrying

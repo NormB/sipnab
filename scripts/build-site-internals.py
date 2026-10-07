@@ -236,6 +236,7 @@ DOCS_TO_SITE = {
     "vcon-harness.md": "vcon-harness.md",
     "vcon-server.md": "vcon-server.md",
     "vcon-sipnab.md": "vcon-sipnab.md",
+    "vcon-store.md": "vcon-store.md",
     "tfps.md": "tfps.md",
     "tfps-sipnab.md": "tfps-sipnab.md",
     "rtpengine-relay.md": "rtpengine-relay.md",

@@ -40,7 +40,7 @@ workspace = true
 
 [package]
 name = "sipnab"
-version = "0.5.204"
+version = "0.5.205"
 edition = "2024"
 rust-version = "1.99"
 authors = ["Norm Brandinger"]
@@ -152,7 +152,7 @@ libc = { version = "0.2", optional = true }
 
 # Phase 2: SIP parsing & output
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 toml = "1"
 # Format-preserving TOML editing for surgical writes to the user's sipnabrc
 # (updates the [names.manual] table without clobbering comments/other sections).
@@ -366,7 +366,10 @@ bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 # reuses, sha2 for the UUIDv8 derivation and the media content_hash, and base64
 # because media travels INLINE as base64url: the draft requires HTTPS for a
 # by-reference url and sipnab hosts nothing.
-vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64"]
+# `rustls` is HTTPS for the forwarder (`--vcon-forward`), the separate process
+# that delivers the spool to a vCon store; the capture process never connects
+# anywhere for a container.
+vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls"]
 # Password-protected capture archives: ZIP (none, ZipCrypto, WinZip AES)
 # opened in memory with a password the operator supplies. NON-DEFAULT, and IN
 # `full`, so the pre-commit hook's `cargo test --features full` covers it.

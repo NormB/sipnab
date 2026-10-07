@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
 .\" License: MIT OR Apache-2.0
-.TH SIPNAB 1 "2026-09-16" "sipnab 0.5.204" "User Commands"
+.TH SIPNAB 1 "2026-09-16" "sipnab 0.5.205" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -162,6 +162,25 @@ interchange format, on stdout. Requires a build with the
 feature. Pair with
 .B \-\-vcon\-out
 to write it to a file instead.
+.TP
+.BI \-\-vcon\-forward " spool-dir"
+Run as the vCon forwarder: a separate process that POSTs each container in an
+.B \-\-export\-vcon\-dir
+spool to
+.BR \-\-vcon\-forward\-url ,
+byte for byte, with the one header in
+.BR \-\-vcon\-forward\-auth\-file ,
+and moves it by the answer: a 2xx to the delivered directory, another 4xx to
+the failed directory beside a
+.I name.error.json
+record, a 5xx, timeout or refused connection retried later. A 401 or 403
+stops it: nothing more is sent, no file moves, and it exits 3. Captures nothing,
+and is refused beside any capture flag. Requires a build with the
+.B vcon
+feature. With
+.B \-\-vcon\-forward\-once
+it makes one pass and exits 0 when every container was delivered, 3 after a
+401 or 403, and 1 otherwise.
 .TP
 .BI \-\-notes " file"
 Operator notes for

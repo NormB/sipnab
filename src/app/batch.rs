@@ -7171,12 +7171,19 @@ fn decode_observed_audio(
 
 /// What the exporter is told about a dialog's audio, from
 /// [`decode_observed_audio`]'s result and its error text.
+///
+/// A redacted export is told the audio is withheld, whatever was decoded:
+/// redaction deletes audio, and an exporter handed audio it must then lose
+/// writes a `recording` Dialog Object with nothing in it. The one place both
+/// writers decide this, so the single-call export and the spool cannot differ.
 #[cfg(feature = "vcon")]
 fn observed_audio<'a>(
     decoded: &'a anyhow::Result<crate::rtp::audio_export::DialogAudio>,
     reason: &'a str,
+    redacting: bool,
 ) -> crate::output::vcon::ObservedAudio<'a> {
     match decoded.as_ref() {
+        _ if redacting => crate::output::vcon::ObservedAudio::WithheldByRedaction,
         Ok(audio) => crate::output::vcon::ObservedAudio::Decoded(audio),
         Err(_) => crate::output::vcon::ObservedAudio::NothingToDecode(reason),
     }
@@ -7255,7 +7262,7 @@ fn write_vcon_containers(
             crate::output::vcon::export_dialog_with_audio(
                 dialog,
                 &context,
-                observed_audio(&decoded, &reason),
+                observed_audio(&decoded, &reason, redactor.is_some()),
             )
         };
         let json =
@@ -7556,11 +7563,18 @@ fn vcon_file_name(call_id: &str) -> String {
             }
         })
         .collect();
-    // No guard for an all-dots Call-ID. `.` and `..` are the two names every
-    // directory already owns, and the extension below is what makes them
-    // unreachable: `..` becomes `...vcon.json`. A defensive prefix here read
+    // No separate guard for an all-dots Call-ID. `.` and `..` are the two
+    // names every directory already owns, and the suffix below is what makes
+    // them unreachable: `..` becomes `_.-<digest>.vcon.json`. A defensive prefix here read
     // as the thing holding that property and held nothing -- removing it left
     // every test green, which is how it was found.
+    // A leading dot would make the container look like sipnab's own staging
+    // file (`.<name>.partial`), which every spool reader skips by contract, so
+    // the container would be written and never forwarded. `_` keeps the name
+    // visible; the digest below still separates `.x` from `_x`.
+    if safe.starts_with('.') {
+        safe.replace_range(..1, "_");
+    }
     safe.truncate(180);
     // A digest of the ORIGINAL Call-ID, because the stem above is lossy twice
     // over: every character outside the allowed set collapses to `_`, so `a@b`
@@ -7813,7 +7827,20 @@ fn write_single_vcon(
         .as_ref()
         .err()
         .map_or_else(String::new, |e| e.to_string());
-    let audio = observed_audio(&decoded, &reason);
+    // The policy before the export, because it decides what the exporter is
+    // told about the audio: a redacted container is built without it.
+    let policy = match redaction_policy(cli) {
+        Ok(p) => p,
+        Err(reason) => {
+            stderr_line!("{reason}");
+            return false;
+        }
+    };
+    let redactor = policy
+        .as_ref()
+        .map(crate::output::redact::RedactionPolicy::redactor);
+
+    let audio = observed_audio(&decoded, &reason, redactor.is_some());
 
     let container = crate::output::vcon::export_dialog_with_audio(
         dialog,
@@ -7826,17 +7853,6 @@ fn write_single_vcon(
         },
         audio,
     );
-
-    let policy = match redaction_policy(cli) {
-        Ok(p) => p,
-        Err(reason) => {
-            stderr_line!("{reason}");
-            return false;
-        }
-    };
-    let redactor = policy
-        .as_ref()
-        .map(crate::output::redact::RedactionPolicy::redactor);
 
     let mut json = match crate::output::vcon::sealed_json(&crate::output::vcon::seal(
         container,
@@ -8778,6 +8794,31 @@ mod tests {
                 "{dots:?} lost its extension: {name}"
             );
         }
+    }
+
+    /// A Call-ID that starts with a dot still yields a name a spool reader
+    /// treats as a container.
+    ///
+    /// The spool contract makes a dot-prefixed name sipnab's staging file
+    /// (`.<name>.partial`), and every reader that follows it, the
+    /// `--vcon-forward` forwarder and `vcon_forward.py` among them, skips
+    /// dot-prefixed names. A container named `.abc-….vcon.json` was therefore
+    /// written and never delivered by any of them.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_call_id_starting_with_a_dot_yields_a_visible_name() {
+        for call_id in [".abc@192.0.2.1", "..", ".", "...x"] {
+            let name = vcon_file_name(call_id);
+            assert!(
+                !name.starts_with('.'),
+                "{call_id:?} produced a dot-prefixed name every spool reader skips: {name}"
+            );
+        }
+        assert_ne!(
+            vcon_file_name(".abc@192.0.2.1"),
+            vcon_file_name("_abc@192.0.2.1"),
+            "the digest of the ORIGINAL Call-ID still tells the two apart"
+        );
     }
 
     /// A Call-ID longer than the filesystem allows is truncated.

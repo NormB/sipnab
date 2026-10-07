@@ -427,6 +427,7 @@ fn capabilities_missing_from_the_musl_build_say_so() -> Result<(), TestError> {
     for (feature, row_marker) in [
         ("plugins", "WASM plugins"),
         ("vcon", "Virtualized Conversation"),
+        ("vcon", "Call records"),
     ] {
         if features.contains(feature) {
             continue;
@@ -505,6 +506,42 @@ fn the_musl_build_s_omissions_are_named_where_the_site_describes_it() -> Result<
             text.contains("7z"),
             "{place} does not say the static musl build reads ZIP and 7z \
              archives, which it now does:\n{text}"
+        );
+    }
+    Ok(())
+}
+
+/// The homepage's vCon tile ("Call records") says sipnab forwards vCons to
+/// third-party stores, names the flag that does it and links the vcon.store
+/// guide. Each part of that claim is held to the code: the flags exist with
+/// the value the guide names, and the forwarder's tests deliver to a store
+/// and exercise the vcon.store mode.
+#[test]
+fn the_homepage_vcon_forwarding_claim_is_backed_by_the_forwarder() -> Result<(), TestError> {
+    let row = enclosing_block(&strip_comments(&homepage()?)?, "Call records")?;
+    for needle in ["--vcon-forward", "vcon.store", "docs/vcon-store.md"] {
+        assert!(
+            row.contains(needle),
+            "the homepage's vCon tile does not say {needle:?}:\n{row}"
+        );
+    }
+    let cli = read("src/cli.rs")?;
+    for flag in [
+        r#"long = "vcon-forward","#,
+        r#"long = "vcon-forward-compat","#,
+        r#"value_parser = ["vcon-store"]"#,
+    ] {
+        assert!(cli.contains(flag), "src/cli.rs has no {flag}");
+    }
+    let tests = read("tests/vcon_forward_test.rs")?;
+    for test in [
+        "fn a_container_is_posted_byte_for_byte_with_one_auth_header(",
+        "fn vcon_store_mode_sends_extensions_as_an_object_and_keeps_the_file(",
+        "fn a_spool_sipnab_wrote_is_delivered_byte_for_byte(",
+    ] {
+        assert!(
+            tests.contains(test),
+            "the forwarder's tests no longer carry {test}, which backs the homepage claim"
         );
     }
     Ok(())

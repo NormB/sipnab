@@ -4225,7 +4225,8 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/ and their two generated site pages.
     // 268 -> 265: the three agent planning documents under docs/superpowers/
     // were removed (agent_planning_documents_are_never_committed).
-    const EXPECTED_MARKDOWN_FILES: usize = 265;
+    // 265 -> 267: docs/vcon-store.md and its generated site page.
+    const EXPECTED_MARKDOWN_FILES: usize = 267;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -4735,7 +4736,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/mcp-tools.md and its site copy (RP4). Attributed by counting
     // separator rows per file: +2 -1 each, the -1 being the Media Streams
     // table's separator widened for its MOS columns, not a removed table.
-    const EXPECTED_TABLES: usize = 1058;
+    // 1058 -> 1066: the vCon forwarder (VCON-FWD). Attributed by counting
+    // added separator rows per file: docs/vcon.md 1, docs/vcon-store.md 2,
+    // docs/cli-reference.md 1, and the same 1, 2, 1 in their site copies.
+    const EXPECTED_TABLES: usize = 1066;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

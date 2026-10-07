@@ -134,10 +134,14 @@ behind.
 
 ## 4. Install the forwarder
 
-sipnab never sends a vCon anywhere itself. `vcon_forward.py`, from sipnab's
-repository, posts each file in the directory to vcon-server's `sipnab` ingress
-list and deletes it once the server has taken it. It needs only Python's
-standard library.
+The capture process never sends a vCon anywhere itself. `vcon_forward.py`, from
+sipnab's repository, posts each file in the directory to vcon-server's `sipnab`
+ingress list and deletes it once the server has taken it. It needs only
+Python's standard library. sipnab releases after 0.5.204 also include a
+forwarder, `sipnab --vcon-forward`, which
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder)
+runs against the same ingress list. This guide's tested steps use the Python
+forwarder.
 
 ```bash
 # Run all of these, in order.
@@ -212,6 +216,67 @@ call of its own. The SIPREC session's first message goes to the recorder's port,
 ```text
 state == 'Completed' and dst.port != 5090
 ```
+
+## Or deliver them with sipnab's own forwarder
+
+`sipnab --vcon-forward` does the forwarder's job from step 4 without Python:
+a second sipnab process that posts each file in the directory to vcon-server
+and moves it out of the directory once the server answers. It captures
+nothing. It needs a sipnab built with the `vcon` feature, and the `sipnab`
+ingress list from [step 1](#1-add-an-ingress-list-and-a-chain-for-sipnab).
+
+This section ran on 2026-10-07, not on the machines in
+[Tested on](#tested-on): against a vcon-server already running on an aarch64
+Linux host, with sipnab built from source, and with that server's
+configuration file in place of `/opt/vcon/config.yml`.
+
+This walk-through uses a directory you own and a capture file, so it touches
+nothing else on the machine. The capture is sipnab's synthetic test call:
+example addresses, no real subscriber.
+
+```bash
+# Run all of these, in order.
+mkdir -p ~/vcon-forward-demo && cd ~/vcon-forward-demo
+curl -fsSLO https://raw.githubusercontent.com/NormB/sipnab/main/tests/fixtures/sip_call.pcap
+KEY=$(sed -n 's/^  sipnab: "\(.*\)"/\1/p' /opt/vcon/config.yml)
+(umask 077; printf 'x-conserver-api-token: %s\n' "$KEY" > vcon-forward.auth)
+sipnab -N --no-cli-print -I sip_call.pcap --export-vcon-when "state == 'Completed'" --export-vcon-dir spool
+sipnab --vcon-forward spool \
+  --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' \
+  --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once
+echo "exit $?"
+ls spool/delivered
+```
+
+The auth file holds one line, `x-conserver-api-token: <key>`, and the
+forwarder refuses it if other users can read it. The forwarder logs one
+`delivered` line naming the file and the server's `204`, exits `0`, and the
+file is now in `spool/delivered`. Look for it in PostgreSQL by the uuid
+inside it:
+
+```bash
+# Run all of these, in order.
+UUID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["uuid"])' ~/vcon-forward-demo/spool/delivered/*.vcon.json)
+cd /opt/vcon
+sleep 3
+docker compose exec -T postgres psql -U vcon -d vcon -c \
+  "select id, vcon_json->'attachments'->-1->>'body' as tags from vcons_observed where id='$UUID'"
+```
+
+The query returns one row. The chain from step 1 tags it
+`["vcon_role:observer"]`. The server this section ran against tags its
+`sipnab` list `["vcon_source:sipnab", "vcon_role:observer"]`, and returned
+that. As in
+[Prove it stores what it accepts](vcon-server.md#prove-it-stores-what-it-accepts), a `204`
+means queued: the forwarder reports `delivered`, never `stored`, and this query
+is how you know.
+
+To run it all the time, leave out `--vcon-forward-once`: the forwarder then
+passes over the directory every five seconds until you stop it, and a
+container it cannot deliver because the server is down waits and goes again.
+[Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store) lists
+everything it does with each answer. Remove the demo directory with
+`rm -r ~/vcon-forward-demo` when you finish: the delivered copy is call data.
 
 ## With Kamailio
 

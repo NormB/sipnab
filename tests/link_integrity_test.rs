@@ -1162,7 +1162,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md +2, auth.md +1, examples.md +1, prometheus-metrics.md +1.
     // 1296 -> 1297: docs/mcp-tools.md links rtp_stats' wideband fields to
     // mos-and-codecs.md#where-the-wideband-score-appears.
-    const EXPECTED_WIKI_LINKS: usize = 1297;
+    // 1297 -> 1312: the vCon forwarder (VCON-FWD). Measured per file from
+    // the diff: vcon-sipnab.md +5, vcon-store.md +4 (new), vcon.md +3,
+    // cli-reference.md +2, README.md (the docs index) +1.
+    const EXPECTED_WIKI_LINKS: usize = 1312;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe 6d in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1291,7 +1294,8 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // API TLS (+2 net, measured from the diff).
     // 114 -> 115: README.md's Security bullet links docs/tfps-sipnab.md for
     // `--allow-action` (the only relative link the README sync adds).
-    const EXPECTED_COMMUNITY_LINKS: usize = 115;
+    // 115 -> 116: README.md's vCon bullet links docs/vcon-store.md.
+    const EXPECTED_COMMUNITY_LINKS: usize = 116;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
@@ -2389,7 +2393,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 70 -> 71: docs/assurance-case.md.
     // 71 -> 73: docs/rtpproxy-relay.md and docs/rtpproxy-sipnab.md.
     // 73 -> 75: docs/fail2ban.md and docs/fail2ban-sipnab.md.
-    const EXPECTED_DOCS_PAGES: usize = 75;
+    // 75 -> 76: docs/vcon-store.md.
+    const EXPECTED_DOCS_PAGES: usize = 76;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

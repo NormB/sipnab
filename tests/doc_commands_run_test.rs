@@ -196,7 +196,10 @@ fn classify(cmd: &str) -> Result<Plan, TestError> {
     if shell_var.is_match(cmd) || cmd.contains("; do") || cmd.contains("; then") {
         return Ok(Plan::ShellProgram);
     }
-    let serves = regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics|-L|--hep-listen)(\s|=|$)")?;
+    // The vCon forwarder polls until stopped, like a server; with
+    // `--vcon-forward-once` it exits on its own, inside the bound.
+    let serves =
+        regex::Regex::new(r"(^|\s)(--api|--mcp|--metrics|-L|--hep-listen|--vcon-forward)(\s|=|$)")?;
     if serves.is_match(cmd) {
         return Ok(Plan::Bounded);
     }
@@ -241,6 +244,21 @@ const LOOPBACK_BIND: &str = "127.0.0.1:0";
 
 /// Where a transmission is sent.
 const LOOPBACK_DISCARD: &str = "127.0.0.1:9";
+
+/// Where a vCon forwarder posts, in place of the store the page names.
+const LOOPBACK_DISCARD_URL: &str = "http://127.0.0.1:9/v1/vcons";
+
+/// Where a vCon forwarder PUTs on a `409`, in place of the page's template.
+const LOOPBACK_DISCARD_REPLACE_URL: &str = "http://127.0.0.1:9/v1/vcons/{uuid}";
+
+/// URL flags naming a store the vCon forwarder TRANSMITS to, each with the
+/// discard-port URL it is rewritten to. A URL, not an address, so they are
+/// not in [`SEND_FLAGS`]: `127.0.0.1:9` alone is not a URL the forwarder
+/// accepts, and a refusal there would test nothing past the URL parser.
+const URL_SEND_FLAGS: &[(&str, &str)] = &[
+    ("--vcon-forward-url", LOOPBACK_DISCARD_URL),
+    ("--vcon-forward-replace-url", LOOPBACK_DISCARD_REPLACE_URL),
+];
 
 /// Drop a trailing shell redirection or comment: the shell's, not sipnab's.
 ///
@@ -424,6 +442,19 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
             } else {
                 argv[i].clone_from(&fixture);
             }
+        } else if prev == "--vcon-forward-auth-file" {
+            // A header the forwarder accepts, at the mode it requires, so the
+            // run reaches the send rather than stopping at the file.
+            use std::os::unix::fs::PermissionsExt;
+            let p = cwd.join("vcon-forward.auth");
+            // A sandbox that refuses the write makes the command one this
+            // gate reports as unpreparable, rather than one it runs half set up.
+            if std::fs::write(&p, "Authorization: Bearer doc-gate\n").is_err()
+                || std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).is_err()
+            {
+                return Ok(None);
+            }
+            argv[i] = p.display().to_string();
         } else if INPUT_FILE_FLAGS.contains(&prev.as_str()) {
             let p = cwd.join("input");
             std::fs::write(&p, "")?;
@@ -447,6 +478,8 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
                 }
                 argv[i] = target.display().to_string();
             }
+        } else if let Some((_, url)) = URL_SEND_FLAGS.iter().find(|(f, _)| *f == prev) {
+            argv[i] = (*url).to_owned();
         } else if BIND_FLAGS.contains(&prev.as_str()) {
             argv[i] = LOOPBACK_BIND.to_owned();
         } else if SEND_FLAGS.contains(&prev.as_str()) {
@@ -461,7 +494,9 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
         }
     }
     let names_device = argv.iter().any(|a| a == "-d" || a == "--device");
-    if !names_device && !argv.iter().any(|a| a == "-I" || a == "--input") {
+    // The forwarder reads a spool, never a capture, and refuses `-I`.
+    let forwards = argv.iter().any(|a| a == "--vcon-forward");
+    if !names_device && !forwards && !argv.iter().any(|a| a == "-I" || a == "--input") {
         argv.push("-I".to_owned());
         argv.push(fixture);
     }
@@ -1218,6 +1253,8 @@ fn no_documented_command_binds_publicly_or_transmits_off_the_host() -> Result<()
                 LOOPBACK_BIND
             } else if SEND_FLAGS.contains(&flag) {
                 LOOPBACK_DISCARD
+            } else if let Some((_, url)) = URL_SEND_FLAGS.iter().find(|(f, _)| *f == flag) {
+                url
             } else {
                 continue;
             };
@@ -1238,6 +1275,49 @@ fn no_documented_command_binds_publicly_or_transmits_off_the_host() -> Result<()
         "these documented commands would bind publicly or transmit off the \
          host when run:\n{}",
         offenses.join("\n")
+    );
+    Ok(())
+}
+
+/// A documented forwarder command (`--vcon-forward`) runs bounded, posts only
+/// to the discard port, reads an auth file the sandbox wrote, and is not handed
+/// `-I`: the forwarder refuses every capture flag, so the fixture this gate
+/// appends to other commands would turn a correct example into a usage error.
+#[test]
+fn a_forwarder_example_runs_on_loopback_with_no_capture_input()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cmd = "sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons \
+               --vcon-forward-auth-file vcon-store.auth \
+               --vcon-forward-replace-url 'https://api.vcon.store/v1/vcons/{uuid}' --vcon-forward-once";
+    assert_eq!(
+        classify(cmd)?,
+        Plan::Bounded,
+        "a polling forwarder never exits"
+    );
+    // Removed on drop, so a failing assertion below leaves nothing behind.
+    let sandbox = tempfile::tempdir()?;
+    let p = prepare(cmd, sandbox.path(), 0)?.ok_or("the command does not split")?;
+    let value = |flag: &str| {
+        p.argv
+            .windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .unwrap_or_default()
+    };
+    assert!(
+        !p.argv.iter().any(|a| a == "-I" || a == "--input"),
+        "the forwarder was handed a capture input: {:?}",
+        p.argv
+    );
+    assert_eq!(value("--vcon-forward-url"), LOOPBACK_DISCARD_URL);
+    assert_eq!(
+        value("--vcon-forward-replace-url"),
+        LOOPBACK_DISCARD_REPLACE_URL
+    );
+    let auth = std::fs::read_to_string(value("--vcon-forward-auth-file")).unwrap_or_default();
+    assert!(
+        auth.starts_with("Authorization: Bearer "),
+        "the sandbox wrote no usable auth file: {auth:?}"
     );
     Ok(())
 }

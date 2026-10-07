@@ -3078,7 +3078,9 @@ pub fn init_logging(cli: &Cli) {
 fn default_log_level(cli: &Cli) -> &'static str {
     // TUI mode: suppress log output to avoid corruption of the alternate screen.
     // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
-    let tui_active = !cli.mode_args.no_tui;
+    // The vCon forwarder draws no TUI either: it is a headless process whose
+    // log lines are its whole report.
+    let tui_active = !cli.mode_args.no_tui && cli.vcon_forward_args.vcon_forward.is_none();
     if cli.mode_args.quiet {
         "warn"
     } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
@@ -3835,6 +3837,51 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
     #[cfg(not(any(feature = "api", feature = "mcp")))]
     {
         tracing::error!("--mint-token requires the 'api' or 'mcp' feature (not compiled in)");
+        Some(2)
+    }
+}
+
+/// Handle `--vcon-forward`: deliver a vCon spool to a store and return the
+/// exit code, or `None` when the flag is absent. The body is feature-swapped
+/// so the caller contains no `cfg`.
+///
+/// Runs before any configuration is loaded or capture opened: the forwarder
+/// is a separate process that reads no packet, and clap has already refused
+/// every capture flag beside it.
+///
+/// # Returns
+///
+/// `Some` exit code from [`crate::app::vcon_forward::run`], `Some(2)` when the
+/// settings are refused or the `vcon` feature is not compiled in, `None` when
+/// `--vcon-forward` was not given.
+///
+/// # Side effects
+///
+/// Reads the auth file, creates the delivered and failed directories,
+/// connects to the store, and moves files out of the spool, until SIGTERM or
+/// SIGINT (or after one pass with `--vcon-forward-once`).
+pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
+    cli.vcon_forward_args.vcon_forward.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        use crate::app::vcon_forward::{ForwardSettings, run};
+        let args = &cli.vcon_forward_args;
+        match ForwardSettings::from_cli(args) {
+            Ok(settings) => Some(run(
+                settings,
+                args.vcon_forward_once,
+                std::time::Duration::from_secs(args.vcon_forward_interval),
+                &crate::signals::shutdown_requested,
+            )),
+            Err(msg) => {
+                tracing::error!("{msg}");
+                Some(2)
+            }
+        }
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
         Some(2)
     }
 }
@@ -5349,6 +5396,30 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The forwarder draws no TUI, so it logs at `info` by default like a
+    /// `-N` run: its delivery lines are what an operator reads. `-q` still
+    /// quiets it.
+    #[test]
+    fn the_vcon_forwarder_logs_at_info_without_n() -> Result<(), Box<dyn std::error::Error>> {
+        use clap::Parser as _;
+        let argv = [
+            "sipnab",
+            "--vcon-forward",
+            "/srv/spool",
+            "--vcon-forward-url",
+            "http://127.0.0.1:8000/x",
+            "--vcon-forward-auth-file",
+            "/etc/x",
+        ];
+        let cli = Cli::try_parse_from(argv)?;
+        if std::env::var("SIPNAB_LOG").is_err() {
+            assert_eq!(default_log_level(&cli), "info");
+        }
+        let quiet = Cli::try_parse_from(argv.iter().copied().chain(["-q"]))?;
+        assert_eq!(default_log_level(&quiet), "warn");
+        Ok(())
+    }
 
     /// Baseline non-interactive CLI; mutate the pub fields per test.
     /// RE4 must not transmit on a run reading a file, and the gate is the

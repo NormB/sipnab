@@ -408,8 +408,13 @@ pub mod rate_limit;
 pub mod host_allowlist;
 // Server-side TLS files (PEM chain, private key, rustls config) for the
 // listeners that terminate TLS themselves: HEP, the REST API, MCP over HTTP
-// and the metrics endpoint.
-#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+// and the metrics endpoint, and the CA files the vCon forwarder trusts.
+#[cfg(any(
+    feature = "hep",
+    feature = "api",
+    feature = "metrics",
+    feature = "vcon"
+))]
 pub(crate) mod tls_files;
 // The HTTPS accept loop the axum servers share: the REST API and MCP over
 // HTTP (which needs `api`).

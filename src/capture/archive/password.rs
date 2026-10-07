@@ -225,31 +225,6 @@ pub fn split_candidates(buf: &[u8]) -> Result<Vec<ArchivePassword>, String> {
     Ok(out)
 }
 
-/// Whether a password file may be read, by OpenSSH's rule for private keys.
-///
-/// Refused only when the file is a regular file owned by the user running
-/// sipnab AND any group or other permission bit is set. So:
-///
-/// - `chmod 644` on your own file is refused. Anyone on the box can read it.
-/// - A file another user owns is accepted whatever its mode: a Kubernetes
-///   secret mount is `root 0644`, and a systemd credential is `0400` with an
-///   ACL. Its owner decided who reads it.
-/// - A pipe, a FIFO or a device is accepted: `<(pass show pcaps)` and
-///   `/dev/stdin` stat as a pipe, and a pipe's mode says nothing about who
-///   can read what passes through it.
-///
-/// Returns the refusal's text, naming the mode, or `None` to proceed.
-#[must_use]
-pub fn permission_refusal(owner: u32, me: u32, mode: u32, regular: bool) -> Option<String> {
-    if regular && owner == me && mode & 0o077 != 0 {
-        return Some(format!(
-            "can be read or written by other users (mode {:04o}); chmod 600 it",
-            mode & 0o7777
-        ));
-    }
-    None
-}
-
 /// Read at most `max` bytes of `src` into a buffer sized before the read.
 ///
 /// # Errors
@@ -279,13 +254,6 @@ fn read_bounded(src: &mut dyn Read, max: usize) -> io::Result<Zeroizing<Vec<u8>>
     Ok(buf)
 }
 
-/// The user running this process.
-#[cfg(unix)]
-fn current_uid() -> u32 {
-    // SAFETY: getuid takes no arguments, cannot fail, and touches no memory.
-    unsafe { libc::getuid() }
-}
-
 /// Read every candidate from a password file, after the permission check.
 ///
 /// The check is made on the descriptor that is then read, not on the path, so
@@ -293,27 +261,13 @@ fn current_uid() -> u32 {
 ///
 /// # Errors
 ///
-/// When the file cannot be opened or read, fails [`permission_refusal`], is
+/// When the file cannot be opened or read, fails
+/// [`crate::privilege::permission_refusal`], is
 /// larger than [`MAX_PASSWORD_FILE_BYTES`], holds a line that is too long, or
 /// holds no password at all. `what` names the source in every message.
 pub fn read_password_file(path: &Path, what: &str) -> Result<Vec<ArchivePassword>, String> {
     let shown = path.display();
-    let mut file = std::fs::File::open(path).map_err(|e| format!("{what} '{shown}': {e}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = file
-            .metadata()
-            .map_err(|e| format!("{what} '{shown}': {e}"))?;
-        if let Some(why) = permission_refusal(
-            meta.uid(),
-            current_uid(),
-            meta.mode(),
-            meta.file_type().is_file(),
-        ) {
-            return Err(format!("{what} '{shown}' {why}"));
-        }
-    }
+    let mut file = crate::privilege::open_private_file(path, what)?;
     let buf = read_bounded(&mut file, MAX_PASSWORD_FILE_BYTES).map_err(|e| {
         format!("{what} '{shown}': {e}; a password file holds one password per line")
     })?;
@@ -1251,6 +1205,9 @@ pub fn run_candidates() -> (Vec<Candidate>, Option<Encoding>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::privilege::current_uid;
+    use crate::privilege::permission_refusal;
 
     /// A password for a test: runtime material, never a literal, so no
     /// scanner reads a hard-coded key into these tests.
