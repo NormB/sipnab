@@ -10,10 +10,15 @@ entry that carries them.
 
 ## [Unreleased]
 
-**Held:** the LINT8 test conversion is a branch of separate commits that lands on `main` as one squash-merged pull request; the release follows that merge.
-
 ### Changed
 
+- **`.githooks/pre-push` runs clippy for the other Linux architecture.** Code
+  under `#[cfg(target_arch = "x86_64")]` never compiles on an aarch64 host, so
+  every local gate passed over it, and on 2026-10-07 nine x86_64-only test
+  lines passed both hooks and failed CI. `scripts/cross-arch-target.sh` names
+  the other target and the hook runs `cargo clippy --target <it> --features
+  full --tests -- -D warnings`; it prints NOT CHECKED, with the `rustup target
+  add` command, when that target is not installed.
 - **Unit tests under `src/` return `Result` and use `?` (LINT8).** The
   `#[cfg(test)]` code no longer calls `.unwrap()`, `.expect(`, `.expect_err(`,
   `.unwrap_err()` or `panic!(`; a failure returns an error that names what was
