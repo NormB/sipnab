@@ -2371,6 +2371,8 @@ pub(crate) mod test_support {
     pub(crate) use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Fixture caller address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
@@ -2498,20 +2500,21 @@ pub(crate) mod test_support {
     /// Below the minimum size the layout collapses to nothing usable; the
     /// user must get an explicit notice instead of a blank/garbled screen.
     #[test]
-    fn tiny_terminal_shows_min_size_notice() {
+    fn tiny_terminal_shows_min_size_notice() -> Result<(), TestError> {
         let mut app = App::new_test();
         let text = render_to_string(&mut app, 30, 4);
         assert!(
             text.contains("too small"),
             "expected a terminal-too-small notice, got: {text}"
         );
+        Ok(())
     }
 
     /// The empty-state hint must match the capture source: "may not
     /// contain SIP traffic" only makes sense for a pcap file, not for a
     /// live capture waiting for its first packet.
     #[test]
-    fn empty_state_hint_matches_capture_source() {
+    fn empty_state_hint_matches_capture_source() -> Result<(), TestError> {
         let mut app = App::new_test(); // capture mode defaults to Online
         let text = render_to_string(&mut app, 80, 20);
         assert!(
@@ -2529,6 +2532,7 @@ pub(crate) mod test_support {
             text.contains("may not contain SIP traffic"),
             "offline empty state keeps the pcap hint: {text}"
         );
+        Ok(())
     }
 
     /// Render one full tick of `app` (cache sync, render, feedback
