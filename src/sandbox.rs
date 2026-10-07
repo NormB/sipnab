@@ -708,6 +708,8 @@ pub fn install(paths: &SandboxPaths) -> LandlockStatus {
 mod abi_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A kernel that reports no Landlock governs nothing, and every access
     /// helper agrees.
     ///
@@ -716,18 +718,20 @@ mod abi_tests {
     /// create, and the failure would surface as a syscall error rather than as
     /// the "this kernel cannot" the operator needs to read.
     #[test]
-    fn abi_zero_governs_nothing() {
+    fn abi_zero_governs_nothing() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(0), 0);
         assert_eq!(read_access(0), 0);
         assert_eq!(write_access(0), 0);
         assert_eq!(execute_access(0), 0);
+        Ok(())
     }
 
     /// ABI 1 governs the thirteen rights Linux 5.13 shipped.
     #[test]
-    fn abi_one_governs_the_original_thirteen_rights() {
+    fn abi_one_governs_the_original_thirteen_rights() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(1), 0x1fff);
         assert_eq!(handled_access_fs(1).count_ones(), 13);
+        Ok(())
     }
 
     /// And not truncate, which arrived two ABIs later.
@@ -736,8 +740,9 @@ mod abi_tests {
     /// kernel does not know makes `landlock_create_ruleset` fail with EINVAL,
     /// so an over-broad mask is a sandbox that never installs.
     #[test]
-    fn abi_one_does_not_govern_truncate() {
+    fn abi_one_does_not_govern_truncate() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(1) & ACCESS_FS_TRUNCATE, 0);
+        Ok(())
     }
 
     /// ABI 2 adds nothing here, because `REFER` is deliberately not governed.
@@ -747,34 +752,38 @@ mod abi_tests {
     /// rename outright. This tree performs one rename, and its staging file is
     /// built with `with_file_name`, so it is a sibling and stays permitted.
     #[test]
-    fn abi_two_adds_nothing_because_refer_is_deliberately_ungoverned() {
+    fn abi_two_adds_nothing_because_refer_is_deliberately_ungoverned() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(2), handled_access_fs(1));
+        Ok(())
     }
 
     /// ABI 3 adds truncate.
     #[test]
-    fn abi_three_governs_truncate() {
+    fn abi_three_governs_truncate() -> Result<(), TestError> {
         assert_ne!(handled_access_fs(3) & ACCESS_FS_TRUNCATE, 0);
         assert_eq!(
             handled_access_fs(3),
             handled_access_fs(1) | ACCESS_FS_TRUNCATE
         );
+        Ok(())
     }
 
     /// ABI 4 adds network rules, which this ruleset does not use, so the
     /// filesystem mask is unchanged.
     #[test]
-    fn abi_four_governs_the_same_filesystem_rights_as_three() {
+    fn abi_four_governs_the_same_filesystem_rights_as_three() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(4), handled_access_fs(3));
+        Ok(())
     }
 
     /// ABI 5 adds `IOCTL_DEV`, which stays ungoverned on purpose: it covers
     /// ioctls on character and block devices, which a capture legitimately
     /// makes.
     #[test]
-    fn abi_five_does_not_govern_ioctls_on_devices() {
+    fn abi_five_does_not_govern_ioctls_on_devices() -> Result<(), TestError> {
         assert_eq!(handled_access_fs(5) & ACCESS_FS_IOCTL_DEV, 0);
         assert_eq!(handled_access_fs(5), handled_access_fs(3));
+        Ok(())
     }
 
     /// A kernel newer than this code is clamped rather than believed.
@@ -783,7 +792,8 @@ mod abi_tests {
     /// written is never governed by inference. An ungoverned right is
     /// unrestricted, which is the safe direction to be wrong in.
     #[test]
-    fn an_abi_newer_than_this_code_knows_governs_no_more_than_the_newest_known() {
+    fn an_abi_newer_than_this_code_knows_governs_no_more_than_the_newest_known()
+    -> Result<(), TestError> {
         for abi in [MAX_KNOWN_ABI, MAX_KNOWN_ABI + 1, 99, u32::MAX] {
             assert_eq!(
                 handled_access_fs(abi),
@@ -791,11 +801,12 @@ mod abi_tests {
                 "ABI {abi} governs something this code has never reasoned about"
             );
         }
+        Ok(())
     }
 
     /// `REFER` is ungoverned at every ABI, not merely at the ones tested above.
     #[test]
-    fn refer_is_never_governed() {
+    fn refer_is_never_governed() -> Result<(), TestError> {
         for abi in 0..=8 {
             assert_eq!(
                 handled_access_fs(abi) & ACCESS_FS_REFER,
@@ -803,14 +814,16 @@ mod abi_tests {
                 "ABI {abi} governs REFER, which would change rename semantics"
             );
         }
+        Ok(())
     }
 
     /// So is `IOCTL_DEV`.
     #[test]
-    fn ioctl_dev_is_never_governed() {
+    fn ioctl_dev_is_never_governed() -> Result<(), TestError> {
         for abi in 0..=8 {
             assert_eq!(handled_access_fs(abi) & ACCESS_FS_IOCTL_DEV, 0, "ABI {abi}");
         }
+        Ok(())
     }
 
     /// A writable path may truncate exactly when truncate is governed.
@@ -821,17 +834,18 @@ mod abi_tests {
     /// would fail on its first open, reading as a permission problem with no
     /// permission having changed.
     #[test]
-    fn a_writable_path_may_truncate_exactly_when_truncate_is_governed() {
+    fn a_writable_path_may_truncate_exactly_when_truncate_is_governed() -> Result<(), TestError> {
         for abi in 1..=MAX_KNOWN_ABI {
             let governed = handled_access_fs(abi) & ACCESS_FS_TRUNCATE != 0;
             let granted = write_access(abi) & ACCESS_FS_TRUNCATE != 0;
             assert_eq!(governed, granted, "ABI {abi}");
         }
+        Ok(())
     }
 
     /// A read-only path is granted no write right.
     #[test]
-    fn read_access_grants_no_write_right() {
+    fn read_access_grants_no_write_right() -> Result<(), TestError> {
         for abi in 1..=MAX_KNOWN_ABI {
             let write_bits = ACCESS_FS_WRITE_FILE
                 | ACCESS_FS_MAKE_REG
@@ -841,11 +855,12 @@ mod abi_tests {
                 | ACCESS_FS_TRUNCATE;
             assert_eq!(read_access(abi) & write_bits, 0, "ABI {abi}");
         }
+        Ok(())
     }
 
     /// A plugin is granted read and execute, and nothing else.
     #[test]
-    fn execute_access_is_read_plus_execute_and_nothing_more() {
+    fn execute_access_is_read_plus_execute_and_nothing_more() -> Result<(), TestError> {
         for abi in 1..=MAX_KNOWN_ABI {
             assert_eq!(
                 execute_access(abi),
@@ -853,6 +868,7 @@ mod abi_tests {
                 "ABI {abi}"
             );
         }
+        Ok(())
     }
 
     /// Every right granted is a right the ruleset governs.
@@ -862,7 +878,7 @@ mod abi_tests {
     /// simply ignored — so a grant that drifts outside the mask becomes a
     /// permission nobody has and nothing says so.
     #[test]
-    fn every_granted_right_is_one_the_ruleset_governs() {
+    fn every_granted_right_is_one_the_ruleset_governs() -> Result<(), TestError> {
         for abi in 1..=MAX_KNOWN_ABI {
             let governed = handled_access_fs(abi);
             for (name, granted) in [
@@ -877,14 +893,16 @@ mod abi_tests {
                 );
             }
         }
+        Ok(())
     }
 
     /// The attribute struct is one `__u64` before ABI 4.
     #[test]
-    fn the_attribute_is_eight_bytes_before_abi_four() {
+    fn the_attribute_is_eight_bytes_before_abi_four() -> Result<(), TestError> {
         for abi in [1, 2, 3] {
             assert_eq!(ruleset_attr_size(abi), 8, "ABI {abi}");
         }
+        Ok(())
     }
 
     /// And two from ABI 4, where the network field arrived.
@@ -893,10 +911,11 @@ mod abi_tests {
     /// the modern size to an older kernel would fail every install on Debian
     /// 12.
     #[test]
-    fn the_attribute_is_sixteen_bytes_from_abi_four() {
+    fn the_attribute_is_sixteen_bytes_from_abi_four() -> Result<(), TestError> {
         for abi in [4, 5, 99] {
             assert_eq!(ruleset_attr_size(abi), 16, "ABI {abi}");
         }
+        Ok(())
     }
 }
 
@@ -904,18 +923,20 @@ mod abi_tests {
 mod plan_tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A directory that exists, so a rule for it is not dropped.
-    fn dir(root: &Path, name: &str) -> PathBuf {
+    fn dir(root: &Path, name: &str) -> Result<PathBuf, TestError> {
         let p = root.join(name);
-        std::fs::create_dir_all(&p).expect("create the fixture directory");
-        p
+        std::fs::create_dir_all(&p).map_err(|e| format!("create the fixture directory: {e:?}"))?;
+        Ok(p)
     }
 
     /// A file that exists, for the same reason.
-    fn file(root: &Path, name: &str) -> PathBuf {
+    fn file(root: &Path, name: &str) -> Result<PathBuf, TestError> {
         let p = root.join(name);
-        std::fs::write(&p, b"x").expect("write the fixture file");
-        p
+        std::fs::write(&p, b"x").map_err(|e| format!("write the fixture file: {e:?}"))?;
+        Ok(p)
     }
 
     fn rule<'a>(rules: &'a [PathRule], path: &Path) -> Option<&'a PathRule> {
@@ -924,9 +945,9 @@ mod plan_tests {
 
     /// A capture being read is granted read, and not write.
     #[test]
-    fn an_input_capture_is_granted_read_and_not_write() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let input = file(tmp.path(), "in.pcap");
+    fn an_input_capture_is_granted_read_and_not_write() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let input = file(tmp.path(), "in.pcap")?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![input.clone()],
@@ -934,18 +955,19 @@ mod plan_tests {
             },
             3,
         );
-        let r = rule(&rules, &input).expect("the input is planned");
+        let r = rule(&rules, &input).ok_or("the input is planned")?;
         // READ_FILE alone: a capture is a regular file, and READ_DIR on one is
         // EINVAL at `landlock_add_rule`.
         assert_eq!(r.access, ACCESS_FS_READ_FILE);
         assert_eq!(r.access & ACCESS_FS_WRITE_FILE, 0);
+        Ok(())
     }
 
     /// An output directory is granted write.
     #[test]
-    fn an_output_directory_is_granted_write() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let out = dir(tmp.path(), "out");
+    fn an_output_directory_is_granted_write() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let out = dir(tmp.path(), "out")?;
         let rules = plan_rules(
             &SandboxPaths {
                 output_dirs: vec![out.clone()],
@@ -953,9 +975,10 @@ mod plan_tests {
             },
             3,
         );
-        let r = rule(&rules, &out).expect("the output is planned");
+        let r = rule(&rules, &out).ok_or("the output is planned")?;
         assert_ne!(r.access & ACCESS_FS_WRITE_FILE, 0);
         assert_ne!(r.access & ACCESS_FS_MAKE_REG, 0);
+        Ok(())
     }
 
     /// A path that does not exist is dropped, and dropping it is not fatal.
@@ -965,9 +988,9 @@ mod plan_tests {
     /// has not started, is ordinary. Refusing to start over it would trade a
     /// capture for a rule.
     #[test]
-    fn a_path_that_does_not_exist_is_dropped_rather_than_fatal() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let real = file(tmp.path(), "real.pcap");
+    fn a_path_that_does_not_exist_is_dropped_rather_than_fatal() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let real = file(tmp.path(), "real.pcap")?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![real.clone(), tmp.path().join("absent.pcap")],
@@ -977,6 +1000,7 @@ mod plan_tests {
         );
         assert_eq!(rules.len(), 1, "only the path that exists is planned");
         assert_eq!(rules[0].path, real);
+        Ok(())
     }
 
     /// One path arriving twice keeps the union of its access.
@@ -986,9 +1010,9 @@ mod plan_tests {
     /// merge is what stops that, and this is the case that produces it: a
     /// directory that is both read from and written to.
     #[test]
-    fn one_path_arriving_twice_keeps_the_union_of_its_access() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let both = dir(tmp.path(), "both");
+    fn one_path_arriving_twice_keeps_the_union_of_its_access() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let both = dir(tmp.path(), "both")?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![both.clone()],
@@ -1001,6 +1025,7 @@ mod plan_tests {
         let r = &rules[0];
         assert_ne!(r.access & ACCESS_FS_WRITE_FILE, 0, "the write survived");
         assert_ne!(r.access & ACCESS_FS_READ_FILE, 0, "so did the read");
+        Ok(())
     }
 
     /// A plan naming nothing that exists produces no rules.
@@ -1009,8 +1034,8 @@ mod plan_tests {
     /// a ruleset that governs the filesystem and grants nothing, which would
     /// deny every file the run needs.
     #[test]
-    fn a_plan_with_nothing_readable_produces_no_rules() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+    fn a_plan_with_nothing_readable_produces_no_rules() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![tmp.path().join("nope")],
@@ -1020,13 +1045,14 @@ mod plan_tests {
             3,
         );
         assert!(rules.is_empty());
+        Ok(())
     }
 
     /// The crash directory is planned like an output, because it is one.
     #[test]
-    fn the_crash_directory_is_granted_write() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let crash = dir(tmp.path(), "crash");
+    fn the_crash_directory_is_granted_write() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let crash = dir(tmp.path(), "crash")?;
         let rules = plan_rules(
             &SandboxPaths {
                 crash_dir: Some(crash.clone()),
@@ -1034,8 +1060,9 @@ mod plan_tests {
             },
             3,
         );
-        let r = rule(&rules, &crash).expect("the crash directory is planned");
+        let r = rule(&rules, &crash).ok_or("the crash directory is planned")?;
         assert_eq!(r.access, write_access(3));
+        Ok(())
     }
 
     /// A plugin is granted execute and an input is not.
@@ -1044,10 +1071,10 @@ mod plan_tests {
     /// it to every readable path would let a dropped payload run from the
     /// capture directory.
     #[test]
-    fn a_plugin_is_granted_execute_and_an_input_is_not() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let plugin = file(tmp.path(), "plugin.so");
-        let input = file(tmp.path(), "in.pcap");
+    fn a_plugin_is_granted_execute_and_an_input_is_not() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let plugin = file(tmp.path(), "plugin.so")?;
+        let input = file(tmp.path(), "in.pcap")?;
         let rules = plan_rules(
             &SandboxPaths {
                 plugins: vec![plugin.clone()],
@@ -1057,20 +1084,21 @@ mod plan_tests {
             3,
         );
         assert_ne!(
-            rule(&rules, &plugin).expect("plugin planned").access & ACCESS_FS_EXECUTE,
+            rule(&rules, &plugin).ok_or("plugin planned")?.access & ACCESS_FS_EXECUTE,
             0
         );
         assert_eq!(
-            rule(&rules, &input).expect("input planned").access & ACCESS_FS_EXECUTE,
+            rule(&rules, &input).ok_or("input planned")?.access & ACCESS_FS_EXECUTE,
             0
         );
+        Ok(())
     }
 
     /// The resolver files are read-only, and only when the caller asks.
     #[test]
-    fn resolver_files_are_read_only_and_only_when_named() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let resolv = file(tmp.path(), "resolv.conf");
+    fn resolver_files_are_read_only_and_only_when_named() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let resolv = file(tmp.path(), "resolv.conf")?;
         let without = plan_rules(&SandboxPaths::default(), 3);
         assert!(without.is_empty(), "nothing is planned by default");
         let with = plan_rules(
@@ -1081,10 +1109,11 @@ mod plan_tests {
             3,
         );
         assert_eq!(
-            rule(&with, &resolv).expect("planned").access,
+            rule(&with, &resolv).ok_or("planned")?.access,
             ACCESS_FS_READ_FILE,
             "a resolver file is a file, so only the file-applicable half applies"
         );
+        Ok(())
     }
 
     /// The rule list is ordered, so one plan produces one ruleset.
@@ -1093,11 +1122,11 @@ mod plan_tests {
     /// to run cannot be compared between runs, and a report naming "5 rules"
     /// should mean the same five every time.
     #[test]
-    fn the_rule_list_is_in_a_stable_order() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let a = file(tmp.path(), "a.pcap");
-        let b = file(tmp.path(), "b.pcap");
-        let c = file(tmp.path(), "c.pcap");
+    fn the_rule_list_is_in_a_stable_order() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let a = file(tmp.path(), "a.pcap")?;
+        let b = file(tmp.path(), "b.pcap")?;
+        let c = file(tmp.path(), "c.pcap")?;
         let forwards = plan_rules(
             &SandboxPaths {
                 inputs: vec![a.clone(), b.clone(), c.clone()],
@@ -1113,6 +1142,7 @@ mod plan_tests {
             3,
         );
         assert_eq!(forwards, backwards);
+        Ok(())
     }
 
     /// A rule on a regular file carries no directory-only right.
@@ -1124,9 +1154,9 @@ mod plan_tests {
     /// because the mask changes nothing about the values until the kernel sees
     /// them.
     #[test]
-    fn a_rule_on_a_file_carries_no_directory_only_right() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let f = file(tmp.path(), "capture.pcap");
+    fn a_rule_on_a_file_carries_no_directory_only_right() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let f = file(tmp.path(), "capture.pcap")?;
         let rules = plan_rules(
             &SandboxPaths {
                 // Asked for as an OUTPUT, which grants the widest set, so the
@@ -1136,7 +1166,7 @@ mod plan_tests {
             },
             3,
         );
-        let r = rule(&rules, &f).expect("planned");
+        let r = rule(&rules, &f).ok_or("planned")?;
         let directory_only = ACCESS_FS_READ_DIR
             | ACCESS_FS_MAKE_REG
             | ACCESS_FS_MAKE_DIR
@@ -1148,6 +1178,7 @@ mod plan_tests {
             "a file rule granting a directory right is EINVAL, not a wider grant"
         );
         assert_ne!(r.access & ACCESS_FS_WRITE_FILE, 0, "the file half survives");
+        Ok(())
     }
 
     /// And a rule on a directory keeps them.
@@ -1156,9 +1187,9 @@ mod plan_tests {
     /// directory unable to create the file the writer opens, which is the
     /// failure the mask exists to avoid trading for.
     #[test]
-    fn a_rule_on_a_directory_keeps_the_directory_rights() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let d = dir(tmp.path(), "out");
+    fn a_rule_on_a_directory_keeps_the_directory_rights() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let d = dir(tmp.path(), "out")?;
         let rules = plan_rules(
             &SandboxPaths {
                 output_dirs: vec![d.clone()],
@@ -1167,10 +1198,11 @@ mod plan_tests {
             3,
         );
         assert_eq!(
-            rule(&rules, &d).expect("planned").access,
+            rule(&rules, &d).ok_or("planned")?.access,
             write_access(3),
             "a directory keeps every right the ABI grants a writable path"
         );
+        Ok(())
     }
 
     /// A file whose only requested right is directory-only is dropped.
@@ -1178,9 +1210,9 @@ mod plan_tests {
     /// The rule would grant nothing, and adding a zero-access rule is the
     /// same `EINVAL`. Dropping it keeps the ruleset installable.
     #[test]
-    fn a_file_left_with_no_applicable_right_is_dropped() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let f = file(tmp.path(), "plain");
+    fn a_file_left_with_no_applicable_right_is_dropped() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let f = file(tmp.path(), "plain")?;
         // READ_DIR alone, which no file can have.
         let rules = plan_rules(
             &SandboxPaths {
@@ -1193,6 +1225,7 @@ mod plan_tests {
             rules.is_empty(),
             "a rule with no applicable right must not reach the kernel"
         );
+        Ok(())
     }
 
     /// The file mask is exactly the rights a file can have.
@@ -1203,7 +1236,7 @@ mod plan_tests {
     /// rule instead, and the run then cannot read its own capture — a sandbox
     /// that installed cleanly and denied the one path it was built for.
     #[test]
-    fn the_file_mask_is_exactly_the_rights_a_file_can_have() {
+    fn the_file_mask_is_exactly_the_rights_a_file_can_have() -> Result<(), TestError> {
         for right in [
             ACCESS_FS_EXECUTE,
             ACCESS_FS_WRITE_FILE,
@@ -1231,6 +1264,7 @@ mod plan_tests {
                 "a directory-only right is in the file mask: {right:#x}"
             );
         }
+        Ok(())
     }
 
     /// A symlink to a directory is planned as the directory it names.
@@ -1241,11 +1275,11 @@ mod plan_tests {
     /// ordinary — would otherwise be masked to the file rights and lose
     /// `MAKE_REG`, and the writer would fail to create its first file.
     #[test]
-    fn a_symlink_to_a_directory_is_planned_as_a_directory() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let real = dir(tmp.path(), "real-out");
+    fn a_symlink_to_a_directory_is_planned_as_a_directory() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let real = dir(tmp.path(), "real-out")?;
         let link = tmp.path().join("link-out");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        std::os::unix::fs::symlink(&real, &link).map_err(|e| format!("symlink: {e:?}"))?;
         let rules = plan_rules(
             &SandboxPaths {
                 output_dirs: vec![link.clone()],
@@ -1254,10 +1288,11 @@ mod plan_tests {
             3,
         );
         assert_eq!(
-            rule(&rules, &link).expect("planned").access,
+            rule(&rules, &link).ok_or("planned")?.access,
             write_access(3),
             "a symlinked directory must keep the directory rights"
         );
+        Ok(())
     }
 
     /// And a symlink to a file is planned as a file.
@@ -1266,11 +1301,11 @@ mod plan_tests {
     /// defect if it is wrong: a capture reached through a symlink would carry
     /// `READ_DIR` and take the whole install down with `EINVAL`.
     #[test]
-    fn a_symlink_to_a_file_is_planned_as_a_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let real = file(tmp.path(), "real.pcap");
+    fn a_symlink_to_a_file_is_planned_as_a_file() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let real = file(tmp.path(), "real.pcap")?;
         let link = tmp.path().join("link.pcap");
-        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        std::os::unix::fs::symlink(&real, &link).map_err(|e| format!("symlink: {e:?}"))?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![link.clone()],
@@ -1279,9 +1314,10 @@ mod plan_tests {
             3,
         );
         assert_eq!(
-            rule(&rules, &link).expect("planned").access,
+            rule(&rules, &link).ok_or("planned")?.access,
             ACCESS_FS_READ_FILE
         );
+        Ok(())
     }
 
     /// A FIFO is not a directory, so it is masked like a file.
@@ -1292,11 +1328,11 @@ mod plan_tests {
     /// directory", not by "is this a regular file", and a plan that tested for
     /// the second would send a directory right on a FIFO to the kernel.
     #[test]
-    fn a_fifo_is_planned_as_a_file_rather_than_a_directory() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+    fn a_fifo_is_planned_as_a_file_rather_than_a_directory() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let fifo = tmp.path().join("keylog.fifo");
         let Ok(cpath) = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()) else {
-            panic!("the fixture path holds a NUL");
+            return Err("the fixture path holds a NUL".into());
         };
         // SAFETY: `cpath` is NUL-terminated and outlives the call.
         let rc = unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) };
@@ -1309,10 +1345,11 @@ mod plan_tests {
             3,
         );
         assert_eq!(
-            rule(&rules, &fifo).expect("planned").access,
+            rule(&rules, &fifo).ok_or("planned")?.access,
             ACCESS_FS_READ_FILE,
             "a FIFO is not a directory and must not carry a directory right"
         );
+        Ok(())
     }
 
     /// Every rule in a mixed plan grants only what its path type allows.
@@ -1322,20 +1359,24 @@ mod plan_tests {
     /// future collection added to `SandboxPaths` that forgets the mask fails
     /// here instead of at `landlock_add_rule` on somebody's machine.
     #[test]
-    fn every_planned_rule_grants_only_rights_its_path_type_allows() {
-        let tmp = tempfile::tempdir().expect("tempdir");
+    fn every_planned_rule_grants_only_rights_its_path_type_allows() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let plan = SandboxPaths {
-            inputs: vec![file(tmp.path(), "in.pcap")],
-            output_dirs: vec![dir(tmp.path(), "out")],
-            read_files: vec![file(tmp.path(), "keylog.txt")],
-            crash_dir: Some(dir(tmp.path(), "crash")),
-            plugins: vec![file(tmp.path(), "plugin.so")],
-            resolver_files: vec![file(tmp.path(), "resolv.conf")],
+            inputs: vec![file(tmp.path(), "in.pcap")?],
+            output_dirs: vec![dir(tmp.path(), "out")?],
+            read_files: vec![file(tmp.path(), "keylog.txt")?],
+            crash_dir: Some(dir(tmp.path(), "crash")?),
+            plugins: vec![file(tmp.path(), "plugin.so")?],
+            resolver_files: vec![file(tmp.path(), "resolv.conf")?],
         };
         let rules = plan_rules(&plan, 3);
         assert_eq!(rules.len(), 6, "every fixture path should be planned");
         for r in &rules {
-            let is_dir = r.path.metadata().expect("fixture exists").is_dir();
+            let is_dir = r
+                .path
+                .metadata()
+                .map_err(|e| format!("fixture exists: {e:?}"))?
+                .is_dir();
             if !is_dir {
                 assert_eq!(
                     r.access & !ACCESS_FS_FILE_APPLICABLE,
@@ -1351,6 +1392,7 @@ mod plan_tests {
                 r.path.display()
             );
         }
+        Ok(())
     }
 
     /// Masking never empties a rule the run needs.
@@ -1360,11 +1402,11 @@ mod plan_tests {
     /// the plan, and the run then meets `EACCES` on the capture it was asked
     /// to read. That failure would look exactly like a sandbox working.
     #[test]
-    fn masking_never_empties_a_rule_the_run_needs() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let input = file(tmp.path(), "in.pcap");
-        let keylog = file(tmp.path(), "keys.log");
-        let plugin = file(tmp.path(), "audio.so");
+    fn masking_never_empties_a_rule_the_run_needs() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let input = file(tmp.path(), "in.pcap")?;
+        let keylog = file(tmp.path(), "keys.log")?;
+        let plugin = file(tmp.path(), "audio.so")?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![input.clone()],
@@ -1380,7 +1422,7 @@ mod plan_tests {
             ("the plugin", &plugin, ACCESS_FS_EXECUTE),
         ] {
             let r = rule(&rules, path)
-                .unwrap_or_else(|| panic!("{what} was dropped from the plan by the mask"));
+                .ok_or_else(|| format!("{what} was dropped from the plan by the mask"))?;
             assert_ne!(
                 r.access & needed,
                 0,
@@ -1388,6 +1430,7 @@ mod plan_tests {
                 r.access
             );
         }
+        Ok(())
     }
 
     /// At ABI 0 a plan grants nothing, whatever it names.
@@ -1396,10 +1439,10 @@ mod plan_tests {
     /// every access helper returns zero, and a rule granting zero access is
     /// not added at all.
     #[test]
-    fn a_plan_at_abi_zero_grants_nothing() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let input = file(tmp.path(), "in.pcap");
-        let out = dir(tmp.path(), "out");
+    fn a_plan_at_abi_zero_grants_nothing() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let input = file(tmp.path(), "in.pcap")?;
+        let out = dir(tmp.path(), "out")?;
         let rules = plan_rules(
             &SandboxPaths {
                 inputs: vec![input],
@@ -1409,12 +1452,15 @@ mod plan_tests {
             0,
         );
         assert!(rules.is_empty());
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod reporting_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     fn unsupported() -> LandlockStatus {
         LandlockStatus::Unsupported {
@@ -1434,13 +1480,14 @@ mod reporting_tests {
     /// line on every run, which is the state that makes a real
     /// non-installation invisible.
     #[test]
-    fn a_disabled_sandbox_is_not_reported_as_a_failure() {
+    fn a_disabled_sandbox_is_not_reported_as_a_failure() -> Result<(), TestError> {
         let line = startup_line(&LandlockStatus::Disabled);
         assert!(!line.contains("NOT active"), "{line}");
         assert!(
             line.contains("--sandbox"),
             "the line must say how to turn it on: {line}"
         );
+        Ok(())
     }
 
     /// An enforced sandbox names its ABI and its rule count.
@@ -1449,11 +1496,12 @@ mod reporting_tests {
     /// nothing, and a rule count without an ABI does not say which rights were
     /// available to grant.
     #[test]
-    fn the_startup_line_names_the_abi_and_the_rule_count() {
+    fn the_startup_line_names_the_abi_and_the_rule_count() -> Result<(), TestError> {
         let line = startup_line(&LandlockStatus::Enforced { abi: 5, rules: 7 });
         assert!(line.contains("ENFORCED"), "{line}");
         assert!(line.contains('5'), "the ABI is missing: {line}");
         assert!(line.contains('7'), "the rule count is missing: {line}");
+        Ok(())
     }
 
     /// And says what it does NOT bound, in the same breath.
@@ -1464,20 +1512,22 @@ mod reporting_tests {
     /// ruleset governs no sockets and the line says so rather than letting the
     /// word imply it.
     #[test]
-    fn the_enforced_line_says_what_it_does_not_bound() {
+    fn the_enforced_line_says_what_it_does_not_bound() -> Result<(), TestError> {
         let line = startup_line(&LandlockStatus::Enforced { abi: 4, rules: 3 });
         assert!(
             line.contains("Sockets are not bounded"),
             "the line lets 'sandboxed' imply a network guarantee: {line}"
         );
+        Ok(())
     }
 
     /// An unsupported kernel is reported with the reason, not as silence.
     #[test]
-    fn the_startup_line_says_why_when_the_kernel_cannot() {
+    fn the_startup_line_says_why_when_the_kernel_cannot() -> Result<(), TestError> {
         let line = startup_line(&unsupported());
         assert!(line.contains("NOT active"), "{line}");
         assert!(line.contains("5.13"), "the reason is missing: {line}");
+        Ok(())
     }
 
     /// A failed install reads differently from an unsupported kernel.
@@ -1486,10 +1536,11 @@ mod reporting_tests {
     /// an operator needs to tell them apart before deciding whether to change
     /// the kernel or the command line.
     #[test]
-    fn a_failed_install_carries_its_own_reason() {
+    fn a_failed_install_carries_its_own_reason() -> Result<(), TestError> {
         let line = startup_line(&failed());
         assert!(line.contains("restrict_self"), "{line}");
         assert_ne!(line, startup_line(&unsupported()));
+        Ok(())
     }
 
     /// Every status has a distinct, stable code.
@@ -1498,7 +1549,7 @@ mod reporting_tests {
     /// statuses sharing a code would make them indistinguishable to everything
     /// downstream.
     #[test]
-    fn every_status_has_a_distinct_code() {
+    fn every_status_has_a_distinct_code() -> Result<(), TestError> {
         let codes = [
             LandlockStatus::Disabled.code(),
             LandlockStatus::Enforced { abi: 1, rules: 1 }.code(),
@@ -1510,15 +1561,17 @@ mod reporting_tests {
         for c in codes {
             assert!(!c.is_empty());
         }
+        Ok(())
     }
 
     /// Only enforcement counts as enforcement.
     #[test]
-    fn only_the_enforced_status_reports_itself_as_enforced() {
+    fn only_the_enforced_status_reports_itself_as_enforced() -> Result<(), TestError> {
         assert!(LandlockStatus::Enforced { abi: 1, rules: 1 }.is_enforced());
         for other in [LandlockStatus::Disabled, unsupported(), failed()] {
             assert!(!other.is_enforced(), "{other:?}");
         }
+        Ok(())
     }
 
     /// `--require-sandbox` refuses when nothing is in force.
@@ -1527,18 +1580,19 @@ mod reporting_tests {
     /// that means the caller never attempted an install, which is a wiring bug
     /// and exactly the case a "required" flag must not pass.
     #[test]
-    fn requiring_a_sandbox_refuses_when_none_is_in_force() {
+    fn requiring_a_sandbox_refuses_when_none_is_in_force() -> Result<(), TestError> {
         for status in [LandlockStatus::Disabled, unsupported(), failed()] {
             let verdict = requirement_verdict(SandboxMode::Required, &status);
-            let err = verdict.expect_err(&format!("{status:?} must refuse"));
+            let err = verdict.err().ok_or(format!("{status:?} must refuse"))?;
             assert!(err.contains("--sandbox required"), "{err}");
             assert!(err.contains("Refusing to capture"), "{err}");
         }
+        Ok(())
     }
 
     /// And accepts when one is.
     #[test]
-    fn requiring_a_sandbox_accepts_enforcement() {
+    fn requiring_a_sandbox_accepts_enforcement() -> Result<(), TestError> {
         assert!(
             requirement_verdict(
                 SandboxMode::Required,
@@ -1546,6 +1600,7 @@ mod reporting_tests {
             )
             .is_ok()
         );
+        Ok(())
     }
 
     /// Best effort captures either way.
@@ -1554,7 +1609,7 @@ mod reporting_tests {
     /// hardening feature was unavailable. Trading a capture for a sandbox
     /// nobody asked to require turns a hardening gap into an outage.
     #[test]
-    fn best_effort_captures_whatever_the_kernel_offers() {
+    fn best_effort_captures_whatever_the_kernel_offers() -> Result<(), TestError> {
         for status in [
             LandlockStatus::Disabled,
             unsupported(),
@@ -1566,22 +1621,25 @@ mod reporting_tests {
                 "{status:?}"
             );
         }
+        Ok(())
     }
 
     /// And an off sandbox never refuses, whatever the status says.
     #[test]
-    fn an_off_sandbox_never_refuses() {
+    fn an_off_sandbox_never_refuses() -> Result<(), TestError> {
         for status in [LandlockStatus::Disabled, unsupported(), failed()] {
             assert!(
                 requirement_verdict(SandboxMode::Off, &status).is_ok(),
                 "{status:?}"
             );
         }
+        Ok(())
     }
 
     /// The default mode is off, so no existing run changes behavior.
     #[test]
-    fn the_default_mode_is_off() {
+    fn the_default_mode_is_off() -> Result<(), TestError> {
         assert_eq!(SandboxMode::default(), SandboxMode::Off);
+        Ok(())
     }
 }

@@ -262,20 +262,24 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
     /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
-    fn ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<DateTime<Utc>, TestError> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or_else(|| "2024-06-15T12:00:00Z is a valid timestamp".into())
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
     /// Parse a minimal bodyless INVITE request.
-    fn make_invite() -> SipMessage {
+    fn make_invite() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -287,20 +291,20 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse INVITE")
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// Parse a 503 Service Unavailable response (error-color path).
-    fn make_error_response() -> SipMessage {
+    fn make_error_response() -> Result<SipMessage, TestError> {
         let raw = build_sip(
             "SIP/2.0 503 Service Unavailable",
             &[
@@ -312,20 +316,20 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse response")
+        .map_err(|e| format!("should parse response: {e:?}"))?)
     }
 
     /// Parse a bodyless OPTIONS keepalive request.
-    fn make_options() -> SipMessage {
+    fn make_options() -> Result<SipMessage, TestError> {
         // A bodyless request, like the OPTIONS keepalives in a real trace.
         let raw = build_sip(
             "OPTIONS sip:bob@example.com SIP/2.0",
@@ -339,16 +343,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse OPTIONS")
+        .map_err(|e| format!("should parse OPTIONS: {e:?}"))?)
     }
 
     // Regression: `--show-empty` was a dead flag. Bodyless messages (every
@@ -358,8 +362,8 @@ mod tests {
     // `-N` output. show_empty must actually reveal those headers.
     /// With `show_empty`, bodyless messages print their full header block.
     #[test]
-    fn show_empty_reveals_headers_of_bodyless_messages() {
-        for msg in [make_options(), make_error_response()] {
+    fn show_empty_reveals_headers_of_bodyless_messages() -> Result<(), TestError> {
+        for msg in [make_options()?, make_error_response()?] {
             let opts = OutputOptions {
                 color: ColorMode::Never,
                 show_empty: true,
@@ -372,24 +376,26 @@ mod tests {
                  message, but got only:\n{out}"
             );
         }
+        Ok(())
     }
 
     // The terse default (no --show-empty) still shows only the summary line for
     // bodyless messages — no wall of headers for every OPTIONS keepalive.
     /// Without `show_empty`, bodyless messages stay a one-line summary.
     #[test]
-    fn bodyless_messages_stay_terse_without_show_empty() {
+    fn bodyless_messages_stay_terse_without_show_empty() -> Result<(), TestError> {
         let opts = OutputOptions {
             color: ColorMode::Never,
             show_empty: false,
             ..Default::default()
         };
-        let out = format_sip_message(&make_options(), &opts, None);
+        let out = format_sip_message(&make_options()?, &opts, None);
         assert!(
             out.contains("OPTIONS") && !out.contains("Call-ID:"),
             "without show_empty a bodyless message must be one line only, \
              got:\n{out}"
         );
+        Ok(())
     }
 
     /// A message that was never on a wire says so on the summary line.
@@ -406,7 +412,8 @@ mod tests {
     /// `InputOrigin::as_str`, so this line and the `--json` field cannot
     /// disagree about the same message.
     #[test]
-    fn a_message_that_was_never_on_a_wire_is_labeled_on_the_summary_line() {
+    fn a_message_that_was_never_on_a_wire_is_labeled_on_the_summary_line() -> Result<(), TestError>
+    {
         use crate::capture::parse::InputOrigin;
 
         let opts = OutputOptions {
@@ -415,7 +422,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut msg = make_options();
+        let mut msg = make_options()?;
         msg.input_origin = Some(InputOrigin::Uprobe);
         let marked = format_sip_message(&msg, &opts, None);
         assert!(
@@ -444,13 +451,14 @@ mod tests {
                  line grows a constant token:\n{plain}"
             );
         }
+        Ok(())
     }
 
     /// An INVITE with `Always` color carries green + reset ANSI codes and
     /// the src -> dst line.
     #[test]
-    fn format_invite_with_color() {
-        let msg = make_invite();
+    fn format_invite_with_color() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Always,
             ..Default::default()
@@ -465,12 +473,13 @@ mod tests {
             "should contain source address"
         );
         assert!(output.contains("->"), "should contain arrow");
+        Ok(())
     }
 
     /// `Never` color mode emits no ANSI escapes at all.
     #[test]
-    fn format_no_color() {
-        let msg = make_invite();
+    fn format_no_color() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Never,
             ..Default::default()
@@ -482,12 +491,13 @@ mod tests {
             !output.contains('\x1b'),
             "should not contain ANSI escape codes"
         );
+        Ok(())
     }
 
     /// A 503 response is rendered bold red.
     #[test]
-    fn format_error_response_bold_red() {
-        let msg = make_error_response();
+    fn format_error_response_bold_red() -> Result<(), TestError> {
+        let msg = make_error_response()?;
         let opts = OutputOptions {
             color: ColorMode::Always,
             ..Default::default()
@@ -499,13 +509,14 @@ mod tests {
             output.contains(BOLD_RED),
             "should contain bold red for error response"
         );
+        Ok(())
     }
 
     /// A `payload_limit` that lands mid-way through a multibyte UTF-8
     /// character truncates at the previous character boundary instead of
     /// panicking on a byte slice.
     #[test]
-    fn payload_limit_mid_utf8_truncates_at_boundary() {
+    fn payload_limit_mid_utf8_truncates_at_boundary() -> Result<(), TestError> {
         let body = "média=é".repeat(8);
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -521,19 +532,19 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         // Aim the limit one byte into the first 'é' of the body so the cut
         // point is guaranteed to be inside a multibyte character.
         let raw_str = String::from_utf8_lossy(&msg.raw).into_owned();
-        let limit = raw_str.find('é').expect("body contains é") + 1;
+        let limit = raw_str.find('é').ok_or("body contains é")? + 1;
         let opts = OutputOptions {
             color: ColorMode::Never,
             payload_limit: Some(limit),
@@ -549,11 +560,12 @@ mod tests {
             !output.contains('\u{FFFD}'),
             "truncation must not split a UTF-8 sequence"
         );
+        Ok(())
     }
 
     /// `payload_limit` truncates the raw dump and appends `[truncated]`.
     #[test]
-    fn payload_limit_truncates() {
+    fn payload_limit_truncates() -> Result<(), TestError> {
         let body = b"v=0\r\no=- 0 0 IN IP4 10.0.0.1\r\ns=-\r\n";
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -569,14 +581,14 @@ mod tests {
         );
         let msg = parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
         )
-        .expect("should parse");
+        .map_err(|e| format!("should parse: {e:?}"))?;
 
         let opts = OutputOptions {
             color: ColorMode::Never,
@@ -589,13 +601,14 @@ mod tests {
             output.contains("[truncated]"),
             "should contain truncation marker"
         );
+        Ok(())
     }
 
     /// Delta-time mode renders `+1.500s` for a 1500 ms gap.
     #[test]
-    fn delta_time_format() {
-        let msg = make_invite();
-        let prev = ts() - chrono::TimeDelta::milliseconds(1500);
+    fn delta_time_format() -> Result<(), TestError> {
+        let msg = make_invite()?;
+        let prev = ts()? - chrono::TimeDelta::milliseconds(1500);
         let opts = OutputOptions {
             color: ColorMode::Never,
             delta_time: true,
@@ -607,12 +620,13 @@ mod tests {
             output.contains("+1.500s"),
             "should show delta time: got {output}"
         );
+        Ok(())
     }
 
     /// `show_proto_number` renders `UDP(17)` after the transport tag.
     #[test]
-    fn proto_number_appended_to_transport_tag() {
-        let msg = make_invite();
+    fn proto_number_appended_to_transport_tag() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Never,
             show_proto_number: true,
@@ -624,12 +638,13 @@ mod tests {
             output.contains("UDP(17)"),
             "should annotate transport with proto number: got {output}"
         );
+        Ok(())
     }
 
     /// The default renders a bare `UDP` tag with no proto number.
     #[test]
-    fn proto_number_off_by_default() {
-        let msg = make_invite();
+    fn proto_number_off_by_default() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Never,
             ..Default::default()
@@ -639,15 +654,16 @@ mod tests {
             output.contains("UDP") && !output.contains("UDP("),
             "default must show bare transport tag: got {output}"
         );
+        Ok(())
     }
 
     /// The proto-number annotation lands after the method's ANSI reset,
     /// never inside the color span.
     #[test]
-    fn proto_number_with_color_stays_outside_reset() {
+    fn proto_number_with_color_stays_outside_reset() -> Result<(), TestError> {
         // Adversarial: the number must not land inside the ANSI color span
         // for the method, which would corrupt the escape sequence.
-        let msg = make_invite();
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Always,
             show_proto_number: true,
@@ -656,18 +672,19 @@ mod tests {
         let output = format_sip_message(&msg, &opts, None);
         assert!(output.contains("UDP(17)"), "got {output}");
         // The transport annotation sits after the method's RESET.
-        let reset_pos = output.find(RESET).expect("reset present");
-        let tag_pos = output.find("UDP(17)").expect("tag present");
+        let reset_pos = output.find(RESET).ok_or("reset present")?;
+        let tag_pos = output.find("UDP(17)").ok_or("tag present")?;
         assert!(tag_pos > reset_pos, "transport tag must follow reset");
+        Ok(())
     }
 
     /// A negative sub-second delta (previous message is newer than the
     /// current one, e.g. out-of-order capture) keeps its negative sign.
     #[test]
-    fn delta_time_negative_sub_second_keeps_sign() {
-        let msg = make_invite();
+    fn delta_time_negative_sub_second_keeps_sign() -> Result<(), TestError> {
+        let msg = make_invite()?;
         // prev is 500 ms *after* msg.timestamp → delta is -500 ms.
-        let prev = ts() + chrono::TimeDelta::milliseconds(500);
+        let prev = ts()? + chrono::TimeDelta::milliseconds(500);
         let opts = OutputOptions {
             color: ColorMode::Never,
             delta_time: true,
@@ -679,12 +696,13 @@ mod tests {
             output.contains("-0.500s"),
             "negative sub-second delta must keep its sign: got {output}"
         );
+        Ok(())
     }
 
     /// Delta-time with no previous message renders `+0.000s`.
     #[test]
-    fn delta_time_no_previous() {
-        let msg = make_invite();
+    fn delta_time_no_previous() -> Result<(), TestError> {
+        let msg = make_invite()?;
         let opts = OutputOptions {
             color: ColorMode::Never,
             delta_time: true,
@@ -696,5 +714,6 @@ mod tests {
             output.contains("+0.000s"),
             "should show zero delta when no previous"
         );
+        Ok(())
     }
 }

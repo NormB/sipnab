@@ -439,6 +439,8 @@ fn mapping_disabled() -> bool {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// No frame may alias the mapping.
     ///
     /// This is the invariant [`MappedPcap::release_behind`] rests on: it hands
@@ -448,10 +450,10 @@ mod tests {
     /// ADDRESS is outside the mapping, which is the only form of the claim that
     /// can fail when the invariant breaks.
     #[test]
-    fn no_frame_aliases_the_mapping_it_was_read_from() {
+    fn no_frame_aliases_the_mapping_it_was_read_from() -> Result<(), TestError> {
         let mut mapped = MappedPcap::open(std::path::Path::new("tests/fixtures/sip_call.pcap"))
-            .expect("fixture opens")
-            .expect("fixture maps");
+            .map_err(|e| format!("fixture opens: {e:?}"))?
+            .ok_or("fixture maps")?;
         let base = mapped.whole.as_ptr() as usize;
         let end = base + mapped.whole.len();
 
@@ -468,52 +470,63 @@ mod tests {
             checked += 1;
         }
         assert!(checked > 0, "fixture had frames to check");
+        Ok(())
     }
 
     /// `caplen` is what [`crate::capture::packet::Packet::from_bytes`]
     /// debug-asserts against `data.len()`, so it must be derived from the data
     /// rather than from a header field that a malformed file controls.
     #[test]
-    fn caplen_always_matches_the_data_length() {
+    fn caplen_always_matches_the_data_length() -> Result<(), TestError> {
         let mut mapped = MappedPcap::open(std::path::Path::new("tests/fixtures/udp_5060.pcap"))
-            .expect("fixture opens")
-            .expect("fixture maps");
+            .map_err(|e| format!("fixture opens: {e:?}"))?
+            .ok_or("fixture maps")?;
         let mut n = 0;
         while let Some(frame) = mapped.next_frame() {
             assert_eq!(frame.caplen, frame.data.len());
             n += 1;
         }
         assert!(n > 0);
+        Ok(())
     }
 
     /// A record whose length field claims more than the file holds must stop
     /// the read, not panic and not read past the mapping.
     #[test]
-    fn a_record_longer_than_the_file_stops_the_read() {
-        let mut bytes = std::fs::read("tests/fixtures/sip_call.pcap").expect("fixture reads");
+    fn a_record_longer_than_the_file_stops_the_read() -> Result<(), TestError> {
+        let mut bytes = std::fs::read("tests/fixtures/sip_call.pcap")
+            .map_err(|e| format!("fixture reads: {e:?}"))?;
         // The first record header sits at 24; its caplen is bytes 8..12 of it.
         let caplen_at = 24 + 8;
         bytes[caplen_at..caplen_at + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("lying.pcap");
-        std::fs::write(&path, &bytes).expect("write");
+        std::fs::write(&path, &bytes).map_err(|e| format!("write: {e:?}"))?;
 
-        if let Some(mut mapped) = MappedPcap::open(&path).expect("open succeeds") {
+        if let Some(mut mapped) =
+            MappedPcap::open(&path).map_err(|e| format!("open succeeds: {e:?}"))?
+        {
             // Must terminate. Any frame it does yield must fit in the file.
             let limit = bytes.len();
             while let Some(frame) = mapped.next_frame() {
                 assert!(frame.data.len() <= limit, "read past the mapping");
             }
         }
+        Ok(())
     }
 
     /// Declining is a routine outcome, so it must not be reported as an error.
     #[test]
-    fn a_directory_and_an_empty_file_decline_without_erroring() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_directory_and_an_empty_file_decline_without_erroring() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let empty = dir.path().join("empty.pcap");
-        std::fs::write(&empty, b"").expect("write");
-        assert!(MappedPcap::open(&empty).expect("no error").is_none());
+        std::fs::write(&empty, b"").map_err(|e| format!("write: {e:?}"))?;
+        assert!(
+            MappedPcap::open(&empty)
+                .map_err(|e| format!("no error: {e:?}"))?
+                .is_none()
+        );
+        Ok(())
     }
 
     // ── Synthetic captures, built byte by byte ───────────────────────────
@@ -570,51 +583,54 @@ mod tests {
     }
 
     /// Write `bytes` into a fresh temp directory and open the result.
-    fn open_bytes(bytes: &[u8]) -> (tempfile::TempDir, Option<MappedPcap>) {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn open_bytes(bytes: &[u8]) -> Result<(tempfile::TempDir, Option<MappedPcap>), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
         let path = dir.path().join("capture.pcap");
-        std::fs::write(&path, bytes).expect("write");
-        let mapped = MappedPcap::open(&path).expect("a regular file opens");
-        (dir, mapped)
+        std::fs::write(&path, bytes).map_err(|e| format!("write: {e:?}"))?;
+        let mapped = MappedPcap::open(&path).map_err(|e| format!("a regular file opens: {e:?}"))?;
+        Ok((dir, mapped))
     }
 
     /// Smaller than a pcap header cannot be a pcap. Declined, not an error,
     /// so the caller falls back to libpcap and lets it say what is wrong.
     #[test]
-    fn a_file_shorter_than_a_pcap_header_is_declined() {
-        let (_dir, mapped) = open_bytes(&[0xD4, 0xC3, 0xB2, 0xA1, 0, 0, 0, 0, 0, 0]);
+    fn a_file_shorter_than_a_pcap_header_is_declined() -> Result<(), TestError> {
+        let (_dir, mapped) = open_bytes(&[0xD4, 0xC3, 0xB2, 0xA1, 0, 0, 0, 0, 0, 0])?;
         assert!(mapped.is_none());
+        Ok(())
     }
 
     /// pcapng, gzip and anything else that is not a classic pcap are
     /// declined, so the libpcap path reads them.
     #[test]
-    fn a_file_that_is_not_a_classic_pcap_is_declined() {
+    fn a_file_that_is_not_a_classic_pcap_is_declined() -> Result<(), TestError> {
         let mut pcapng = vec![0x0A, 0x0D, 0x0D, 0x0A, 28, 0, 0, 0, 0x4D, 0x3C, 0x2B, 0x1A];
         pcapng.resize(28, 0);
         let mut gzip = vec![0x1F, 0x8B, 0x08, 0x00];
         gzip.resize(64, 0);
         for bytes in [pcapng, gzip] {
-            let (_dir, mapped) = open_bytes(&bytes);
+            let (_dir, mapped) = open_bytes(&bytes)?;
             assert!(mapped.is_none(), "declined: {:02x?}", &bytes[..4]);
         }
+        Ok(())
     }
 
     /// A link type too large to report as libpcap's `int` datalink is
     /// declined rather than reported as a negative number.
     #[test]
-    fn a_link_type_libpcap_cannot_report_is_declined() {
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 0x8000_0000, &[rec(b"x")]));
+    fn a_link_type_libpcap_cannot_report_is_declined() -> Result<(), TestError> {
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 0x8000_0000, &[rec(b"x")]))?;
         assert!(mapped.is_none());
+        Ok(())
     }
 
     /// The file's own link type is what callers stamp frames with, and the
     /// debug form names the mapping without dumping it.
     #[test]
-    fn the_files_link_type_is_reported_and_the_debug_form_is_a_summary() {
+    fn the_files_link_type_is_reported_and_the_debug_form_is_a_summary() -> Result<(), TestError> {
         let bytes = pcap(false, false, 113, &[rec(b"frame")]);
-        let (_dir, mapped) = open_bytes(&bytes);
-        let mapped = mapped.expect("a classic pcap maps");
+        let (_dir, mapped) = open_bytes(&bytes)?;
+        let mapped = mapped.ok_or("a classic pcap maps")?;
         assert_eq!(mapped.link_type(), 113, "LINUX_SLL, as the header says");
         let debug = format!("{mapped:?}");
         assert!(debug.starts_with("MappedPcap"), "{debug}");
@@ -625,21 +641,22 @@ mod tests {
         );
         assert!(debug.contains("link_type: 113"), "{debug}");
         assert!(!debug.contains("frame"), "no file contents: {debug}");
+        Ok(())
     }
 
     /// A nanosecond-resolution file keeps every digit of its fraction; a
     /// microsecond one is scaled up to nanoseconds.
     #[test]
-    fn fractions_are_read_in_the_resolution_the_magic_declares() {
+    fn fractions_are_read_in_the_resolution_the_magic_declares() -> Result<(), TestError> {
         let nano = Rec {
             frac: 123_456_789,
             ..rec(b"n")
         };
-        let (_d1, mapped) = open_bytes(&pcap(false, true, 1, &[nano]));
+        let (_d1, mapped) = open_bytes(&pcap(false, true, 1, &[nano]))?;
         let t = mapped
-            .expect("maps")
+            .ok_or("maps")?
             .next_frame()
-            .expect("a frame")
+            .ok_or("a frame")?
             .timestamp;
         assert_eq!(t.timestamp(), 1_700_000_000);
         assert_eq!(t.timestamp_subsec_nanos(), 123_456_789);
@@ -648,72 +665,78 @@ mod tests {
             frac: 654_321,
             ..rec(b"u")
         };
-        let (_d2, mapped) = open_bytes(&pcap(false, false, 1, &[micro]));
+        let (_d2, mapped) = open_bytes(&pcap(false, false, 1, &[micro]))?;
         let t = mapped
-            .expect("maps")
+            .ok_or("maps")?
             .next_frame()
-            .expect("a frame")
+            .ok_or("a frame")?
             .timestamp;
         assert_eq!(t.timestamp_subsec_nanos(), 654_321_000);
+        Ok(())
     }
 
     /// A fraction too large for its unit is clamped to the last nanosecond of
     /// the second, not dropped: libpcap hands that record over, so must this.
     #[test]
-    fn a_fraction_past_one_second_is_clamped_not_dropped() {
+    fn a_fraction_past_one_second_is_clamped_not_dropped() -> Result<(), TestError> {
         let bad = Rec {
             frac: 2_000_000,
             ..rec(b"late")
         };
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[bad]));
-        let frame = mapped.expect("maps").next_frame().expect("still a frame");
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[bad]))?;
+        let frame = mapped.ok_or("maps")?.next_frame().ok_or("still a frame")?;
         assert_eq!(frame.timestamp.timestamp(), 1_700_000_000, "same second");
         assert_eq!(frame.timestamp.timestamp_subsec_nanos(), 999_999_999);
         assert_eq!(&frame.data[..], b"late");
+        Ok(())
     }
 
     /// A snapped frame reports the wire length it was cut from.
     #[test]
-    fn a_snapped_frame_keeps_its_wire_length() {
+    fn a_snapped_frame_keeps_its_wire_length() -> Result<(), TestError> {
         let snapped = Rec {
             orig: 1500,
             ..rec(&[7u8; 96])
         };
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[snapped]));
-        let frame = mapped.expect("maps").next_frame().expect("a frame");
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[snapped]))?;
+        let frame = mapped.ok_or("maps")?.next_frame().ok_or("a frame")?;
         assert_eq!((frame.caplen, frame.origlen), (96, 1500));
+        Ok(())
     }
 
     /// Reading to a clean end is not a truncation.
     #[test]
-    fn a_clean_end_is_not_a_truncation() {
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(b"a"), rec(b"b")]));
-        let mut mapped = mapped.expect("maps");
+    fn a_clean_end_is_not_a_truncation() -> Result<(), TestError> {
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(b"a"), rec(b"b")]))?;
+        let mut mapped = mapped.ok_or("maps")?;
         assert!(mapped.next_frame().is_some() && mapped.next_frame().is_some());
         assert!(mapped.next_frame().is_none());
         assert_eq!(mapped.truncation(), None);
+        Ok(())
     }
 
     /// A file that ends inside a record HEADER stops cleanly and says how many
     /// bytes were left, with no claimed length to report.
     #[test]
-    fn a_file_cut_inside_a_record_header_reports_what_was_left() {
+    fn a_file_cut_inside_a_record_header_reports_what_was_left() -> Result<(), TestError> {
         let mut bytes = pcap(false, false, 1, &[rec(b"whole")]);
         bytes.extend_from_slice(&[0xEE; 10]);
-        let (_dir, mapped) = open_bytes(&bytes);
-        let mut mapped = mapped.expect("maps");
+        let (_dir, mapped) = open_bytes(&bytes)?;
+        let mut mapped = mapped.ok_or("maps")?;
         assert_eq!(
-            &mapped.next_frame().expect("the whole record").data[..],
+            &mapped.next_frame().ok_or("the whole record")?.data[..],
             b"whole"
         );
         assert!(mapped.next_frame().is_none(), "the fragment is not a frame");
         assert_eq!(mapped.truncation(), Some((0, 10)));
+        Ok(())
     }
 
     /// A file that ends inside a record BODY reports the length the header
     /// claimed, read in the file's own byte order, against what is there.
     #[test]
-    fn a_file_cut_inside_a_record_body_reports_the_claimed_length_in_either_byte_order() {
+    fn a_file_cut_inside_a_record_body_reports_the_claimed_length_in_either_byte_order()
+    -> Result<(), TestError> {
         for big_endian in [false, true] {
             let mut bytes = pcap(big_endian, false, 1, &[rec(b"whole")]);
             let claim = |v: u32| {
@@ -728,8 +751,8 @@ mod tests {
             bytes.extend_from_slice(&claim(500)); // incl_len
             bytes.extend_from_slice(&claim(500)); // orig_len
             bytes.extend_from_slice(&[0xEE; 20]);
-            let (_dir, mapped) = open_bytes(&bytes);
-            let mut mapped = mapped.expect("maps");
+            let (_dir, mapped) = open_bytes(&bytes)?;
+            let mut mapped = mapped.ok_or("maps")?;
             assert!(mapped.next_frame().is_some());
             assert!(mapped.next_frame().is_none());
             assert_eq!(
@@ -738,22 +761,24 @@ mod tests {
                 "big_endian={big_endian}"
             );
         }
+        Ok(())
     }
 
     /// A frame larger than the 64 KiB block gets a block of its own and is
     /// read whole, and the frame after it is unaffected.
     #[test]
-    fn a_frame_larger_than_the_block_is_read_whole() {
+    fn a_frame_larger_than_the_block_is_read_whole() -> Result<(), TestError> {
         let jumbo: Vec<u8> = (0..70_000u32).map(|i| (i % 253) as u8).collect();
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(&jumbo), rec(b"after")]));
-        let mut mapped = mapped.expect("maps");
-        let first = mapped.next_frame().expect("the jumbo frame");
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &[rec(&jumbo), rec(b"after")]))?;
+        let mut mapped = mapped.ok_or("maps")?;
+        let first = mapped.next_frame().ok_or("the jumbo frame")?;
         assert_eq!(first.data.len(), 70_000);
         assert_eq!(&first.data[..], &jumbo[..]);
         assert_eq!(
-            &mapped.next_frame().expect("the next frame").data[..],
+            &mapped.next_frame().ok_or("the next frame")?.data[..],
             b"after"
         );
+        Ok(())
     }
 
     /// Pages the read has passed are handed back a chunk at a time, on page
@@ -761,11 +786,11 @@ mod tests {
     /// that is still intact, because frames are copies and never borrow the
     /// released pages.
     #[test]
-    fn pages_behind_the_cursor_are_released_without_disturbing_frames() {
+    fn pages_behind_the_cursor_are_released_without_disturbing_frames() -> Result<(), TestError> {
         let frames: Vec<Vec<u8>> = (0..140u8).map(|i| vec![i; 65_535]).collect();
         let records: Vec<Rec<'_>> = frames.iter().map(|f| rec(f)).collect();
-        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &records));
-        let mut mapped = mapped.expect("maps");
+        let (_dir, mapped) = open_bytes(&pcap(false, false, 1, &records))?;
+        let mut mapped = mapped.ok_or("maps")?;
 
         let mut read = 0u8;
         while let Some(frame) = mapped.next_frame() {
@@ -783,5 +808,6 @@ mod tests {
         );
         assert_eq!(mapped.released % page_size(), 0, "on a page boundary");
         assert!(mapped.released <= mapped.cursor, "never ahead of the read");
+        Ok(())
     }
 }

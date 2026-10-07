@@ -280,11 +280,13 @@ mod tests {
     use super::*;
     use crate::tui::Popup;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A filter expression that fails to parse must keep the dialog open
     /// with an inline error (mirroring the file-open dialog) instead of
     /// closing and discarding the user's typed values.
     #[test]
-    fn invalid_filter_expression_keeps_dialog_open_with_inline_error() {
+    fn invalid_filter_expression_keeps_dialog_open_with_inline_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.filter_dialog.sip_from = "alice".to_string();
         app.active_popup = Some(Popup::FilterDialog);
@@ -319,6 +321,7 @@ mod tests {
         assert!(app.active_popup.is_none(), "valid filter closes the dialog");
         assert!(app.filter_dialog.error.is_none());
         assert!(app.active_filter.is_some());
+        Ok(())
     }
 
     /// The time bounds parse through `apply_filter_dialog`: a malformed
@@ -326,9 +329,12 @@ mod tests {
     /// and applies nothing, while a good pair sets the active window and closes
     /// — even with no DSL filter, since the DSL has no wall-clock field.
     #[test]
-    fn apply_filter_dialog_applies_a_time_window_and_flags_a_bad_one() {
-        let at =
-            |h: u32| chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, h, 0, 0).unwrap();
+    fn apply_filter_dialog_applies_a_time_window_and_flags_a_bad_one() -> Result<(), TestError> {
+        let at = |h: u32| -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, h, 0, 0)
+                .single()
+                .ok_or_else(|| format!("hour {h} is not a valid timestamp").into())
+        };
         let mut app = App::new_test();
         app.active_popup = Some(Popup::FilterDialog);
 
@@ -363,8 +369,8 @@ mod tests {
             "a valid window closes the dialog"
         );
         assert!(app.filter_dialog.error.is_none());
-        assert_eq!(app.active_time_after, Some(at(8)));
-        assert_eq!(app.active_time_before, Some(at(9)));
+        assert_eq!(app.active_time_after, Some(at(8)?));
+        assert_eq!(app.active_time_before, Some(at(9)?));
         assert!(
             app.active_filter.is_none(),
             "no DSL filter was set, only a window"
@@ -374,6 +380,7 @@ mod tests {
             "the status text names the window: {}",
             app.active_filter_text
         );
+        Ok(())
     }
 }
 
@@ -387,6 +394,8 @@ mod all_checkbox_order_tests {
         METHOD_CHECKBOX_BASE, Popup,
     };
     use crossterm::event::KeyModifiers;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
@@ -403,7 +412,7 @@ mod all_checkbox_order_tests {
     /// cursor on char boundaries — no mid-character `String::insert`/`remove`
     /// panics.
     #[test]
-    fn multibyte_text_editing_is_char_boundary_safe() {
+    fn multibyte_text_editing_is_char_boundary_safe() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_filter(&mut app);
 
@@ -421,12 +430,13 @@ mod all_checkbox_order_tests {
         assert_eq!(app.filter_dialog.text_field(0), "x");
         handle_filter_popup_key(&mut app, key(KeyCode::Delete)); // drop 'x'
         assert_eq!(app.filter_dialog.text_field(0), "");
+        Ok(())
     }
 
     /// Tab order after the reorder: text fields → All → methods (REGISTER
     /// first) → Filter → Cancel → wrap. Space on All toggles every method.
     #[test]
-    fn tab_traversal_visits_all_before_methods_and_wraps() {
+    fn tab_traversal_visits_all_before_methods_and_wraps() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_filter(&mut app);
         assert_eq!(app.filter_dialog.focused_field, 0);
@@ -471,13 +481,14 @@ mod all_checkbox_order_tests {
         // Shift-Tab walks backward to Cancel.
         handle_filter_popup_key(&mut app, key(KeyCode::BackTab));
         assert_eq!(app.filter_dialog.focused_field, CANCEL_BUTTON_IDX);
+        Ok(())
     }
 
     /// Arrow navigation through the reordered rows: Down from All lands on
     /// REGISTER; Up from REGISTER returns to All; Down from the bottom-right
     /// method reaches the buttons; Up from All returns to the text fields.
     #[test]
-    fn arrow_navigation_respects_all_above_methods() {
+    fn arrow_navigation_respects_all_above_methods() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_filter(&mut app);
         app.filter_dialog.focused_field = ALL_METHODS_IDX;
@@ -508,12 +519,13 @@ mod all_checkbox_order_tests {
             app.filter_dialog.focused_field, FILTER_BUTTON_IDX,
             "Down from the bottom-right method reaches the buttons"
         );
+        Ok(())
     }
 
     /// Space still applies/cancels on the buttons and toggles single
     /// methods after the index reshuffle.
     #[test]
-    fn space_semantics_survive_the_reorder() {
+    fn space_semantics_survive_the_reorder() -> Result<(), TestError> {
         let mut app = App::new_test();
         open_filter(&mut app);
         app.filter_dialog.focused_field = METHOD_CHECKBOX_BASE; // REGISTER
@@ -524,6 +536,7 @@ mod all_checkbox_order_tests {
         app.filter_dialog.focused_field = CANCEL_BUTTON_IDX;
         handle_filter_popup_key(&mut app, key(KeyCode::Char(' ')));
         assert!(app.active_popup.is_none(), "Space on Cancel closes");
+        Ok(())
     }
 }
 
@@ -535,6 +548,8 @@ mod key_handling_tests {
     use super::*;
     use crate::tui::{FilterDialogState, Popup};
     use crossterm::event::KeyModifiers;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
@@ -552,7 +567,7 @@ mod key_handling_tests {
     /// Enter on Cancel closes the dialog WITHOUT applying what was typed;
     /// Enter on any other element applies it and closes.
     #[test]
-    fn enter_on_cancel_discards_and_enter_elsewhere_applies() {
+    fn enter_on_cancel_discards_and_enter_elsewhere_applies() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_from = "alice".to_string();
         app.filter_dialog.focused_field = CANCEL_BUTTON_IDX;
@@ -570,11 +585,12 @@ mod key_handling_tests {
             "status text: {}",
             app.active_filter_text
         );
+        Ok(())
     }
 
     /// Space on the Filter button applies, exactly as Enter does.
     #[test]
-    fn space_on_the_filter_button_applies() {
+    fn space_on_the_filter_button_applies() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_to = "bob".to_string();
         app.filter_dialog.focused_field = FILTER_BUTTON_IDX;
@@ -585,13 +601,14 @@ mod key_handling_tests {
             "status text: {}",
             app.active_filter_text
         );
+        Ok(())
     }
 
     /// Shift-Tab (as terminals that report the modifier send it) walks focus
     /// backward like BackTab, and landing on a text field puts the cursor at
     /// the end of its text.
     #[test]
-    fn shift_tab_walks_focus_backward_and_parks_the_cursor_at_the_end() {
+    fn shift_tab_walks_focus_backward_and_parks_the_cursor_at_the_end() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_from = "abc".to_string();
         app.filter_dialog.focused_field = 2;
@@ -600,12 +617,13 @@ mod key_handling_tests {
         handle_filter_popup_key(&mut app, key(KeyCode::BackTab));
         assert_eq!(app.filter_dialog.focused_field, 0);
         assert_eq!(app.filter_dialog.cursor_pos, 3, "cursor at end of 'abc'");
+        Ok(())
     }
 
     /// Outside the method grid, Down and Up move focus to the next and
     /// previous element rather than navigating checkboxes.
     #[test]
-    fn arrows_outside_the_method_grid_move_between_fields() {
+    fn arrows_outside_the_method_grid_move_between_fields() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_to = "xy".to_string();
         handle_filter_popup_key(&mut app, key(KeyCode::Down));
@@ -619,12 +637,13 @@ mod key_handling_tests {
         assert_eq!(app.filter_dialog.focused_field, CANCEL_BUTTON_IDX);
         handle_filter_popup_key(&mut app, key(KeyCode::Up));
         assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
+        Ok(())
     }
 
     /// F9 empties every field, re-checks every method, drops the active
     /// filter and the status error, and closes the dialog.
     #[test]
-    fn f9_clears_the_fields_and_the_active_filter_and_closes() {
+    fn f9_clears_the_fields_and_the_active_filter_and_closes() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.payload = "needle".to_string();
         app.filter_dialog.methods[0] = false;
@@ -643,12 +662,14 @@ mod key_handling_tests {
             app.filter_dialog.methods.iter().all(|&m| m),
             "every method re-checked"
         );
+        Ok(())
     }
 
     /// Home and End jump to the ends of the focused text field, and typing
     /// inserts at the cursor rather than appending.
     #[test]
-    fn home_and_end_jump_within_the_field_and_typing_inserts_at_the_cursor() {
+    fn home_and_end_jump_within_the_field_and_typing_inserts_at_the_cursor() -> Result<(), TestError>
+    {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_from = "hello".to_string();
         app.filter_dialog.cursor_pos = 2;
@@ -659,13 +680,14 @@ mod key_handling_tests {
         assert_eq!(app.filter_dialog.cursor_pos, 1);
         handle_filter_popup_key(&mut app, key(KeyCode::End));
         assert_eq!(app.filter_dialog.cursor_pos, "Xhello".len());
+        Ok(())
     }
 
     /// At the edges of a field, Backspace at the start, Delete and Right at
     /// the end change nothing; a key the dialog does not bind changes
     /// nothing; and text keys on a button type nowhere.
     #[test]
-    fn edits_past_the_field_edges_and_text_keys_on_a_button_are_no_ops() {
+    fn edits_past_the_field_edges_and_text_keys_on_a_button_are_no_ops() -> Result<(), TestError> {
         let mut app = app_with_open_filter();
         app.filter_dialog.sip_from = "ab".to_string();
         app.filter_dialog.cursor_pos = 0;
@@ -689,5 +711,6 @@ mod key_handling_tests {
         assert_eq!(app.filter_dialog.sip_from, "ab", "a button is not a field");
         assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
         assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+        Ok(())
     }
 }

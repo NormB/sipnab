@@ -1412,16 +1412,22 @@ mod tests {
     use crate::tui::render::test_support::*;
     use crate::tui::{NameTarget, NoteEditorState, Popup};
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Flatten a rendered frame to text, one line per row.
-    fn frame_text(buf: &ratatui::buffer::Buffer) -> String {
+    fn frame_text(buf: &ratatui::buffer::Buffer) -> Result<String, TestError> {
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             text.push('\n');
         }
-        text
+        Ok(text)
     }
 
     /// An `App` whose Name Address popup offers two endpoints.
@@ -1452,16 +1458,14 @@ mod tests {
     ///
     /// A popup that does not say how to close it is the worst line to lose.
     #[test]
-    fn name_popup_shows_its_whole_hint_including_how_to_cancel() {
+    fn name_popup_shows_its_whole_hint_including_how_to_cancel() -> Result<(), TestError> {
         let app = app_naming_two();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_name_popup(frame, area, &app);
-            })
-            .unwrap();
-        let text = frame_text(terminal.backend().buffer());
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_name_popup(frame, area, &app);
+        })?;
+        let text = frame_text(terminal.backend().buffer())?;
 
         for fragment in [
             "Tab switch endpoint",
@@ -1477,6 +1481,7 @@ mod tests {
                  stuck.\n{text}"
             );
         }
+        Ok(())
     }
 
     /// The single-endpoint hint fits too.
@@ -1484,26 +1489,25 @@ mod tests {
     /// The other arm of the same branch. It happened to fit at width 60, which
     /// is exactly why the bug survived: the common case looked right.
     #[test]
-    fn name_popup_single_endpoint_shows_its_whole_hint() {
+    fn name_popup_single_endpoint_shows_its_whole_hint() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.name_dialog.targets = vec![NameTarget {
             ip: "192.0.2.10".to_string(),
             name: String::new(),
         }];
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_name_popup(frame, area, &app);
-            })
-            .unwrap();
-        let text = frame_text(terminal.backend().buffer());
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_name_popup(frame, area, &app);
+        })?;
+        let text = frame_text(terminal.backend().buffer())?;
         for fragment in ["Enter save", "empty name clears", "Esc cancel"] {
             assert!(
                 text.contains(fragment),
                 "the single-endpoint popup truncated {fragment:?}\n{text}"
             );
         }
+        Ok(())
     }
 
     /// Every popup entry point, rendered, with the text it must not lose.
@@ -1519,35 +1523,54 @@ mod tests {
     /// own text is a bug; one squeezed by an 80-column terminal is a
     /// trade-off.
     /// One overlay: its name, and the call that draws it into a frame.
-    type Overlay = (&'static str, fn(&mut ratatui::Frame, Rect, &App));
+    type Overlay = (
+        &'static str,
+        fn(&mut ratatui::Frame, Rect, &App) -> Result<(), TestError>,
+    );
 
     fn popup_renders() -> Vec<Overlay> {
         vec![
-            ("save", |f, a, app| render_save_popup(f, a, app)),
-            ("name", |f, a, app| render_name_popup(f, a, app)),
-            ("file_open", |f, a, app| render_file_open_popup(f, a, app)),
-            ("settings", |f, a, app| render_settings_popup(f, a, app)),
+            ("save", |f, a, app| {
+                render_save_popup(f, a, app);
+                Ok(())
+            }),
+            ("name", |f, a, app| {
+                render_name_popup(f, a, app);
+                Ok(())
+            }),
+            ("file_open", |f, a, app| {
+                render_file_open_popup(f, a, app);
+                Ok(())
+            }),
+            ("settings", |f, a, app| {
+                render_settings_popup(f, a, app);
+                Ok(())
+            }),
             ("filter", |f, a, app| {
-                render_filter_popup(f, a, &app.filter_dialog, &app.theme)
+                render_filter_popup(f, a, &app.filter_dialog, &app.theme);
+                Ok(())
             }),
             ("quit_confirm", |f, a, app| {
-                render_quit_confirm_popup(f, a, app)
+                render_quit_confirm_popup(f, a, app);
+                Ok(())
             }),
             // The editor draws only while a note is being typed, so it is
             // rendered here with one open, on an operator's longest line.
             ("note_editor", |f, a, _app| {
                 let mut app = App::new_test();
                 let frame = crate::capture::resolve::parse_pointer("cap.pcap#0@00000000000000a1")
-                    .expect("a test pointer");
+                    .map_err(|e| format!("a test pointer: {e:?}"))?;
                 let mut editor = crate::annotate::tui::NoteEditor::new(None);
                 for c in "the 183 here carried a second SDP answer the SBC never acked".chars() {
                     editor.insert(c);
                 }
                 app.note_editor = Some(NoteEditorState { frame, editor });
-                render_note_editor_popup(f, a, &app)
+                render_note_editor_popup(f, a, &app);
+                Ok(())
             }),
             ("unsaved_notes", |f, a, app| {
-                render_unsaved_notes_popup(f, a, app)
+                render_unsaved_notes_popup(f, a, app);
+                Ok(())
             }),
             // Drawn only while a load waits on a password, so rendered with
             // one open: a long archive and member name, after a wrong try.
@@ -1567,7 +1590,8 @@ mod tests {
                         reply,
                     },
                 ));
-                render_archive_password_popup(f, a, &app)
+                render_archive_password_popup(f, a, &app);
+                Ok(())
             }),
         ]
     }
@@ -1578,20 +1602,20 @@ mod tests {
     /// of text a stuck user needs, and it is always last in the hint -- which
     /// makes it the first thing a too-narrow popup drops.
     #[test]
-    fn every_popup_renders_its_exit_key_in_full() {
+    fn every_popup_renders_its_exit_key_in_full() -> Result<(), TestError> {
         let mut app = app_naming_two();
         app.filter_dialog = FilterDialogState::default();
         let mut checked = 0;
 
         for (name, render) in popup_renders() {
-            let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render(frame, area, &app);
-                })
-                .unwrap();
-            let text = frame_text(terminal.backend().buffer());
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))?;
+            let mut rendered: Result<(), TestError> = Ok(());
+            terminal.draw(|frame| {
+                let area = frame.area();
+                rendered = render(frame, area, &app);
+            })?;
+            rendered?;
+            let text = frame_text(terminal.backend().buffer())?;
             checked += 1;
             assert!(
                 text.contains("Esc"),
@@ -1606,6 +1630,7 @@ mod tests {
             "only {checked} popup(s) exercised; the table is not covering the \
              module and this gate proves little"
         );
+        Ok(())
     }
 
     /// The table covers every popup the module exposes.
@@ -1613,7 +1638,7 @@ mod tests {
     /// Without this, a popup added later is simply absent from the gate --
     /// and an uncovered popup looks exactly like a covered one that passes.
     #[test]
-    fn the_popup_table_covers_every_popup_entry_point() {
+    fn the_popup_table_covers_every_popup_entry_point() -> Result<(), TestError> {
         let src = include_str!("popups.rs");
         let exposed: Vec<&str> = src
             .lines()
@@ -1649,6 +1674,7 @@ mod tests {
                  {covered:?}"
             );
         }
+        Ok(())
     }
 
     /// The name popup grows for content a constant width could not have known.
@@ -1658,7 +1684,7 @@ mod tests {
     /// the original 60 was chosen for, and a wider constant would fail the
     /// same way one address later.
     #[test]
-    fn name_popup_grows_for_long_addresses_and_an_error() {
+    fn name_popup_grows_for_long_addresses_and_an_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.name_dialog.targets = vec![
             NameTarget {
@@ -1672,14 +1698,12 @@ mod tests {
         ];
         app.name_dialog.error = Some("a name may not contain a space".to_string());
 
-        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_name_popup(frame, area, &app);
-            })
-            .unwrap();
-        let text = frame_text(terminal.backend().buffer());
+        let mut terminal = Terminal::new(TestBackend::new(160, 40))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_name_popup(frame, area, &app);
+        })?;
+        let text = frame_text(terminal.backend().buffer())?;
 
         for fragment in [
             "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
@@ -1693,6 +1717,7 @@ mod tests {
                  or an error will be\n{text}"
             );
         }
+        Ok(())
     }
 
     /// A terminal too narrow for the popup does not panic.
@@ -1701,17 +1726,18 @@ mod tests {
     /// than the frame is an arithmetic underflow away from a crash, and the
     /// user resizing their terminal is not an error case.
     #[test]
-    fn name_popup_survives_a_terminal_narrower_than_its_content() {
+    fn name_popup_survives_a_terminal_narrower_than_its_content() -> Result<(), TestError> {
         let app = app_naming_two();
         for w in [10u16, 20, 30, 40, 66, 70] {
-            let mut terminal = Terminal::new(TestBackend::new(w, 12)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(w, 12))?;
             terminal
                 .draw(|frame| {
                     let area = frame.area();
                     render_name_popup(frame, area, &app);
                 })
-                .unwrap_or_else(|e| panic!("width {w} panicked: {e}"));
+                .map_err(|e| format!("width {w} panicked: {e}"))?;
         }
+        Ok(())
     }
 
     /// The text a rendered frame actually shows, borders and blanks stripped.
@@ -1719,8 +1745,8 @@ mod tests {
     /// Only rows carrying a letter or digit survive, so a box-drawing border
     /// -- whose width changes with the popup -- cannot make two renderings of
     /// the same content look different.
-    fn content_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
-        frame_text(buf)
+    fn content_lines(buf: &ratatui::buffer::Buffer) -> Result<Vec<String>, TestError> {
+        Ok(frame_text(buf)?
             .lines()
             .map(|l| {
                 l.chars()
@@ -1730,14 +1756,15 @@ mod tests {
                     .to_string()
             })
             .filter(|l| l.chars().any(|c| c.is_alphanumeric()))
-            .collect()
+            .collect())
     }
 
     /// Every overlay, including the one that does not live in this module.
     fn every_overlay() -> Vec<Overlay> {
         let mut all = popup_renders();
         all.push(("column_selector", |f, a, app| {
-            crate::tui::call_list::render_column_selector(f, a, &app.call_list, &app.theme)
+            crate::tui::call_list::render_column_selector(f, a, &app.call_list, &app.theme);
+            Ok(())
         }));
         all
     }
@@ -1753,26 +1780,26 @@ mod tests {
     /// This is what would have caught `N` without anyone knowing the hint's
     /// length, and it catches the next one the same way.
     #[test]
-    fn no_popup_shows_more_text_when_the_terminal_grows() {
+    fn no_popup_shows_more_text_when_the_terminal_grows() -> Result<(), TestError> {
         let app = app_naming_two();
         for (name, render) in every_overlay() {
-            let mut small = Terminal::new(TestBackend::new(100, 40)).unwrap();
-            small
-                .draw(|f| {
-                    let a = f.area();
-                    render(f, a, &app);
-                })
-                .unwrap();
-            let at_100 = content_lines(small.backend().buffer());
+            let mut small = Terminal::new(TestBackend::new(100, 40))?;
+            let mut rendered: Result<(), TestError> = Ok(());
+            small.draw(|f| {
+                let a = f.area();
+                rendered = render(f, a, &app);
+            })?;
+            rendered?;
+            let at_100 = content_lines(small.backend().buffer())?;
 
-            let mut large = Terminal::new(TestBackend::new(240, 60)).unwrap();
-            large
-                .draw(|f| {
-                    let a = f.area();
-                    render(f, a, &app);
-                })
-                .unwrap();
-            let at_240 = content_lines(large.backend().buffer());
+            let mut large = Terminal::new(TestBackend::new(240, 60))?;
+            let mut rendered: Result<(), TestError> = Ok(());
+            large.draw(|f| {
+                let a = f.area();
+                rendered = render(f, a, &app);
+            })?;
+            rendered?;
+            let at_240 = content_lines(large.backend().buffer())?;
 
             assert_eq!(
                 at_100, at_240,
@@ -1782,6 +1809,7 @@ mod tests {
                  a constant.\nat 100: {at_100:#?}\nat 240: {at_240:#?}"
             );
         }
+        Ok(())
     }
 
     /// Every overlay in the TUI is covered by these gates.
@@ -1792,7 +1820,7 @@ mod tests {
     /// selector` lives in `call_list.rs` and was missed by a table that only
     /// read this module.
     #[test]
-    fn every_tui_overlay_is_covered_by_these_gates() {
+    fn every_tui_overlay_is_covered_by_these_gates() -> Result<(), TestError> {
         let sources = [
             ("popups", include_str!("popups.rs")),
             ("call_list", include_str!("../call_list.rs")),
@@ -1825,6 +1853,7 @@ mod tests {
              {covered}. An uncovered popup looks exactly like a covered one \
              that passes."
         );
+        Ok(())
     }
 
     /// Every overlay names the key that closes it.
@@ -1834,23 +1863,24 @@ mod tests {
     /// the name popup, which named it and then cut it off. From the keyboard
     /// those are the same defect.
     #[test]
-    fn every_overlay_names_the_key_that_closes_it() {
+    fn every_overlay_names_the_key_that_closes_it() -> Result<(), TestError> {
         let app = app_naming_two();
         for (name, render) in every_overlay() {
-            let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
-            terminal
-                .draw(|f| {
-                    let a = f.area();
-                    render(f, a, &app);
-                })
-                .unwrap();
-            let text = frame_text(terminal.backend().buffer());
+            let mut terminal = Terminal::new(TestBackend::new(140, 44))?;
+            let mut rendered: Result<(), TestError> = Ok(());
+            terminal.draw(|f| {
+                let a = f.area();
+                rendered = render(f, a, &app);
+            })?;
+            rendered?;
+            let text = frame_text(terminal.backend().buffer())?;
             assert!(
                 text.contains("Esc"),
                 "the {name} overlay never names `Esc`, so a user has no way \
                  to learn how to leave it short of reading the source\n{text}"
             );
         }
+        Ok(())
     }
 
     /// Every overlay survives a terminal far too small for it.
@@ -1859,7 +1889,7 @@ mod tests {
     /// one subtraction away from a panic, and resizing a terminal is not an
     /// error case.
     #[test]
-    fn every_overlay_survives_a_tiny_terminal() {
+    fn every_overlay_survives_a_tiny_terminal() -> Result<(), TestError> {
         let app = app_naming_two();
         let mut crashed = Vec::new();
         for (name, render) in every_overlay() {
@@ -1869,16 +1899,19 @@ mod tests {
                 // every other one AND the message cannot say which overlay it
                 // was.
                 let app_ref = &app;
-                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-                    terminal
-                        .draw(|f| {
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), TestError> {
+                        let mut terminal = Terminal::new(TestBackend::new(w, h))?;
+                        let mut rendered: Result<(), TestError> = Ok(());
+                        terminal.draw(|f| {
                             let a = f.area();
-                            render(f, a, app_ref);
-                        })
-                        .unwrap();
-                }));
-                if ok.is_err() {
+                            rendered = render(f, a, app_ref);
+                        })?;
+                        rendered?;
+                        Ok(())
+                    },
+                ));
+                if !matches!(ok, Ok(Ok(()))) {
                     crashed.push(format!("  {name} at {w}x{h}"));
                 }
             }
@@ -1890,6 +1923,7 @@ mod tests {
              with it:\n{}",
             crashed.join("\n")
         );
+        Ok(())
     }
 
     /// Every overlay draws inside the frame it was given.
@@ -1899,17 +1933,17 @@ mod tests {
     /// is a dialog that is simply not there — which reads as the key having
     /// done nothing.
     #[test]
-    fn every_overlay_draws_something_inside_the_frame() {
+    fn every_overlay_draws_something_inside_the_frame() -> Result<(), TestError> {
         let app = app_naming_two();
         for (name, render) in every_overlay() {
-            let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
-            terminal
-                .draw(|f| {
-                    let a = f.area();
-                    render(f, a, &app);
-                })
-                .unwrap();
-            let drawn = content_lines(terminal.backend().buffer());
+            let mut terminal = Terminal::new(TestBackend::new(100, 40))?;
+            let mut rendered: Result<(), TestError> = Ok(());
+            terminal.draw(|f| {
+                let a = f.area();
+                rendered = render(f, a, &app);
+            })?;
+            rendered?;
+            let drawn = content_lines(terminal.backend().buffer())?;
             assert!(
                 !drawn.is_empty(),
                 "the {name} overlay drew no text at all inside a 100x40 \
@@ -1917,6 +1951,7 @@ mod tests {
                  nothing"
             );
         }
+        Ok(())
     }
 
     // ── crashes ────────────────────────────────────────────────────
@@ -1938,7 +1973,7 @@ mod tests {
     /// Each case is a different way to be out of bounds, and the answer to
     /// all of them is to draw nothing rather than to panic.
     #[test]
-    fn set_string_clipped_declines_every_out_of_bounds_write() {
+    fn set_string_clipped_declines_every_out_of_bounds_write() -> Result<(), TestError> {
         let area = Rect::new(2, 2, 6, 3); // x 2..8, y 2..5
         for (x, y, what) in [
             (2u16, 5u16, "one row below"),
@@ -1962,6 +1997,7 @@ mod tests {
                  rather than panic OR paint"
             );
         }
+        Ok(())
     }
 
     /// A write that starts inside is truncated at the right edge.
@@ -1970,21 +2006,34 @@ mod tests {
     /// value beginning one column inside would run through the border and out
     /// of the buffer.
     #[test]
-    fn set_string_clipped_truncates_at_the_right_edge() {
+    fn set_string_clipped_truncates_at_the_right_edge() -> Result<(), TestError> {
         let area = Rect::new(2, 2, 6, 3);
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 10));
         set_string_clipped(&mut buf, area, 6, 3, "ABCDEFGHIJ", Style::default());
 
         // Columns 6 and 7 are the last two inside the area.
-        assert_eq!(buf.cell((6, 3)).unwrap().symbol(), "A");
-        assert_eq!(buf.cell((7, 3)).unwrap().symbol(), "B");
+        assert_eq!(
+            buf.cell((6, 3))
+                .ok_or("the cell lies inside the buffer")?
+                .symbol(),
+            "A"
+        );
+        assert_eq!(
+            buf.cell((7, 3))
+                .ok_or("the cell lies inside the buffer")?
+                .symbol(),
+            "B"
+        );
         // Column 8 is outside it and must be untouched.
         assert_eq!(
-            buf.cell((8, 3)).unwrap().symbol(),
+            buf.cell((8, 3))
+                .ok_or("the cell lies inside the buffer")?
+                .symbol(),
             " ",
             "the write ran past the right edge of its area and into whatever \
              is drawn there -- a border, or another widget"
         );
+        Ok(())
     }
 
     /// A zero-sized area accepts nothing.
@@ -1992,7 +2041,7 @@ mod tests {
     /// The degenerate case a saturating subtraction produces on a 1x1
     /// terminal, where `inner` of a bordered block has no cells at all.
     #[test]
-    fn set_string_clipped_accepts_nothing_into_a_zero_sized_area() {
+    fn set_string_clipped_accepts_nothing_into_a_zero_sized_area() -> Result<(), TestError> {
         for area in [
             Rect::new(0, 0, 0, 0),
             Rect::new(3, 3, 0, 5),
@@ -2011,6 +2060,7 @@ mod tests {
                 area.height
             );
         }
+        Ok(())
     }
 
     /// Multibyte text is truncated on a character boundary.
@@ -2019,7 +2069,7 @@ mod tests {
     /// capture this tool is pointed at can carry a non-ASCII display name, so
     /// this is a routine input, not an exotic one.
     #[test]
-    fn set_string_clipped_truncates_multibyte_without_panicking() {
+    fn set_string_clipped_truncates_multibyte_without_panicking() -> Result<(), TestError> {
         let area = Rect::new(0, 0, 4, 1);
         for text in [
             "\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}\u{e9}",
@@ -2029,6 +2079,7 @@ mod tests {
             let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 10, 2));
             set_string_clipped(&mut buf, area, 0, 0, text, Style::default());
         }
+        Ok(())
     }
 
     /// Nothing in the TUI writes through the unguarded call.
@@ -2037,7 +2088,7 @@ mod tests {
     /// added next month calls `Buffer::set_string` directly -- which is the
     /// obvious thing to reach for, and what all 42 existing call sites did.
     #[test]
-    fn no_tui_code_writes_through_the_unguarded_set_string() {
+    fn no_tui_code_writes_through_the_unguarded_set_string() -> Result<(), TestError> {
         let mut offenders = Vec::new();
         let mut scanned = 0;
         for (name, src) in [
@@ -2069,6 +2120,7 @@ mod tests {
              `set_string_clipped`, which declines instead:\n{}",
             offenders.join("\n")
         );
+        Ok(())
     }
 
     /// Every overlay survives every terminal size worth having.
@@ -2077,22 +2129,26 @@ mod tests {
     /// crashes found here appeared at 4x3 and at 66x12 -- one absurd, one
     /// completely ordinary -- and no sampled list would have contained both.
     #[test]
-    fn every_overlay_survives_an_exhaustive_size_sweep() {
+    fn every_overlay_survives_an_exhaustive_size_sweep() -> Result<(), TestError> {
         let app = app_naming_two();
         let mut crashed = Vec::new();
         for (name, render) in every_overlay() {
             for w in 1u16..=90 {
                 for h in [1u16, 2, 3, 5, 8, 12, 20, 30] {
                     let app_ref = &app;
-                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-                        t.draw(|f| {
-                            let a = f.area();
-                            render(f, a, app_ref);
-                        })
-                        .unwrap();
-                    }));
-                    if ok.is_err() {
+                    let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                        || -> Result<(), TestError> {
+                            let mut t = Terminal::new(TestBackend::new(w, h))?;
+                            let mut rendered: Result<(), TestError> = Ok(());
+                            t.draw(|f| {
+                                let a = f.area();
+                                rendered = render(f, a, app_ref);
+                            })?;
+                            rendered?;
+                            Ok(())
+                        },
+                    ));
+                    if !matches!(ok, Ok(Ok(()))) {
                         crashed.push(format!("  {name} at {w}x{h}"));
                     }
                 }
@@ -2110,6 +2166,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        Ok(())
     }
 
     /// Overlays survive content far longer than anything they were sized for.
@@ -2118,7 +2175,7 @@ mod tests {
     /// long validation error and a long name at once, on a small terminal --
     /// which is the combination a constant width was never chosen for.
     #[test]
-    fn overlays_survive_extreme_content_on_a_small_terminal() {
+    fn overlays_survive_extreme_content_on_a_small_terminal() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.name_dialog.targets = (0..8)
             .map(|i| NameTarget {
@@ -2133,15 +2190,19 @@ mod tests {
         for (name, render) in every_overlay() {
             for (w, h) in [(1u16, 1u16), (8, 4), (20, 6), (40, 10), (80, 24), (120, 40)] {
                 let app_ref = &app;
-                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-                    t.draw(|f| {
-                        let a = f.area();
-                        render(f, a, app_ref);
-                    })
-                    .unwrap();
-                }));
-                if ok.is_err() {
+                let ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                    || -> Result<(), TestError> {
+                        let mut t = Terminal::new(TestBackend::new(w, h))?;
+                        let mut rendered: Result<(), TestError> = Ok(());
+                        t.draw(|f| {
+                            let a = f.area();
+                            rendered = render(f, a, app_ref);
+                        })?;
+                        rendered?;
+                        Ok(())
+                    },
+                ));
+                if !matches!(ok, Ok(Ok(()))) {
                     crashed.push(format!("  {name} at {w}x{h}"));
                 }
             }
@@ -2151,6 +2212,7 @@ mod tests {
             "overlays panic on oversized content:\n{}",
             crashed.join("\n")
         );
+        Ok(())
     }
 
     /// The sweep is actually drawing something.
@@ -2159,16 +2221,17 @@ mod tests {
     /// nothing would survive every size in the sweep and prove nothing at all
     /// -- which is the same shape as the bug the sweep is looking for.
     #[test]
-    fn the_crash_sweep_renders_real_content() {
+    fn the_crash_sweep_renders_real_content() -> Result<(), TestError> {
         let app = app_naming_two();
         for (name, render) in every_overlay() {
-            let mut t = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            let mut t = Terminal::new(TestBackend::new(120, 40))?;
+            let mut rendered: Result<(), TestError> = Ok(());
             t.draw(|f| {
                 let a = f.area();
-                render(f, a, &app);
-            })
-            .unwrap();
-            let drawn = content_lines(t.backend().buffer());
+                rendered = render(f, a, &app);
+            })?;
+            rendered?;
+            let drawn = content_lines(t.backend().buffer())?;
             assert!(
                 drawn.len() >= 2,
                 "the {name} overlay drew {} line(s) of content at 120x40, so \
@@ -2176,140 +2239,150 @@ mod tests {
                 drawn.len()
             );
         }
+        Ok(())
     }
 
     /// An empty save path renders the popup (block cursor branch) without
     /// panicking.
     #[test]
-    fn render_save_popup_empty_path_shows_cursor() {
+    fn render_save_popup_empty_path_shows_cursor() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.save.path.clear();
         app.save.cursor = 0;
-        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_save_popup(frame, area, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(90, 30))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_save_popup(frame, area, &app);
+        })?;
         // Should not panic with empty path; popup title present.
         let buf = terminal.backend().buffer();
         let mut found = false;
         for y in 0..buf.area.height {
             let mut row = String::new();
             for x in 0..buf.area.width {
-                row.push_str(buf.cell((x, y)).unwrap().symbol());
+                row.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             if row.contains("Save capture") {
                 found = true;
             }
         }
         assert!(found);
+        Ok(())
     }
 
     /// A cursor in the middle of the path exercises the split-span
     /// (before/cursor/after) branch without panicking.
     #[test]
-    fn render_save_popup_cursor_mid_string() {
+    fn render_save_popup_cursor_mid_string() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.save.path = "abcdef".to_string();
         app.save.cursor = 3; // cursor in the middle
-        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_save_popup(frame, area, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(90, 30))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_save_popup(frame, area, &app);
+        })?;
         // Renders without panic; reaches the mid-string cursor branch.
+        Ok(())
     }
 
     /// An empty entry list shows the "(no matching pcap files)" notice.
     #[test]
-    fn render_file_open_browser_empty_and_populated() {
+    fn render_file_open_browser_empty_and_populated() -> Result<(), TestError> {
         // Empty entries → "(no matching pcap files)" path.
         let mut app = App::new_test();
         app.file_open.entries.clear();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = centered_popup(area, 80, 22);
-                render_file_open_browser(frame, inner, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let inner = centered_popup(area, 80, 22);
+            render_file_open_browser(frame, inner, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             text.push('\n');
         }
         assert!(text.contains("no matching pcap files"));
+        Ok(())
     }
 
     /// A typed filter replaces the hint line with "Filter: <text>".
     #[test]
-    fn render_file_open_browser_with_filter() {
+    fn render_file_open_browser_with_filter() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.file_open.filter = "abc".to_string();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = centered_popup(area, 80, 22);
-                render_file_open_browser(frame, inner, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let inner = centered_popup(area, 80, 22);
+            render_file_open_browser(frame, inner, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             text.push('\n');
         }
         assert!(text.contains("Filter: abc"));
+        Ok(())
     }
 
     /// The manual variant renders both the empty-path and mid-path cursor
     /// branches and shows the Path label.
     #[test]
-    fn render_file_open_manual_empty_and_with_path() {
+    fn render_file_open_manual_empty_and_with_path() -> Result<(), TestError> {
         // Empty path branch.
         let mut app = App::new_test();
         app.file_open.path.clear();
         app.file_open.cursor = 0;
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = centered_popup(area, 80, 22);
-                render_file_open_manual(frame, inner, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let inner = centered_popup(area, 80, 22);
+            render_file_open_manual(frame, inner, &app);
+        })?;
 
         // Cursor mid-path branch.
         app.file_open.path = "/tmp/a.pcap".to_string();
         app.file_open.cursor = 4;
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = centered_popup(area, 80, 22);
-                render_file_open_manual(frame, inner, &app);
-            })
-            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let inner = centered_popup(area, 80, 22);
+            render_file_open_manual(frame, inner, &app);
+        })?;
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for y in 0..buf.area.height {
             for x in 0..buf.area.width {
-                text.push_str(buf.cell((x, y)).unwrap().symbol());
+                text.push_str(
+                    buf.cell((x, y))
+                        .ok_or("the cell lies inside the buffer")?
+                        .symbol(),
+                );
             }
             text.push('\n');
         }
         assert!(text.contains("Path:"));
+        Ok(())
     }
 
     // ── render_status_line2/3 direct (non-call-flow branch) ────────
@@ -2317,7 +2390,7 @@ mod tests {
     /// A focused field shows label, value and cursor; an unfocused field
     /// truncates a value longer than the field width.
     #[test]
-    fn render_filter_text_field_focused_and_unfocused() {
+    fn render_filter_text_field_focused_and_unfocused() -> Result<(), TestError> {
         let theme = Theme::default();
 
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
@@ -2332,7 +2405,11 @@ mod tests {
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(
+                buf.cell((x, 0))
+                    .ok_or("the cell lies inside the buffer")?
+                    .symbol(),
+            );
         }
         assert!(row.contains("From:"));
         assert!(row.contains("alice"));
@@ -2350,16 +2427,21 @@ mod tests {
         render_filter_text_field(&mut buf2, 0, 0, &field2, &theme);
         let mut row2 = String::new();
         for x in 0..buf2.area.width {
-            row2.push_str(buf2.cell((x, 0)).unwrap().symbol());
+            row2.push_str(
+                buf2.cell((x, 0))
+                    .ok_or("the cell lies inside the buffer")?
+                    .symbol(),
+            );
         }
         assert!(row2.contains("To:"));
+        Ok(())
     }
 
     /// An empty field shows its placeholder (the format it wants), muted; a
     /// field with a value never does. The After/Before fields took an RFC 3339
     /// timestamp and gave no hint of the format.
     #[test]
-    fn an_empty_field_shows_its_placeholder() {
+    fn an_empty_field_shows_its_placeholder() -> Result<(), TestError> {
         let theme = Theme::default();
         let row_of = |value: &str, focused: bool| {
             let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
@@ -2373,38 +2455,42 @@ mod tests {
             };
             render_filter_text_field(&mut buf, 0, 0, &field, &theme);
             (0..60)
-                .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
-                .collect::<String>()
+                .map(|x| {
+                    buf.cell((x, 0))
+                        .map(|c| c.symbol().to_string())
+                        .ok_or("a column inside the 60-wide buffer has a cell")
+                })
+                .collect::<Result<String, _>>()
         };
-        assert!(row_of("", false).contains("2026-07-07T08:00:00Z"));
-        assert!(row_of("", true).contains("2026-07-07T08:00:00Z"));
-        assert!(!row_of("x", false).contains("2026-07-07"));
+        assert!(row_of("", false)?.contains("2026-07-07T08:00:00Z"));
+        assert!(row_of("", true)?.contains("2026-07-07T08:00:00Z"));
+        assert!(!row_of("x", false)?.contains("2026-07-07"));
+        Ok(())
     }
 
     /// The settings popup speaks in the same words as the rest of the TUI:
     /// "Delta from previous", not the enum name `DeltaPrev`; "Detail pane",
     /// not "Raw Preview"; On/Off, not ON/OFF.
     #[test]
-    fn settings_values_are_words() {
+    fn settings_values_are_words() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.active_popup = Some(Popup::SettingsDialog);
-        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        terminal
-            .draw(|frame| render_settings_popup(frame, Rect::new(0, 0, 100, 30), &app))
-            .unwrap();
-        let text = frame_text(terminal.backend().buffer());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30))?;
+        terminal.draw(|frame| render_settings_popup(frame, Rect::new(0, 0, 100, 30), &app))?;
+        let text = frame_text(terminal.backend().buffer())?;
         for needle in ["[Delta from previous]", "Detail pane:", "[On]", "[Hidden]"] {
             assert!(text.contains(needle), "{needle:?} missing:\n{text}");
         }
         for stale in ["DeltaPrev", "Raw Preview", "[ON]", "[None]"] {
             assert!(!text.contains(stale), "{stale:?} is back:\n{text}");
         }
+        Ok(())
     }
 
     /// A block cursor sitting on a multibyte character renders that whole
     /// character without panicking on a `cursor..cursor + 1` byte slice.
     #[test]
-    fn render_filter_text_field_multibyte_cursor_no_panic() {
+    fn render_filter_text_field_multibyte_cursor_no_panic() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
         let field = FilterTextField {
@@ -2418,15 +2504,20 @@ mod tests {
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         let mut row = String::new();
         for x in 0..buf.area.width {
-            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            row.push_str(
+                buf.cell((x, 0))
+                    .ok_or("the cell lies inside the buffer")?
+                    .symbol(),
+            );
         }
         assert!(row.contains('h'), "field content missing: {row}");
+        Ok(())
     }
 
     /// A cursor past the visible field width must not build an inverted
     /// (start > end) slice range for the after-cursor text.
     #[test]
-    fn render_filter_text_field_cursor_beyond_inner_width_no_panic() {
+    fn render_filter_text_field_cursor_beyond_inner_width_no_panic() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
         let field = FilterTextField {
@@ -2438,12 +2529,13 @@ mod tests {
             placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+        Ok(())
     }
 
     /// Unfocused truncation of a value whose display cut lands inside a
     /// multibyte character backs up to the previous boundary, not a panic.
     #[test]
-    fn render_filter_text_field_unfocused_multibyte_truncation_no_panic() {
+    fn render_filter_text_field_unfocused_multibyte_truncation_no_panic() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
         let field = FilterTextField {
@@ -2455,45 +2547,44 @@ mod tests {
             placeholder: "",
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+        Ok(())
     }
 
     /// The file-open manual path renders a block cursor on a multibyte
     /// character without panicking on a `cursor..cursor + 1` byte slice.
     #[test]
-    fn render_file_open_manual_multibyte_cursor_no_panic() {
+    fn render_file_open_manual_multibyte_cursor_no_panic() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.file_open.path = "/tmp/café.pcap".to_string();
-        app.file_open.cursor = app.file_open.path.find('é').unwrap();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                let inner = centered_popup(area, 80, 22);
-                render_file_open_manual(frame, inner, &app);
-            })
-            .unwrap();
+        app.file_open.cursor = app.file_open.path.find('é').ok_or("the path contains é")?;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let inner = centered_popup(area, 80, 22);
+            render_file_open_manual(frame, inner, &app);
+        })?;
+        Ok(())
     }
 
     /// The save-dialog path renders a block cursor on a multibyte character
     /// without panicking on a `cursor..cursor + 1` byte slice.
     #[test]
-    fn render_save_popup_multibyte_cursor_no_panic() {
+    fn render_save_popup_multibyte_cursor_no_panic() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.save.path = "/tmp/café.pcap".to_string();
-        app.save.cursor = app.save.path.find('é').unwrap();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
-        terminal
-            .draw(|frame| {
-                let area = frame.area();
-                render_save_popup(frame, area, &app);
-            })
-            .unwrap();
+        app.save.cursor = app.save.path.find('é').ok_or("the path contains é")?;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            render_save_popup(frame, area, &app);
+        })?;
+        Ok(())
     }
 
     /// A cursor at `value.len()` paints the trailing block cursor without
     /// panicking.
     #[test]
-    fn render_filter_text_field_cursor_at_end() {
+    fn render_filter_text_field_cursor_at_end() -> Result<(), TestError> {
         let theme = Theme::default();
         let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
         let field = FilterTextField {
@@ -2506,6 +2597,7 @@ mod tests {
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         // Renders block cursor at end without panic.
+        Ok(())
     }
 
     /// A field narrower than its two brackets must not underflow
@@ -2513,7 +2605,7 @@ mod tests {
     /// `field_width` values below 2, including a focused zero-width field
     /// that also exercises the closing-bracket position arithmetic.
     #[test]
-    fn render_filter_text_field_narrow_no_underflow() {
+    fn render_filter_text_field_narrow_no_underflow() -> Result<(), TestError> {
         let theme = Theme::default();
         for field_width in [0u16, 1, 2] {
             for focused in [false, true] {
@@ -2531,33 +2623,33 @@ mod tests {
                 render_filter_text_field(&mut buf, 0, 0, &field, &theme);
             }
         }
+        Ok(())
     }
 
     /// The whole filter popup must render without underflowing `iw - 4`
     /// (the separator width) on a sub-6-column terminal, where
     /// `centered_popup` clamps the popup to a tiny inner width.
     #[test]
-    fn render_filter_popup_narrow_terminal_no_underflow() {
+    fn render_filter_popup_narrow_terminal_no_underflow() -> Result<(), TestError> {
         let theme = Theme::default();
         let state = FilterDialogState::default();
         for w in [1u16, 3, 5, 6] {
-            let mut terminal = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(w, 24))?;
             // Would panic in `iw - 4` (and the text fields' `field_width - 2`)
             // before the saturating guards.
-            terminal
-                .draw(|frame| {
-                    let area = frame.area();
-                    render_filter_popup(frame, area, &state, &theme);
-                })
-                .unwrap();
+            terminal.draw(|frame| {
+                let area = frame.area();
+                render_filter_popup(frame, area, &state, &theme);
+            })?;
         }
+        Ok(())
     }
 
     // ── centered_popup geometry ────────────────────────────────────
 
     /// Oversized requests clamp to the area; smaller ones center inside it.
     #[test]
-    fn centered_popup_clamps_to_area() {
+    fn centered_popup_clamps_to_area() -> Result<(), TestError> {
         let area = Rect::new(0, 0, 40, 20);
         let r = centered_popup(area, 100, 100);
         assert_eq!(r.width, 40);
@@ -2567,6 +2659,7 @@ mod tests {
         assert_eq!(r2.height, 10);
         assert_eq!(r2.x, 10);
         assert_eq!(r2.y, 5);
+        Ok(())
     }
 
     // ── message diff edge cases ────────────────────────────────────

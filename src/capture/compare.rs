@@ -395,6 +395,8 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/pcap-samples")
@@ -404,8 +406,10 @@ mod tests {
     /// An unknown dimension is refused before any file is read, naming the
     /// vocabulary. Valid ones dedup and default when empty.
     #[test]
-    fn resolve_dimensions_guards_the_vocabulary() {
-        let err = resolve_dimensions(Some(&["bogus".to_string()])).expect_err("unknown");
+    fn resolve_dimensions_guards_the_vocabulary() -> Result<(), TestError> {
+        let err = resolve_dimensions(Some(&["bogus".to_string()]))
+            .err()
+            .ok_or("unknown")?;
         assert!(
             matches!(err, CompareError::UnknownDimension { .. }),
             "an unknown dimension is refused: {err}"
@@ -413,20 +417,22 @@ mod tests {
         assert!(err.to_string().contains("state"), "names the vocabulary");
 
         assert_eq!(
-            resolve_dimensions(None).expect("defaults"),
+            resolve_dimensions(None).map_err(|e| format!("defaults: {e:?}"))?,
             vec!["state".to_string(), "response_code".to_string()]
         );
         // A repeated dimension is deduped, not doubled.
         assert_eq!(
-            resolve_dimensions(Some(&["state".to_string(), "state".to_string()])).expect("dedup"),
+            resolve_dimensions(Some(&["state".to_string(), "state".to_string()]))
+                .map_err(|e| format!("dedup: {e:?}"))?,
             vec!["state".to_string()]
         );
+        Ok(())
     }
 
     /// Two real captures diff by state: each bucket carries both sides and their
     /// signed delta, and the same file against itself is refused.
     #[test]
-    fn compare_two_captures_by_state() {
+    fn compare_two_captures_by_state() -> Result<(), TestError> {
         let a = fixture("b2bua-asterisk.pcapng");
         let b = fixture("sip-rtp-g711.pcap");
         let dims = vec!["state".to_string()];
@@ -444,7 +450,7 @@ mod tests {
             1000,
             50,
         )
-        .expect("two readable captures diff");
+        .map_err(|e| format!("two readable captures diff: {e:?}"))?;
 
         assert_eq!(cmp.dimensions.len(), 1);
         assert_eq!(cmp.dimensions[0].dimension, "state");
@@ -473,12 +479,13 @@ mod tests {
             50,
         );
         assert!(matches!(same, Err(CompareError::SameFile { .. })));
+        Ok(())
     }
 
     /// A side that yields nothing and reports why is refused, not diffed against
     /// — every bucket would look like it collapsed to zero.
     #[test]
-    fn an_unreadable_side_is_refused() {
+    fn an_unreadable_side_is_refused() -> Result<(), TestError> {
         let good = fixture("sip-rtp-g711.pcap");
         let missing = std::path::Path::new("/nonexistent/nope.pcap");
         let dims = vec!["state".to_string()];
@@ -496,18 +503,20 @@ mod tests {
             1000,
             50,
         )
-        .expect_err("a side that read nothing is refused");
+        .err()
+        .ok_or("a side that read nothing is refused")?;
         assert!(
             matches!(err, CompareError::Unreadable { .. }),
             "an unreadable side is refused: {err}"
         );
+        Ok(())
     }
 
     /// Buckets are ranked by how far they MOVED, not by how big they are. The
     /// largest bucket is usually the one that changed least, and putting it
     /// first buries the answer.
     #[test]
-    fn buckets_rank_by_movement_not_by_size() {
+    fn buckets_rank_by_movement_not_by_size() -> Result<(), TestError> {
         let a: BTreeMap<String, usize> = [("200".to_string(), 900), ("503".to_string(), 1)].into();
         let b: BTreeMap<String, usize> = [("200".to_string(), 899), ("503".to_string(), 60)].into();
         let diff = diff_dimension("response_code", &a, &b, 10);
@@ -518,12 +527,13 @@ mod tests {
         assert_eq!(diff.buckets[0].delta, 59);
         assert_eq!(diff.buckets[1].delta, -1);
         assert_eq!(diff.distinct_values, 2);
+        Ok(())
     }
 
     /// A value present in one capture only is reported as zero on the other
     /// side, because "this appeared today" is the finding, not a missing row.
     #[test]
-    fn a_value_seen_in_one_capture_only_reads_as_zero_on_the_other() {
+    fn a_value_seen_in_one_capture_only_reads_as_zero_on_the_other() -> Result<(), TestError> {
         let a: BTreeMap<String, usize> = [("200".to_string(), 5)].into();
         let b: BTreeMap<String, usize> = [("200".to_string(), 5), ("603".to_string(), 4)].into();
         let diff = diff_dimension("response_code", &a, &b, 10);
@@ -531,14 +541,15 @@ mod tests {
             .buckets
             .iter()
             .find(|r| r.value == "603")
-            .expect("the new value must be a bucket, not an omission");
+            .ok_or("the new value must be a bucket, not an omission")?;
         assert_eq!((new.a, new.b, new.delta), (0, 4, 4));
+        Ok(())
     }
 
     /// Everything past `top_n` is summed rather than dropped, so the rows and
     /// the remainder still account for both populations.
     #[test]
-    fn buckets_past_top_n_are_summed_into_other() {
+    fn buckets_past_top_n_are_summed_into_other() -> Result<(), TestError> {
         let a: BTreeMap<String, usize> = [
             ("200".to_string(), 10),
             ("404".to_string(), 3),
@@ -563,12 +574,13 @@ mod tests {
             6,
             "rows plus other must account for b"
         );
+        Ok(())
     }
 
     /// A cap the capture exceeds is reported, not hidden: a diff over a
     /// truncated population is a wrong answer that looks like a right one.
     #[test]
-    fn a_capture_over_the_dialog_ceiling_says_so() {
+    fn a_capture_over_the_dialog_ceiling_says_so() -> Result<(), TestError> {
         let snap = snapshot(
             &fixture("sip-problem-call.pcap"),
             "sip-problem-call.pcap",
@@ -580,5 +592,6 @@ mod tests {
             snap.side.dialogs_dropped > 0,
             "a one-dialog ceiling over a multi-dialog capture must report the loss"
         );
+        Ok(())
     }
 }

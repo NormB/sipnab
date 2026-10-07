@@ -505,6 +505,8 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// The address every fixture message is sent FROM, so `src.ip` puts a
     /// whole fixture in one group unless a test says otherwise.
     fn from_addr() -> IpAddr {
@@ -518,15 +520,17 @@ mod tests {
     }
 
     /// Fixed base timestamp, so every derived duration is exact.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
-            .single()
-            .expect("2024-06-15T12:00:00Z is unambiguous")
+    fn base_ts() -> Result<DateTime<Utc>, TestError> {
+        Ok(
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0)
+                .single()
+                .ok_or("2024-06-15T12:00:00Z is unambiguous")?,
+        )
     }
 
     /// `base_ts()` plus `secs`.
-    fn at(secs: i64) -> DateTime<Utc> {
-        base_ts() + TimeDelta::seconds(secs)
+    fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(base_ts()? + TimeDelta::seconds(secs))
     }
 
     /// Parse fixture SIP sent to `dst:dst_port` at `ts`.
@@ -536,9 +540,9 @@ mod tests {
         ts: DateTime<Utc>,
         dst: IpAddr,
         dst_port: u16,
-    ) -> SipMessage {
+    ) -> Result<SipMessage, TestError> {
         let raw = crate::test_utils::build_sip_message(first_line, headers, b"");
-        crate::sip::parser::parse_sip(
+        Ok(crate::sip::parser::parse_sip(
             &raw,
             ts,
             from_addr(),
@@ -547,11 +551,16 @@ mod tests {
             dst_port,
             TransportProto::Udp,
         )
-        .expect("fixture SIP must parse")
+        .map_err(|e| format!("fixture SIP must parse: {e:?}"))?)
     }
 
     /// An INVITE for `call_id` whose To URI is `to_uri`.
-    fn invite_to(call_id: &str, to_uri: &str, ts: DateTime<Utc>, port: u16) -> SipMessage {
+    fn invite_to(
+        call_id: &str,
+        to_uri: &str,
+        ts: DateTime<Utc>,
+        port: u16,
+    ) -> Result<SipMessage, TestError> {
         sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -570,12 +579,16 @@ mod tests {
     }
 
     /// An INVITE for `call_id` to the default callee.
-    fn invite(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn invite(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         invite_to(call_id, "sip:bob@example.com", ts, 5060)
     }
 
     /// A response to `call_id`'s initial INVITE.
-    fn invite_response(call_id: &str, status_line: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn invite_response(
+        call_id: &str,
+        status_line: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
         sip(
             status_line,
             &[
@@ -594,7 +607,7 @@ mod tests {
     }
 
     /// The BYE that ends `call_id`.
-    fn bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn bye(call_id: &str, ts: DateTime<Utc>) -> Result<SipMessage, TestError> {
         sip(
             "BYE sip:alice@example.com SIP/2.0",
             &[
@@ -612,7 +625,7 @@ mod tests {
     }
 
     /// A REGISTER and its 200 OK — a dialog that is not a call attempt.
-    fn registration(call_id: &str, ts: DateTime<Utc>) -> Vec<SipMessage> {
+    fn registration(call_id: &str, ts: DateTime<Utc>) -> Result<Vec<SipMessage>, TestError> {
         let headers = |line: &str, tagged: bool, ts: DateTime<Utc>| {
             sip(
                 line,
@@ -633,20 +646,23 @@ mod tests {
                 5060,
             )
         };
-        vec![
-            headers("REGISTER sip:example.com SIP/2.0", false, ts),
-            headers("SIP/2.0 200 OK", true, ts + TimeDelta::milliseconds(20)),
-        ]
+        Ok(vec![
+            headers("REGISTER sip:example.com SIP/2.0", false, ts)?,
+            headers("SIP/2.0 200 OK", true, ts + TimeDelta::milliseconds(20))?,
+        ])
     }
 
     /// A server whose dialog store holds exactly `messages`, in order.
-    fn server_of(messages: Vec<SipMessage>) -> SipnabMcp {
+    fn server_of(messages: Vec<SipMessage>) -> Result<SipnabMcp, TestError> {
         server_of_with_media(messages, &[])
     }
 
     /// A server holding `messages` plus one linked RTP stream per
     /// `(call_id, payload_type)`, so MOS grounding can be exercised.
-    fn server_of_with_media(messages: Vec<SipMessage>, media: &[(&str, u8)]) -> SipnabMcp {
+    fn server_of_with_media(
+        messages: Vec<SipMessage>,
+        media: &[(&str, u8)],
+    ) -> Result<SipnabMcp, TestError> {
         let mut ds = DialogStore::new(100, false);
         for m in messages {
             ds.process_message(m);
@@ -669,7 +685,7 @@ mod tests {
             let packet = crate::capture::parse::ParsedPacket {
                 frame_bytes: None,
                 frame: None,
-                timestamp: base_ts(),
+                timestamp: base_ts()?,
                 src_addr: from_addr(),
                 dst_addr: to_addr(),
                 src_port: 40000 + i as u16,
@@ -686,14 +702,17 @@ mod tests {
                 input_origin: crate::capture::parse::InputOrigin::Wire,
                 hep: None,
             };
-            ss.process_rtp(&packet, &header, base_ts());
+            ss.process_rtp(&packet, &header, base_ts()?);
             ss.link_to_dialog(to_addr(), port, call_id);
         }
-        SipnabMcp::new(Arc::new(RwLock::new(ds)), Arc::new(RwLock::new(ss)))
+        Ok(SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(ss)),
+        ))
     }
 
     /// The payload block of a tool result, skipping the provenance note.
-    fn payload(result: &rmcp::model::CallToolResult) -> serde_json::Value {
+    fn payload(result: &rmcp::model::CallToolResult) -> Result<serde_json::Value, TestError> {
         let note = crate::mcp::shape::untrusted_note();
         let text = result
             .content
@@ -701,27 +720,27 @@ mod tests {
             .filter_map(|c| c.as_text())
             .map(|t| t.text.clone())
             .find(|t| *t != note)
-            .expect("a payload block that is not the note");
-        serde_json::from_str(&text).expect("the payload is JSON")
+            .ok_or("a payload block that is not the note")?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
     /// Call `group_dialogs` and return its parsed answer.
-    async fn grouped(server: &SipnabMcp, by: &str) -> serde_json::Value {
+    async fn grouped(server: &SipnabMcp, by: &str) -> Result<serde_json::Value, TestError> {
         let result = server
             .group_dialogs(Parameters(GroupDialogsParams {
                 by: by.to_string(),
                 ..Default::default()
             }))
             .await
-            .expect("group_dialogs should succeed");
+            .map_err(|e| format!("group_dialogs should succeed: {e:?}"))?;
         payload(&result)
     }
 
     /// The single group of a one-group answer.
-    fn only_group(v: &serde_json::Value) -> &serde_json::Value {
-        let groups = v["groups"].as_array().expect("groups array");
+    fn only_group(v: &serde_json::Value) -> Result<&serde_json::Value, TestError> {
+        let groups = v["groups"].as_array().ok_or("groups array")?;
         assert_eq!(groups.len(), 1, "expected exactly one group: {v}");
-        &groups[0]
+        Ok(&groups[0])
     }
 
     /// The whole point of the tool: a RATE per group, not a count.
@@ -731,19 +750,19 @@ mod tests {
     /// seizures, two answered, is an ASR of 66.67% and the population that
     /// produced it.
     #[tokio::test]
-    async fn group_dialogs_returns_a_rate_and_the_population_under_it() {
+    async fn group_dialogs_returns_a_rate_and_the_population_under_it() -> Result<(), TestError> {
         let mut msgs = Vec::new();
         for (id, status) in [
             ("a@h", "SIP/2.0 200 OK"),
             ("b@h", "SIP/2.0 200 OK"),
             ("c@h", "SIP/2.0 503 Service Unavailable"),
         ] {
-            msgs.push(invite(id, base_ts()));
-            msgs.push(invite_response(id, status, at(1)));
+            msgs.push(invite(id, base_ts()?)?);
+            msgs.push(invite_response(id, status, at(1)?)?);
         }
-        let v = grouped(&server_of(msgs), "src.ip").await;
+        let v = grouped(&server_of(msgs)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["count"], 3);
         assert_eq!(g["metrics"]["asr"], 66.67, "two answers over three: {v}");
         assert_eq!(
@@ -762,6 +781,7 @@ mod tests {
             "an answer that cannot say which capture it came from cannot be \
              checked against a later one: {v}"
         );
+        Ok(())
     }
 
     /// NER credits the far end where ASR does not.
@@ -770,20 +790,21 @@ mod tests {
     /// network delivered every call and the callee was busy. Reading the ASR
     /// alone is how a healthy carrier gets escalated.
     #[tokio::test]
-    async fn ner_credits_the_far_end_where_asr_does_not() {
+    async fn ner_credits_the_far_end_where_asr_does_not() -> Result<(), TestError> {
         let msgs = vec![
-            invite("busy@h", base_ts()),
-            invite_response("busy@h", "SIP/2.0 486 Busy Here", at(1)),
+            invite("busy@h", base_ts()?)?,
+            invite_response("busy@h", "SIP/2.0 486 Busy Here", at(1)?)?,
         ];
-        let v = grouped(&server_of(msgs), "src.ip").await;
+        let v = grouped(&server_of(msgs)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["metrics"]["asr"], 0.0, "nobody answered: {v}");
         assert_eq!(
             g["metrics"]["ner"], 100.0,
             "the network delivered the call and the callee was busy: {v}"
         );
         assert_eq!(g["population"]["delivered"], 1);
+        Ok(())
     }
 
     /// A metric whose population is empty says which population was missing.
@@ -792,10 +813,10 @@ mod tests {
     /// working registrar as a dead trunk, which is a wrong answer rather than
     /// a missing one.
     #[tokio::test]
-    async fn a_population_that_cannot_support_a_metric_says_so() {
-        let v = grouped(&server_of(registration("reg@h", base_ts())), "src.ip").await;
+    async fn a_population_that_cannot_support_a_metric_says_so() -> Result<(), TestError> {
+        let v = grouped(&server_of(registration("reg@h", base_ts()?)?)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["count"], 1, "the dialog is still counted: {v}");
         assert!(
             g["metrics"]["asr"].is_null(),
@@ -803,12 +824,13 @@ mod tests {
         );
         let why = g["not_grounded"]["asr"]
             .as_str()
-            .expect("a null metric carries its reason");
+            .ok_or("a null metric carries its reason")?;
         assert!(
             why.contains("INVITE") && why.contains("final response"),
             "the reason must name the population that was missing: {why}"
         );
         assert_eq!(g["population"]["seizures"], 0);
+        Ok(())
     }
 
     /// ACD times the conversation, not the dialog.
@@ -818,11 +840,11 @@ mod tests {
     /// handshake. Averaging the dialog span bills the caller for the ringing,
     /// which is not what any carrier means by average call duration.
     #[tokio::test]
-    async fn acd_times_the_conversation_and_not_the_dialog_span() {
+    async fn acd_times_the_conversation_and_not_the_dialog_span() -> Result<(), TestError> {
         let msgs = vec![
-            invite("talk@h", base_ts()),
-            invite_response("talk@h", "SIP/2.0 200 OK", at(5)),
-            bye("talk@h", at(65)),
+            invite("talk@h", base_ts()?)?,
+            invite_response("talk@h", "SIP/2.0 200 OK", at(5)?)?,
+            bye("talk@h", at(65)?)?,
             sip(
                 "SIP/2.0 200 OK",
                 &[
@@ -833,19 +855,20 @@ mod tests {
                     "CSeq: 2 BYE",
                     "Content-Length: 0",
                 ],
-                at(66),
+                at(66)?,
                 to_addr(),
                 5060,
-            ),
+            )?,
         ];
-        let v = grouped(&server_of(msgs), "src.ip").await;
+        let v = grouped(&server_of(msgs)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(
             g["metrics"]["acd"], 60.0,
             "200 OK to BYE is 60s; the dialog spans 66: {v}"
         );
         assert_eq!(g["population"]["completed_calls"], 1);
+        Ok(())
     }
 
     /// PDD percentiles are computed over the calls that HAVE a PDD.
@@ -855,24 +878,24 @@ mod tests {
     /// the same substitution that made `rtp.mos < 3.0` select every call with
     /// no RTP at all.
     #[tokio::test]
-    async fn pdd_percentiles_ignore_calls_that_never_rang() {
+    async fn pdd_percentiles_ignore_calls_that_never_rang() -> Result<(), TestError> {
         let mut msgs = Vec::new();
         for (id, ring_ms) in [("p1@h", 100), ("p2@h", 200), ("p3@h", 5000)] {
-            msgs.push(invite(id, base_ts()));
+            msgs.push(invite(id, base_ts()?)?);
             msgs.push(invite_response(
                 id,
                 "SIP/2.0 180 Ringing",
-                base_ts() + TimeDelta::milliseconds(ring_ms),
-            ));
-            msgs.push(invite_response(id, "SIP/2.0 200 OK", at(10)));
+                base_ts()? + TimeDelta::milliseconds(ring_ms),
+            )?);
+            msgs.push(invite_response(id, "SIP/2.0 200 OK", at(10)?)?);
         }
         // A fourth call that failed before any provisional response.
-        msgs.push(invite("p4@h", base_ts()));
-        msgs.push(invite_response("p4@h", "SIP/2.0 404 Not Found", at(1)));
+        msgs.push(invite("p4@h", base_ts()?)?);
+        msgs.push(invite_response("p4@h", "SIP/2.0 404 Not Found", at(1)?)?);
 
-        let v = grouped(&server_of(msgs), "src.ip").await;
+        let v = grouped(&server_of(msgs)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["count"], 4);
         assert_eq!(
             g["population"]["pdd_measured"], 3,
@@ -880,6 +903,7 @@ mod tests {
         );
         assert_eq!(g["metrics"]["pdd_p50"], 200.0, "{v}");
         assert_eq!(g["metrics"]["pdd_p95"], 5000.0, "{v}");
+        Ok(())
     }
 
     /// A MOS percentile over a codec with no published impairment factor is
@@ -889,17 +913,18 @@ mod tests {
     /// G.711 one and means "unknown". A p10 built out of those is a number
     /// about nothing, presented in the shape of a measurement.
     #[tokio::test]
-    async fn mos_p10_refuses_a_codec_with_no_published_impairment_factor() {
-        let call = |id: &str| {
-            vec![
-                invite(id, base_ts()),
-                invite_response(id, "SIP/2.0 200 OK", at(1)),
-            ]
+    async fn mos_p10_refuses_a_codec_with_no_published_impairment_factor() -> Result<(), TestError>
+    {
+        let call = |id: &str| -> Result<Vec<SipMessage>, TestError> {
+            Ok(vec![
+                invite(id, base_ts()?)?,
+                invite_response(id, "SIP/2.0 200 OK", at(1)?)?,
+            ])
         };
 
-        let ungrounded = server_of_with_media(call("g722@h"), &[("g722@h", 9)]);
-        let v = grouped(&ungrounded, "src.ip").await;
-        let g = only_group(&v);
+        let ungrounded = server_of_with_media(call("g722@h")?, &[("g722@h", 9)])?;
+        let v = grouped(&ungrounded, "src.ip").await?;
+        let g = only_group(&v)?;
         assert!(
             g["metrics"]["mos_p10"].is_null(),
             "G.722 is unpublished: {v}"
@@ -907,20 +932,21 @@ mod tests {
         assert_eq!(g["population"]["mos_grounded_dialogs"], 0);
         let why = g["not_grounded"]["mos_p10"]
             .as_str()
-            .expect("a null metric carries its reason");
+            .ok_or("a null metric carries its reason")?;
         assert!(
             why.contains("impairment factor"),
             "the reason must name what is missing: {why}"
         );
 
-        let grounded = server_of_with_media(call("pcmu@h"), &[("pcmu@h", 0)]);
-        let v = grouped(&grounded, "src.ip").await;
-        let g = only_group(&v);
+        let grounded = server_of_with_media(call("pcmu@h")?, &[("pcmu@h", 0)])?;
+        let v = grouped(&grounded, "src.ip").await?;
+        let g = only_group(&v)?;
         assert!(
             g["metrics"]["mos_p10"].as_f64().is_some_and(|m| m > 1.0),
             "PCMU is published, so the percentile is a real estimate: {v}"
         );
         assert_eq!(g["population"]["mos_grounded_dialogs"], 1);
+        Ok(())
     }
 
     /// `retransmit_rate` counts retransmitted messages per dialog.
@@ -930,24 +956,25 @@ mod tests {
     /// drop stored messages, while the CSeq set that detects a retransmission
     /// survives them.
     #[tokio::test]
-    async fn retransmit_rate_counts_retransmissions_per_dialog() {
+    async fn retransmit_rate_counts_retransmissions_per_dialog() -> Result<(), TestError> {
         let msgs = vec![
-            invite("rtx@h", base_ts()),
+            invite("rtx@h", base_ts()?)?,
             // The same INVITE again: one retransmission.
-            invite("rtx@h", at(1)),
-            invite_response("rtx@h", "SIP/2.0 200 OK", at(2)),
-            invite("quiet@h", base_ts()),
-            invite_response("quiet@h", "SIP/2.0 200 OK", at(1)),
+            invite("rtx@h", at(1)?)?,
+            invite_response("rtx@h", "SIP/2.0 200 OK", at(2)?)?,
+            invite("quiet@h", base_ts()?)?,
+            invite_response("quiet@h", "SIP/2.0 200 OK", at(1)?)?,
         ];
-        let v = grouped(&server_of(msgs), "src.ip").await;
+        let v = grouped(&server_of(msgs)?, "src.ip").await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["count"], 2);
         assert_eq!(g["population"]["retransmits"], 1);
         assert_eq!(
             g["metrics"]["retransmit_rate"], 0.5,
             "one retransmission across two dialogs: {v}"
         );
+        Ok(())
     }
 
     /// `hour` groups on the calendar hour a call started in.
@@ -957,18 +984,18 @@ mod tests {
     /// Buckets are aligned to the epoch, so two captures of the same window
     /// land on the same boundaries.
     #[tokio::test]
-    async fn hour_groups_on_the_calendar_hour() {
+    async fn hour_groups_on_the_calendar_hour() -> Result<(), TestError> {
         // Two minutes past the hour, deliberately: a timestamp already on a
         // boundary would pass whether or not anything truncated it.
         let msgs = vec![
-            invite("early@h", at(120)),
-            invite_response("early@h", "SIP/2.0 200 OK", at(121)),
-            invite("late@h", at(3720)),
-            invite_response("late@h", "SIP/2.0 200 OK", at(3721)),
+            invite("early@h", at(120)?)?,
+            invite_response("early@h", "SIP/2.0 200 OK", at(121)?)?,
+            invite("late@h", at(3720)?)?,
+            invite_response("late@h", "SIP/2.0 200 OK", at(3721)?)?,
         ];
-        let v = grouped(&server_of(msgs), "hour").await;
+        let v = grouped(&server_of(msgs)?, "hour").await?;
 
-        let groups = v["groups"].as_array().expect("groups array");
+        let groups = v["groups"].as_array().ok_or("groups array")?;
         assert_eq!(groups.len(), 2, "two hours, two groups: {v}");
         let mut hours: Vec<&str> = groups
             .iter()
@@ -980,6 +1007,7 @@ mod tests {
             vec!["2024-06-15T12:00:00Z", "2024-06-15T13:00:00Z"],
             "each group names the hour it starts, truncated to the hour: {v}"
         );
+        Ok(())
     }
 
     /// `next_hop` names the peer the opening message was addressed to, and
@@ -988,24 +1016,25 @@ mod tests {
     /// The two questions a carrier engineer asks first — which trunk, which
     /// customer — and neither was reachable before.
     #[tokio::test]
-    async fn next_hop_names_the_peer_and_to_domain_names_the_callee_domain() {
+    async fn next_hop_names_the_peer_and_to_domain_names_the_callee_domain() -> Result<(), TestError>
+    {
         let msgs = vec![
-            invite_to("t1@h", "sip:bob@carrier-a.example:5060", base_ts(), 5080),
-            invite_response("t1@h", "SIP/2.0 200 OK", at(1)),
+            invite_to("t1@h", "sip:bob@carrier-a.example:5060", base_ts()?, 5080)?,
+            invite_response("t1@h", "SIP/2.0 200 OK", at(1)?)?,
         ];
-        let server = server_of(msgs);
+        let server = server_of(msgs)?;
 
-        let v = grouped(&server, "next_hop").await;
+        let v = grouped(&server, "next_hop").await?;
         assert_eq!(
-            only_group(&v)["value"],
+            only_group(&v)?["value"],
             "10.0.0.2:5080",
             "the transport peer the INVITE was addressed to: {v}"
         );
 
-        let v = grouped(&server, "to_domain").await;
-        let value = only_group(&v)["value"]
+        let v = grouped(&server, "to_domain").await?;
+        let value = only_group(&v)?["value"]
             .as_str()
-            .expect("a group value")
+            .ok_or("a group value")?
             .to_string();
         assert!(
             value.contains("carrier-a.example"),
@@ -1019,6 +1048,7 @@ mod tests {
             value.contains(crate::mcp::shape::UNTRUSTED_OPEN),
             "a To URI is written by the sender and must be fenced: {value}"
         );
+        Ok(())
     }
 
     /// A derived dimension is not fenced.
@@ -1027,17 +1057,18 @@ mod tests {
     /// observation — and fencing it would tell the agent to distrust the
     /// analysis rather than the traffic.
     #[tokio::test]
-    async fn a_derived_dimension_is_not_fenced() {
+    async fn a_derived_dimension_is_not_fenced() -> Result<(), TestError> {
         let msgs = vec![
-            invite("d@h", base_ts()),
-            invite_response("d@h", "SIP/2.0 200 OK", at(1)),
+            invite("d@h", base_ts()?)?,
+            invite_response("d@h", "SIP/2.0 200 OK", at(1)?)?,
         ];
-        let v = grouped(&server_of(msgs), "next_hop").await;
-        let value = only_group(&v)["value"].as_str().expect("a group value");
+        let v = grouped(&server_of(msgs)?, "next_hop").await?;
+        let value = only_group(&v)?["value"].as_str().ok_or("a group value")?;
         assert!(
             !value.contains(crate::mcp::shape::UNTRUSTED_OPEN),
             "an address sipnab read off the wire is not sender-written: {value}"
         );
+        Ok(())
     }
 
     /// Groups plus the remainder account for every matched dialog.
@@ -1047,26 +1078,26 @@ mod tests {
     /// no metrics, because an ASR averaged across the groups that were dropped
     /// for being small is how one busy trunk becomes a capture-wide verdict.
     #[tokio::test]
-    async fn groups_and_other_count_account_for_every_matched_dialog() {
+    async fn groups_and_other_count_account_for_every_matched_dialog() -> Result<(), TestError> {
         let msgs = vec![
-            invite("h1@h", base_ts()),
-            invite_response("h1@h", "SIP/2.0 200 OK", at(1)),
-            invite("h2@h", at(3600)),
-            invite_response("h2@h", "SIP/2.0 200 OK", at(3601)),
-            invite("h3@h", at(7200)),
-            invite_response("h3@h", "SIP/2.0 200 OK", at(7201)),
+            invite("h1@h", base_ts()?)?,
+            invite_response("h1@h", "SIP/2.0 200 OK", at(1)?)?,
+            invite("h2@h", at(3600)?)?,
+            invite_response("h2@h", "SIP/2.0 200 OK", at(3601)?)?,
+            invite("h3@h", at(7200)?)?,
+            invite_response("h3@h", "SIP/2.0 200 OK", at(7201)?)?,
         ];
-        let result = server_of(msgs)
+        let result = server_of(msgs)?
             .group_dialogs(Parameters(GroupDialogsParams {
                 by: "hour".to_string(),
                 top_n: Some(1),
                 ..Default::default()
             }))
             .await
-            .expect("group_dialogs should succeed");
-        let v = payload(&result);
+            .map_err(|e| format!("group_dialogs should succeed: {e:?}"))?;
+        let v = payload(&result)?;
 
-        let groups = v["groups"].as_array().expect("groups array");
+        let groups = v["groups"].as_array().ok_or("groups array")?;
         assert_eq!(groups.len(), 1, "top_n bounded the answer: {v}");
         assert_eq!(v["distinct_values"], 3, "three hours were seen: {v}");
         let returned: u64 = groups
@@ -1074,38 +1105,39 @@ mod tests {
             .filter_map(|g| g["count"].as_u64())
             .sum::<u64>();
         assert_eq!(
-            returned + v["other_count"].as_u64().expect("other_count"),
-            v["total_matched"].as_u64().expect("total_matched"),
+            returned + v["other_count"].as_u64().ok_or("other_count")?,
+            v["total_matched"].as_u64().ok_or("total_matched")?,
             "the groups and the remainder must account for every matched \
              dialog: {v}"
         );
+        Ok(())
     }
 
     /// Only the metrics asked for are computed, and each names its unit.
     #[tokio::test]
-    async fn a_metric_subset_is_honored_and_carries_its_units() {
+    async fn a_metric_subset_is_honored_and_carries_its_units() -> Result<(), TestError> {
         let msgs = vec![
-            invite("m@h", base_ts()),
-            invite_response("m@h", "SIP/2.0 200 OK", at(1)),
+            invite("m@h", base_ts()?)?,
+            invite_response("m@h", "SIP/2.0 200 OK", at(1)?)?,
         ];
-        let result = server_of(msgs)
+        let result = server_of(msgs)?
             .group_dialogs(Parameters(GroupDialogsParams {
                 by: "src.ip".to_string(),
                 metrics: Some(vec!["ner".to_string(), "asr".to_string()]),
                 ..Default::default()
             }))
             .await
-            .expect("group_dialogs should succeed");
-        let v = payload(&result);
+            .map_err(|e| format!("group_dialogs should succeed: {e:?}"))?;
+        let v = payload(&result)?;
 
         assert_eq!(
             v["metrics"],
             serde_json::json!(["asr", "ner"]),
             "sorted, so the key order does not depend on the request: {v}"
         );
-        let metrics = only_group(&v)["metrics"]
+        let metrics = only_group(&v)?["metrics"]
             .as_object()
-            .expect("metrics object");
+            .ok_or("metrics object")?;
         assert_eq!(
             metrics.len(),
             2,
@@ -1113,16 +1145,17 @@ mod tests {
         );
         assert_eq!(v["units"]["ner"], "percent");
         assert!(
-            v["units"].as_object().expect("units object").len() == 2,
+            v["units"].as_object().ok_or("units object")?.len() == 2,
             "units describe exactly what was computed: {v}"
         );
+        Ok(())
     }
 
     /// An unknown dimension and an unknown metric are both refused, and each
     /// refusal names the legal set so the agent does not guess again.
     #[tokio::test]
-    async fn an_unknown_dimension_and_an_unknown_metric_are_refused() {
-        let server = server_of(vec![invite("x@h", base_ts())]);
+    async fn an_unknown_dimension_and_an_unknown_metric_are_refused() -> Result<(), TestError> {
+        let server = server_of(vec![invite("x@h", base_ts()?)?])?;
 
         for bad in ["src.ip,hour", "created_at", "payload"] {
             let err = server
@@ -1131,8 +1164,10 @@ mod tests {
                     ..Default::default()
                 }))
                 .await
-                .expect_err("an unknown or multi-valued dimension must be refused");
-            let json = serde_json::to_value(err).expect("the error serializes");
+                .err()
+                .ok_or("an unknown or multi-valued dimension must be refused")?;
+            let json =
+                serde_json::to_value(err).map_err(|e| format!("the error serializes: {e:?}"))?;
             assert_eq!(json["code"], -32602, "refused as invalid_params: {bad}");
             let msg = json["message"].as_str().unwrap_or_default();
             assert!(
@@ -1149,14 +1184,16 @@ mod tests {
                 ..Default::default()
             }))
             .await
-            .expect_err("an unknown metric must be refused");
-        let json = serde_json::to_value(err).expect("the error serializes");
+            .err()
+            .ok_or("an unknown metric must be refused")?;
+        let json = serde_json::to_value(err).map_err(|e| format!("the error serializes: {e:?}"))?;
         assert_eq!(json["code"], -32602);
         let msg = json["message"].as_str().unwrap_or_default();
         assert!(
             msg.contains("abr") && msg.contains("asr"),
             "the refusal must name the typo AND the legal set: {msg}"
         );
+        Ok(())
     }
 
     /// A seizure is an INVITE dialog, not any dialog that saw an INVITE
@@ -1168,7 +1205,8 @@ mod tests {
     /// trunk with a perfect ASR, which is a confident wrong answer about a
     /// dimension an operator is about to act on.
     #[tokio::test]
-    async fn a_seizure_is_an_invite_dialog_and_not_a_keepalive_that_saw_one() {
+    async fn a_seizure_is_an_invite_dialog_and_not_a_keepalive_that_saw_one()
+    -> Result<(), TestError> {
         let keepalive = sip(
             "OPTIONS sip:example.com SIP/2.0",
             &[
@@ -1179,10 +1217,10 @@ mod tests {
                 "CSeq: 1 OPTIONS",
                 "Content-Length: 0",
             ],
-            base_ts(),
+            base_ts()?,
             to_addr(),
             5060,
-        );
+        )?;
         let stray_invite_response = sip(
             "SIP/2.0 200 OK",
             &[
@@ -1193,13 +1231,17 @@ mod tests {
                 "CSeq: 2 INVITE",
                 "Content-Length: 0",
             ],
-            at(1),
+            at(1)?,
             to_addr(),
             5060,
-        );
-        let v = grouped(&server_of(vec![keepalive, stray_invite_response]), "src.ip").await;
+        )?;
+        let v = grouped(
+            &server_of(vec![keepalive, stray_invite_response])?,
+            "src.ip",
+        )
+        .await?;
 
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["count"], 1, "the dialog is still counted: {v}");
         assert_eq!(
             g["population"]["seizures"], 0,
@@ -1209,30 +1251,32 @@ mod tests {
             g["metrics"]["asr"].is_null(),
             "and so it has no answer-seizure ratio at all: {v}"
         );
+        Ok(())
     }
 
     /// A filter scopes a grouped answer the way it scopes a listing.
     #[tokio::test]
-    async fn a_filter_scopes_the_grouping() {
+    async fn a_filter_scopes_the_grouping() -> Result<(), TestError> {
         let msgs = vec![
-            invite("ok@h", base_ts()),
-            invite_response("ok@h", "SIP/2.0 200 OK", at(1)),
-            invite("bad@h", base_ts()),
-            invite_response("bad@h", "SIP/2.0 503 Service Unavailable", at(1)),
+            invite("ok@h", base_ts()?)?,
+            invite_response("ok@h", "SIP/2.0 200 OK", at(1)?)?,
+            invite("bad@h", base_ts()?)?,
+            invite_response("bad@h", "SIP/2.0 503 Service Unavailable", at(1)?)?,
         ];
-        let result = server_of(msgs)
+        let result = server_of(msgs)?
             .group_dialogs(Parameters(GroupDialogsParams {
                 by: "src.ip".to_string(),
                 filter: Some("response_code == 503".to_string()),
                 ..Default::default()
             }))
             .await
-            .expect("group_dialogs should succeed");
-        let v = payload(&result);
+            .map_err(|e| format!("group_dialogs should succeed: {e:?}"))?;
+        let v = payload(&result)?;
 
         assert_eq!(v["total_matched"], 1, "the filter ran before grouping: {v}");
-        let g = only_group(&v);
+        let g = only_group(&v)?;
         assert_eq!(g["metrics"]["asr"], 0.0, "only the failure survived: {v}");
+        Ok(())
     }
     // --- `timeline` -------------------------------------------------------
     //
@@ -1249,12 +1293,12 @@ mod tests {
     /// same rows if empty buckets are dropped -- the series just gets shorter,
     /// which reads as continuous traffic rather than as an outage.
     #[test]
-    fn timeline_keeps_the_empty_bucket_that_is_the_outage() {
+    fn timeline_keeps_the_empty_bucket_that_is_the_outage() -> Result<(), TestError> {
         // One call, a two-minute silence, then one more.
         let server = server_of(vec![
-            invite_to("a", "sip:bob@example.com", at(0), 20000),
-            invite_to("b", "sip:bob@example.com", at(180), 20002),
-        ]);
+            invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
+            invite_to("b", "sip:bob@example.com", at(180)?, 20002)?,
+        ])?;
         let rows = server.timeline_buckets(60);
         assert_eq!(
             rows.len(),
@@ -1267,6 +1311,7 @@ mod tests {
             vec![1, 0, 0, 1],
             "the two silent minutes must be reported as zeros, not skipped: {rows:?}"
         );
+        Ok(())
     }
 
     /// Buckets align to the epoch, not to the first dialog.
@@ -1276,15 +1321,15 @@ mod tests {
     /// comparing a baseline to today. Aligning to the earliest call instead
     /// moves every boundary whenever that one call moves.
     #[test]
-    fn timeline_buckets_align_to_the_epoch_not_to_the_first_call() {
+    fn timeline_buckets_align_to_the_epoch_not_to_the_first_call() -> Result<(), TestError> {
         // 12:00:37 is deliberately NOT on a bucket boundary.
         let offset = 37;
         let server = server_of(vec![invite_to(
             "a",
             "sip:bob@example.com",
-            at(offset),
+            at(offset)?,
             20000,
-        )]);
+        )?])?;
         let rows = server.timeline_buckets(60);
         assert_eq!(rows.len(), 1, "one call is one bucket: {rows:?}");
         assert_eq!(
@@ -1294,9 +1339,10 @@ mod tests {
              call's own second: {rows:?}"
         );
         assert!(
-            rows[0].start <= at(offset),
+            rows[0].start <= at(offset)?,
             "the bucket must CONTAIN the call it counts: {rows:?}"
         );
+        Ok(())
     }
 
     /// An empty store yields no rows rather than one bucket of zero.
@@ -1304,21 +1350,22 @@ mod tests {
     /// A single empty bucket would name an interval that no capture covers,
     /// which is a claim about a window nobody observed.
     #[test]
-    fn timeline_of_an_empty_store_is_empty() {
-        let server = server_of(vec![]);
+    fn timeline_of_an_empty_store_is_empty() -> Result<(), TestError> {
+        let server = server_of(vec![])?;
         assert!(
             server.timeline_buckets(60).is_empty(),
             "no dialogs means no intervals to report"
         );
+        Ok(())
     }
 
     /// The width the caller asked for is the width they get, and it is echoed.
     #[test]
-    fn timeline_honors_the_requested_width_and_echoes_it() {
+    fn timeline_honors_the_requested_width_and_echoes_it() -> Result<(), TestError> {
         let server = server_of(vec![
-            invite_to("a", "sip:bob@example.com", at(0), 20000),
-            invite_to("b", "sip:bob@example.com", at(700), 20002),
-        ]);
+            invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
+            invite_to("b", "sip:bob@example.com", at(700)?, 20002)?,
+        ])?;
         let rows = server.timeline_buckets(300);
         assert!(
             rows.iter().all(|r| r.bucket_seconds == 300),
@@ -1332,21 +1379,24 @@ mod tests {
              middle one empty: {rows:?}"
         );
         assert_eq!(rows[1].dialogs, 0, "the middle bucket is the gap: {rows:?}");
+        Ok(())
     }
 
     /// A zero width is refused rather than dividing by zero.
     #[tokio::test]
-    async fn timeline_refuses_a_zero_width_bucket() {
-        let server = server_of(vec![invite_to("a", "sip:bob@example.com", at(0), 20000)]);
+    async fn timeline_refuses_a_zero_width_bucket() -> Result<(), TestError> {
+        let server = server_of(vec![invite_to("a", "sip:bob@example.com", at(0)?, 20000)?])?;
         let err = server
             .timeline(Parameters(TimelineParams {
                 bucket_seconds: Some(0),
             }))
             .await
-            .expect_err("a zero-width bucket must be refused");
+            .err()
+            .ok_or("a zero-width bucket must be refused")?;
         assert!(
             err.message.contains("greater than zero"),
             "the refusal must name the constraint it enforced: {err:?}"
         );
+        Ok(())
     }
 }

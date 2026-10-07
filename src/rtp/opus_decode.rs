@@ -105,54 +105,62 @@ impl OpusStreamDecoder {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A decoder created with valid params reports its rate and channel count.
     #[test]
-    fn new_decoder_valid_params() {
+    fn new_decoder_valid_params() -> Result<(), TestError> {
         let dec = OpusStreamDecoder::new(48000, 1);
         assert!(dec.is_ok());
-        let dec = dec.unwrap();
+        let dec = dec?;
         assert_eq!(dec.sample_rate(), 48000);
         assert_eq!(dec.channels(), 1);
+        Ok(())
     }
 
     /// A stereo (2-channel) decoder is created successfully.
     #[test]
-    fn new_decoder_stereo() {
+    fn new_decoder_stereo() -> Result<(), TestError> {
         let dec = OpusStreamDecoder::new(48000, 2);
         assert!(dec.is_ok());
-        assert_eq!(dec.unwrap().channels(), 2);
+        assert_eq!(dec?.channels(), 2);
+        Ok(())
     }
 
     /// An unsupported sample rate (44100) fails decoder creation.
     #[test]
-    fn new_decoder_invalid_rate() {
+    fn new_decoder_invalid_rate() -> Result<(), TestError> {
         let dec = OpusStreamDecoder::new(44100, 1);
         assert!(dec.is_err());
+        Ok(())
     }
 
     /// An invalid channel count (3) fails decoder creation.
     #[test]
-    fn new_decoder_invalid_channels() {
+    fn new_decoder_invalid_channels() -> Result<(), TestError> {
         let dec = OpusStreamDecoder::new(48000, 3);
         assert!(dec.is_err());
+        Ok(())
     }
 
     /// Decoding an empty payload returns an error.
     #[test]
-    fn decode_empty_payload_errors() {
-        let mut dec = OpusStreamDecoder::new(48000, 1).unwrap();
+    fn decode_empty_payload_errors() -> Result<(), TestError> {
+        let mut dec = OpusStreamDecoder::new(48000, 1)?;
         let result = dec.decode_frame(&[]);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// PLC on a fresh decoder succeeds (producing zero samples with no state).
     #[test]
-    fn decode_lost_produces_samples() {
+    fn decode_lost_produces_samples() -> Result<(), TestError> {
         // First feed a valid-ish frame, then test PLC.
         // With a fresh decoder and no prior state, PLC returns zero-length.
-        let mut dec = OpusStreamDecoder::new(48000, 1).unwrap();
+        let mut dec = OpusStreamDecoder::new(48000, 1)?;
         let result = dec.decode_lost();
         // Fresh decoder with no prior packets produces 0 samples (no state to conceal from)
         assert!(result.is_ok());
+        Ok(())
     }
 }

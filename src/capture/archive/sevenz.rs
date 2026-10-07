@@ -343,17 +343,20 @@ pub(crate) mod testutil {
     //! Build 7z fixtures in a test, with the dev-only encoder. The password is
     //! always the caller's, minted at runtime.
 
+    /// The error a fallible fixture builder here returns.
+    pub type TestError = Box<dyn std::error::Error>;
+
     /// A 7z of `entries`, LZMA2, AES-256 with `password` when given; the
     /// member list encrypted too when `encrypt_header`.
-    #[must_use]
     pub fn build(
         entries: &[(&str, &[u8])],
         password: Option<&str>,
         encrypt_header: bool,
-    ) -> Vec<u8> {
+    ) -> Result<Vec<u8>, TestError> {
         use sevenz_rust2::encoder_options::AesEncoderOptions;
         use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password};
-        let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new())).expect("writer");
+        let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new()))
+            .map_err(|e| format!("writer: {e:?}"))?;
         match password {
             Some(pw) => {
                 w.set_content_methods(vec![
@@ -368,21 +371,22 @@ pub(crate) mod testutil {
         }
         for (name, data) in entries {
             w.push_archive_entry(ArchiveEntry::new_file(name), Some(*data))
-                .expect("entry");
+                .map_err(|e| format!("entry: {e:?}"))?;
         }
-        w.finish().expect("finish").into_inner()
+        Ok(w.finish()
+            .map_err(|e| format!("finish: {e:?}"))?
+            .into_inner())
     }
 
     /// `archive` with the NumCyclesPower of its header's AES coder raised to
     /// `power`, and the start header's checksums redone to match: an archive
     /// that asks for `2^power` key-derivation rounds.
-    #[must_use]
-    pub fn with_cycles_power(mut archive: Vec<u8>, power: u8) -> Vec<u8> {
+    pub fn with_cycles_power(mut archive: Vec<u8>, power: u8) -> Result<Vec<u8>, TestError> {
         let id = [0x06u8, 0xF1, 0x07, 0x01];
         let at = archive
             .windows(4)
             .rposition(|w| w == id)
-            .expect("an AES coder in the plain header");
+            .ok_or("an AES coder in the plain header")?;
         // The id, the properties' size, then the first property byte, whose
         // low six bits are NumCyclesPower.
         let props = at + 4 + 1;
@@ -394,13 +398,12 @@ pub(crate) mod testutil {
     /// `value`, checksums redone. AES-CBC makes the first decrypted byte the
     /// block's decryption XOR `IV[0]`, so stepping `value` through all 256
     /// values walks that byte through all 256 values too, for any key.
-    #[must_use]
-    pub fn with_iv_first_byte(mut archive: Vec<u8>, value: u8) -> Vec<u8> {
+    pub fn with_iv_first_byte(mut archive: Vec<u8>, value: u8) -> Result<Vec<u8>, TestError> {
         let id = [0x06u8, 0xF1, 0x07, 0x01];
         let at = archive
             .windows(4)
             .rposition(|w| w == id)
-            .expect("an AES coder in the plain header");
+            .ok_or("an AES coder in the plain header")?;
         // 7-Zip's AES properties: flags and NumCyclesPower, then the sizes
         // byte, then the salt, then the IV. Bit 7 and the high nibble give the
         // salt's size, bit 6 and the low nibble the IV's.
@@ -414,15 +417,23 @@ pub(crate) mod testutil {
     }
 
     /// Redo the next-header CRC and the start header's CRC after a patch.
-    fn refresh_checksums(mut archive: Vec<u8>) -> Vec<u8> {
-        let next_offset = u64::from_le_bytes(archive[12..20].try_into().expect("8")) as usize;
-        let next_size = u64::from_le_bytes(archive[20..28].try_into().expect("8")) as usize;
+    fn refresh_checksums(mut archive: Vec<u8>) -> Result<Vec<u8>, TestError> {
+        let next_offset = u64::from_le_bytes(
+            archive[12..20]
+                .try_into()
+                .map_err(|e| format!("8: {e:?}"))?,
+        ) as usize;
+        let next_size = u64::from_le_bytes(
+            archive[20..28]
+                .try_into()
+                .map_err(|e| format!("8: {e:?}"))?,
+        ) as usize;
         let header = 32 + next_offset;
         let crc = crc32(&archive[header..header + next_size]);
         archive[28..32].copy_from_slice(&crc.to_le_bytes());
         let start = crc32(&archive[12..32]);
         archive[8..12].copy_from_slice(&start.to_le_bytes());
-        archive
+        Ok(archive)
     }
 
     /// CRC-32 (IEEE), bit by bit: a fixture helper, not a hot path.
@@ -447,6 +458,8 @@ mod tests {
     use super::Declared;
     use super::testutil::{build, with_cycles_power, with_iv_first_byte};
     use std::io::{Read, Write};
+
+    type TestError = Box<dyn std::error::Error>;
 
     fn pcap_bytes(payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -476,65 +489,93 @@ mod tests {
         crate::test_material::key_str(label)
     }
 
-    fn ring_of(passwords: &[&str]) -> Keyring {
-        Keyring::new(
-            passwords
-                .iter()
-                .map(|p| Candidate {
-                    password: ArchivePassword::from_bytes(p.as_bytes()).expect("valid"),
+    fn ring_of(passwords: &[&str]) -> Result<Keyring, TestError> {
+        let candidates = passwords
+            .iter()
+            .map(|p| -> Result<Candidate, TestError> {
+                Ok(Candidate {
+                    password: ArchivePassword::from_bytes(p.as_bytes())
+                        .map_err(|e| format!("valid: {e:?}"))?,
                     source: Source::File,
                 })
-                .collect(),
-            None,
-        )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Keyring::new(candidates, None))
     }
 
     #[test]
-    fn a_member_that_ends_before_its_declared_size_is_an_error() {
+    fn a_member_that_ends_before_its_declared_size_is_an_error() -> Result<(), TestError> {
         let mut r = Declared::new(&b"abc"[..], 5);
         let mut out = Vec::new();
-        let e = r.read_to_end(&mut out).expect_err("short");
+        let e = r.read_to_end(&mut out).err().ok_or("short")?;
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(out, b"abc");
         assert!(e.to_string().contains("3 of 5"), "{e}");
+        Ok(())
     }
 
     #[test]
-    fn a_member_of_exactly_its_declared_size_reads_clean() {
+    fn a_member_of_exactly_its_declared_size_reads_clean() -> Result<(), TestError> {
         let mut r = Declared::new(&b"abcde"[..], 5);
         let mut out = Vec::new();
-        assert_eq!(r.read_to_end(&mut out).expect("exact"), 5);
-        assert_eq!(r.read(&mut [0u8; 4]).expect("past the end"), 0);
+        assert_eq!(
+            r.read_to_end(&mut out)
+                .map_err(|e| format!("exact: {e:?}"))?,
+            5
+        );
+        assert_eq!(
+            r.read(&mut [0u8; 4])
+                .map_err(|e| format!("past the end: {e:?}"))?,
+            0
+        );
+        Ok(())
     }
 
     #[test]
-    fn an_empty_buffer_is_not_mistaken_for_the_end() {
+    fn an_empty_buffer_is_not_mistaken_for_the_end() -> Result<(), TestError> {
         let mut r = Declared::new(&b"abc"[..], 3);
-        assert_eq!(r.read(&mut []).expect("zero-length read"), 0);
+        assert_eq!(
+            r.read(&mut [])
+                .map_err(|e| format!("zero-length read: {e:?}"))?,
+            0
+        );
         let mut out = Vec::new();
-        assert_eq!(r.read_to_end(&mut out).expect("then the rest"), 3);
+        assert_eq!(
+            r.read_to_end(&mut out)
+                .map_err(|e| format!("then the rest: {e:?}"))?,
+            3
+        );
+        Ok(())
     }
 
-    fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    fn write(
+        dir: &std::path::Path,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<std::path::PathBuf, TestError> {
         let p = dir.join(name);
-        std::fs::write(&p, bytes).expect("write");
-        p
+        std::fs::write(&p, bytes).map_err(|e| format!("write: {e:?}"))?;
+        Ok(p)
     }
 
-    fn expand_with(path: &std::path::Path, keyring: Option<&mut Keyring>) -> Expansion {
-        expand_filtered_with(path, &limits(), None, keyring).expect("expand")
+    fn expand_with(
+        path: &std::path::Path,
+        keyring: Option<&mut Keyring>,
+    ) -> Result<Expansion, TestError> {
+        Ok(expand_filtered_with(path, &limits(), None, keyring)
+            .map_err(|e| format!("expand: {e:?}"))?)
     }
 
     #[test]
-    fn an_unencrypted_7z_reads_like_a_tar() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn an_unencrypted_7z_reads_like_a_tar() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"alpha");
         let path = write(
             tmp.path(),
             "set.7z",
-            &build(&[("set/a.pcap", &a), ("notes.txt", b"lab")], None, false),
-        );
-        let exp = expand_with(&path, None);
+            &build(&[("set/a.pcap", &a), ("notes.txt", b"lab")], None, false)?,
+        )?;
+        let exp = expand_with(&path, None)?;
         assert_eq!(exp.members.len(), 1, "{:?} {:?}", exp.skipped, exp.stops);
         assert_eq!(
             exp.members[0].label,
@@ -542,20 +583,25 @@ mod tests {
         );
         assert_eq!(exp.members[0].layers, vec![Layer::SevenZip]);
         assert_eq!(exp.members[0].encryption, Encryption::None);
-        assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), a);
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            a
+        );
+        Ok(())
     }
 
     #[test]
-    fn an_aes_7z_opens_with_the_right_password_and_says_why_not_otherwise() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn an_aes_7z_opens_with_the_right_password_and_says_why_not_otherwise() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"secret");
         for encrypt_header in [false, true] {
             let path = write(
                 tmp.path(),
                 "aes.7z",
-                &build(&[("a.pcap", &a)], Some(secret("7z-right")), encrypt_header),
-            );
-            let exp = expand_with(&path, Some(&mut ring_of(&["x", secret("7z-right")])));
+                &build(&[("a.pcap", &a)], Some(secret("7z-right")), encrypt_header)?,
+            )?;
+            let exp = expand_with(&path, Some(&mut ring_of(&["x", secret("7z-right")])?))?;
             assert_eq!(
                 exp.members.len(),
                 1,
@@ -563,9 +609,12 @@ mod tests {
                 exp.skipped
             );
             assert_eq!(exp.members[0].encryption, Encryption::SevenZipAes256);
-            assert_eq!(std::fs::read(&exp.members[0].path).expect("read"), a);
+            assert_eq!(
+                std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+                a
+            );
 
-            let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-wrong")])));
+            let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-wrong")])?))?;
             assert!(exp.members.is_empty());
             assert!(
                 matches!(exp.skipped.as_slice(), [s] if s.reason == SkipReason::EncryptedWrongPassword),
@@ -574,13 +623,14 @@ mod tests {
                 exp.stops
             );
 
-            let exp = expand_with(&path, None);
+            let exp = expand_with(&path, None)?;
             assert!(
                 matches!(exp.skipped.as_slice(), [s] if s.reason == SkipReason::EncryptedNoPassword),
                 "{:?}",
                 exp.skipped
             );
         }
+        Ok(())
     }
 
     /// A wrong key decrypts to noise, and LZMA2 reads some noise without
@@ -590,20 +640,20 @@ mod tests {
     /// count as the password opening the archive. Every first byte is tried,
     /// so both cases are hit on every run rather than one run in ~100.
     #[test]
-    fn no_first_decrypted_byte_lets_a_wrong_password_open_a_7z() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn no_first_decrypted_byte_lets_a_wrong_password_open_a_7z() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"every-first-byte");
         // Two key-derivation rounds instead of 2^19: the key no longer
         // matches what the content was encrypted with, which is the point.
-        let base = with_cycles_power(build(&[("a.pcap", &a)], Some(secret("7z-iv")), false), 1);
+        let base = with_cycles_power(build(&[("a.pcap", &a)], Some(secret("7z-iv")), false)?, 1)?;
         let mut opened = Vec::new();
         for value in 0..=u8::MAX {
             let path = write(
                 tmp.path(),
                 &format!("iv{value}.7z"),
-                &with_iv_first_byte(base.clone(), value),
-            );
-            let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-iv-wrong")])));
+                &with_iv_first_byte(base.clone(), value)?,
+            )?;
+            let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-iv-wrong")])?))?;
             if !exp.members.is_empty()
                 || !matches!(exp.skipped.as_slice(), [s] if s.reason == SkipReason::EncryptedWrongPassword)
             {
@@ -615,11 +665,12 @@ mod tests {
             "a wrong password opened {} of 256: {opened:?}",
             opened.len()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_decomposed_password_opens_a_7z_made_with_the_composed_one() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_decomposed_password_opens_a_7z_made_with_the_composed_one() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let base = secret("7z-nfc");
         let composed = format!("{}\u{00fc}{}", &base[..6], &base[6..12]);
         let decomposed = format!("{}u\u{0308}{}", &base[..6], &base[6..12]);
@@ -627,25 +678,26 @@ mod tests {
         let path = write(
             tmp.path(),
             "nfc.7z",
-            &build(&[("a.pcap", &a)], Some(&composed), false),
-        );
-        let mut keys = ring_of(&[&decomposed]);
-        let exp = expand_with(&path, Some(&mut keys));
+            &build(&[("a.pcap", &a)], Some(&composed), false)?,
+        )?;
+        let mut keys = ring_of(&[&decomposed])?;
+        let exp = expand_with(&path, Some(&mut keys))?;
         assert_eq!(exp.members.len(), 1, "{:?}", exp.skipped);
         assert_eq!(keys.attempts(), 1, "every spelling is one attempt");
+        Ok(())
     }
 
     #[test]
-    fn a_key_derivation_past_the_bound_is_refused_quickly() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_key_derivation_past_the_bound_is_refused_quickly() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let base = build(
             &[("a.pcap", &pcap_bytes(b"slow"))],
             Some(secret("7z-slow")),
             true,
-        );
-        let path = write(tmp.path(), "slow.7z", &with_cycles_power(base, 40));
+        )?;
+        let path = write(tmp.path(), "slow.7z", &with_cycles_power(base, 40)?)?;
         let started = std::time::Instant::now();
-        let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-slow")])));
+        let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-slow")])?))?;
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
         assert!(exp.members.is_empty());
         assert!(
@@ -655,22 +707,28 @@ mod tests {
             exp.skipped,
             exp.stops
         );
+        Ok(())
     }
 
     #[test]
-    fn a_password_7z_nested_in_a_tgz_opens() {
-        let tmp = tempfile::tempdir().expect("tmp");
+    fn a_password_7z_nested_in_a_tgz_opens() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
         let a = pcap_bytes(b"deep");
-        let sz = build(&[("a.pcap", &a)], Some(secret("7z-nest")), false);
+        let sz = build(&[("a.pcap", &a)], Some(secret("7z-nest")), false)?;
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         gz.write_all(&build_tar(&[Spec::file("inner.7z", &sz)]))
-            .expect("gzip");
-        let path = write(tmp.path(), "outer.tgz", &gz.finish().expect("gzip"));
-        let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-nest")])));
+            .map_err(|e| format!("gzip: {e:?}"))?;
+        let path = write(
+            tmp.path(),
+            "outer.tgz",
+            &gz.finish().map_err(|e| format!("gzip: {e:?}"))?,
+        )?;
+        let exp = expand_with(&path, Some(&mut ring_of(&[secret("7z-nest")])?))?;
         assert_eq!(exp.members.len(), 1, "{:?} {:?}", exp.skipped, exp.stops);
         assert_eq!(
             exp.members[0].layers,
             vec![Layer::Gzip, Layer::Tar, Layer::SevenZip]
         );
+        Ok(())
     }
 }

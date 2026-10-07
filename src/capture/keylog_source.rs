@@ -481,6 +481,8 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// There is no `hex` crate in this tree, so encode by hand.
     fn hex32(b: u8) -> String {
         (0..32).map(|_| format!("{b:02x}")).collect()
@@ -493,65 +495,62 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn mkfifo(path: &std::path::Path) {
+    fn mkfifo(path: &std::path::Path) -> Result<(), TestError> {
         use std::os::unix::ffi::OsStrExt;
-        let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
         // SAFETY: `c` is a valid NUL-terminated path living across the call.
         let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
         assert_eq!(rc, 0);
+        Ok(())
     }
 
     #[test]
-    fn growing_file_yields_only_new_lines() {
-        let dir = tempfile::tempdir().unwrap();
+    fn growing_file_yields_only_new_lines() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl");
-        std::fs::write(&path, line(1)).unwrap();
+        std::fs::write(&path, line(1))?;
 
-        let mut src = KeylogSource::open_file(&path).unwrap();
-        let first = src.poll().unwrap();
+        let mut src = KeylogSource::open_file(&path)?;
+        let first = src.poll()?;
         assert_eq!(first.lines.lines().count(), 1, "first poll reads the file");
         assert!(first.reset.is_none());
 
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        f.write_all(line(2).as_bytes()).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path)?;
+        f.write_all(line(2).as_bytes())?;
 
-        let second = src.poll().unwrap();
+        let second = src.poll()?;
         assert_eq!(
             second.lines.lines().count(),
             1,
             "second poll reads ONLY the appended line, not the whole file"
         );
+        Ok(())
     }
 
     #[test]
-    fn quiet_file_yields_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn quiet_file_yields_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl");
-        std::fs::write(&path, line(1)).unwrap();
-        let mut src = KeylogSource::open_file(&path).unwrap();
-        src.poll().unwrap();
-        assert!(
-            src.poll().unwrap().lines.is_empty(),
-            "no new bytes, no lines"
-        );
+        std::fs::write(&path, line(1))?;
+        let mut src = KeylogSource::open_file(&path)?;
+        src.poll()?;
+        assert!(src.poll()?.lines.is_empty(), "no new bytes, no lines");
+        Ok(())
     }
 
     #[test]
-    fn truncation_resets_and_reloads_the_keys() {
-        let dir = tempfile::tempdir().unwrap();
+    fn truncation_resets_and_reloads_the_keys() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl");
-        std::fs::write(&path, format!("{}{}", line(1), line(2))).unwrap();
+        std::fs::write(&path, format!("{}{}", line(1), line(2)))?;
 
-        let mut src = KeylogSource::open_file(&path).unwrap();
-        assert_eq!(src.poll().unwrap().lines.lines().count(), 2);
+        let mut src = KeylogSource::open_file(&path)?;
+        assert_eq!(src.poll()?.lines.lines().count(), 2);
 
         // The producer rotates by truncating in place and writing one new key.
-        std::fs::write(&path, line(3)).unwrap();
+        std::fs::write(&path, line(3))?;
 
-        let out = src.poll().unwrap();
+        let out = src.poll()?;
         assert!(
             matches!(out.reset, Some(ResetCause::Truncated)),
             "a shrink with the same inode is a truncation"
@@ -561,23 +560,24 @@ mod tests {
             1,
             "the post-truncation key is DELIVERED, not skipped for the rest of the run"
         );
+        Ok(())
     }
 
     #[test]
-    fn replacement_resets_and_reloads_the_keys() {
-        let dir = tempfile::tempdir().unwrap();
+    fn replacement_resets_and_reloads_the_keys() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl");
-        std::fs::write(&path, format!("{}{}", line(1), line(2))).unwrap();
+        std::fs::write(&path, format!("{}{}", line(1), line(2)))?;
 
-        let mut src = KeylogSource::open_file(&path).unwrap();
-        assert_eq!(src.poll().unwrap().lines.lines().count(), 2);
+        let mut src = KeylogSource::open_file(&path)?;
+        assert_eq!(src.poll()?.lines.lines().count(), 2);
 
         // The producer rotates by rename-and-create: new inode, and longer than
         // the old file, so a size comparison alone reads it at a stale offset.
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, format!("{}{}{}", line(3), line(4), line(5))).unwrap();
+        std::fs::remove_file(&path)?;
+        std::fs::write(&path, format!("{}{}{}", line(3), line(4), line(5)))?;
 
-        let out = src.poll().unwrap();
+        let out = src.poll()?;
         assert!(
             matches!(out.reset, Some(ResetCause::Replaced)),
             "a different inode is a replacement, not a growth"
@@ -587,77 +587,74 @@ mod tests {
             3,
             "all three keys from the NEW file arrive, none read at a stale offset"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_line_split_across_polls_is_delivered_exactly_once() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_line_split_across_polls_is_delivered_exactly_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl");
         let whole = line(1);
         let (head, tail) = whole.split_at(20);
 
-        std::fs::write(&path, head).unwrap();
-        let mut src = KeylogSource::open_file(&path).unwrap();
+        std::fs::write(&path, head)?;
+        let mut src = KeylogSource::open_file(&path)?;
         assert!(
-            src.poll().unwrap().lines.is_empty(),
+            src.poll()?.lines.is_empty(),
             "a partial line is retained, never emitted half-formed"
         );
 
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        f.write_all(tail.as_bytes()).unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path)?;
+        f.write_all(tail.as_bytes())?;
 
-        let out = src.poll().unwrap();
+        let out = src.poll()?;
         assert_eq!(
             out.lines, whole,
             "the completed line arrives intact, exactly once"
         );
-        assert!(
-            src.poll().unwrap().lines.is_empty(),
-            "and is not delivered again"
-        );
+        assert!(src.poll()?.lines.is_empty(), "and is not delivered again");
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn a_fifo_with_no_writer_returns_immediately() {
+    fn a_fifo_with_no_writer_returns_immediately() -> Result<(), TestError> {
         // THE REGRESSION: `File::open` on a FIFO O_RDONLY blocks until a writer
         // appears, and this runs inside the packet sweep loop. Measured before
         // the fix: `timeout 2 cat kl.fifo` exits 124.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl.fifo");
-        mkfifo(&path);
+        mkfifo(&path)?;
 
         let started = std::time::Instant::now();
-        let mut src = KeylogSource::open_auto(&path).unwrap();
-        let out = src.poll().unwrap();
+        let mut src = KeylogSource::open_auto(&path)?;
+        let out = src.poll()?;
         assert!(out.lines.is_empty());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(1),
             "opening and polling a writerless FIFO must not block the packet loop"
         );
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn a_fifo_delivers_keys_a_size_check_could_never_see() {
+    fn a_fifo_delivers_keys_a_size_check_could_never_see() -> Result<(), TestError> {
         // THE REGRESSION: a FIFO stats as length 0 however much is queued, so
         // `current_size <= last_keylog_size` held forever and returned Ok(0).
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl.fifo");
-        mkfifo(&path);
+        mkfifo(&path)?;
 
-        let mut src = KeylogSource::open_auto(&path).unwrap();
+        let mut src = KeylogSource::open_auto(&path)?;
 
-        let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        w.write_all(line(7).as_bytes()).unwrap();
-        w.flush().unwrap();
+        let mut w = std::fs::OpenOptions::new().write(true).open(&path)?;
+        w.write_all(line(7).as_bytes())?;
+        w.flush()?;
 
         let mut got = String::new();
         for _ in 0..50 {
-            got.push_str(&src.poll().unwrap().lines);
+            got.push_str(&src.poll()?.lines);
             if !got.is_empty() {
                 break;
             }
@@ -668,6 +665,7 @@ mod tests {
             1,
             "the key written to the FIFO arrived"
         );
+        Ok(())
     }
 
     /// The whole point of `--keylog-fd`: a producer writes secrets into a pipe
@@ -677,7 +675,7 @@ mod tests {
     /// bytes were read.
     #[test]
     #[cfg(unix)]
-    fn secrets_sent_down_a_pipe_reach_the_decryptor() {
+    fn secrets_sent_down_a_pipe_reach_the_decryptor() -> Result<(), TestError> {
         use crate::capture::decrypt::TlsDecryptor;
         use std::os::fd::AsRawFd;
 
@@ -688,9 +686,11 @@ mod tests {
             (fds[0], fds[1])
         };
 
-        let mut decryptor =
-            TlsDecryptor::new(None, crate::crypto::default_backend()).expect("decryptor");
-        decryptor.set_keylog_source(KeylogSource::from_fd(read_fd).expect("adopt the read end"));
+        let mut decryptor = TlsDecryptor::new(None, crate::crypto::default_backend())
+            .map_err(|e| format!("decryptor: {e:?}"))?;
+        decryptor.set_keylog_source(
+            KeylogSource::from_fd(read_fd).map_err(|e| format!("adopt the read end: {e:?}"))?,
+        );
         assert_eq!(decryptor.keylog_entry_count(), 0, "nothing yet");
 
         // SAFETY: `read_fd` was duplicated by `from_fd`, so closing ours is safe.
@@ -699,14 +699,16 @@ mod tests {
         {
             // SAFETY: `write_fd` is a fresh descriptor this scope owns.
             let mut w = unsafe { <std::fs::File as std::os::fd::FromRawFd>::from_raw_fd(write_fd) };
-            w.write_all(line(3).as_bytes()).unwrap();
-            w.flush().unwrap();
+            w.write_all(line(3).as_bytes())?;
+            w.flush()?;
             let _ = w.as_raw_fd();
         } // the writer closes here
 
         let mut loaded = 0;
         for _ in 0..50 {
-            loaded += decryptor.poll_keylog_file().expect("poll");
+            loaded += decryptor
+                .poll_keylog_file()
+                .map_err(|e| format!("poll: {e:?}"))?;
             if loaded > 0 {
                 break;
             }
@@ -719,24 +721,25 @@ mod tests {
             1,
             "and the decryptor holds it, with nothing written to disk"
         );
+        Ok(())
     }
 
     #[test]
     #[cfg(unix)]
-    fn a_stream_reports_exhaustion_when_the_producer_exits() {
-        let dir = tempfile::tempdir().unwrap();
+    fn a_stream_reports_exhaustion_when_the_producer_exits() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("kl.fifo");
-        mkfifo(&path);
-        let mut src = KeylogSource::open_auto(&path).unwrap();
+        mkfifo(&path)?;
+        let mut src = KeylogSource::open_auto(&path)?;
 
         {
-            let mut w = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-            w.write_all(line(8).as_bytes()).unwrap();
+            let mut w = std::fs::OpenOptions::new().write(true).open(&path)?;
+            w.write_all(line(8).as_bytes())?;
         } // the writer closes, so the next read sees EOF
 
         let mut got = String::new();
         for _ in 0..50 {
-            got.push_str(&src.poll().unwrap().lines);
+            got.push_str(&src.poll()?.lines);
             if src.is_exhausted() {
                 break;
             }
@@ -751,12 +754,15 @@ mod tests {
             src.is_exhausted(),
             "a closed producer is reported, not polled forever"
         );
+        Ok(())
     }
 }
 
 #[cfg(all(test, unix, feature = "tls"))]
 mod fd_contract_tests {
     use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
 
     /// **The caller's descriptor must come back exactly as it went in.**
     ///
@@ -770,11 +776,11 @@ mod fd_contract_tests {
     /// the two descriptors are not equal, so nothing about the call LOOKS
     /// wrong.
     #[test]
-    fn from_fd_does_not_change_the_callers_descriptor_flags() {
-        let dir = tempfile::tempdir().expect("temp dir");
+    fn from_fd_does_not_change_the_callers_descriptor_flags() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let path = dir.path().join("keys.log");
-        std::fs::write(&path, b"").expect("create");
-        let file = std::fs::File::open(&path).expect("open");
+        std::fs::write(&path, b"").map_err(|e| format!("create: {e:?}"))?;
+        let file = std::fs::File::open(&path).map_err(|e| format!("open: {e:?}"))?;
         let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
 
         // SAFETY: `fd` is open and owned by `file` for the whole test.
@@ -790,7 +796,7 @@ mod fd_contract_tests {
             "the fixture must start BLOCKING or this test proves nothing"
         );
 
-        let source = KeylogSource::from_fd(fd).expect("from_fd");
+        let source = KeylogSource::from_fd(fd).map_err(|e| format!("from_fd: {e:?}"))?;
 
         // SAFETY: as above.
         let after = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -802,5 +808,6 @@ mod fd_contract_tests {
              open-file description, so F_SETFL on the duplicate changes both — \
              the doc comment promises the opposite"
         );
+        Ok(())
     }
 }
