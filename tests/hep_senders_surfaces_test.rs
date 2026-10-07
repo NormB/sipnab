@@ -109,6 +109,7 @@ fn rest_state(meter: sipnab::capture::channel::CaptureMeter) -> ApiState {
         alert_engine: None,
         armed_detections: Vec::new(),
         file_root: None,
+        pipeline_options: Default::default(),
         archive: sipnab::output::api::ArchivePasswordPolicy::default(),
     }
 }

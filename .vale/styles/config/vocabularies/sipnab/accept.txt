@@ -651,7 +651,6 @@ Tegra
 tempdir
 TFPS
 thiserror
-thor
 timestamping
 tls
 tmux

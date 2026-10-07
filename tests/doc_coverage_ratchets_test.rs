@@ -360,7 +360,7 @@ fn the_ceiling_value_comparison_fires_on_a_disagreement() -> Result<(), TestErro
 /// `capture::archive::MAX_DEPTH` is 4 and `rtpengine::bencode::MAX_DEPTH` is
 /// 16. The first version kept one value per name, so the declaration read
 /// LAST won, and which one that was depended on the order `read_dir` returned
-/// files in. The gate passed on thor-02 and failed in CI's Coverage job over
+/// files in. The gate passed on the aarch64 development host and failed in CI's Coverage job over
 /// the same commit, reporting the correct `MAX_DEPTH` (4) as wrong. A document
 /// citing either value is citing a real bound, so both orders must agree with
 /// both values, and a number matching neither must still be reported.

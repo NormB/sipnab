@@ -556,9 +556,19 @@ fn the_homepage_vcon_forwarding_claim_is_backed_by_the_forwarder() -> Result<(),
     for flag in [
         r#"long = "vcon-forward","#,
         r#"long = "vcon-forward-compat","#,
-        r#"value_parser = ["vcon-store"]"#,
+        r#"long = "vcon-forward-kind","#,
+        "crate::config::FORWARD_COMPAT.iter()",
+        "crate::config::FORWARD_KINDS.iter()",
     ] {
         assert!(cli.contains(flag), "src/cli.rs has no {flag}");
+    }
+    // The names the two flags accept, declared once in src/config.rs.
+    let config = read("src/config.rs")?;
+    for names in [
+        r#"pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];"#,
+        r#"pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];"#,
+    ] {
+        assert!(config.contains(names), "src/config.rs has no {names}");
     }
     let tests = read("tests/vcon_forward_test.rs")?;
     for test in [

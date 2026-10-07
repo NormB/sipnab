@@ -3092,6 +3092,7 @@ fn server_selection(
         // findings list can tell "nothing was watching" from "the
         // traffic was clean".
         armed_detections: engines.armed_kinds(),
+        pipeline_options: crate::app::server_pipeline_options(cli, config),
     }
 }
 
@@ -5236,16 +5237,16 @@ fn process_parsed_packet(
     // extraction, SDES/DTLS key learning, RTCP/RTP/heuristic detection), then
     // apply the action with the batch extras: counters, matcher/DSL filter,
     // output dispatch, security detectors, events, DTMF.
-    let opts = crate::pipeline::PipelineOptions {
-        no_dialog: cli.dialog_args.no_dialog,
-        no_rtp: ctx.no_rtp,
-        sip_portrange: Some(ctx.portrange),
-        rtpproxy_control: cli.rtp_args.rtpproxy_control,
-        quiet_bad_parse: cli.capture_args.quiet_bad_parse,
-        // The packet loop already applied `--hep-parse` before this packet
-        // reached here; unwrapping SIP a second time would find no HEP.
-        hep_parse: false,
-    };
+    let opts = crate::app::pipeline_options(
+        cli,
+        crate::app::PipelineDecisions {
+            no_rtp: ctx.no_rtp,
+            // The packet loop already applied `--hep-parse` before this packet
+            // reached here; unwrapping SIP a second time would find no HEP.
+            hep_parse: false,
+            sip_portrange: Some(ctx.portrange),
+        },
+    );
     #[cfg(feature = "tls")]
     let mut decrypt = crate::pipeline::MediaDecrypt {
         srtp: state.srtp.as_deref_mut(),
@@ -10918,7 +10919,7 @@ mod tests {
     /// No container emits an explicit null.
     ///
     /// "Absent, never null" is the module's standing contract, and the
-    /// container stored on thor-02 by an earlier release violates it -- with
+    /// container stored on the development host by an earlier release violates it -- with
     /// `url`, `mediatype` and `duration` all null. This asserts the property
     /// on the path this task added.
     #[cfg(feature = "vcon")]

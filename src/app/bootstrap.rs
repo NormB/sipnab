@@ -3885,32 +3885,44 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 /// exit code, or `None` when the flag is absent. The body is feature-swapped
 /// so the caller contains no `cfg`.
 ///
-/// Runs before any configuration is loaded or capture opened: the forwarder
-/// is a separate process that reads no packet, and clap has already refused
-/// every capture flag beside it.
+/// Loads the configuration for `[vcon_forward]` ([`load_config`], which also
+/// refuses forwarder settings that cannot be used), and opens no capture: the
+/// forwarder is a separate process that reads no packet, and clap has already
+/// refused every capture flag beside it.
 ///
 /// # Returns
 ///
-/// `Some` exit code from [`crate::app::vcon_forward::run`], `Some(2)` when the
-/// settings are refused or the `vcon` feature is not compiled in, `None` when
-/// `--vcon-forward` was not given.
+/// `Some` exit code from [`crate::app::vcon_forward::run`]; the exit code of
+/// [`load_config`]'s refusal (1 for the file, 2 for a setting); `Some(2)` when
+/// the credential cannot be read or the `vcon` feature is not compiled in;
+/// `None` when `--vcon-forward` was not given.
 ///
 /// # Side effects
 ///
-/// Reads the auth file, creates the delivered and failed directories,
-/// connects to the store, and moves files out of the spool, until SIGTERM or
-/// SIGINT (or after one pass with `--vcon-forward-once`).
+/// Reads the config file and the credential's file, creates the delivered
+/// and failed directories, connects to the store, and moves files out of the
+/// spool, until SIGTERM or SIGINT (or after one pass with
+/// `--vcon-forward-once`).
 pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     cli.vcon_forward_args.vcon_forward.as_ref()?;
     #[cfg(feature = "vcon")]
     {
-        use crate::app::vcon_forward::{ForwardSettings, run};
+        use crate::app::vcon_forward::{ForwardPlan, run};
+        let loaded = match load_config(cli) {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                tracing::error!("{}", e.message);
+                return Some(e.exit_code);
+            }
+        };
         let args = &cli.vcon_forward_args;
-        match ForwardSettings::from_cli(args) {
-            Ok(settings) => Some(run(
+        match ForwardPlan::resolve(args, &loaded.config.vcon_forward)
+            .and_then(ForwardPlan::into_settings)
+        {
+            Ok((settings, interval)) => Some(run(
                 settings,
                 args.vcon_forward_once,
-                std::time::Duration::from_secs(args.vcon_forward_interval),
+                interval,
                 &crate::signals::shutdown_requested,
             )),
             Err(msg) => {
@@ -3923,6 +3935,24 @@ pub fn run_vcon_forward(cli: &Cli) -> Option<i32> {
     {
         tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
         Some(2)
+    }
+}
+
+/// Why a `--vcon-forward` run's settings cannot be used, or `None` (also
+/// when this is not a forwarder run). Feature-swapped: without the `vcon`
+/// feature [`run_vcon_forward`] refuses the run before the config is read.
+fn forwarder_settings_problem(cli: &Cli, config: &Config) -> Option<String> {
+    cli.vcon_forward_args.vcon_forward.as_ref()?;
+    #[cfg(feature = "vcon")]
+    {
+        crate::app::vcon_forward::ForwardPlan::resolve(&cli.vcon_forward_args, &config.vcon_forward)
+            .err()
+    }
+    #[cfg(not(feature = "vcon"))]
+    {
+        // Nothing to resolve: no forwarder is compiled in.
+        let _ = config;
+        None
     }
 }
 
@@ -4002,6 +4032,15 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
         });
     }
 
+    // [vcon_forward] keys are held to the rules their flags follow: the
+    // ranges, the kind and compat names, and the back-off pair.
+    if let Err(e) = loaded.config.vcon_forward.validate() {
+        return Err(PlanError {
+            exit_code: 1,
+            message: e.to_string(),
+        });
+    }
+
     // [names] carries dns_cache_entries, which --dns-cache-entries refuses at
     // 0; the file must too, and until now [names] was the one section with no
     // validator wired in here at all.
@@ -4046,6 +4085,17 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     // naming the flag and the key. Exit 2, as the flag-only check this
     // replaced used.
     if let Some(problem) = cli.tls_settings_problem(&loaded.config) {
+        return Err(PlanError {
+            exit_code: 2,
+            message: problem,
+        });
+    }
+
+    // The forwarder's settings, resolved from its flags and [vcon_forward]
+    // together by the forwarder's own resolver: a URL or a credential from
+    // either source, refused here naming the flag or key, before the
+    // forwarder reads a file or connects. Exit 2, as a refused flag exits.
+    if let Some(problem) = forwarder_settings_problem(cli, &loaded.config) {
         return Err(PlanError {
             exit_code: 2,
             message: problem,

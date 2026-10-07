@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.206] - 2026-10-07
 
 ### Security
 
@@ -18,6 +18,58 @@ entry that carries them.
   (`[env: SIPNAB_HEP_AUTH=<value>]`). Help now names the variable only.
   `tests/help_env_values_test.rs` reads every environment-backed flag from the
   parser, so a flag added later is held to the same rule.
+- **`--run-provenance-file` no longer records secrets.** The record held the
+  command line as given, so `--hep-auth <key>`, `--api-key=<key>` and the other
+  flags that take a secret inline wrote that secret to the file. Their values
+  are now recorded as `[redacted]`. `cli::SECRET_FLAGS` lists those flags, and
+  `tests/secret_flags_test.rs` fails when a flag read from an environment
+  variable, or one whose value is named as a key, token, password, header or
+  `user:pass`, is missing from it.
+- **sipnab no longer echoes or records the user name and password in a URL.**
+  sipnab refused `--vcon-forward-url https://user:pass@host/` with a message
+  that quoted the whole URL, password included, and the run provenance record
+  kept any URL argument as given. Every refusal of a forwarder URL, and every
+  URL argument in the provenance record (`--flag value` and `--flag=value`),
+  now shows the user name and password as `[redacted]`. Both use one
+  function, `run_provenance::redact_url_userinfo`.
+
+### Added
+
+- **The vCon forwarder takes its settings from `sipnab.toml`.** A
+  `[vcon_forward]` section has a key for each forwarder flag that is not
+  per-run: `kind`, `url`, `replace_url`, `auth_file`, `ca`, `done`, `failed`,
+  `interval`, `timeout`, `compat`, `backoff_first`, `backoff_cap`,
+  `max_response_head` and `max_error_body`. A flag overrides its key, each key
+  is checked by the rule its flag follows, and `--dump-config` shows them.
+  `--vcon-forward` no longer requires `--vcon-forward-url` and
+  `--vcon-forward-auth-file` on the command line; without a URL or a credential
+  from either source, sipnab refuses the run with exit 2, naming the flag and
+  the key.
+- **`--vcon-forward-kind` (`generic`, `vcon-store`, `conserver`) and
+  `[vcon_forward] kind`.** A kind supplies what that store needs, as measured on
+  2026-10-07: the ingest path for a base URL (`/v1/vcons` for vcon.store,
+  `/vcon/external-ingress?ingress_list=sipnab` for a conserver), the header
+  for a bare key (`Authorization: Bearer <key>`, `x-conserver-api-token:
+  <key>`), and the payload adaptation (`vcon-store` sends `extensions` as an
+  object). An explicit URL path, a full header line or `--vcon-forward-compat`
+  overrides each. `generic`, the default, supplies nothing, as before.
+  `--vcon-forward-compat vcon-store` keeps its meaning, and takes `none` to turn
+  a kind's adaptation off. `docs/vcon.md` shows how to chain two forwarders to
+  deliver to two stores.
+- **The forwarder's credential from the environment.** `SIPNAB_VCON_FORWARD_AUTH`
+  (or `--vcon-forward-auth`, whose value the process list shows) holds what
+  the auth file holds. It is refused when empty and beside
+  `--vcon-forward-auth-file` or `[vcon_forward] auth_file`, `--help` does not
+  show its value, and it is removed from every log line, failure record and
+  stop reason the way the file's value is.
+- **The forwarder's fixed numbers are settings.** `--vcon-forward-backoff-first`
+  (default 2 s) and `--vcon-forward-backoff-cap` (default 300 s) space the
+  retries, and refuse 0 and a first delay longer than the cap;
+  `--vcon-forward-max-response-head` (default 65536 bytes) and
+  `--vcon-forward-max-error-body` (default 8192 bytes) bound what is read of a
+  store's answer and kept of a refusal, and refuse 0. The defaults are the
+  former constants. The constants that remain each state why they are not
+  settings.
 
 ### Changed
 
@@ -56,6 +108,15 @@ entry that carries them.
 
 ### Fixed
 
+- **`-E` times each message by the HEP packet's own timestamp.** It kept the
+  time the HEP datagram was sniffed, so every message in a feed got the
+  sniffer's clock: a 60 s call relayed or replayed as HEP showed as seven
+  messages in the same millisecond. `--hep-listen` already used the HEP
+  timestamp; both now follow one rule. Found from Giovanni Maruzzelli's
+  ([@gmaruzz](https://github.com/gmaruzz)) retest of the loopback HEP setup in
+  [#343](https://github.com/NormB/sipnab/issues/343), which also showed that a
+  HEP port with no listener loses messages (see `[capture]` in the
+  configuration reference).
 - **Refusals name the setting the user wrote.** Quality band flags were refused
   naming `[quality]` keys; `--business-hours` naming `[security]
   business_hours`; an empty `--hep-auth` or `--metrics-auth` naming the
@@ -65,6 +126,23 @@ entry that carries them.
   expression` did not name the setting at all.
 - A malformed `--ws-portrange` exits 2, as `--portrange` does, instead of 1.
 - The `exec_queue_depth` refusal message no longer contains runs of spaces.
+- `--vcon-forward-once --help` names exit `3`, which a `401` or `403` from the
+  store already produced. The man page describes `--vcon-forward-kind`,
+  `--vcon-forward-auth`, `SIPNAB_VCON_FORWARD_AUTH`, the back-off and size
+  flags, `[vcon_forward]` and every forwarder exit status, and lists exit `3`.
+- The command reference and configuration reference state the range each
+  setting accepts, for every value listed under Changed above.
+- **Captures read through MCP and REST apply the run's options.** MCP
+  `open_capture` and `compare_captures`, and REST `GET /v1/captures/compare`,
+  read capture files with the pipeline defaults, so `-E` / `--hep-parse`
+  (and `[capture] hep_parse`) did not apply there: a HEP copy that
+  `-I file -E` decoded showed no SIP when opened through a server. The
+  servers now read every capture file with the run's options, built by the
+  same function the packet loop and the TUI use: `--hep-parse`, `--no-rtp`,
+  `--no-dialog`, `--rtpproxy-control` and `--quiet-bad-parse`. MCP
+  `find_in_captures` reads with them too. A file opened through a server still
+  reads SIP on every port, as the TUI's own file open does: `--portrange` does
+  not apply there.
 
 ## [0.5.205] - 2026-10-07
 

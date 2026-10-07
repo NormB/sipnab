@@ -1520,6 +1520,113 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    (
+        "vcon_forward",
+        "auth_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "backoff_cap",
+        KeyKind::Int {
+            lo: 2,
+            hi: 4294967295,
+        },
+    ),
+    (
+        "vcon_forward",
+        "backoff_first",
+        KeyKind::Int { lo: 1, hi: 300 },
+    ),
+    (
+        "vcon_forward",
+        "ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "compat",
+        KeyKind::Literal {
+            accept: &["\"none\"", "\"vcon-store\""],
+            reject: &["\"x\"", "\"\"", "\" \"", "\"VCON-STORE\"", "\"off\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "done",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "failed",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\"", "\"/var/spool/sipnab-vcon\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    ("vcon_forward", "interval", KeyKind::Int { lo: 1, hi: 3600 }),
+    (
+        "vcon_forward",
+        "kind",
+        KeyKind::Literal {
+            accept: &["\"generic\"", "\"vcon-store\"", "\"conserver\""],
+            reject: &["\"x\"", "\"\"", "\" \"", "\"VCON-STORE\"", "\"none\""],
+            ctx: "",
+        },
+    ),
+    (
+        "vcon_forward",
+        "max_error_body",
+        KeyKind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+    ),
+    (
+        "vcon_forward",
+        "max_response_head",
+        KeyKind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+    ),
+    (
+        "vcon_forward",
+        "replace_url",
+        KeyKind::Literal {
+            accept: &[
+                "\"https://store.example.com/v1/vcons/{uuid}\"",
+                "\"x\"",
+                "\"\"",
+            ],
+            reject: &[],
+            ctx: "",
+        },
+    ),
+    ("vcon_forward", "timeout", KeyKind::Int { lo: 1, hi: 600 }),
+    (
+        "vcon_forward",
+        "url",
+        KeyKind::Literal {
+            accept: &["\"https://store.example.com/v1/vcons\"", "\"x\"", "\"\""],
+            reject: &[],
+            ctx: "",
+        },
+    ),
 ];
 
 /// Every recognized `(section, key)`, from the settings table.
@@ -2053,4 +2160,113 @@ fn random_config_files_hold_the_invariants() -> Result<(), TestError> {
         Ok(())
     });
     outcome.map_err(|e| e.to_string().into())
+}
+
+/// Run the startup pipeline as a forwarder (`--vcon-forward /var/tmp` and
+/// `extra`) on a file holding `[vcon_forward]` and `body`.
+fn forward_with(body: &str, extra: &[&str]) -> Result<Outcome, TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("sipnab.toml");
+    std::fs::write(&path, format!("[vcon_forward]\n{body}\n"))?;
+    let mut args = vec!["--vcon-forward", "/var/tmp"];
+    args.extend_from_slice(extra);
+    Ok(run(&argv(&args), Some(&path)))
+}
+
+/// The forwarder's URL, replace URL, credential and back-off keys are checked
+/// when the forwarder runs, by the rule its flags follow, before anything is
+/// sent. Each refusal exits 2 and names the key; a refusal that two settings
+/// cause names both.
+#[test]
+fn forwarder_keys_are_checked_when_the_forwarder_runs() -> Result<(), TestError> {
+    const BASE: &str = "url = \"http://127.0.0.1:9/v1/vcons\"\nauth_file = \"/nonexistent/auth\"";
+    let mut failures = Vec::new();
+    let accepted = forward_with(BASE, &[])?;
+    if !accepted.accepted() {
+        failures.push(format!(
+            "url and auth_file from the file: want accepted, got {:?}/{}: {}",
+            accepted.stage, accepted.code, accepted.message
+        ));
+    }
+    let refused: &[(&str, &[&str], &[&str])] = &[
+        (
+            "url = \"x\"\nauth_file = \"/nonexistent/auth\"",
+            &[],
+            &["[vcon_forward] url"],
+        ),
+        (
+            "url = \"\"\nauth_file = \"/nonexistent/auth\"",
+            &[],
+            &["[vcon_forward] url"],
+        ),
+        (
+            "url = \"ftp://127.0.0.1/v1\"\nauth_file = \"/nonexistent/auth\"",
+            &[],
+            &["[vcon_forward] url"],
+        ),
+        (
+            "url = \"https://user:pw@store.example.com/v1\"\nauth_file = \"/nonexistent/auth\"",
+            &[],
+            &["[vcon_forward] url"],
+        ),
+        (
+            "auth_file = \"/nonexistent/auth\"",
+            &[],
+            &["--vcon-forward-url", "[vcon_forward] url"],
+        ),
+        (
+            "url = \"http://127.0.0.1:9/v1/vcons\"",
+            &[],
+            &["--vcon-forward-auth-file", "[vcon_forward] auth_file"],
+        ),
+        (
+            &format!("{BASE}\nreplace_url = \"http://127.0.0.1:9/v1/vcons/fixed\""),
+            &[],
+            &["[vcon_forward] replace_url"],
+        ),
+        (
+            &format!("{BASE}\nreplace_url = \"x{{uuid}}\""),
+            &[],
+            &["[vcon_forward] replace_url"],
+        ),
+        (
+            BASE,
+            &["--vcon-forward-auth=Authorization: Bearer from-the-flag"],
+            &["--vcon-forward-auth", "[vcon_forward] auth_file"],
+        ),
+        (
+            &format!("{BASE}\nbackoff_first = 10"),
+            &["--vcon-forward-backoff-cap=5"],
+            &["[vcon_forward] backoff_first", "--vcon-forward-backoff-cap"],
+        ),
+        (
+            &format!("{BASE}\nbackoff_cap = 5"),
+            &["--vcon-forward-backoff-first=10"],
+            &["--vcon-forward-backoff-first", "[vcon_forward] backoff_cap"],
+        ),
+    ];
+    for (body, extra, names) in refused {
+        let o = forward_with(body, extra)?;
+        let what = format!("{body:?} with {extra:?}");
+        if let Some(p) = &o.panic {
+            failures.push(format!("{what}: panicked: {p}"));
+        } else if o.accepted() || o.stage != Stage::Config || o.code != 2 {
+            failures.push(format!(
+                "{what}: want a refusal from load_config with exit 2, got {:?}/{}: {}",
+                o.stage, o.code, o.message
+            ));
+        } else if let Some(missing) = names.iter().find(|n| !o.message.contains(*n)) {
+            failures.push(format!(
+                "{what}: refusal does not name {missing}: {}",
+                o.message
+            ));
+        }
+        if o.message.contains("from-the-flag") {
+            failures.push(format!(
+                "{what}: the refusal quotes the credential: {}",
+                o.message
+            ));
+        }
+    }
+    verdict(failures)
 }

@@ -4774,7 +4774,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1067 -> 1072: the site copy of CONTRIBUTING.md's five tables,
     // website/content/docs/contributing.md. Attributed by counting separator
     // rows in the added file: 5.
-    const EXPECTED_TABLES: usize = 1072;
+    // 1072 -> 1076: the forwarder's settings. Attributed by counting added
+    // separator rows per file: docs/config-reference.md 1 (`[vcon_forward]`),
+    // docs/vcon.md 1 (the store kinds), and the same 1, 1 in their site
+    // copies.
+    const EXPECTED_TABLES: usize = 1076;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

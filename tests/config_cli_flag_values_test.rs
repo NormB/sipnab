@@ -2069,8 +2069,18 @@ static SPECS: &[Spec] = &[
     (
         "vcon-forward-url",
         Kind::Text {
-            accept: &["x", "", " ", "0"],
-            reject: &[],
+            accept: &[
+                "http://127.0.0.1:9/x",
+                "https://store.example.com/v1/vcons?ingress_list=sipnab",
+            ],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                (" ", 2),
+                ("ftp://127.0.0.1/x", 2),
+                ("https://user:pw@store.example.com/v1", 2),
+                ("https://store.example.com/v1#part", 2),
+            ],
         },
         &[
             "--vcon-forward-auth-file",
@@ -2125,8 +2135,16 @@ static SPECS: &[Spec] = &[
     (
         "vcon-forward-replace-url",
         Kind::Text {
-            accept: &["x", "", " ", "0"],
-            reject: &[],
+            accept: &[
+                "http://127.0.0.1:9/x/{uuid}",
+                "https://store.example.com/v1/vcons/{uuid}",
+            ],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                ("http://127.0.0.1:9/x", 2),
+                ("x{uuid}", 2),
+            ],
         },
         &[
             "--vcon-forward-url",
@@ -2179,6 +2197,88 @@ static SPECS: &[Spec] = &[
             accept: &["x", " ", "0", "-1"],
             reject: &[("", 2)],
         },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
+        "vcon-forward-auth",
+        Kind::Text {
+            accept: &["x", "Authorization: Bearer x"],
+            reject: &[("", 2), (" ", 2)],
+        },
+        &[],
+    ),
+    (
+        "vcon-forward-backoff-first",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-backoff-cap=4294967295",
+        ],
+    ),
+    (
+        "vcon-forward-backoff-cap",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+            "--vcon-forward-backoff-first=1",
+        ],
+    ),
+    (
+        "vcon-forward-max-response-head",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
+        "vcon-forward-max-error-body",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &[
+            "--vcon-forward-url",
+            "http://127.0.0.1:9/x",
+            "--vcon-forward-auth-file",
+            "/nonexistent/auth",
+            "--vcon-forward",
+            "/var/tmp",
+        ],
+    ),
+    (
+        "vcon-forward-kind",
+        Kind::Choice,
         &[
             "--vcon-forward-url",
             "http://127.0.0.1:9/x",
@@ -2923,6 +3023,15 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.alias_thresholds(config)),
         format!("{:?}", cli.asymmetry_thresholds(config)),
         format!("{:?}", cli.fraud_destinations()),
+        // The forwarder's settings, resolved from its flags and
+        // `[vcon_forward]`; the credential's value never shows in it.
+        format!(
+            "{:?}",
+            sipnab::app::vcon_forward::ForwardPlan::resolve(
+                &cli.vcon_forward_args,
+                &config.vcon_forward
+            )
+        ),
     ];
     let mut text = parts.join("\n");
     match sipnab::app::bootstrap::plan(cli, config) {

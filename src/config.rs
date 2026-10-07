@@ -47,6 +47,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "api",
             "metrics",
             "hep",
+            "vcon_forward",
         ]
         .as_slice(),
     );
@@ -241,6 +242,28 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         ["tls_ca", "tls_extra_ca", "tls_cert", "tls_key"].as_slice(),
     );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
+    // [vcon_forward] holds the vCon forwarder's standing settings, one key per
+    // forwarder flag that is not per-run intent or a secret.
+    m.insert(
+        "vcon_forward",
+        [
+            "kind",
+            "url",
+            "replace_url",
+            "auth_file",
+            "ca",
+            "done",
+            "failed",
+            "interval",
+            "timeout",
+            "compat",
+            "backoff_first",
+            "backoff_cap",
+            "max_response_head",
+            "max_error_body",
+        ]
+        .as_slice(),
+    );
     m.insert(
         "names",
         [
@@ -421,6 +444,9 @@ pub struct Config {
     /// [`HepConfig`].
     #[serde(default)]
     pub hep: HepConfig,
+    /// The vCon forwarder's settings -- see [`VconForwardConfig`].
+    #[serde(default)]
+    pub vcon_forward: VconForwardConfig,
 }
 
 /// `[api]`: settings for the REST API that belong in a file rather than on
@@ -468,6 +494,278 @@ pub struct HepConfig {
     pub tls_cert: Option<PathBuf>,
     /// PEM private key for `tls_cert`. `--hep-tls-key` replaces it.
     pub tls_key: Option<PathBuf>,
+}
+
+/// `[vcon_forward]`: the settings of the vCon forwarder
+/// (`sipnab --vcon-forward <SPOOL_DIR>`), each the value of the flag of the
+/// same name, which overrides it.
+///
+/// The spool itself and `--vcon-forward-once` stay on the command line: the
+/// first names this run's input and the second is per-run intent. The
+/// credential's value has no key, because a secret does not belong in
+/// sipnab.toml: `auth_file` names the file that holds it.
+///
+/// The URL, the replace URL and the credential are checked when the
+/// forwarder starts, by the rules the flags follow; every other key is checked
+/// whenever the file is loaded.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct VconForwardConfig {
+    /// The kind of store, one of [`FORWARD_KINDS`]: what the forwarder
+    /// supplies when a setting is not given. `--vcon-forward-kind` overrides
+    /// it.
+    pub kind: Option<String>,
+    /// Where each container is POSTed, or, with a `kind` other than
+    /// `generic` and no path, the store's base URL. `--vcon-forward-url`
+    /// overrides it.
+    pub url: Option<String>,
+    /// The URL template a `409` is PUT to, `{uuid}` filled in.
+    /// `--vcon-forward-replace-url` overrides it.
+    pub replace_url: Option<String>,
+    /// The file holding the one `Header-Name: value` line that authenticates
+    /// the forwarder. `--vcon-forward-auth-file` overrides it;
+    /// `--vcon-forward-auth` (or `SIPNAB_VCON_FORWARD_AUTH`) beside it is
+    /// refused.
+    pub auth_file: Option<PathBuf>,
+    /// The only CA file trusted for an `https://` store.
+    /// `--vcon-forward-ca` overrides it.
+    pub ca: Option<PathBuf>,
+    /// Where a delivered container goes. `--vcon-forward-done` overrides it.
+    pub done: Option<PathBuf>,
+    /// Where a refused container goes. `--vcon-forward-failed` overrides it.
+    pub failed: Option<PathBuf>,
+    /// Seconds between passes over the spool. See [`FORWARD_INTERVAL`].
+    pub interval: Option<u64>,
+    /// Seconds to wait to connect and for each read and write. See
+    /// [`FORWARD_TIMEOUT`].
+    pub timeout: Option<u64>,
+    /// The store deviation to correct for in the copy sent, one of
+    /// [`FORWARD_COMPAT`]. `--vcon-forward-compat` overrides it.
+    pub compat: Option<String>,
+    /// Seconds before the first retry. See [`FORWARD_BACKOFF_FIRST`].
+    pub backoff_first: Option<u64>,
+    /// The longest wait between retries, in seconds. See
+    /// [`FORWARD_BACKOFF_CAP`].
+    pub backoff_cap: Option<u64>,
+    /// The most bytes of a store's status line and headers read. See
+    /// [`FORWARD_MAX_RESPONSE_HEAD`].
+    pub max_response_head: Option<u64>,
+    /// The most bytes of a store's refusal kept in a failure record. See
+    /// [`FORWARD_MAX_ERROR_BODY`].
+    pub max_error_body: Option<u64>,
+}
+
+/// A whole-number forwarder setting, declared once: its key, its flag, the
+/// values both accept and the value when neither is given. The flag's parser
+/// ([`ForwardNumber::parse`]) and the key's check
+/// ([`VconForwardConfig::validate`]) are the same rule, [`ForwardNumber::check`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ForwardNumber {
+    /// The `[vcon_forward]` key.
+    pub key: &'static str,
+    /// The flag, with its dashes.
+    pub flag: &'static str,
+    /// The smallest value accepted.
+    pub min: u64,
+    /// The largest value accepted.
+    pub max: u64,
+    /// The value when neither the flag nor the key is given.
+    pub default: u64,
+}
+
+impl ForwardNumber {
+    /// `value`, when it is from [`Self::min`] to [`Self::max`].
+    ///
+    /// # Errors
+    /// The range, for the caller to prefix with the setting's name.
+    pub fn check(&self, value: u64) -> Result<u64, String> {
+        if (self.min..=self.max).contains(&value) {
+            Ok(value)
+        } else {
+            Err(format!(
+                "{value} is out of range: give a whole number from {} to {}",
+                self.min, self.max
+            ))
+        }
+    }
+
+    /// The flag's value parser: a decimal whole number that passes
+    /// [`Self::check`].
+    ///
+    /// # Errors
+    /// Not a whole number, or out of range.
+    pub fn parse(&self, text: &str) -> Result<u64, String> {
+        let value = text.parse::<u64>().map_err(|_| {
+            format!(
+                "not a whole number: give one from {} to {}",
+                self.min, self.max
+            )
+        })?;
+        self.check(value)
+    }
+
+    /// The value in force, and where it came from: the flag, else the key,
+    /// else [`Self::default`]. The second half names the source for a
+    /// message: the flag, `[vcon_forward] <key>`, or `the default`.
+    #[must_use]
+    pub fn pick(&self, flag: Option<u64>, key: Option<u64>) -> (u64, String) {
+        match (flag, key) {
+            (Some(v), _) => (v, self.flag.to_string()),
+            (None, Some(v)) => (v, format!("[vcon_forward] {}", self.key)),
+            (None, None) => (self.default, "the default".to_string()),
+        }
+    }
+}
+
+/// Seconds between passes over the spool.
+pub const FORWARD_INTERVAL: ForwardNumber = ForwardNumber {
+    key: "interval",
+    flag: "--vcon-forward-interval",
+    min: 1,
+    max: 3600,
+    default: 5,
+};
+
+/// Seconds the forwarder waits to connect, and for each read and write,
+/// before the store counts as unreachable.
+pub const FORWARD_TIMEOUT: ForwardNumber = ForwardNumber {
+    key: "timeout",
+    flag: "--vcon-forward-timeout",
+    min: 1,
+    max: 600,
+    default: 30,
+};
+
+/// The largest value a seconds or bytes setting below accepts: `u32::MAX`.
+/// The type's own limit, not a policy: it keeps every delay and every byte
+/// count representable on any target sipnab builds for.
+const FORWARD_U32_MAX: u64 = u32::MAX as u64;
+
+/// Seconds a container waits after its first failed try. Each failed try
+/// after it doubles the wait, up to [`FORWARD_BACKOFF_CAP`].
+pub const FORWARD_BACKOFF_FIRST: ForwardNumber = ForwardNumber {
+    key: "backoff_first",
+    flag: "--vcon-forward-backoff-first",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 2,
+};
+
+/// The longest a container waits between tries, in seconds.
+pub const FORWARD_BACKOFF_CAP: ForwardNumber = ForwardNumber {
+    key: "backoff_cap",
+    flag: "--vcon-forward-backoff-cap",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 300,
+};
+
+/// The most bytes of a store's status line and headers the forwarder reads.
+/// An answer with more is treated as no answer, and the container is retried.
+pub const FORWARD_MAX_RESPONSE_HEAD: ForwardNumber = ForwardNumber {
+    key: "max_response_head",
+    flag: "--vcon-forward-max-response-head",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 64 * 1024,
+};
+
+/// The most bytes of a store's answer to a refused container that its
+/// `<name>.error.json` record keeps.
+pub const FORWARD_MAX_ERROR_BODY: ForwardNumber = ForwardNumber {
+    key: "max_error_body",
+    flag: "--vcon-forward-max-error-body",
+    min: 1,
+    max: FORWARD_U32_MAX,
+    default: 8 * 1024,
+};
+
+/// Every whole-number forwarder setting.
+pub const FORWARD_NUMBERS: [ForwardNumber; 6] = [
+    FORWARD_INTERVAL,
+    FORWARD_TIMEOUT,
+    FORWARD_BACKOFF_FIRST,
+    FORWARD_BACKOFF_CAP,
+    FORWARD_MAX_RESPONSE_HEAD,
+    FORWARD_MAX_ERROR_BODY,
+];
+
+/// The names `--vcon-forward-compat` and `[vcon_forward] compat` accept.
+/// `none` sends every container byte for byte, the default; `vcon-store`
+/// corrects for vcon.store's deviations from the vCon drafts.
+pub const FORWARD_COMPAT: &[&str] = &["none", "vcon-store"];
+
+/// The names `--vcon-forward-kind` and `[vcon_forward] kind` accept, in the
+/// order of the forwarder's kind table. `generic` supplies nothing: every
+/// setting is given explicitly, as before kinds existed.
+pub const FORWARD_KINDS: &[&str] = &["generic", "vcon-store", "conserver"];
+
+/// Why a first retry delay and a cap cannot both hold, or `None` when they
+/// can: the first delay may not be longer than the longest. Each value comes
+/// with where it came from, as [`ForwardNumber::pick`] names it.
+#[must_use]
+pub fn forward_backoff_problem(first: (u64, &str), cap: (u64, &str)) -> Option<String> {
+    (first.0 > cap.0).then(|| {
+        format!(
+            "the first retry delay, {} s from {}, is longer than the longest, {} s from {}; \
+             give a first delay no longer than the cap",
+            first.0, first.1, cap.0, cap.1
+        )
+    })
+}
+
+impl VconForwardConfig {
+    /// Refuse a value its flag would refuse.
+    ///
+    /// Each whole-number key is held to its [`ForwardNumber`] range, `compat`
+    /// to [`FORWARD_COMPAT`], `kind` to [`FORWARD_KINDS`], and the back-off pair to
+    /// [`forward_backoff_problem`] with the default standing in for a key
+    /// that is not set. The URLs and the credential are checked when the
+    /// forwarder starts, where the flags are.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid`, naming the key.
+    pub fn validate(&self) -> Result<(), crate::Error> {
+        for (number, value) in self.numbers() {
+            if let Some(v) = value {
+                number.check(v).map_err(|e| {
+                    crate::Error::ConfigInvalid(format!("[vcon_forward] {}: {e}", number.key))
+                })?;
+            }
+        }
+        for (key, value, names) in [
+            ("compat", &self.compat, FORWARD_COMPAT),
+            ("kind", &self.kind, FORWARD_KINDS),
+        ] {
+            if let Some(name) = value
+                && !names.contains(&name.as_str())
+            {
+                return Err(crate::Error::ConfigInvalid(format!(
+                    "[vcon_forward] {key}: {name:?} is not one of {}",
+                    names.join(", ")
+                )));
+            }
+        }
+        let first = FORWARD_BACKOFF_FIRST.pick(None, self.backoff_first);
+        let cap = FORWARD_BACKOFF_CAP.pick(None, self.backoff_cap);
+        match forward_backoff_problem((first.0, &first.1), (cap.0, &cap.1)) {
+            Some(problem) => Err(crate::Error::ConfigInvalid(problem)),
+            None => Ok(()),
+        }
+    }
+
+    /// Each whole-number key beside the setting it is.
+    #[must_use]
+    pub fn numbers(&self) -> [(ForwardNumber, Option<u64>); 6] {
+        [
+            (FORWARD_INTERVAL, self.interval),
+            (FORWARD_TIMEOUT, self.timeout),
+            (FORWARD_BACKOFF_FIRST, self.backoff_first),
+            (FORWARD_BACKOFF_CAP, self.backoff_cap),
+            (FORWARD_MAX_RESPONSE_HEAD, self.max_response_head),
+            (FORWARD_MAX_ERROR_BODY, self.max_error_body),
+        ]
+    }
 }
 
 /// `[mcp]`: which tools the MCP server registers, and whether it advertises
@@ -2402,7 +2700,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&PathBuf>); 8] = [
+        let keys: [(&str, Option<&PathBuf>); 12] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_ref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_ref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_ref()),
@@ -2411,6 +2709,13 @@ impl Config {
             ("[tfps] ctl", self.tfps.ctl.as_ref()),
             ("[tfps] db", self.tfps.db.as_ref()),
             ("[crash] report_dir", self.crash.report_dir.as_ref()),
+            (
+                "[vcon_forward] auth_file",
+                self.vcon_forward.auth_file.as_ref(),
+            ),
+            ("[vcon_forward] ca", self.vcon_forward.ca.as_ref()),
+            ("[vcon_forward] done", self.vcon_forward.done.as_ref()),
+            ("[vcon_forward] failed", self.vcon_forward.failed.as_ref()),
         ];
         for (key, value) in keys {
             if value.is_some_and(|p| p.as_os_str().is_empty()) {
@@ -3801,6 +4106,163 @@ column_selector = "F10"
             c.api.allowed_hosts,
             Some(vec!["proxy.example".to_string(), "*".to_string()])
         );
+    }
+
+    /// A `[vcon_forward]` section holding `body`, deserialized.
+    fn forward_keys(body: &str) -> Result<VconForwardConfig, toml::de::Error> {
+        Ok(toml::from_str::<Config>(&format!("[vcon_forward]\n{body}\n"))?.vcon_forward)
+    }
+
+    /// What a fallible test returns.
+    type Outcome = Result<(), Box<dyn std::error::Error>>;
+
+    /// Every `[vcon_forward]` key parses, is known, passes validation, and
+    /// shows in `--dump-config`'s serialization.
+    #[test]
+    fn the_vcon_forward_keys_parse_validate_and_dump() -> Outcome {
+        let body = "kind = \"vcon-store\"\nurl = \"https://store.example.com/v1/vcons\"\n\
+                    replace_url = \"https://store.example.com/v1/vcons/{uuid}\"\n\
+                    auth_file = \"/etc/sipnab/vcon.auth\"\nca = \"/etc/sipnab/store-ca.pem\"\n\
+                    done = \"/srv/sent\"\nfailed = \"/srv/held\"\ninterval = 7\ntimeout = 9\n\
+                    compat = \"vcon-store\"\nbackoff_first = 4\nbackoff_cap = 120\n\
+                    max_response_head = 16384\nmax_error_body = 2048";
+        let text = format!("[vcon_forward]\n{body}\n");
+        assert_eq!(Config::unknown_keys(&text)?, Vec::<String>::new());
+        let keys = forward_keys(body)?;
+        keys.validate()?;
+        let config = Config {
+            vcon_forward: keys,
+            ..Config::default()
+        };
+        config.validate_paths()?;
+        let dumped = config.dump()?;
+        for line in body.lines() {
+            assert!(dumped.contains(line), "{line} not in:\n{dumped}");
+        }
+        Ok(())
+    }
+
+    /// Each whole-number key is accepted at both ends of its range and refused
+    /// one past each, by name; its flag's parser accepts and refuses the same
+    /// values, because both are `ForwardNumber::check`.
+    #[test]
+    fn the_vcon_forward_numbers_are_held_to_their_ranges() -> Outcome {
+        for number in FORWARD_NUMBERS {
+            // The other half of the back-off pair, set so the pair holds at
+            // either end of this key's range.
+            let partner = match number.key {
+                "backoff_first" => "\nbackoff_cap = 4294967295",
+                "backoff_cap" => "\nbackoff_first = 1",
+                _ => "",
+            };
+            for good in [number.min, number.max] {
+                let keys = forward_keys(&format!("{} = {good}{partner}", number.key))?;
+                assert!(keys.validate().is_ok(), "{} = {good}", number.key);
+                assert_eq!(number.parse(&good.to_string()), Ok(good), "{}", number.flag);
+            }
+            for bad in [number.min - 1, number.max + 1] {
+                let keys = forward_keys(&format!("{} = {bad}{partner}", number.key))?;
+                let e = keys
+                    .validate()
+                    .expect_err("out of range accepted")
+                    .to_string();
+                assert!(e.contains(&format!("[vcon_forward] {}", number.key)), "{e}");
+                assert!(
+                    number.parse(&bad.to_string()).is_err(),
+                    "{} {bad}",
+                    number.flag
+                );
+            }
+            for text in ["", "x", "1.5", "-1", "0x10"] {
+                assert!(number.parse(text).is_err(), "{} {text:?}", number.flag);
+            }
+        }
+        Ok(())
+    }
+
+    /// The defaults the forwarder had as constants are the declared defaults.
+    #[test]
+    fn the_vcon_forward_defaults_are_the_former_constants() {
+        assert_eq!(FORWARD_INTERVAL.default, 5);
+        assert_eq!(FORWARD_TIMEOUT.default, 30);
+        assert_eq!(FORWARD_BACKOFF_FIRST.default, 2);
+        assert_eq!(FORWARD_BACKOFF_CAP.default, 300);
+        assert_eq!(FORWARD_MAX_RESPONSE_HEAD.default, 64 * 1024);
+        assert_eq!(FORWARD_MAX_ERROR_BODY.default, 8 * 1024);
+        for number in FORWARD_NUMBERS {
+            assert!(number.check(number.default).is_ok(), "{}", number.key);
+        }
+    }
+
+    /// A first back-off longer than the cap is refused, naming both keys, or
+    /// the key and the default it is measured against.
+    #[test]
+    fn a_vcon_forward_first_backoff_longer_than_the_cap_is_refused() -> Outcome {
+        let e = forward_keys("backoff_first = 10\nbackoff_cap = 5")?
+            .validate()
+            .expect_err("10 > 5 accepted")
+            .to_string();
+        assert!(
+            e.contains("[vcon_forward] backoff_first") && e.contains("[vcon_forward] backoff_cap"),
+            "{e}"
+        );
+        let e = forward_keys("backoff_first = 301")?
+            .validate()
+            .expect_err("301 > the default 300 accepted")
+            .to_string();
+        assert!(
+            e.contains("[vcon_forward] backoff_first") && e.contains("300"),
+            "{e}"
+        );
+        assert!(forward_keys("backoff_first = 300")?.validate().is_ok());
+        assert!(forward_keys("backoff_cap = 2")?.validate().is_ok());
+        let e = forward_keys("backoff_cap = 1")?
+            .validate()
+            .expect_err("1 < the default 2 accepted")
+            .to_string();
+        assert!(e.contains("[vcon_forward] backoff_cap"), "{e}");
+        Ok(())
+    }
+
+    /// `compat` and `kind` accept exactly the names their flags accept.
+    #[test]
+    fn the_vcon_forward_names_are_the_flags_names() -> Outcome {
+        for (key, names) in [("compat", FORWARD_COMPAT), ("kind", FORWARD_KINDS)] {
+            for name in names {
+                assert!(
+                    forward_keys(&format!("{key} = {name:?}"))?
+                        .validate()
+                        .is_ok(),
+                    "{key} {name}"
+                );
+            }
+            for bad in ["x", "", "VCON-STORE", "off"] {
+                let e = forward_keys(&format!("{key} = {bad:?}"))?
+                    .validate()
+                    .expect_err("unknown name accepted")
+                    .to_string();
+                assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
+            }
+        }
+        Ok(())
+    }
+
+    /// An empty path in a `[vcon_forward]` path key is refused by name, as
+    /// its flag refuses an empty path.
+    #[test]
+    fn an_empty_vcon_forward_path_is_refused() -> Outcome {
+        for key in ["auth_file", "ca", "done", "failed"] {
+            let config = Config {
+                vcon_forward: forward_keys(&format!("{key} = \"\""))?,
+                ..Config::default()
+            };
+            let e = config
+                .validate_paths()
+                .expect_err("empty path accepted")
+                .to_string();
+            assert!(e.contains(&format!("[vcon_forward] {key}")), "{e}");
+        }
+        Ok(())
     }
 
     /// Every listener's TLS keys parse and are known: `[api]`, `[mcp]` and

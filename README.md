@@ -271,10 +271,10 @@ Next: [REST API and metrics](docs/rest-api.md),
   conversation container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
   `--vcon-forward`, a separate process, delivers them to a vCon store such as
   vcon.store or a self-hosted conserver (in the gnu and macOS builds; the
-  static musl builds lack the `vcon` feature); `--vcon-forward-compat vcon-store`
-  changes only the copy it sends, because vcon.store's validator rejects the
-  string-array `extensions` both vCon drafts define
-  ([Send sipnab's vCons to vcon.store](docs/vcon-store.md))
+  static musl builds lack the `vcon` feature). `--vcon-forward-kind vcon-store`
+  adds vcon.store's ingest path and header and changes only the copy it sends,
+  because vcon.store's validator rejects the string-array `extensions` both
+  vCon drafts define ([Send sipnab's vCons to vcon.store](docs/vcon-store.md))
 - **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
   the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and

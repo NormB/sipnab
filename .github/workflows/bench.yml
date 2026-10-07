@@ -41,7 +41,7 @@ jobs:
     # The baseline is a property of THIS machine. Running elsewhere would
     # compare one host's number against another's, which is not a regression
     # signal at all.
-    runs-on: [self-hosted, thor-02]
+    runs-on: [self-hosted, jetson]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

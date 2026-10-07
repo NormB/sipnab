@@ -29,15 +29,15 @@ jobs:
     # free for public repositories. It KEEPS the architecture this project
     # cares about while running in parallel.
     #
-    # It used to be [self-hosted, thor-02], and that was the whole bottleneck.
-    # thor-02 executes one job per runner instance, so 21 jobs queued
+    # It used to be the aarch64 self-hosted runner, and that was the whole bottleneck.
+    # That runner executes one job per runner instance, so 21 jobs queued
     # single-file; a PR took 20-60 minutes, and because branch protection also
     # requires up-to-date branches, four open PRs meant four sequential full
     # runs. Adding runner instances widened it and immediately introduced a new
     # failure -- concurrent `apt-get install` racing for a machine-wide lock.
     # Hosted runners remove the constraint instead of widening it.
     #
-    # thor-02 keeps exactly the two jobs that genuinely need THAT box:
+    # The self-hosted runner keeps exactly the two jobs that genuinely need THAT box:
     # bench.yml (its throughput baseline is a property of that hardware) and
     # self-hosted-smoke.yml (which exists to prove the box works).
     #
@@ -484,7 +484,7 @@ jobs:
     name: Installer (install.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: pure POSIX sh, no Rust toolchain.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -508,7 +508,7 @@ jobs:
     name: Deb packaging (build-deb.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: packaging script, arch-independent.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -533,7 +533,7 @@ jobs:
     name: RPM packaging (build-rpm.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: packaging script, arch-independent.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -573,7 +573,7 @@ jobs:
     name: Homebrew formula (update-formula.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: formula text, arch-independent.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -613,7 +613,7 @@ jobs:
     name: Ops scripts (verdict.sh, platform-table.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: shell scripts, arch-independent.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -689,7 +689,7 @@ jobs:
     name: Bench scripts (live-capture.sh)
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: shell script, arch-independent.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -722,7 +722,7 @@ jobs:
     # below that assume a disposable hosted VM are skipped here: they would
     # delete software and docker images from a real machine, and upload its
     # cargo registry.
-    runs-on: [self-hosted, thor-02]
+    runs-on: [self-hosted, jetson]
     strategy:
       fail-fast: false
       matrix:
@@ -899,7 +899,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     # GitHub-hosted on purpose: cargo audit reads Cargo.lock; also gets a FRESH advisory-db each run rather than this box's cache, which went stale and broke every audit on 2026-08-09.
-    # thor-02 is ONE runner and runs one job at a time, so every job
+    # The self-hosted runner is ONE machine and runs one job at a time, so every job
     # pinned there that does not need it delays every job that does.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
