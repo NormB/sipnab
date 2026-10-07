@@ -29,6 +29,14 @@ const REFUSED: &[(&str, &str)] = &[
         "name the type: a struct with named fields instead of a nested tuple",
     ),
     (
+        "clippy::wildcard_imports",
+        "name every import, so each name says where it comes from",
+    ),
+    (
+        "clippy::many_single_char_names",
+        "name the bindings for what they hold",
+    ),
+    (
         "unused_mut",
         "compute the value in one expression per feature set instead of \
          mutating it inside cfg blocks",

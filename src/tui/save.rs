@@ -17,7 +17,7 @@
 //! prior file intact — while the streaming pcap writer and the WAV
 //! exporter still write in place.
 
-use super::*;
+use super::{App, ColorMode, PathBuf, SdpDisplayMode, TimestampMode, View, call_flow};
 
 // ── Save functionality ─────────────────────────────────────────────
 
@@ -1141,7 +1141,9 @@ mod tests {
     use crate::capture::parse::{ParsedPacket, TransportProto};
     use crate::sip::SipMessage;
     use crate::sip::parser::parse_sip;
+    use crate::tui::SaveFormat;
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use crossterm::event::KeyCode;
     use std::net::{IpAddr, Ipv4Addr};
 
     /// Fixed caller-side test address 10.0.0.1.

@@ -70,6 +70,11 @@ entry that carries them.
   MCP in one chain, the server list is collected from each door's optional
   server, and the ICMP capture path reads its message through the same
   constructor `parse_icmp_error` uses. The gate refuses both lints.
+- **Every import names what it brings in, and no scope holds five one-letter
+  bindings.** `clippy::wildcard_imports` and `clippy::many_single_char_names`
+  are now denied. The 23 `use crate::tui::*` and `use super::*` imports in the
+  TUI list their names, and the three functions with single-letter bindings
+  name them for what they hold. The gate refuses an allow for either lint.
 
 ## [0.5.204] - 2026-10-06
 

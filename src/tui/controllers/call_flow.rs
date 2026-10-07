@@ -3,7 +3,10 @@
 //! Key handling for the call flow ladder and its message-level views
 //! (raw message, message diff, combined detail).
 
-use crate::tui::*;
+use crate::tui::{
+    App, Arc, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode, View, call_flow,
+    open_name_dialog_for, open_note_editor, open_save_popup,
+};
 
 /// Map the call-flow selection (a *displayed* row position) back to the index
 /// into the dialog's full message list. Two projections apply in order:

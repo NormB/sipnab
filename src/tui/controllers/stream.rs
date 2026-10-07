@@ -2,7 +2,9 @@
 
 //! Key handling for the RTP stream list and stream detail views.
 
-use crate::tui::*;
+use crate::tui::{
+    App, KeyCode, KeyEvent, Keymap, Popup, View, open_name_dialog_for, open_save_popup,
+};
 
 /// Everything the stream list view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

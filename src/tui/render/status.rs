@@ -3,7 +3,7 @@
 //! The three status lines and the context-sensitive
 //! F-key bar.
 
-use crate::tui::*;
+use crate::tui::{App, Line, Modifier, Paragraph, Popup, Rect, Span, Style, Theme, View};
 use unicode_width::UnicodeWidthStr;
 
 /// Leading indent of status line 1, before the capture source.
@@ -734,7 +734,17 @@ pub(in crate::tui) fn render_fkey_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::controllers::relay_stats_action;
     use crate::tui::render::test_support::*;
+    use crate::tui::{
+        Keymap, RelayStatsMode, call_flow_action, call_list_action, call_volume_action,
+        capture_health_action, carrier_metrics_action, combined_detail_action,
+        compare_dialogs_action, conformance_action, dashboard_action, endpoint_rollup_action,
+        help_action, hep_senders_action, loss_map_action, message_diff_action, raw_message_action,
+        sdp_timeline_action, security_findings_action, statistics_action, stream_detail_action,
+        stream_list_action, talkers_action, tfps_observe_action, timeline_action,
+    };
+    use crossterm::event::KeyEvent;
 
     /// The auto-generated default is summarized, never drawn as its raw
     /// thousand-column expression -- the whole point of the display fix. A

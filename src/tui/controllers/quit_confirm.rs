@@ -13,7 +13,7 @@
 //! its own kind of trap — scripts and stuck terminals need a way out that does
 //! not depend on the popup rendering correctly.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, Popup};
 
 /// Ask before quitting, rather than quitting.
 ///
@@ -55,6 +55,7 @@ pub(in crate::tui) fn handle_quit_confirm_key(app: &mut App, key: KeyEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

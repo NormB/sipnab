@@ -3,7 +3,11 @@
 //! The file-open dialog: directory browsing, manual path entry and
 //! pcap loading.
 
-use crate::tui::*;
+use crate::tui::{
+    App, Arc, CallListState, DialogStore, FileEntry, KeyCode, KeyEvent, PathBuf, PcapLoadOutcome,
+    PcapLoadProgress, PendingSwap, Popup, Result, RwLock, StatusMessage, StreamListState,
+    StreamStore, View,
+};
 
 /// Open the file-open dialog, seeding it with a directory listing rooted at
 /// the last-browsed directory (or the current working directory on first use).
@@ -2178,6 +2182,7 @@ mod browser_tests {
 mod archive_password_tests {
     use super::*;
     use crate::capture::archive::zipped::testutil::{Lock, build};
+    use crate::tui::controllers::handle_popup_key;
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn secret(label: &str) -> &'static str {

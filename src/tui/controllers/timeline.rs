@@ -18,7 +18,7 @@
 //! true, and `timeline_wheel_moves_no_selection_and_no_scroll_offset` is what
 //! makes that arm observable.
 
-use crate::tui::*;
+use crate::tui::{App, KeyCode, KeyEvent, Keymap, View};
 
 /// Everything the call-timeline view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

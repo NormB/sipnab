@@ -1548,21 +1548,31 @@ mod tests {
     fn address_prefixes_are_preserved() {
         let p = policy();
         let r = p.redactor();
-        let a = r.ip("10.0.2.15"
+        let host_15 = r.ip("10.0.2.15"
             .parse()
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
-        let b = r.ip("10.0.2.20"
+        let host_20 = r.ip("10.0.2.20"
             .parse()
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
-        let c = r.ip("192.0.2.1"
+        let other_net = r.ip("192.0.2.1"
             .parse()
             .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
-        let (IpAddr::V4(a), IpAddr::V4(b), IpAddr::V4(c)) = (a, b, c) else {
+        let (IpAddr::V4(host_15), IpAddr::V4(host_20), IpAddr::V4(other_net)) =
+            (host_15, host_20, other_net)
+        else {
             panic!("v4 in, v4 out");
         };
-        assert_eq!(a.octets()[..3], b.octets()[..3], "{a} {b}");
-        assert_ne!(a.octets()[0], c.octets()[0], "{a} {c}");
-        assert_ne!(a, b, "distinct hosts must stay distinct");
+        assert_eq!(
+            host_15.octets()[..3],
+            host_20.octets()[..3],
+            "{host_15} {host_20}"
+        );
+        assert_ne!(
+            host_15.octets()[0],
+            other_net.octets()[0],
+            "{host_15} {other_net}"
+        );
+        assert_ne!(host_15, host_20, "distinct hosts must stay distinct");
     }
 
     /// IPv6 prefixes are preserved the same way.

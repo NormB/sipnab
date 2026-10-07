@@ -2,7 +2,7 @@
 
 //! Resolved theme and keymap types plus adaptive refresh constants.
 
-use super::*;
+use super::{Color, Duration, KeyCode, KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
 // ── Resolved theme and keymap ──────────────────────────────────────
 

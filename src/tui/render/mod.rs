@@ -4,7 +4,11 @@
 //! it owns (statistics, message diff). Status lines / f-key bar and popup
 //! rendering live in the submodules.
 
-use super::*;
+use super::{
+    App, Block, Borders, Constraint, DialogStore, Layout, Line, Modifier, Paragraph, Popup, Rect,
+    RelayStatsMode, Span, StreamStore, Style, Theme, View, Wrap, call_flow, call_list, header_form,
+    help, msg_raw, stream_detail, stream_list,
+};
 
 mod popups;
 pub(in crate::tui) use popups::set_string_clipped;
@@ -2562,6 +2566,7 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::SaveFormat;
     use crate::tui::render::test_support::*;
 
     /// Empty app renders the chrome; a populated one shows "Dialogs: 1".
