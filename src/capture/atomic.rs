@@ -84,34 +84,38 @@ where
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A successful write to a previously nonexistent path creates the file
     /// with exactly the written contents.
     #[test]
-    fn writes_new_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn writes_new_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.bin");
-        write_atomic(&path, |w| w.write_all(b"hello")).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"hello");
+        write_atomic(&path, |w| w.write_all(b"hello"))?;
+        assert_eq!(std::fs::read(&path)?, b"hello");
+        Ok(())
     }
 
     /// A successful write over an existing file fully replaces the old
     /// contents with the new ones.
     #[test]
-    fn replaces_existing_file_on_success() {
-        let dir = tempfile::tempdir().unwrap();
+    fn replaces_existing_file_on_success() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.bin");
-        std::fs::write(&path, b"old contents").unwrap();
-        write_atomic(&path, |w| w.write_all(b"new")).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        std::fs::write(&path, b"old contents")?;
+        write_atomic(&path, |w| w.write_all(b"new"))?;
+        assert_eq!(std::fs::read(&path)?, b"new");
+        Ok(())
     }
 
     /// A mid-write failure must leave the original file byte-identical and
     /// leave no `.sipnab-tmp-*` litter in the directory.
     #[test]
-    fn failure_leaves_original_intact_and_no_temp() {
-        let dir = tempfile::tempdir().unwrap();
+    fn failure_leaves_original_intact_and_no_temp() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.bin");
-        std::fs::write(&path, b"original").unwrap();
+        std::fs::write(&path, b"original")?;
 
         // The writer fails partway; the original must be untouched.
         let err = write_atomic(&path, |w| {
@@ -119,51 +123,50 @@ mod tests {
             Err(io::Error::other("boom"))
         });
         assert!(err.is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(std::fs::read(&path)?, b"original");
 
         // No leftover temp files in the directory.
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
-            .unwrap()
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())?
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+        Ok(())
     }
 
     /// The writer handed to the closure must be buffered: a small write must
     /// not land in the temp file immediately (an unbuffered `File` writes
     /// through to disk on every call, one syscall per write).
     #[test]
-    fn closure_writer_is_buffered() {
-        let dir = tempfile::tempdir().unwrap();
+    fn closure_writer_is_buffered() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.bin");
         let dir_path = dir.path().to_path_buf();
         write_atomic(&path, |w| {
             w.write_all(b"tiny")?;
             // With an unbuffered File these 4 bytes are already in the temp
             // file; a buffered writer holds them until flush.
-            let tmp_bytes_on_disk: u64 = std::fs::read_dir(&dir_path)
-                .unwrap()
+            let tmp_bytes_on_disk: u64 = std::fs::read_dir(&dir_path)?
                 .filter_map(|e| e.ok())
                 .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
-                .map(|e| e.metadata().unwrap().len())
-                .sum();
+                .map(|e| e.metadata().map(|m| m.len()))
+                .sum::<std::io::Result<u64>>()?;
             assert_eq!(
                 tmp_bytes_on_disk, 0,
                 "small writes must be buffered, not written through per call"
             );
             Ok(())
-        })
-        .unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"tiny");
+        })?;
+        assert_eq!(std::fs::read(&path)?, b"tiny");
+        Ok(())
     }
 
     /// Byte-at-a-time writes spanning several buffer fills (and ending with a
     /// partial buffer) must all land in the final file — i.e. the buffer is
     /// flushed before the fsync + rename.
     #[test]
-    fn buffered_contents_are_flushed_before_rename() {
-        let dir = tempfile::tempdir().unwrap();
+    fn buffered_contents_are_flushed_before_rename() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("out.bin");
         // > 8 KiB (the default BufWriter capacity) and not a multiple of it.
         let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
@@ -172,16 +175,16 @@ mod tests {
                 w.write_all(std::slice::from_ref(b))?;
             }
             Ok(())
-        })
-        .unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), data);
+        })?;
+        assert_eq!(std::fs::read(&path)?, data);
+        Ok(())
     }
 
     /// A failed write to a path that never existed must not create the
     /// target file at all.
     #[test]
-    fn failure_when_target_is_new_creates_nothing() {
-        let dir = tempfile::tempdir().unwrap();
+    fn failure_when_target_is_new_creates_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("never.bin");
         let err = write_atomic(&path, |_w| Err(io::Error::other("nope")));
         assert!(err.is_err());
@@ -189,5 +192,6 @@ mod tests {
             !path.exists(),
             "target should not exist after a failed write"
         );
+        Ok(())
     }
 }

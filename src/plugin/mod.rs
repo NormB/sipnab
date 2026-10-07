@@ -489,13 +489,15 @@ fn truncate(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// A minimal conforming plugin, written in WAT so the test does not depend
     /// on a wasm32 toolchain being installed.
     ///
     /// It stores a fixed JSON reply at offset 1024 and returns it regardless of
     /// input — enough to exercise the whole host path: alloc, write, call,
     /// unpack, read, parse, attribute.
-    fn wat_plugin(abi: i32, reply: &str) -> Vec<u8> {
+    fn wat_plugin(abi: i32, reply: &str) -> Result<Vec<u8>, TestError> {
         let bytes: Vec<String> = reply.bytes().map(|b| format!("\\{b:02x}")).collect();
         let wat = format!(
             r#"(module
@@ -511,59 +513,62 @@ mod tests {
             data = bytes.join(""),
             len = reply.len()
         );
-        wat::parse_str(&wat).expect("fixture WAT assembles")
+        Ok(wat::parse_str(&wat)?)
     }
 
-    fn write_plugin(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+    fn write_plugin(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TestError> {
         let dir = std::env::temp_dir().join(format!("sipnab-plugin-tests-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
+        std::fs::create_dir_all(&dir)?;
         let p = dir.join(format!("{name}.wasm"));
-        std::fs::write(&p, bytes).expect("write fixture");
-        p
+        std::fs::write(&p, bytes)?;
+        Ok(p)
     }
 
     #[test]
-    fn a_conforming_plugin_returns_attributed_findings() {
+    fn a_conforming_plugin_returns_attributed_findings() -> Result<(), TestError> {
         let reply = r#"{"findings":[{"id":"custom","summary":"found it","evidence":[2]}]}"#;
-        let p = write_plugin("good", &wat_plugin(1, reply));
-        let plugin = Plugin::load(&p).expect("loads");
-        let found = plugin.analyze("{}").expect("analyzes");
+        let p = write_plugin("good", &wat_plugin(1, reply)?)?;
+        let plugin = Plugin::load(&p)?;
+        let found = plugin.analyze("{}")?;
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "custom");
         assert_eq!(found[0].evidence, vec![2]);
         // Attribution comes from the host, not from the plugin's own output.
         assert_eq!(found[0].plugin, "good");
+        Ok(())
     }
 
     #[test]
-    fn a_plugin_speaking_another_abi_is_refused_at_load() {
-        let p = write_plugin("v99", &wat_plugin(99, r#"{"findings":[]}"#));
+    fn a_plugin_speaking_another_abi_is_refused_at_load() -> Result<(), TestError> {
+        let p = write_plugin("v99", &wat_plugin(99, r#"{"findings":[]}"#)?)?;
         match Plugin::load(&p) {
             Err(PluginError::AbiVersion { found, expected }) => {
                 assert_eq!(found, 99);
                 assert_eq!(expected, ABI_VERSION);
             }
-            other => panic!("expected an ABI version refusal, got {other:?}"),
+            other => return Err(format!("expected an ABI version refusal, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// The spec's first rule applies to third parties too.
     #[test]
-    fn a_finding_without_evidence_is_rejected() {
+    fn a_finding_without_evidence_is_rejected() -> Result<(), TestError> {
         let reply = r#"{"findings":[{"id":"vague","summary":"something","evidence":[]}]}"#;
-        let p = write_plugin("noevidence", &wat_plugin(1, reply));
-        let plugin = Plugin::load(&p).expect("loads");
+        let p = write_plugin("noevidence", &wat_plugin(1, reply)?)?;
+        let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::BadOutput(m)) => assert!(m.contains("evidence"), "{m}"),
-            other => panic!("expected rejection, got {other:?}"),
+            other => return Err(format!("expected rejection, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// The sandbox claim, tested rather than asserted: a module that imports
     /// anything at all must fail to instantiate, because the host registers no
     /// imports whatsoever.
     #[test]
-    fn a_plugin_that_imports_anything_cannot_instantiate() {
+    fn a_plugin_that_imports_anything_cannot_instantiate() -> Result<(), TestError> {
         let wat = r#"(module
             (import "env" "read_file" (func $rf (param i32) (result i32)))
             (memory (export "memory") 1)
@@ -571,16 +576,22 @@ mod tests {
             (func (export "sipnab_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "sipnab_dealloc") (param i32 i32))
             (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#;
-        let p = write_plugin("importer", &wat::parse_str(wat).expect("assembles"));
+        let p = write_plugin("importer", &wat::parse_str(wat)?)?;
         match Plugin::load(&p) {
             Err(PluginError::Abi(m)) => assert!(m.contains("import"), "{m}"),
-            other => panic!("a plugin importing a host function must not load, got {other:?}"),
+            other => {
+                return Err(format!(
+                    "a plugin importing a host function must not load, got {other:?}"
+                )
+                .into());
+            }
         }
+        Ok(())
     }
 
     /// An infinite loop must be cut off by fuel rather than hanging the capture.
     #[test]
-    fn an_infinite_loop_runs_out_of_fuel() {
+    fn an_infinite_loop_runs_out_of_fuel() -> Result<(), TestError> {
         let wat = r#"(module
             (memory (export "memory") 1)
             (func (export "sipnab_plugin_abi_version") (result i32) (i32.const 1))
@@ -589,12 +600,13 @@ mod tests {
             (func (export "sipnab_analyze") (param i32 i32) (result i64)
               (loop $spin (br $spin))
               (i64.const 0)))"#;
-        let p = write_plugin("spinner", &wat::parse_str(wat).expect("assembles"));
-        let plugin = Plugin::load(&p).expect("loads — the loop is only reached in analyze");
+        let p = write_plugin("spinner", &wat::parse_str(wat)?)?;
+        let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::Trap(_)) => {}
-            other => panic!("expected fuel exhaustion, got {other:?}"),
+            other => return Err(format!("expected fuel exhaustion, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// A plugin declaring a huge linear memory must be refused **before** the
@@ -608,7 +620,7 @@ mod tests {
     /// downloading — the cap has to be enforced by the engine, not audited
     /// afterwards.
     #[test]
-    fn a_plugin_declaring_huge_memory_is_refused_before_allocating() {
+    fn a_plugin_declaring_huge_memory_is_refused_before_allocating() -> Result<(), TestError> {
         // 32768 pages = 2 GiB, well over the 256-page (16 MiB) cap.
         let wat = r#"(module
             (memory (export "memory") 32768)
@@ -616,7 +628,7 @@ mod tests {
             (func (export "sipnab_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "sipnab_dealloc") (param i32 i32))
             (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#;
-        let p = write_plugin("fatmem", &wat::parse_str(wat).expect("assembles"));
+        let p = write_plugin("fatmem", &wat::parse_str(wat)?)?;
         match Plugin::load(&p) {
             Err(PluginError::Trap(m)) | Err(PluginError::Abi(m)) => {
                 assert!(
@@ -624,26 +636,31 @@ mod tests {
                     "expected a memory-limit refusal, got: {m}"
                 );
             }
-            other => panic!("a 2 GiB plugin must not instantiate, got {other:?}"),
+            other => {
+                return Err(format!("a 2 GiB plugin must not instantiate, got {other:?}").into());
+            }
         }
+        Ok(())
     }
 
     #[test]
-    fn a_plugin_returning_garbage_is_reported_not_fatal() {
-        let p = write_plugin("garbage", &wat_plugin(1, "not json at all"));
-        let plugin = Plugin::load(&p).expect("loads");
+    fn a_plugin_returning_garbage_is_reported_not_fatal() -> Result<(), TestError> {
+        let p = write_plugin("garbage", &wat_plugin(1, "not json at all")?)?;
+        let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::BadOutput(_)) => {}
-            other => panic!("expected BadOutput, got {other:?}"),
+            other => return Err(format!("expected BadOutput, got {other:?}").into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn a_missing_file_is_a_read_error() {
+    fn a_missing_file_is_a_read_error() -> Result<(), TestError> {
         match Plugin::load("/nonexistent/nope.wasm") {
             Err(PluginError::Read(_)) => {}
-            other => panic!("expected Read, got {other:?}"),
+            other => return Err(format!("expected Read, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// Asserts the EFFECT — that the host does not allocate the file's length.
@@ -653,17 +670,16 @@ mod tests {
     /// and "did the test pass?" the same question. An unbounded `fs::read`
     /// here allocates 2 GiB before `wasmi` is ever handed anything.
     #[test]
-    fn a_plugin_file_larger_than_the_cap_is_refused_without_reading_it() {
+    fn a_plugin_file_larger_than_the_cap_is_refused_without_reading_it() -> Result<(), TestError> {
         use std::io::{Seek, SeekFrom, Write};
 
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("huge.wasm");
-        let mut f = std::fs::File::create(&path).expect("create");
+        let mut f = std::fs::File::create(&path)?;
         // A real WASM header, so a rejection cannot be the magic number.
-        f.write_all(b"\0asm\x01\0\0\0").expect("header");
-        f.seek(SeekFrom::Start(2 * 1024 * 1024 * 1024))
-            .expect("seek");
-        f.write_all(b"\0").expect("tail");
+        f.write_all(b"\0asm\x01\0\0\0")?;
+        f.seek(SeekFrom::Start(2 * 1024 * 1024 * 1024))?;
+        f.write_all(b"\0")?;
         drop(f);
 
         match Plugin::load(&path) {
@@ -673,20 +689,22 @@ mod tests {
                     "the reason must name the size limit, got {m:?}"
                 );
             }
-            other => panic!("expected Read, got {other:?}"),
+            other => return Err(format!("expected Read, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// The cap is a ceiling, not a target: an ordinary plugin still loads.
     ///
     /// Without this, "reject everything" would pass the test above.
     #[test]
-    fn a_plugin_at_a_normal_size_still_loads() {
-        let p = write_plugin("normal", &wat_plugin(1, "[]"));
+    fn a_plugin_at_a_normal_size_still_loads() -> Result<(), TestError> {
+        let p = write_plugin("normal", &wat_plugin(1, "[]")?)?;
         assert!(
             Plugin::load(&p).is_ok(),
             "an ordinary plugin must still load"
         );
+        Ok(())
     }
     /// The documented export set is the set the host actually resolves.
     ///
@@ -700,7 +718,7 @@ mod tests {
     /// written beside them, so adding an export without documenting it fails
     /// here too.
     #[test]
-    fn the_documented_exports_are_the_ones_the_host_resolves() {
+    fn the_documented_exports_are_the_ones_the_host_resolves() -> Result<(), TestError> {
         let src = include_str!("mod.rs");
         // Production only: the test module below builds fixture modules that
         // name exports, and a scanner counting its own fixtures measures
@@ -773,5 +791,6 @@ mod tests {
                  requires and the host ignores is a rule nothing enforces."
             );
         }
+        Ok(())
     }
 }

@@ -306,6 +306,9 @@ impl SipMessage {
 /// iat freshness, and SipMessage integration (including the compact form).
 #[cfg(test)]
 mod tests {
+
+    type TestError = Box<dyn std::error::Error>;
+
     /// Every `Identity` header is read, not just the first.
     ///
     /// [RFC 8224 section 4](https://www.rfc-editor.org/rfc/rfc8224#section-4), first paragraph: "Note that unlike the prior
@@ -316,7 +319,7 @@ mod tests {
     /// `--stir-shaken`, to the vCon `parties[].stir` field, and to everything
     /// else.
     #[test]
-    fn every_identity_header_is_read() {
+    fn every_identity_header_is_read() -> Result<(), TestError> {
         let msg = invite_with_identities(&[
             &build_identity_header(&format!(
                 r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
@@ -324,7 +327,7 @@ mod tests {
             &build_identity_header(&format!(
                 r#"{{"attest":"C","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125559999"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
             )),
-        ]);
+        ])?;
         let all = msg.stir_shaken_all();
         assert_eq!(all.len(), 2, "RFC 8224 4 permits more than one");
         let attestations: Vec<Option<Attestation>> = all
@@ -336,6 +339,7 @@ mod tests {
                 && attestations.contains(&Some(Attestation::C)),
             "both PASSporTs are reported: {attestations:?}"
         );
+        Ok(())
     }
 
     /// A single header still yields exactly one result.
@@ -343,23 +347,25 @@ mod tests {
     /// The regression guard — one `Identity` is the ordinary case and must not
     /// become a list of zero or two.
     #[test]
-    fn a_single_identity_header_yields_one_result() {
+    fn a_single_identity_header_yields_one_result() -> Result<(), TestError> {
         let msg = invite_with_identities(&[&build_identity_header(&format!(
             r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
-        ))]);
+        ))])?;
         assert_eq!(msg.stir_shaken_all().len(), 1);
         assert!(
             msg.stir_shaken().is_some(),
             "the single-value accessor still works"
         );
+        Ok(())
     }
 
     /// No `Identity` header yields nothing, not an empty-token error.
     #[test]
-    fn no_identity_header_yields_no_results() {
-        let msg = invite_with_identities(&[]);
+    fn no_identity_header_yields_no_results() -> Result<(), TestError> {
+        let msg = invite_with_identities(&[])?;
         assert!(msg.stir_shaken_all().is_empty());
         assert!(msg.stir_shaken().is_none());
+        Ok(())
     }
 
     /// An unparseable token is REPORTED, not dropped.
@@ -370,15 +376,16 @@ mod tests {
     /// Returning `Err` keeps the failure in the data rather than in a log line
     /// nobody sees.
     #[test]
-    fn an_unparseable_identity_is_reported_rather_than_dropped() {
+    fn an_unparseable_identity_is_reported_rather_than_dropped() -> Result<(), TestError> {
         let msg =
-            invite_with_identities(&["this-is-not-a-passport;info=<https://c.example/c.pem>"]);
+            invite_with_identities(&["this-is-not-a-passport;info=<https://c.example/c.pem>"])?;
         let all = msg.stir_shaken_all();
         assert_eq!(all.len(), 1, "the header was present, so there is a result");
         assert!(
             all[0].is_err(),
             "and that result says it could not be parsed"
         );
+        Ok(())
     }
 
     /// A good token beside a bad one: both are accounted for.
@@ -387,17 +394,18 @@ mod tests {
     /// like, and it is where "report the first" and "drop the unparseable" both
     /// lose information silently.
     #[test]
-    fn a_good_token_beside_a_bad_one_reports_both() {
+    fn a_good_token_beside_a_bad_one_reports_both() -> Result<(), TestError> {
         let msg = invite_with_identities(&[
             &build_identity_header(&format!(
                 r#"{{"attest":"A","dest":{{"tn":["12125550002"]}},"iat":{FIXED_IAT},"orig":{{"tn":"12125550001"}},"origid":"a1b2c3d4-e5f6-4a5b-8c7d-9e0f1a2b3c4d"}}"#
             )),
             "garbage-token",
-        ]);
+        ])?;
         let all = msg.stir_shaken_all();
         assert_eq!(all.len(), 2);
         assert!(all[0].is_ok(), "the good one parses");
         assert!(all[1].is_err(), "the bad one is reported as bad");
+        Ok(())
     }
 
     use super::*;
@@ -413,7 +421,7 @@ mod tests {
     const LONG_AFTER_IAT: i64 = FIXED_IAT + 3600;
 
     /// An INVITE carrying zero or more `Identity` headers.
-    fn invite_with_identities(identities: &[&str]) -> SipMessage {
+    fn invite_with_identities(identities: &[&str]) -> Result<SipMessage, TestError> {
         let mut raw = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
         raw.push_str("From: <sip:alice@example.com>;tag=t1\r\n");
         raw.push_str("To: <sip:bob@example.com>\r\n");
@@ -424,9 +432,16 @@ mod tests {
         }
         raw.push_str("Content-Length: 0\r\n\r\n");
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-        let ts = chrono::DateTime::from_timestamp(FIXED_IAT, 0).expect("valid");
-        crate::sip::parser::parse_sip(raw.as_bytes(), ts, ip, ip, 5060, 5060, TransportProto::Udp)
-            .expect("the fixture must parse")
+        let ts = chrono::DateTime::from_timestamp(FIXED_IAT, 0).ok_or("valid")?;
+        Ok(crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            ts,
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?)
     }
 
     /// Build a minimal SHAKEN JWT with the given claims.
@@ -447,7 +462,7 @@ mod tests {
     /// A full attestation-A payload yields every claim (and a stale iat
     /// marks it Expired).
     #[test]
-    fn parse_attest_a_full() {
+    fn parse_attest_a_full() -> Result<(), TestError> {
         let payload = r#"{
             "attest": "A",
             "dest": {"tn": ["12025551234"]},
@@ -456,7 +471,7 @@ mod tests {
             "origid": "550e8400-e29b-41d4-a716-446655440000"
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("12125559876"));
@@ -468,6 +483,7 @@ mod tests {
         assert_eq!(info.iat, Some(1_700_000_000));
         // iat is from 2023 — well beyond the 60s freshness window
         assert_eq!(info.verified, VerificationStatus::Expired);
+        Ok(())
     }
 
     /// A crafted `iat` cannot overflow the freshness check. `iat = i64::MIN`
@@ -476,24 +492,24 @@ mod tests {
     /// via `--stir-shaken`, since `iat` is an attacker-supplied JWT claim). The
     /// check now uses saturating arithmetic, so an absurd iat is Expired.
     #[test]
-    fn a_crafted_iat_does_not_overflow_the_freshness_check() {
+    fn a_crafted_iat_does_not_overflow_the_freshness_check() -> Result<(), TestError> {
         for iat in [i64::MIN, i64::MAX, i64::MIN + 1, i64::MAX - 1] {
             let payload = format!(r#"{{"attest":"A","iat":{iat},"orig":{{"tn":"1"}}}}"#);
             let header = build_identity_header(&payload);
-            let info = parse_identity_header(&header, LONG_AFTER_IAT)
-                .expect("should parse without panicking");
+            let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
             assert_eq!(
                 info.verified,
                 VerificationStatus::Expired,
                 "an iat of {iat} is far outside the 60s window and must read as Expired"
             );
         }
+        Ok(())
     }
 
     /// A dest claim with multiple `tn` entries (RFC 8225 Section 5.2.1)
     /// retains every destination, not just the first.
     #[test]
-    fn parse_multiple_dest_tns_all_retained() {
+    fn parse_multiple_dest_tns_all_retained() -> Result<(), TestError> {
         let payload = r#"{
             "attest": "A",
             "dest": {"tn": ["12025551000", "12025551001", "12025551002"]},
@@ -501,7 +517,7 @@ mod tests {
             "orig": {"tn": "12125559876"}
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(
             info.dest_tn,
@@ -510,12 +526,13 @@ mod tests {
         );
         assert!(info.dest_uri.is_empty());
         assert_eq!(info.dest_display(), "12025551000,12025551001,12025551002");
+        Ok(())
     }
 
     /// A dest claim carrying `uri` entries (allowed alongside or instead of
     /// `tn` per RFC 8225 Section 5.2.1) retains every URI.
     #[test]
-    fn parse_dest_uris_all_retained() {
+    fn parse_dest_uris_all_retained() -> Result<(), TestError> {
         let payload = r#"{
             "attest": "A",
             "dest": {"tn": ["12025551000"], "uri": ["sip:bob@example.com", "sip:carol@example.net"]},
@@ -523,7 +540,7 @@ mod tests {
             "orig": {"tn": "12125559876"}
         }"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.dest_tn, ["12025551000"]);
         assert_eq!(
@@ -535,85 +552,94 @@ mod tests {
             info.dest_display(),
             "12025551000,sip:bob@example.com,sip:carol@example.net"
         );
+        Ok(())
     }
 
     /// `"attest": "B"` maps to Attestation::B.
     #[test]
-    fn parse_attest_b() {
+    fn parse_attest_b() -> Result<(), TestError> {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000001}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::B);
+        Ok(())
     }
 
     /// `"attest": "C"` maps to Attestation::C.
     #[test]
-    fn parse_attest_c() {
+    fn parse_attest_c() -> Result<(), TestError> {
         let payload = r#"{"attest": "C", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000002}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::C);
+        Ok(())
     }
 
     /// An unrecognized attestation letter maps to Attestation::Unknown.
     #[test]
-    fn parse_unknown_attestation() {
+    fn parse_unknown_attestation() -> Result<(), TestError> {
         let payload = r#"{"attest": "X", "orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::Unknown);
+        Ok(())
     }
 
     /// A payload without an `attest` claim maps to Attestation::Unknown.
     #[test]
-    fn parse_missing_attestation() {
+    fn parse_missing_attestation() -> Result<(), TestError> {
         let payload = r#"{"orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::Unknown);
+        Ok(())
     }
 
     /// A token with more than 3 dot-separated parts is rejected.
     #[test]
-    fn malformed_jwt_too_many_parts() {
+    fn malformed_jwt_too_many_parts() -> Result<(), TestError> {
         // "not.a.valid.jwt.with.too.many.parts" splits into 8 parts (> 3).
         let result = parse_identity_header("not.a.valid.jwt.with.too.many.parts", LONG_AFTER_IAT);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A single-segment token (no dots) is rejected.
     #[test]
-    fn malformed_jwt_single_segment() {
+    fn malformed_jwt_single_segment() -> Result<(), TestError> {
         let result = parse_identity_header("justatoken", LONG_AFTER_IAT);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A payload segment that is not valid base64url is rejected.
     #[test]
-    fn malformed_jwt_bad_base64() {
+    fn malformed_jwt_bad_base64() -> Result<(), TestError> {
         let result = parse_identity_header("aaa.!!!invalid_base64!!!.ccc", LONG_AFTER_IAT);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// A payload that decodes but is not JSON is rejected.
     #[test]
-    fn malformed_jwt_bad_json() {
+    fn malformed_jwt_bad_json() -> Result<(), TestError> {
         let payload_b64 = URL_SAFE_NO_PAD.encode(b"not json at all");
         let header = format!("aaa.{payload_b64}.ccc");
         let result = parse_identity_header(&header, LONG_AFTER_IAT);
         assert!(result.is_err());
+        Ok(())
     }
 
     /// An empty JSON payload parses with all claims absent.
     #[test]
-    fn parse_minimal_payload() {
+    fn parse_minimal_payload() -> Result<(), TestError> {
         let payload = r#"{}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.attestation, Attestation::Unknown);
         assert!(info.orig_tn.is_none());
@@ -622,60 +648,65 @@ mod tests {
         assert_eq!(info.dest_display(), "-");
         assert!(info.orig_id.is_none());
         assert!(info.iat.is_none());
+        Ok(())
     }
 
     /// An iat matching the capture clock stays NotChecked.
     #[test]
-    fn iat_fresh_within_window() {
+    fn iat_fresh_within_window() -> Result<(), TestError> {
         let payload = format!(
             r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "dest": {{"tn": ["2002"]}}, "iat": {LONG_AFTER_IAT}}}"#,
         );
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.verified, VerificationStatus::NotChecked);
+        Ok(())
     }
 
     /// An iat two minutes before the capture clock is marked Expired.
     #[test]
-    fn iat_stale_past() {
+    fn iat_stale_past() -> Result<(), TestError> {
         // 2 minutes before the packet was captured — outside the 60s window.
         let stale = LONG_AFTER_IAT - 120;
         let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {stale}}}"#,);
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.verified, VerificationStatus::Expired);
+        Ok(())
     }
 
     /// An iat two minutes after the capture clock is also marked Expired.
     #[test]
-    fn iat_stale_future() {
+    fn iat_stale_future() -> Result<(), TestError> {
         // 2 minutes after the packet was captured — also outside the window.
         let future = LONG_AFTER_IAT + 120;
         let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {future}}}"#,);
         let header = build_identity_header(&payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert_eq!(info.verified, VerificationStatus::Expired);
+        Ok(())
     }
 
     /// A missing iat leaves the status NotChecked, not Expired.
     #[test]
-    fn iat_missing_not_expired() {
+    fn iat_missing_not_expired() -> Result<(), TestError> {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}}"#;
         let header = build_identity_header(payload);
-        let info = parse_identity_header(&header, LONG_AFTER_IAT).expect("should parse");
+        let info = parse_identity_header(&header, LONG_AFTER_IAT)?;
 
         assert!(info.iat.is_none());
         assert_eq!(info.verified, VerificationStatus::NotChecked);
+        Ok(())
     }
 
     /// The iat freshness window is classified deterministically against an
     /// injected clock: at exactly 60s from `now` the token is still fresh; at
     /// 61s (past or future) it is Expired. No dependency on the wall clock.
     #[test]
-    fn iat_window_boundary_with_injected_clock() {
+    fn iat_window_boundary_with_injected_clock() -> Result<(), TestError> {
         // Fixed reference "now" so the test never depends on Utc::now().
         let now: i64 = FIXED_IAT;
 
@@ -686,7 +717,7 @@ mod tests {
 
         // Exactly on the 60s boundary (both directions) stays NotChecked.
         for iat in [now - 60, now + 60] {
-            let info = parse_identity_header(&header_at(iat), now).expect("should parse");
+            let info = parse_identity_header(&header_at(iat), now)?;
             assert_eq!(
                 info.verified,
                 VerificationStatus::NotChecked,
@@ -696,18 +727,19 @@ mod tests {
 
         // One second past the boundary (both directions) is Expired.
         for iat in [now - 61, now + 61] {
-            let info = parse_identity_header(&header_at(iat), now).expect("should parse");
+            let info = parse_identity_header(&header_at(iat), now)?;
             assert_eq!(
                 info.verified,
                 VerificationStatus::Expired,
                 "iat {iat} at now {now} should be outside the 60s window"
             );
         }
+        Ok(())
     }
 
     /// `stir_shaken()` returns `None` when no Identity header is present.
     #[test]
-    fn sip_message_stir_shaken_missing_header() {
+    fn sip_message_stir_shaken_missing_header() -> Result<(), TestError> {
         use std::net::{IpAddr, Ipv4Addr};
         let msg = SipMessage {
             frame: None,
@@ -732,12 +764,13 @@ mod tests {
         };
 
         assert!(msg.stir_shaken().is_none());
+        Ok(())
     }
 
     /// The RFC 8224 compact `y:` form is expanded and analyzed identically
     /// to a long-form Identity header.
     #[test]
-    fn compact_identity_header_cannot_evade_extraction() {
+    fn compact_identity_header_cannot_evade_extraction() -> Result<(), TestError> {
         // RFC 8224 registers `y` as the compact form of Identity. A caller
         // emitting `y:` is fully standards-compliant toward verifiers, so if
         // sipnab only recognized the long form, compact-form PASSporTs would
@@ -767,15 +800,14 @@ mod tests {
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("should parse");
+        )?;
 
         let info = msg
             .stir_shaken()
-            .expect("compact y: header must be recognized as Identity")
-            .expect("PASSporT should parse");
+            .ok_or("compact y: header must be recognized as Identity")??;
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
+        Ok(())
     }
 
     /// An INVITE carrying `identity_value`, captured at `captured_at`.
@@ -816,18 +848,16 @@ mod tests {
 
     /// `stir_shaken()` parses a present Identity header into claims.
     #[test]
-    fn sip_message_stir_shaken_with_identity() {
+    fn sip_message_stir_shaken_with_identity() -> Result<(), TestError> {
         let payload = r#"{"attest": "A", "orig": {"tn": "5551234"}, "dest": {"tn": ["5559876"]}, "iat": 1700000000}"#;
         let msg = message_with_identity(build_identity_header(payload), chrono::Utc::now());
 
-        let info = msg
-            .stir_shaken()
-            .expect("should have Identity header")
-            .expect("should parse");
+        let info = msg.stir_shaken().ok_or("should have Identity header")??;
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
         // Captured now, issued in 2023: stale against this packet's own clock.
         assert_eq!(info.verified, VerificationStatus::Expired);
+        Ok(())
     }
 
     /// A token issued when the packet was captured is FRESH, however long ago
@@ -841,17 +871,16 @@ mod tests {
     /// poses. Both readings are computed here so the test names what it is
     /// choosing between rather than merely asserting the good one.
     #[test]
-    fn an_old_capture_does_not_expire_a_token_that_was_fresh_when_sent() {
+    fn an_old_capture_does_not_expire_a_token_that_was_fresh_when_sent() -> Result<(), TestError> {
         // A capture from 2023. The token was issued as the INVITE went out.
-        let captured_at = chrono::DateTime::from_timestamp(FIXED_IAT, 0).expect("valid epoch");
+        let captured_at = chrono::DateTime::from_timestamp(FIXED_IAT, 0).ok_or("valid epoch")?;
         let payload =
             format!(r#"{{"attest": "A", "orig": {{"tn": "5551234"}}, "iat": {FIXED_IAT}}}"#);
         let identity_value = build_identity_header(&payload);
 
         let info = message_with_identity(identity_value.clone(), captured_at)
             .stir_shaken()
-            .expect("should have Identity header")
-            .expect("should parse");
+            .ok_or("should have Identity header")??;
         assert_eq!(
             info.verified,
             VerificationStatus::NotChecked,
@@ -869,7 +898,8 @@ mod tests {
              {FIXED_IAT}; it is 2023, so only a badly wrong system clock \
              gets here"
         );
-        let by_wall_clock = parse_identity_header(&identity_value, wall).expect("should parse");
+        let by_wall_clock = parse_identity_header(&identity_value, wall)?;
         assert_eq!(by_wall_clock.verified, VerificationStatus::Expired);
+        Ok(())
     }
 }

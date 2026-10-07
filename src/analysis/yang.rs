@@ -1222,6 +1222,8 @@ pub fn module_text() -> String {
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
 
+    type TestError = Box<dyn std::error::Error>;
+
     use serde_json::Value;
 
     use super::*;
@@ -1233,9 +1235,9 @@ mod tests {
     /// Struct literals throughout, never `..Default::default()`: a field added
     /// to any of the three structs is a compile error here until it is
     /// populated, and then a census failure below until it has a node.
-    fn populated() -> CaptureAnalysis {
-        let at = chrono::DateTime::from_timestamp_millis(1_700_000_000_123).expect("valid");
-        CaptureAnalysis {
+    fn populated() -> Result<CaptureAnalysis, TestError> {
+        let at = chrono::DateTime::from_timestamp_millis(1_700_000_000_123).ok_or("valid")?;
+        Ok(CaptureAnalysis {
             schema_version: CAPTURE_ANALYSIS_SCHEMA_VERSION,
             filter: Some("one_way == true".to_string()),
             // Above 2^32, so a uint64 carried as a uint32 anywhere would show.
@@ -1291,7 +1293,7 @@ mod tests {
                     evidence_omitted: 10,
                 },
             ],
-        }
+        })
     }
 
     /// The serialized field names a node table claims.
@@ -1306,12 +1308,12 @@ mod tests {
     }
 
     /// The member names of a JSON object.
-    fn keys(v: &Value) -> BTreeSet<&str> {
-        v.as_object()
-            .expect("an object")
+    fn keys(v: &Value) -> Result<BTreeSet<&str>, TestError> {
+        Ok(v.as_object()
+            .ok_or("an object")?
             .keys()
             .map(String::as_str)
-            .collect()
+            .collect())
     }
 
     /// Every serialized field has a node, and every node a field, for all
@@ -1320,8 +1322,8 @@ mod tests {
     /// Driven from a serialized value rather than the source text, so a
     /// `#[serde(rename)]` is compared as it appears on the wire.
     #[test]
-    fn every_serialized_field_has_a_node_and_every_node_a_field() {
-        let plain = serde_json::to_value(populated()).expect("serializes");
+    fn every_serialized_field_has_a_node_and_every_node_a_field() -> Result<(), TestError> {
+        let plain = serde_json::to_value(populated()?)?;
         let finding = &plain["findings"][1];
         let evidence = &finding["evidence"][0];
         for (what, nodes, value) in [
@@ -1331,10 +1333,11 @@ mod tests {
         ] {
             assert_eq!(
                 fields(nodes),
-                keys(value),
+                keys(value)?,
                 "{what}: the node table and the serialization disagree"
             );
         }
+        Ok(())
     }
 
     /// `WhenEmpty` says what serde really does with an empty collection, and
@@ -1344,7 +1347,8 @@ mod tests {
     /// marker would make every decoded empty analysis differ from the plain
     /// JSON in exactly the case the fixtures are least likely to exercise.
     #[test]
-    fn the_table_describes_what_serde_writes_for_empty_and_absent_values() {
+    fn the_table_describes_what_serde_writes_for_empty_and_absent_values() -> Result<(), TestError>
+    {
         let empty = CaptureAnalysis {
             filter: None,
             findings: vec![Finding {
@@ -1367,15 +1371,21 @@ mod tests {
             findings: Vec::new(),
             ..empty.clone()
         };
-        let plain = |a: &CaptureAnalysis| serde_json::to_value(a).expect("serializes");
+        let plain = |a: &CaptureAnalysis| -> Result<serde_json::Value, TestError> {
+            Ok(serde_json::to_value(a)?)
+        };
         // With the key of the list each entry belongs to: a key leaf is
         // always present, and RFC 7950 makes it so without `mandatory`.
         let cases = [
-            (CAPTURE_ANALYSIS, plain(&no_findings), None),
-            (FINDING, plain(&sparse)["findings"][0].clone(), Some("kind")),
+            (CAPTURE_ANALYSIS, plain(&no_findings)?, None),
+            (
+                FINDING,
+                plain(&sparse)?["findings"][0].clone(),
+                Some("kind"),
+            ),
             (
                 EVIDENCE,
-                plain(&empty)["findings"][0]["evidence"][0].clone(),
+                plain(&empty)?["findings"][0]["evidence"][0].clone(),
                 Some("index"),
             ),
         ];
@@ -1402,12 +1412,13 @@ mod tests {
             }
         }
         assert!(checked >= 15, "only {checked} fields checked");
+        Ok(())
     }
 
     /// Identity names are unique across both families, and neither family
     /// reuses a base's name.
     #[test]
-    fn identity_names_are_unique_across_both_families() {
+    fn identity_names_are_unique_across_both_families() -> Result<(), TestError> {
         let mut seen = BTreeSet::from(["finding-kind", "count-label"]);
         for name in FindingKind::ALL
             .iter()
@@ -1416,12 +1427,13 @@ mod tests {
         {
             assert!(seen.insert(name), "`{name}` is defined twice");
         }
+        Ok(())
     }
 
     /// Every list names one of its own children as its key, holds at most
     /// one position leaf, and no two siblings share a name.
     #[test]
-    fn every_list_is_keyed_by_its_own_child() {
+    fn every_list_is_keyed_by_its_own_child() -> Result<(), TestError> {
         fn walk(nodes: &[Node], at: &str) -> usize {
             let mut names = BTreeSet::new();
             let mut lists = 0;
@@ -1449,6 +1461,7 @@ mod tests {
             lists
         }
         assert_eq!(walk(CAPTURE_ANALYSIS, ""), 2, "finding and evidence");
+        Ok(())
     }
 
     /// The rendered module names every identity, every node and the revision.
@@ -1457,7 +1470,7 @@ mod tests {
     /// `tests/yang_module_test.rs`; this is the cheaper check that the text
     /// says what the tables say before anyone blesses it.
     #[test]
-    fn the_module_text_renders_every_table() {
+    fn the_module_text_renders_every_table() -> Result<(), TestError> {
         let text = module_text();
         assert!(text.starts_with("module sipnab-diagnosis {\n"));
         assert!(text.contains(&format!("revision {REVISION} {{")));
@@ -1504,6 +1517,7 @@ mod tests {
                 .all(|l| l.chars().count() <= WIDTH || !l.contains(' ')),
             "a line runs past the page width"
         );
+        Ok(())
     }
 
     /// The one member of an RFC 7951 document.
@@ -1514,8 +1528,8 @@ mod tests {
     /// [RFC 7951 section 6.1](https://www.rfc-editor.org/rfc/rfc7951#section-6.1): every `uint64` is a JSON string and every
     /// `uint32` stays a number.
     #[test]
-    fn a_uint64_is_a_string_and_a_uint32_is_a_number() {
-        let doc = to_rfc7951(&populated()).expect("encodes");
+    fn a_uint64_is_a_string_and_a_uint32_is_a_number() -> Result<(), TestError> {
+        let doc = to_rfc7951(&populated()?)?;
         let top = body(&doc);
         assert_eq!(top["frames-read"], Value::from("5000000000"));
         assert_eq!(top["dialogs-examined"], Value::from("3"));
@@ -1534,15 +1548,16 @@ mod tests {
                 {"name": "streams", "value": "1"}
             ])
         );
+        Ok(())
     }
 
     /// [RFC 7951 section 4](https://www.rfc-editor.org/rfc/rfc7951#section-4): the top-level member is qualified by the module
     /// name, and nothing below it is.
     #[test]
-    fn only_the_top_level_member_is_qualified() {
-        let doc = to_rfc7951(&populated()).expect("encodes");
+    fn only_the_top_level_member_is_qualified() -> Result<(), TestError> {
+        let doc = to_rfc7951(&populated()?)?;
         assert_eq!(
-            keys(&doc),
+            keys(&doc)?,
             BTreeSet::from(["sipnab-diagnosis:capture-analysis"])
         );
         fn no_colon_below(v: &Value, at: &str) {
@@ -1561,23 +1576,25 @@ mod tests {
         // An identity in the same module takes the simple form (RFC 7951
         // section 6.8), which is the plain JSON's own string.
         assert_eq!(body(&doc)["finding"][0]["kind"], "undecodable_frames");
+        Ok(())
     }
 
     /// The document decodes back to the plain JSON it was encoded from.
     #[test]
-    fn decode_inverts_encode() {
-        for analysis in [populated(), CaptureAnalysis::default()] {
-            let plain = serde_json::to_value(&analysis).expect("serializes");
-            let doc = to_rfc7951(&analysis).expect("encodes");
-            assert_eq!(decode(&doc).expect("decodes"), plain);
+    fn decode_inverts_encode() -> Result<(), TestError> {
+        for analysis in [populated()?, CaptureAnalysis::default()] {
+            let plain = serde_json::to_value(&analysis)?;
+            let doc = to_rfc7951(&analysis)?;
+            assert_eq!(decode(&doc)?, plain);
         }
+        Ok(())
     }
 
     /// The decoder refuses what RFC 7951 and the module forbid, rather than
     /// repairing it: the mirror test is only as strong as this.
     #[test]
-    fn the_decoder_refuses_what_the_encoding_forbids() {
-        let good = to_rfc7951(&populated()).expect("encodes");
+    fn the_decoder_refuses_what_the_encoding_forbids() -> Result<(), TestError> {
+        let good = to_rfc7951(&populated()?)?;
         /// What the case breaks, and how.
         type Corruption = (&'static str, fn(&mut Value));
         let corrupt: [Corruption; 9] = [
@@ -1622,6 +1639,7 @@ mod tests {
             f(&mut bad);
             assert!(decode(&bad).is_err(), "the decoder accepted {what}");
         }
+        Ok(())
     }
 
     /// The ranking survives the trip even when a consumer reorders the list.
@@ -1630,9 +1648,9 @@ mod tests {
     /// decoder must restore order from `rank` and `index` and never from
     /// array position.
     #[test]
-    fn the_decoder_orders_by_rank_and_index_not_by_position() {
-        let plain = serde_json::to_value(populated()).expect("serializes");
-        let mut doc = to_rfc7951(&populated()).expect("encodes");
+    fn the_decoder_orders_by_rank_and_index_not_by_position() -> Result<(), TestError> {
+        let plain = serde_json::to_value(populated()?)?;
+        let mut doc = to_rfc7951(&populated()?)?;
         let top = &mut doc["sipnab-diagnosis:capture-analysis"];
         if let Some(findings) = top["finding"].as_array_mut() {
             findings.reverse();
@@ -1640,24 +1658,26 @@ mod tests {
         if let Some(evidence) = top["finding"][0]["evidence"].as_array_mut() {
             evidence.reverse();
         }
-        assert_eq!(decode(&doc).expect("decodes"), plain);
+        assert_eq!(decode(&doc)?, plain);
+        Ok(())
     }
 
     /// A character YANG's string type cannot carry is written as U+FFFD, and
     /// nothing else about the string changes.
     #[test]
-    fn a_character_yang_cannot_carry_becomes_the_replacement_character() {
+    fn a_character_yang_cannot_carry_becomes_the_replacement_character() -> Result<(), TestError> {
         assert_eq!(yang_string("a\u{1b}[31mb"), "a\u{FFFD}[31mb");
         assert_eq!(yang_string("x\u{FFFE}y\u{FFFF}"), "x\u{FFFD}y\u{FFFD}");
         let kept = "tab\tcr\rlf\n del\u{7f} nel\u{85} \u{10FFFD}";
         assert_eq!(yang_string(kept), kept, "legal characters are untouched");
 
-        let mut analysis = populated();
+        let mut analysis = populated()?;
         analysis.findings[1].evidence[0].note = Some("bell\u{7}".to_string());
-        let doc = to_rfc7951(&analysis).expect("encodes");
+        let doc = to_rfc7951(&analysis)?;
         assert_eq!(
             body(&doc)["finding"][1]["evidence"][0]["note"],
             "bell\u{FFFD}"
         );
+        Ok(())
     }
 }

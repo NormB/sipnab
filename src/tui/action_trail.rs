@@ -363,23 +363,22 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Read a trail file back as lines.
-    fn lines(path: &Path) -> Vec<String> {
+    fn lines(path: &Path) -> Result<Vec<String>, TestError> {
         let mut s = String::new();
-        std::fs::File::open(path)
-            .expect("open trail")
-            .read_to_string(&mut s)
-            .expect("read trail");
-        s.lines().map(str::to_string).collect()
+        std::fs::File::open(path)?.read_to_string(&mut s)?;
+        Ok(s.lines().map(str::to_string).collect())
     }
 
     /// An export names its destination, which is the question the trail
     /// exists to answer.
     #[test]
-    fn an_export_record_names_its_destination() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn an_export_record_names_its_destination() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trail.jsonl");
-        let trail = ActionTrail::open(&path).expect("open");
+        let trail = ActionTrail::open(&path)?;
         assert!(
             trail
                 .record(&ActionRecord {
@@ -392,7 +391,7 @@ mod tests {
                 .is_none(),
             "a writable trail must report no problem"
         );
-        let v: serde_json::Value = serde_json::from_str(&lines(&path)[0]).expect("json");
+        let v: serde_json::Value = serde_json::from_str(&lines(&path)?[0])?;
         assert_eq!(v["record"], "tui");
         assert_eq!(v["action"], "export");
         assert_eq!(v["target"], "/tmp/subset.pcap");
@@ -401,6 +400,7 @@ mod tests {
             v["caller"].as_str().is_some_and(|c| c.starts_with("tui ")),
             "the record must say who was at the terminal: {v}"
         );
+        Ok(())
     }
 
     /// A newline in an export path cannot forge a second record.
@@ -410,10 +410,10 @@ mod tests {
     /// genuine record of an export that never happened, which is worse than a
     /// missing one.
     #[test]
-    fn a_newline_in_the_destination_cannot_forge_a_record() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_newline_in_the_destination_cannot_forge_a_record() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trail.jsonl");
-        let trail = ActionTrail::open(&path).expect("open");
+        let trail = ActionTrail::open(&path)?;
         trail.record(&ActionRecord {
             action: "export",
             target: "/tmp/a\n{\"seq\":99,\"record\":\"tui\",\"action\":\"export\"}",
@@ -421,18 +421,19 @@ mod tests {
             outcome: "ok",
             error: "",
         });
-        let out = lines(&path);
+        let out = lines(&path)?;
         assert_eq!(out.len(), 1, "the destination forged a record: {out:?}");
-        let v: serde_json::Value = serde_json::from_str(&out[0]).expect("json");
+        let v: serde_json::Value = serde_json::from_str(&out[0])?;
         assert_eq!(v["seq"], 1, "the forged sequence number was believed: {v}");
+        Ok(())
     }
 
     /// A refused action is recorded with its reason.
     #[test]
-    fn a_refused_export_is_recorded_with_its_reason() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_refused_export_is_recorded_with_its_reason() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trail.jsonl");
-        let trail = ActionTrail::open(&path).expect("open");
+        let trail = ActionTrail::open(&path)?;
         trail.record(&ActionRecord {
             action: "export",
             target: "/caps/live.pcap",
@@ -440,20 +441,21 @@ mod tests {
             outcome: "refused",
             error: "Save to would overwrite the capture being read",
         });
-        let v: serde_json::Value = serde_json::from_str(&lines(&path)[0]).expect("json");
+        let v: serde_json::Value = serde_json::from_str(&lines(&path)?[0])?;
         assert_eq!(v["outcome"], "refused");
         assert!(
-            v["error"].as_str().expect("error").contains("overwrite"),
+            v["error"].as_str().ok_or("error")?.contains("overwrite"),
             "a refusal with no reason does not answer why: {v}"
         );
+        Ok(())
     }
 
     /// A successful action carries `error: null` rather than omitting the key.
     #[test]
-    fn a_successful_action_records_a_null_error_rather_than_no_key() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_successful_action_records_a_null_error_rather_than_no_key() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trail.jsonl");
-        let trail = ActionTrail::open(&path).expect("open");
+        let trail = ActionTrail::open(&path)?;
         trail.record(&ActionRecord {
             action: "filter_cleared",
             target: "",
@@ -461,19 +463,20 @@ mod tests {
             outcome: "ok",
             error: "",
         });
-        let v: serde_json::Value = serde_json::from_str(&lines(&path)[0]).expect("json");
+        let v: serde_json::Value = serde_json::from_str(&lines(&path)?[0])?;
         assert!(
             v.get("error").is_some() && v["error"].is_null(),
             "`.error` must exist on every record: {v}"
         );
+        Ok(())
     }
 
     /// A trail that has never failed reports nothing at exit.
     #[test]
-    fn a_whole_trail_prints_no_exit_notice() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_whole_trail_prints_no_exit_notice() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("trail.jsonl");
-        let trail = ActionTrail::open(&path).expect("open");
+        let trail = ActionTrail::open(&path)?;
         trail.record(&ActionRecord {
             action: "capture_opened",
             target: "/caps/a.pcap",
@@ -483,5 +486,6 @@ mod tests {
         });
         assert!(!trail.is_incomplete());
         assert_eq!(trail.exit_notice(), None);
+        Ok(())
     }
 }
