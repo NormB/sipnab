@@ -294,12 +294,23 @@ fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> 
 /// Uprobe capture is a Linux kernel facility, so everywhere else says so
 /// plainly rather than failing later with a missing-path error.
 #[cfg(not(all(target_os = "linux", feature = "native")))]
-fn plan_uprobe_targets(_cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
-    Err(
-        "--uprobe-tls needs Linux kernel uprobes and a sipnab built with the \
-         `native` feature"
-            .to_string(),
-    )
+fn plan_uprobe_targets(cli: &Cli) -> Result<Vec<capture::UprobeTarget>, String> {
+    Err(uprobe_unavailable(
+        cli.tls_args.uprobe_tls,
+        !cli.tls_args.uprobe_library.is_empty(),
+    ))
+}
+
+/// The refusal for a uprobe source where uprobes do not exist, naming the
+/// flags that asked for one: `--uprobe-tls`, `--uprobe-library`, or both.
+#[cfg(any(test, not(all(target_os = "linux", feature = "native"))))]
+fn uprobe_unavailable(tls: bool, libraries: bool) -> String {
+    let (flags, verb) = match (tls, libraries) {
+        (true, true) => ("--uprobe-tls and --uprobe-library", "need"),
+        (false, true) => ("--uprobe-library", "needs"),
+        _ => ("--uprobe-tls", "needs"),
+    };
+    format!("{flags} {verb} Linux kernel uprobes and a sipnab built with the `native` feature")
 }
 
 /// Build the `-L/--hep-listen` source from the CLI and config.
@@ -5455,6 +5466,30 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Off Linux, the refusal names the uprobe flags the user gave. It named
+    /// `--uprobe-tls` for `--uprobe-library=` alone, which macOS CI caught in
+    /// `blank_value_refusals_name_the_flag`; the platform stub that builds it
+    /// never compiles on Linux, so the wording is tested here.
+    #[test]
+    fn the_uprobe_platform_refusal_names_the_flags_given() {
+        let tls = uprobe_unavailable(true, false);
+        assert!(tls.starts_with("--uprobe-tls needs"), "{tls}");
+        let lib = uprobe_unavailable(false, true);
+        assert!(lib.starts_with("--uprobe-library needs"), "{lib}");
+        assert!(!lib.contains("--uprobe-tls"), "{lib}");
+        let both = uprobe_unavailable(true, true);
+        assert!(
+            both.starts_with("--uprobe-tls and --uprobe-library need"),
+            "{both}"
+        );
+        for m in [tls, lib, both] {
+            assert!(
+                m.contains("Linux kernel uprobes") && m.contains("`native` feature"),
+                "{m}"
+            );
+        }
+    }
 
     /// The forwarder draws no TUI, so it logs at `info` by default like a
     /// `-N` run: its delivery lines are what an operator reads. `-q` still
