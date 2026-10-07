@@ -4465,6 +4465,72 @@ fn snaplen_audio_retention_warning(cli: &Cli, config: &Config) -> Option<String>
 
 // ── Auth / token helpers ───────────────────────────────────────────
 
+/// A surface's signing key, the lifetime of the tokens it mints, and the
+/// audience they are bound to.
+#[cfg(any(feature = "api", feature = "mcp"))]
+struct SigningSource {
+    /// The first configured signing key.
+    key: Vec<u8>,
+    /// Token lifetime in seconds.
+    ttl: i64,
+    /// The audience the token is valid for.
+    audience: &'static str,
+}
+
+/// The REST API's signing source, when this build has the API and a key is
+/// configured for it.
+#[cfg(any(feature = "api", feature = "mcp"))]
+fn api_signing_source(cli: &Cli) -> Option<SigningSource> {
+    #[cfg(feature = "api")]
+    {
+        let configured = cli.listener_args.api_signing_key_file.is_some()
+            || !cli.listener_args.api_signing_key.is_empty();
+        configured.then(|| {
+            let cfg = crate::app::servers::resolve_api_verifier_config(cli);
+            cfg.signing_keys
+                .into_iter()
+                .next()
+                .map(|key| SigningSource {
+                    key,
+                    ttl: cli.listener_args.api_token_ttl,
+                    audience: crate::auth::AUDIENCE_API,
+                })
+        })?
+    }
+    #[cfg(not(feature = "api"))]
+    {
+        let _ = cli;
+        None
+    }
+}
+
+/// MCP's signing source, when this build has MCP and a key is configured
+/// for it.
+#[cfg(any(feature = "api", feature = "mcp"))]
+fn mcp_signing_source(cli: &Cli) -> Option<SigningSource> {
+    #[cfg(feature = "mcp")]
+    {
+        let configured =
+            cli.mcp_args.mcp_signing_key_file.is_some() || !cli.mcp_args.mcp_signing_key.is_empty();
+        configured.then(|| {
+            let cfg = crate::app::servers::resolve_mcp_verifier_config(cli);
+            cfg.signing_keys
+                .into_iter()
+                .next()
+                .map(|key| SigningSource {
+                    key,
+                    ttl: cli.mcp_args.mcp_token_ttl,
+                    audience: crate::auth::AUDIENCE_MCP,
+                })
+        })?
+    }
+    #[cfg(not(feature = "mcp"))]
+    {
+        let _ = cli;
+        None
+    }
+}
+
 /// Mint a signed token from the CLI configuration and return it. Picks the
 /// surface (API vs MCP) based on which signing keys are configured
 /// (API keys preferred). The caller (`run_mint_token`) prints the token and
@@ -4482,43 +4548,17 @@ fn snaplen_audio_retention_warning(cli: &Cli, config: &Config) -> Option<String>
 /// `crate::app::servers::read_signing_key_file`).
 #[cfg(any(feature = "api", feature = "mcp"))]
 fn mint_token(cli: &Cli) -> Result<String, String> {
-    // Gather the first signing key + TTL, preferring API config, then MCP.
-    #[allow(unused_mut)]
-    let mut first_key: Option<Vec<u8>> = None;
-    #[allow(unused_mut)]
-    let mut ttl: i64 = 3600;
-    // The minted token is bound to whichever surface supplied the signing key,
-    // so a token minted from --api-signing-key is rejected by HTTP MCP (and
-    // vice versa) even when both surfaces share one secret.
-    #[allow(unused_mut)]
-    let mut audience: &str = crate::auth::AUDIENCE_API;
-
-    #[cfg(feature = "api")]
-    {
-        if cli.listener_args.api_signing_key_file.is_some()
-            || !cli.listener_args.api_signing_key.is_empty()
-        {
-            let cfg = crate::app::servers::resolve_api_verifier_config(cli);
-            first_key = cfg.signing_keys.into_iter().next();
-            ttl = cli.listener_args.api_token_ttl;
-            audience = crate::auth::AUDIENCE_API;
-        }
-    }
-    #[cfg(feature = "mcp")]
-    if first_key.is_none()
-        && (cli.mcp_args.mcp_signing_key_file.is_some() || !cli.mcp_args.mcp_signing_key.is_empty())
-    {
-        let cfg = crate::app::servers::resolve_mcp_verifier_config(cli);
-        first_key = cfg.signing_keys.into_iter().next();
-        ttl = cli.mcp_args.mcp_token_ttl;
-        audience = crate::auth::AUDIENCE_MCP;
-    }
-
-    let key = first_key.ok_or_else(|| {
-        "--mint-token requires at least one --api-signing-key/--api-signing-key-file \
-         or --mcp-signing-key/--mcp-signing-key-file"
-            .to_string()
-    })?;
+    // The REST API's key first, then MCP's. The minted token is bound to
+    // whichever surface supplied the key, so a token minted from
+    // --api-signing-key is rejected by HTTP MCP (and vice versa) even when both
+    // surfaces share one secret.
+    let SigningSource { key, ttl, audience } = api_signing_source(cli)
+        .or_else(|| mcp_signing_source(cli))
+        .ok_or_else(|| {
+            "--mint-token requires at least one --api-signing-key/--api-signing-key-file \
+             or --mcp-signing-key/--mcp-signing-key-file"
+                .to_string()
+        })?;
 
     if ttl <= 0 {
         return Err(format!("token TTL must be positive, got {ttl}"));

@@ -64,6 +64,12 @@ entry that carries them.
   classified packet returns is 120 bytes instead of 336 (`packet_action_stays_small`
   pins it), at one allocation per SIP message; a test helper's four-value
   tuple is a named struct. The gate refuses both lints.
+- **No `unused_mut` or `unused_variables` suppression remains.** Each
+  value that cfg blocks used to fill in is now computed in one expression
+  per feature set: `mint-token` picks its signing key from the API and then
+  MCP in one chain, the server list is collected from each door's optional
+  server, and the ICMP capture path reads its message through the same
+  constructor `parse_icmp_error` uses. The gate refuses both lints.
 
 ## [0.5.204] - 2026-10-06
 

@@ -12,19 +12,30 @@
 
 use std::process::Command;
 
-/// Lints whose suppression is refused, with the design fix each one asks for.
+/// Lints whose suppression is refused, as written in an `allow`, with the
+/// design fix each one asks for. Clippy's carry their `clippy::` prefix;
+/// rustc's own (`unused_mut`) have none.
 const REFUSED: &[(&str, &str)] = &[
     (
-        "too_many_arguments",
+        "clippy::too_many_arguments",
         "group the values that travel together into a named type",
     ),
     (
-        "large_enum_variant",
+        "clippy::large_enum_variant",
         "box the large variant's data so every value of the enum stays small",
     ),
     (
-        "type_complexity",
+        "clippy::type_complexity",
         "name the type: a struct with named fields instead of a nested tuple",
+    ),
+    (
+        "unused_mut",
+        "compute the value in one expression per feature set instead of \
+         mutating it inside cfg blocks",
+    ),
+    (
+        "unused_variables",
+        "bind the value inside the cfg block that uses it",
     ),
 ];
 
@@ -51,7 +62,15 @@ fn suppressions() -> Vec<String> {
                 continue;
             }
             for (lint, _) in REFUSED {
-                if code.contains(&format!("clippy::{lint}")) {
+                // A whole lint name: `unused_mut` must not match inside a longer
+                // one, and the `clippy::` prefix is part of the name.
+                let named = code.match_indices(lint).any(|(at, _)| {
+                    let before = code[..at].chars().next_back();
+                    let after = code[at + lint.len()..].chars().next();
+                    !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == ':')
+                        && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+                });
+                if named {
                     found.push(format!("{rel}:{}: {lint}", n + 1));
                 }
             }
