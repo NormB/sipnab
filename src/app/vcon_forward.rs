@@ -51,7 +51,7 @@ const MAX_HALT_BODY: usize = 200;
 /// 8190 bytes, nginx's `large_client_header_buffers` to 8 KiB per line). The
 /// same figure bounds how far past the kept part of an answer the forwarder
 /// reads, so the credential is removed before the cut.
-const MAX_AUTH_FILE: usize = 8 * 1024;
+pub const MAX_AUTH_FILE: usize = 8 * 1024;
 
 /// How often the wait between passes asks whether a stop was requested.
 ///
