@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.204"
+version = "0.5.205"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -362,6 +362,7 @@ title = "Add to your voice stack"
 pages = [
   { path = "docs/vcon-server.md", menu = true },
   { path = "docs/vcon-sipnab.md", menu = true },
+  { path = "docs/vcon-store.md", menu = true },
   { path = "docs/tfps.md", menu = true },
   { path = "docs/tfps-sipnab.md", menu = true },
   { path = "docs/fail2ban.md", menu = true },

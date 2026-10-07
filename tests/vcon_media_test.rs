@@ -92,6 +92,17 @@ fn dialog_store(
     caller_media: SocketAddr,
     callee_media: SocketAddr,
 ) -> Result<DialogStore, TestError> {
+    dialog_store_ending(call_id, caller_media, callee_media, "SIP/2.0 200 OK")
+}
+
+/// [`dialog_store`], with the callee's final response given as its status
+/// line.
+fn dialog_store_ending(
+    call_id: &str,
+    caller_media: SocketAddr,
+    callee_media: SocketAddr,
+    final_line: &str,
+) -> Result<DialogStore, TestError> {
     let mut store = DialogStore::new(64, true);
     let caller = sock(10, 0, 0, 1, 5060);
     let callee = sock(10, 0, 0, 2, 5060);
@@ -118,7 +129,7 @@ fn dialog_store(
     )?);
 
     let ok = message(
-        "SIP/2.0 200 OK",
+        final_line,
         &[
             "From: \"Alice\" <sip:alice@example.com>;tag=alice-tag".to_string(),
             "To: \"Bob\" <sip:bob@example.net>;tag=bob-tag".to_string(),
@@ -1209,5 +1220,79 @@ fn a_raised_budget_carries_what_the_default_would_refuse() -> Result<(), TestErr
         "twice the encoded size must carry it: {}",
         json_of(&carried)?["dialog"]
     );
+    Ok(())
+}
+
+/// A redacted export is built with its audio withheld, and its Dialog Object is
+/// then typed by what it carries: nothing. No observed failure names no `type`;
+/// an observed final failure names `incomplete` with the reason. Never a
+/// `recording`, and never the media fields, because there is no media.
+#[test]
+fn audio_withheld_by_redaction_leaves_the_signaling_object_typed_by_the_rule()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (label, final_line, kind, disposition) in [
+        ("answered", "SIP/2.0 200 OK", None, None),
+        (
+            "busy",
+            "SIP/2.0 486 Busy Here",
+            Some("incomplete"),
+            Some("busy"),
+        ),
+    ] {
+        let call_id = format!("withheld-{label}@example.com");
+        let store = dialog_store_ending(
+            &call_id,
+            sock(10, 0, 0, 1, 20000),
+            sock(10, 0, 0, 2, 30000),
+            final_line,
+        )?;
+        let dialog = store
+            .get(&call_id)
+            .ok_or("the fixture dialog is in the store")?;
+        let facts = CaptureFacts::default();
+        let vcon = export_dialog_with_audio(
+            dialog,
+            &ExportContext {
+                capture_id: "vcon-media-fixture.pcap",
+                facts: &facts,
+                max_inline_media_bytes: None,
+                analysis: None,
+                media: &[],
+            },
+            ObservedAudio::WithheldByRedaction,
+        );
+        let json: serde_json::Value = serde_json::from_str(&vcon.to_json()?)?;
+        let objects = json["dialog"].as_array().ok_or("dialog is an array")?;
+        assert_eq!(objects.len(), 1, "{label}: {json}");
+        let object = &objects[0];
+        assert_eq!(
+            object.get("type").and_then(|t| t.as_str()),
+            kind,
+            "{label}: {object}"
+        );
+        assert_eq!(
+            object.get("disposition").and_then(|t| t.as_str()),
+            disposition,
+            "{label}: {object}"
+        );
+        for media_field in [
+            "body",
+            "mediatype",
+            "encoding",
+            "content_hash",
+            "parties",
+            "duration",
+        ] {
+            assert!(
+                object.get(media_field).is_none(),
+                "{label}: {media_field} in {object}"
+            );
+        }
+        assert_eq!(
+            completeness(&json)?["media"],
+            "withheld-by-redaction",
+            "{label}: {json}"
+        );
+    }
     Ok(())
 }

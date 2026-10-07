@@ -83,7 +83,8 @@ src/
 │   ├── bootstrap.rs      # CLI+config → RunPlan (mode/source/policy) + launch
 │   ├── batch.rs          # BatchRunner: batch/offline receive loop, reports
 │   ├── servers.rs        # API + MCP servers on one shared tokio runtime
-│   └── tui_mode.rs       # TUI mode entry
+│   ├── tui_mode.rs       # TUI mode entry
+│   └── vcon_forward.rs   # --vcon-forward: a separate process that delivers a vCon spool to a store (vcon feature)
 ├── cli.rs                # clap definitions (the terminal SIP tools flag superset)
 ├── config.rs             # sipnabrc parsing/merging (toml_edit for surgical writes)
 ├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
@@ -95,7 +96,7 @@ src/
 ├── stun.rs               # STUN/TURN parse and the request that never came back
 ├── error.rs              # typed error enums: Error (config/CLI), ParseError (parse_sip/_bytes/_rtp_header/_sdp), CaptureError (parse_packet/PcapReader) — all re-exported at the crate root
 ├── names.rs              # name resolution + [names.manual] persistence
-├── privilege.rs          # setuid drop, chroot (drop early, drop hard)
+├── privilege.rs          # setuid drop, chroot (drop early, drop hard); the one secret-file permission rule
 ├── process_isolation.rs  # isolated child for active responses (scanner kill)
 ├── signals.rs            # signal handling
 ├── capture/              # sources + L2-L4

@@ -8,9 +8,41 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.205] - 2026-10-07
 
 ### Added
+
+- **`sipnab --vcon-forward <SPOOL_DIR>` delivers a vCon spool to a store
+  (VCON-FWD).** A separate process, refused beside any capture flag, so the
+  capture process still makes no outbound connection. It POSTs each container
+  in an `--export-vcon-dir` spool to `--vcon-forward-url`, byte for byte, with
+  `Content-Type: application/json`, `User-Agent: sipnab/<version>` and one
+  header read from `--vcon-forward-auth-file` (`Header-Name: value`; refused
+  when other users can read it, by the rule the archive password file already
+  followed). A `2xx` moves the container to `--vcon-forward-done`, another
+  `4xx` to `--vcon-forward-failed` beside a `<name>.error.json` record, and a
+  `5xx`, timeout or refused connection leaves it for a retry after 2 s,
+  doubling to 5 minutes, without holding up the rest. A `401` or `403`
+  refuses the credentials or the client for every container, so the
+  forwarder stops there: it sends nothing more, moves no file, logs the
+  status and the first 200 bytes of the answer (a Cloudflare front's
+  `error code: 1010` included), and exits `3`. A `409` is PUT to
+  `--vcon-forward-replace-url` with the container's uuid when that is set. A
+  container sipnab rewrites under the same name goes again. The auth value
+  never appears in a log line, an error or a record, even when a store echoes
+  it back. `--vcon-forward-once` makes one pass and exits `0` only when
+  everything was delivered; otherwise it polls until SIGTERM and sends nothing
+  after it. HTTPS uses rustls with the host's CA bundle or
+  `--vcon-forward-ca`; no new crate. A `2xx` is reported as delivered, never
+  as stored.
+- **`--vcon-forward-compat vcon-store`.** vcon.store refuses `extensions` in
+  the array-of-strings form section 4.1.3 of draft-ietf-vcon-vcon-core-02 and
+  -03 defines. In this mode the copy sent carries `extensions` as an object of
+  names mapped to `true`, in order, and a container whose Dialog Object lacks
+  `type` or `parties` is refused with a reason naming `--retain-audio` and
+  `--redact` rather than rewritten. The container on disk never changes, and each change is
+  logged. [Send sipnab's vCons to vcon.store](docs/vcon-store.md) has the
+  measurements.
 
 - **The call report and the vCon carry MOS (CMP6).** Wherever a stream's MOS
   is computed from the capture, it is now reported. The call report's text
@@ -42,6 +74,12 @@ entry that carries them.
 
 ### Changed
 
+- **The README links every guide the home page's voice-stack tiles do.** A new
+  "Add it to your voice stack" section mirrors the six tiles (SIP proxy, Call
+  records, Attack blocking, Media relay, Call history, Metrics) and their 19
+  guides, and the vCon bullet says which builds carry `--vcon-forward`.
+  `readme_homepage_parity_test` now reads the tiles from the page and fails
+  when one links a guide the README does not.
 - **No `#[allow(clippy::too_many_arguments)]` remains; each was a design
   fix instead.** Values that travel together are now named types: the
   library's `PcapWriter::with_provenance(path, link_type, PcapWriterOptions)`
@@ -98,6 +136,22 @@ entry that carries them.
   eight are gone: `batch::run` takes a `CaptureFeed`, the HEP listener takes
   one start-up value, `openapi_json` merges each optional route set as a new
   value, and the test helpers take named structs.
+
+### Fixed
+
+- **A redacted vCon export no longer carries an empty `recording` Dialog
+  Object.** `--redact` with `--retain-audio` decoded the audio, typed the
+  Dialog Object `recording`, and then redaction deleted the body, leaving a
+  `recording` with `parties` and no content beside a caveat saying the media
+  was inline. A redacted export is now built without the audio: the Dialog
+  Object is the signaling one, typed by what it carries (no `type`, or
+  `incomplete` with the disposition when a final failure was observed),
+  `capture_completeness.media` says `withheld-by-redaction`, and the note says
+  the export, not the call, carries no audio.
+- **A vCon container is never given a dot-prefixed name.** A Call-ID that
+  started with a dot produced a container named like sipnab's own staging
+  file, which the spool contract tells every reader to skip, so the container
+  was written and never forwarded. A leading dot now becomes `_`.
 
 ## [0.5.204] - 2026-10-06
 

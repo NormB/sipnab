@@ -219,3 +219,42 @@ fn the_readme_and_the_homepage_state_the_same_numbers() -> Result<(), TestError>
     }
     Ok(())
 }
+
+/// Every guide a homepage voice-stack tile links to is linked from the README
+/// too, so a reader who starts on GitHub or crates.io can reach the same
+/// guides. The tiles are read from the page, so a new guide on a tile fails
+/// here until the README links it.
+#[test]
+fn every_homepage_tile_guide_is_linked_from_the_readme() -> Result<(), Box<dyn std::error::Error>> {
+    let card = regex::Regex::new(r#"(?s)<div class="feature-card[^"]*">(.*?)</ul>\s*</div>"#)?;
+    let guide = regex::Regex::new(r"@/docs/([a-z0-9-]+\.md)")?;
+    let mut tiles = 0;
+    let mut missing = Vec::new();
+    for c in card.captures_iter(HOMEPAGE) {
+        tiles += 1;
+        for g in guide.captures_iter(&c[1]) {
+            let path = format!("docs/{}", &g[1]);
+            if !README.contains(&path) {
+                missing.push(path);
+            }
+        }
+    }
+    assert!(tiles >= 6, "read only {tiles} tiles from the home page");
+    assert!(
+        missing.is_empty(),
+        "the home page's tiles link these guides and the README does not: {missing:?}"
+    );
+    Ok(())
+}
+
+/// The README says which builds carry the vCon forwarder, as the home page's
+/// "Call records" tile does: the static musl builds lack the `vcon` feature.
+#[test]
+fn the_readme_says_which_builds_forward_vcons() {
+    let at = README.find("--vcon-forward").unwrap_or(0);
+    let bullet = &README[at..README.len().min(at + 800)];
+    assert!(
+        bullet.contains("musl") || bullet.contains("gnu"),
+        "the README names --vcon-forward without saying which builds carry it:\n{bullet}"
+    );
+}

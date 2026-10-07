@@ -886,12 +886,12 @@ impl CaptureCompleteness {
 
 /// What became of one dialog's audio on its way into a container.
 ///
-/// Four answers, kept apart, because collapsing any two of them recreates the
+/// Five answers, kept apart, because collapsing any two of them recreates the
 /// failure `nothing_to_decode` exists to refuse: a limit of THIS RUN reported
 /// as a finding about the TRAFFIC. "Nobody asked for media", "the run kept
-/// none", "it was too big to carry" and "here it is" are four facts with four
-/// different next steps, and an absent `dialog` entry is the same shape for
-/// the first three.
+/// none", "it was too big to carry", "the export is redacted" and "here it is"
+/// are five facts with five different next steps, and an absent media object
+/// is the same shape for the first four.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MediaOutcome {
@@ -916,6 +916,10 @@ pub enum MediaOutcome {
     RefusedOverBudget,
     /// Media was decoded and is inline in a `recording` Dialog Object.
     Carried,
+    /// The export is redacted, so no audio was considered for it: redaction
+    /// deletes audio rather than pseudonymizing it. Says nothing about whether
+    /// the call carried audio.
+    WithheldByRedaction,
 }
 
 impl MediaOutcome {
@@ -930,6 +934,7 @@ impl MediaOutcome {
             Self::NoneDecodable => "none-decodable",
             Self::RefusedOverBudget => "refused-over-budget",
             Self::Carried => "carried",
+            Self::WithheldByRedaction => "withheld-by-redaction",
         }
     }
 }
@@ -950,6 +955,11 @@ pub enum ObservedAudio<'a> {
     NothingToDecode(&'a str),
     /// Audio sipnab decoded for this dialog.
     Decoded(&'a DialogAudio),
+    /// The export is redacted, and redaction deletes audio rather than
+    /// pseudonymizing it. Yields [`MediaOutcome::WithheldByRedaction`]: the
+    /// Dialog Object stays the signaling one, typed by what it carries, which
+    /// is nothing — never a `recording` with its content cut out.
+    WithheldByRedaction,
 }
 
 /// A signaling-only vCon for one observed dialog.
@@ -1262,8 +1272,14 @@ impl crate::output::redact::Redact for Dialog {
         // that keeps a diagnosis answerable and carries no content, and a
         // container that pseudonymized every identifier and then inlined four
         // minutes of the call would be the most complete privacy failure this
-        // module could ship. The object stays, carrying its clock, so the
-        // export still says a recording existed.
+        // module could ship.
+        //
+        // This is the backstop, not the path. sipnab's own redacted exports
+        // never reach it with audio: they pass
+        // `ObservedAudio::WithheldByRedaction`, so the Dialog Object is the
+        // signaling one, typed by what it carries. Cutting the content out of
+        // a `recording` here leaves an object that names content it does not
+        // hold, which is why the exporter must not hand one over.
         if *kind == Some(RECORDING_TYPE) {
             *body = None;
             *content_hash = None;
@@ -1816,6 +1832,13 @@ fn media_objects(
             return MediaVerdict {
                 outcome: MediaOutcome::NoneDecodable,
                 note: Some(reason.to_string()),
+                refusal: None,
+            };
+        }
+        ObservedAudio::WithheldByRedaction => {
+            return MediaVerdict {
+                outcome: MediaOutcome::WithheldByRedaction,
+                note: None,
                 refusal: None,
             };
         }
@@ -2784,7 +2807,7 @@ fn completeness_note(
 
 /// The sentence describing what this container carries in place of media.
 ///
-/// Four sentences rather than one, because the four outcomes are four
+/// Five sentences rather than one, because the five outcomes are five
 /// different facts and the reader's next step differs for each. The dangerous
 /// one is [`MediaOutcome::NotConsidered`]: a container with no `recording`
 /// object reads as a conversation that had no media, which is a claim about
@@ -2810,6 +2833,11 @@ fn media_clause(outcome: MediaOutcome) -> &'static str {
             " No media is in this container because sipnab REFUSED to inline it: it decoded \
              audio and the encoded body was over the budget below. The audio exists and was not \
              truncated."
+        }
+        MediaOutcome::WithheldByRedaction => {
+            " No media is in this container because the export is redacted, and redaction \
+             deletes audio rather than pseudonymizing it. That is a fact about this EXPORT, not \
+             about the call: nothing here says whether the conversation carried audio."
         }
         MediaOutcome::Carried => {
             " Media IS in this container, as a recording Dialog Object holding a WAV inline. It \

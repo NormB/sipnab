@@ -253,6 +253,78 @@ pub fn setup_capabilities() -> Result<()> {
     )
 }
 
+/// Whether a secret file may be read, by OpenSSH's rule for private keys.
+///
+/// Refused only when the file is a regular file owned by the user running
+/// sipnab AND any group or other permission bit is set. So:
+///
+/// - `chmod 644` or `chmod 640` on your own file is refused. Other users can
+///   read it.
+/// - A file another user owns is accepted whatever its mode: a Kubernetes
+///   secret mount is `root 0644`, and a systemd credential is `0400` with an
+///   ACL. Its owner decided who reads it.
+/// - A pipe, a FIFO or a device is accepted: `<(pass show pcaps)` and
+///   `/dev/stdin` stat as a pipe, and a pipe's mode says nothing about who
+///   can read what passes through it.
+///
+/// The one copy of this rule. The archive password file and the vCon
+/// forwarder's auth file both reach it through [`open_private_file`].
+///
+/// Returns the refusal's text, naming the mode, or `None` to proceed.
+#[must_use]
+pub fn permission_refusal(owner: u32, me: u32, mode: u32, regular: bool) -> Option<String> {
+    if regular && owner == me && mode & 0o077 != 0 {
+        return Some(format!(
+            "can be read or written by other users (mode {:04o}); chmod 600 it",
+            mode & 0o7777
+        ));
+    }
+    None
+}
+
+/// The user running this process.
+#[cfg(unix)]
+#[must_use]
+pub fn current_uid() -> u32 {
+    // SAFETY: getuid takes no arguments, cannot fail, and touches no memory.
+    unsafe { libc::getuid() }
+}
+
+/// Open a file that holds a secret, after [`permission_refusal`].
+///
+/// The check is made on the descriptor that is returned, not on the path, so
+/// nothing can swap the file between the check and the read.
+///
+/// # Arguments
+///
+/// * `path` — the secret file.
+/// * `what` — the flag that named it, quoted at the start of every error.
+///
+/// # Errors
+///
+/// When the file cannot be opened or stat'd, or fails [`permission_refusal`].
+/// The text names the path and the mode, never the contents.
+pub fn open_private_file(path: &std::path::Path, what: &str) -> Result<std::fs::File, String> {
+    let shown = path.display();
+    let file = std::fs::File::open(path).map_err(|e| format!("{what} '{shown}': {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = file
+            .metadata()
+            .map_err(|e| format!("{what} '{shown}': {e}"))?;
+        if let Some(why) = permission_refusal(
+            meta.uid(),
+            current_uid(),
+            meta.mode(),
+            meta.file_type().is_file(),
+        ) {
+            return Err(format!("{what} '{shown}' {why}"));
+        }
+    }
+    Ok(file)
+}
+
 /// Check if the current process is running as root (UID 0).
 pub fn is_root() -> bool {
     // SAFETY: getuid() is always safe — it reads kernel state and cannot fail.
@@ -885,6 +957,34 @@ mod tests {
     //! Privilege-drop no-op paths, user resolution, chroot failure, and the
     //! `setcap` command-shape tests (none of which require root).
     use super::*;
+
+    /// A secret file you own that your group or other users can read is
+    /// refused, naming the mode, and the same file at 0600 opens. This is the
+    /// one rule every secret file sipnab reads goes through.
+    #[cfg(unix)]
+    #[test]
+    fn an_own_group_readable_secret_file_is_refused_and_a_private_one_opens()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("secret");
+        std::fs::write(&path, "Authorization: Bearer x\n")?;
+        for mode in [0o640, 0o604, 0o644] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+            match open_private_file(&path, "--some-secret-file") {
+                Ok(_) => return Err(format!("mode {mode:o} was accepted").into()),
+                Err(e) => assert!(
+                    e.starts_with("--some-secret-file '")
+                        && e.contains(&format!("(mode {mode:04o})"))
+                        && e.contains("chmod 600"),
+                    "{e}"
+                ),
+            }
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        assert!(open_private_file(&path, "--some-secret-file").is_ok());
+        Ok(())
+    }
 
     /// A normal (non-root) test process reports `is_root() == false`.
     #[test]

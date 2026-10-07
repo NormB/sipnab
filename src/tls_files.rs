@@ -12,10 +12,14 @@
 //! names its own surface (`"HEP TLS"`, `"API TLS"`, `"MCP TLS"`,
 //! `"metrics TLS"`) so an error says which flags to look at.
 //!
+//! The vCon forwarder (`--vcon-forward`) is the one TLS client here: it reads
+//! a CA file or the host's bundle with the same readers, through
+//! [`host_ca_bundle`] and [`pem_certificates`].
+//!
 //! Named `tls_files` rather than `tls` because `tls` is the Cargo feature for
 //! capture-side decryption, which this has nothing to do with.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 
 /// The crypto provider every TLS configuration sipnab builds is based on.
 ///
@@ -24,6 +28,43 @@ use anyhow::{Context, Result, bail, ensure};
 /// tool must not abort a run inside a builder.
 pub(crate) fn provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
     std::sync::Arc::new(rustls::crypto::ring::default_provider())
+}
+
+/// CA bundles a host may keep, tried in order when no CA file is named
+/// (`--hep-tls-ca`, `--vcon-forward-ca`).
+///
+/// Reading the host's own bundle rather than compiling Mozilla's list in has
+/// two consequences worth stating: an operator who adds their collector's
+/// issuer to the system store does not also have to name it here, and a host
+/// whose bundle sipnab cannot find is told to pass a CA file rather than
+/// silently trusting nothing.
+#[cfg(any(feature = "hep", feature = "vcon"))]
+const SYSTEM_CA_BUNDLES: &[&str] = &[
+    // Debian, Ubuntu, Arch
+    "/etc/ssl/certs/ca-certificates.crt",
+    // RHEL, Fedora, CentOS
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    // openSUSE
+    "/etc/ssl/ca-bundle.pem",
+    // Alpine, and the OpenSSL default on the BSDs
+    "/etc/ssl/cert.pem",
+    // Homebrew's OpenSSL on macOS
+    "/opt/homebrew/etc/openssl@3/cert.pem",
+];
+
+/// The host's CA bundle: `$SSL_CERT_FILE` if it names a file, else the first
+/// of [`SYSTEM_CA_BUNDLES`] that exists, else `None`.
+#[cfg(any(feature = "hep", feature = "vcon"))]
+pub(crate) fn host_ca_bundle() -> Option<std::path::PathBuf> {
+    std::env::var_os("SSL_CERT_FILE")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            SYSTEM_CA_BUNDLES
+                .iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.is_file())
+        })
 }
 
 /// A `rustls` server configuration presenting the chain in `cert` with the
@@ -50,6 +91,7 @@ pub(crate) fn provider() -> std::sync::Arc<rustls::crypto::CryptoProvider> {
 /// # Side effects
 ///
 /// Reads and stats both files.
+#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
 pub(crate) fn server_config(
     cert: &std::path::Path,
     key: &std::path::Path,
@@ -167,6 +209,7 @@ pub(crate) fn pem_certificates(
 ///
 /// The file cannot be read or stat'd, it is world-readable, it holds no
 /// private key, or a block does not decode.
+#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
 pub(crate) fn pem_private_key(
     path: &std::path::Path,
     surface: &str,
@@ -193,7 +236,7 @@ pub(crate) fn pem_private_key(
         };
         return Ok(key);
     }
-    bail!(
+    anyhow::bail!(
         "{}: no PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY block in this file",
         path.display()
     )

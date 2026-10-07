@@ -493,3 +493,121 @@ fn body_of(node: &serde_json::Value) -> Result<serde_json::Value, TestError> {
         .ok_or_else(|| format!("a json body must be a string: {node}"))?;
     Ok(serde_json::from_str(text).map_err(|e| format!("body must parse: {e}: {text}"))?)
 }
+
+/// `--redact` with `--retain-audio`: sipnab deletes the audio rather than
+/// pseudonymizing it, and then the Dialog Object must be typed by what it
+/// carries, which is nothing. `docs/vcon.md`'s typing rule: no content and no
+/// observed failure names no `type`. So the container may hold no `recording`
+/// or `recording-set` object without a body, its caveat may not claim media is
+/// inline, and its Dialog Objects are the ones a redacted export that never
+/// kept audio writes for the same call. Checked through both writers: the
+/// single-call `--export-vcon` and the `--export-vcon-dir` spool.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_redacted_export_of_retained_audio_carries_no_empty_recording()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let key = dir.path().join("redact.key");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&key, "a fixed key for this test")?;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
+    }
+    let key = key.display().to_string();
+    let export =
+        |name: &str, audio: bool| -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+            let out = dir.path().join(name);
+            let out_s = out.display().to_string();
+            let mut args = vec![
+                "-N",
+                "-q",
+                "--no-cli-print",
+                "-I",
+                SAMPLE,
+                "--export-vcon",
+                CALL_A,
+                "--vcon-out",
+                &out_s,
+                "--redact",
+                "--redact-key-file",
+                &key,
+            ];
+            if audio {
+                args.push("--retain-audio");
+            }
+            let run = run(&args)?;
+            let err = String::from_utf8_lossy(&run.stderr);
+            if !run.status.success() {
+                return Err(format!("export failed: {err}").into());
+            }
+            Ok(serde_json::from_slice(&std::fs::read(&out)?)?)
+        };
+    let with_audio = export("with-audio.json", true)?;
+    let without = export("without-audio.json", false)?;
+
+    let spool = dir.path().join("spool");
+    let spool_s = spool.display().to_string();
+    let run_dir = run(&[
+        "-N",
+        "-q",
+        "--no-cli-print",
+        "-I",
+        SAMPLE,
+        "--retain-audio",
+        "--redact",
+        "--redact-key-file",
+        &key,
+        "--export-vcon-when",
+        "state == 'Completed'",
+        "--export-vcon-dir",
+        &spool_s,
+    ])?;
+    if !run_dir.status.success() {
+        return Err(format!(
+            "spool export failed: {}",
+            String::from_utf8_lossy(&run_dir.stderr)
+        )
+        .into());
+    }
+    let mut from_spool = Vec::new();
+    for entry in std::fs::read_dir(&spool)? {
+        from_spool.push(serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(entry?.path())?,
+        )?);
+    }
+    if from_spool.is_empty() {
+        return Err("the spool export wrote nothing".into());
+    }
+
+    for (label, container) in std::iter::once(("--export-vcon", &with_audio))
+        .chain(from_spool.iter().map(|c| ("--export-vcon-dir", c)))
+    {
+        let dialogs = container["dialog"]
+            .as_array()
+            .ok_or("dialog is not an array")?;
+        for object in dialogs {
+            let typed = object["type"] == "recording" || object["type"] == "recording-set";
+            assert!(
+                !typed || object.get("body").is_some(),
+                "{label}: a {} object with no content: {object}",
+                object["type"]
+            );
+        }
+        let caveat = body_of(&container["analysis"][0])?["capture_completeness"].clone();
+        assert_eq!(
+            caveat["media"], "withheld-by-redaction",
+            "{label}: {caveat}"
+        );
+        let note = caveat["note"].as_str().unwrap_or_default();
+        assert!(
+            !note.contains("Media IS in this container"),
+            "{label}: {note}"
+        );
+    }
+    assert_eq!(
+        with_audio["dialog"], without["dialog"],
+        "a redacted export that kept audio must describe the dialog exactly as one \
+         that never kept any"
+    );
+    Ok(())
+}

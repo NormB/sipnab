@@ -1592,6 +1592,38 @@ CoreAudio the moment anything touches it.
 - `sipnab -N -I calls.pcap --mcp --mcp-allow-save-findings --mcp-max-findings 25` — a scripted agent run on a box with a small journal: twenty-five annotations, then sipnab refuses further writes and says so rather than filling the disk
 
 
+## vCon forwarder
+
+`--vcon-forward` runs sipnab as the process that delivers an
+`--export-vcon-dir` spool to a vCon store. It captures nothing, and sipnab
+refuses it beside any capture source, listener or export flag. The other flags
+in this section need it. Needs the `vcon` Cargo feature. More:
+[Deliver the spool to a store](vcon.md#deliver-the-spool-to-a-store).
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--vcon-forward` | `<SPOOL_DIR>` | -- | Deliver each container in this spool to `--vcon-forward-url`, byte for byte, and move it out of the spool by the store's answer: `2xx` to `--vcon-forward-done`, another `4xx` to `--vcon-forward-failed` beside a `<name>.error.json` record, `5xx`, a timeout or no connection left in place and retried after 2 s, doubling to at most 5 minutes. A `401` or `403` refuses the credentials or the client for every container, so the forwarder stops instead: it sends nothing more, moves no file, logs the status and the first 200 bytes of the answer, and exits `3`, in either mode. Skips dot-prefixed names and names that do not end in `.json`. A container sipnab rewrites under the same name goes again. A `2xx` means the store accepted the container, not that it stored it. Requires `--vcon-forward-url` and `--vcon-forward-auth-file` |
+| `--vcon-forward-url` | `<URL>` | -- | Where the forwarder POSTs each container, `http://` or `https://`, with its path and query. sipnab refuses credentials in the URL: they belong in the auth file. Plain `http://` to a host other than loopback logs a warning |
+| `--vcon-forward-auth-file` | `<FILE>` | -- | File holding one line, `Header-Name: value`, sent with every request: `Authorization: Bearer <token>`, or `x-conserver-api-token: <key>`. Refused when other users can read it (`chmod 600` it), by the rule sipnab applies to its other secret files. The value never appears in a log line, an error or a failure record |
+| `--vcon-forward-done` | `<DIR>` | `<SPOOL_DIR>/delivered` | Where a delivered container goes, under its own name. Created mode `0700` if missing. Must be on the spool's file system |
+| `--vcon-forward-failed` | `<DIR>` | `<SPOOL_DIR>/failed` | Where a refused container goes, beside `<name>.error.json`: the status, the method and URL, and the first 8 KiB of the store's answer with the auth value removed, or the forwarder's own reason. Created mode `0700` if missing. Must be on the spool's file system |
+| `--vcon-forward-replace-url` | `<TEMPLATE>` | -- | When the POST answers `409`, PUT the same bytes to this URL with `{uuid}` replaced by the container's `uuid`. Without it a `409` is a refusal like any other `4xx` |
+| `--vcon-forward-once` | -- | off | Make one pass and exit: `0` when the store accepted every container or the spool held none, `1` when the store refused one or one is still waiting, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`. Without it the forwarder passes over the spool every `--vcon-forward-interval` seconds until SIGTERM or SIGINT, and sends nothing after the signal |
+| `--vcon-forward-interval` | `<SECS>` | `5` | Seconds between passes, 1 to 3600 |
+| `--vcon-forward-timeout` | `<SECS>` | `30` | Seconds to wait to connect, and for each read and write, before the store counts as unreachable and the container waits for a retry, 1 to 600 |
+| `--vcon-forward-ca` | `<FILE>` | host bundle | Trust only the CA certificates in this PEM file for an `https://` store. Without it the forwarder trusts the host's CA bundle |
+| `--vcon-forward-compat` | `<vcon-store>` | -- | Change the copy SENT for one store's known deviation from the drafts, and log each change. `vcon-store` sends `extensions` as an object of names mapped to `true`, because vcon.store refuses the array of strings section 4.1.3 of the drafts defines, and refuses a container whose Dialog Object lacks `type` or `parties`. The container on disk never changes. More: [Send sipnab's vCons to vcon.store](vcon-store.md) |
+
+**Examples**
+
+- `sipnab --vcon-forward spool --vcon-forward-url 'http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab' --vcon-forward-auth-file vcon-forward.auth --vcon-forward-once` — deliver what is in `spool` to a self-hosted conserver's `sipnab` ingress list once, and exit `0` when the conserver accepted all of it
+- `sipnab --vcon-forward spool --vcon-forward-url https://api.vcon.store/v1/vcons --vcon-forward-auth-file vcon-store.auth --vcon-forward-compat vcon-store` — keep delivering to vcon.store, through the compat mode its validator needs, until stopped
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-timeout 10` — a store whose certificate a private CA issued: trust only that CA, and give up on a silent store after ten seconds rather than thirty
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-ca store-ca.pem --vcon-forward-interval 60 --vcon-forward-timeout 120` — a store across a slow link: pass over the spool once a minute and wait up to two minutes for each answer
+- `sipnab --vcon-forward /var/spool/sipnab-vcon --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-done /var/spool/sipnab-vcon-sent --vcon-forward-failed /var/spool/sipnab-vcon-held --vcon-forward-interval 2` — keep delivered and refused containers beside the spool rather than inside it, on the same file system, and pass every two seconds
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-once` — a store that answers `409` for a uuid it holds: PUT the rewritten container to the uuid's own URL instead of filing it as refused
+- `sipnab --vcon-forward spool --vcon-forward-url https://vcon.example.com/v1/vcons --vcon-forward-auth-file vcon.auth --vcon-forward-replace-url 'https://vcon.example.com/v1/vcons/{uuid}' --vcon-forward-done sent --vcon-forward-failed held` — the same, polling, with the delivered and refused containers in `sent` and `held`
+
 ## Config
 
 | Flag | Value | Default | Description |

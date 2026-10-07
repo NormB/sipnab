@@ -413,6 +413,10 @@ pub struct Cli {
     #[command(flatten)]
     pub token_args: TokenArgs,
 
+    // ── vCon forwarder ──
+    #[command(flatten)]
+    pub vcon_forward_args: VconForwardArgs,
+
     // ── Config ──
     #[command(flatten)]
     pub config_args: ConfigArgs,
@@ -4190,6 +4194,149 @@ pub struct TokenArgs {
     pub token_scope: String,
 }
 
+/// `vCon forwarder` flags: the mode that delivers an `--export-vcon-dir`
+/// spool to a vCon store over HTTP or HTTPS.
+///
+/// A separate process from any capture. `--vcon-forward` conflicts with every
+/// capture source, listener and export flag, so the capture process keeps
+/// making no outbound connection for a container, and the forwarder reads no
+/// packet.
+#[derive(clap::Args, Debug, Clone)]
+pub struct VconForwardArgs {
+    /// Run as the vCon forwarder: deliver each container in this
+    /// `--export-vcon-dir` spool to --vcon-forward-url, byte for byte, and
+    /// move it out of the spool once the store answers. Captures nothing.
+    /// Needs the `vcon` feature.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward",
+        value_name = "SPOOL_DIR",
+        requires_all = ["vcon_forward_url", "vcon_forward_auth_file"],
+        conflicts_with_all = [
+            "device", "input", "hep_listen", "hep_send", "bpf_filter",
+            "bpf_file", "api", "mcp", "metrics", "export_vcon",
+            "export_vcon_when", "export_vcon_dir", "mint_token", "replay",
+        ]
+    )]
+    pub vcon_forward: Option<std::path::PathBuf>,
+
+    /// Where the forwarder POSTs each container, `http://` or `https://`,
+    /// path and query included, for example
+    /// `http://127.0.0.1:8000/vcon/external-ingress?ingress_list=sipnab`.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-url",
+        value_name = "URL",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_url: Option<String>,
+
+    /// File holding the one header that authenticates the forwarder, as
+    /// `Header-Name: value` on one line, for example
+    /// `Authorization: Bearer <token>` or `x-conserver-api-token: <key>`.
+    /// Refused when other users can read it: chmod 600. The value never
+    /// appears in a log line, an error or a failure record.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-auth-file",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_auth_file: Option<std::path::PathBuf>,
+
+    /// Where a container goes, under its own name, once the store answers
+    /// 2xx. Default: `delivered/` inside the spool. Must be on the spool's
+    /// filesystem.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-done",
+        value_name = "DIR",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_done: Option<std::path::PathBuf>,
+
+    /// Where a container goes when the store refuses it with a 4xx, beside
+    /// a `<name>.error.json` record of the status and the store's answer.
+    /// Default: `failed/` inside the spool. Must be on the spool's
+    /// filesystem.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-failed",
+        value_name = "DIR",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_failed: Option<std::path::PathBuf>,
+
+    /// URL template the forwarder PUTs a container to when the POST answers
+    /// 409 (the store already holds that uuid). `{uuid}` is replaced with the
+    /// container's `uuid`, for example
+    /// `https://api.vcon.store/v1/vcons/{uuid}`. Without it a 409 is a
+    /// refusal like any other 4xx.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-replace-url",
+        value_name = "TEMPLATE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_replace_url: Option<String>,
+
+    /// Make one pass over the spool and exit: 0 when every container was
+    /// delivered (or there was none), 1 when any was refused or is still
+    /// waiting. Without it the forwarder polls until SIGTERM.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-once",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_once: bool,
+
+    /// Seconds between passes over the spool, 1 to 3600.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-interval",
+        value_name = "SECS",
+        default_value = "5",
+        value_parser = clap::value_parser!(u64).range(1..=3600),
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_interval: u64,
+
+    /// Seconds the forwarder waits to connect, and for each read and write,
+    /// before it treats the store as unreachable and retries later, 1 to 600.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-timeout",
+        value_name = "SECS",
+        default_value = "30",
+        value_parser = clap::value_parser!(u64).range(1..=600),
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_timeout: u64,
+
+    /// Trust only the CA certificates in this PEM file for an `https://`
+    /// store. Without it the forwarder trusts the host's CA bundle.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-ca",
+        value_name = "FILE",
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_ca: Option<std::path::PathBuf>,
+
+    /// Adjust the copy that is SENT for one store's known deviation from the
+    /// vCon drafts. `vcon-store`: send `extensions` as an object, and refuse
+    /// a Dialog Object without `type` and `parties`. The container on disk is
+    /// never changed. Default: no adjustment.
+    #[arg(
+        help_heading = "vCon forwarder",
+        long = "vcon-forward-compat",
+        value_name = "STORE",
+        value_parser = ["vcon-store"],
+        requires = "vcon_forward"
+    )]
+    pub vcon_forward_compat: Option<String>,
+}
+
 /// `Config` flags.
 ///
 /// Split out of [`Cli`] so clap's generated parser builds this group in its
@@ -6466,6 +6613,131 @@ fn parse_quality_threshold(s: &str) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── --vcon-forward: a separate process that captures nothing ────────
+
+    /// The forwarder flags every forwarder run needs: the spool, the URL and
+    /// the auth file.
+    const FORWARD: [&str; 6] = [
+        "--vcon-forward",
+        "/srv/spool",
+        "--vcon-forward-url",
+        "https://store.example.com/v1/vcons",
+        "--vcon-forward-auth-file",
+        "/etc/sipnab/vcon-auth",
+    ];
+
+    /// `--vcon-forward` parses with its URL and auth file, and every option
+    /// lands where the forwarder reads it.
+    #[test]
+    fn vcon_forward_parses_with_its_options() -> Result<(), Box<dyn std::error::Error>> {
+        let mut argv = vec!["sipnab"];
+        argv.extend(FORWARD);
+        argv.extend([
+            "--vcon-forward-once",
+            "--vcon-forward-compat",
+            "vcon-store",
+            "--vcon-forward-replace-url",
+            "https://store.example.com/v1/vcons/{uuid}",
+            "--vcon-forward-done",
+            "/srv/done",
+            "--vcon-forward-failed",
+            "/srv/failed",
+            "--vcon-forward-interval",
+            "7",
+            "--vcon-forward-timeout",
+            "9",
+            "--vcon-forward-ca",
+            "/etc/ssl/store-ca.pem",
+        ]);
+        let cli = Cli::try_parse_from(argv)?;
+        cli.validate()?;
+        let f = &cli.vcon_forward_args;
+        assert_eq!(
+            f.vcon_forward.as_deref(),
+            Some(std::path::Path::new("/srv/spool"))
+        );
+        assert_eq!(
+            f.vcon_forward_url.as_deref(),
+            Some("https://store.example.com/v1/vcons")
+        );
+        assert!(f.vcon_forward_once);
+        assert_eq!(f.vcon_forward_compat.as_deref(), Some("vcon-store"));
+        assert_eq!(f.vcon_forward_interval, 7);
+        assert_eq!(f.vcon_forward_timeout, 9);
+        Ok(())
+    }
+
+    /// The forwarder is a separate process: no capture source, no listener
+    /// and no export may share its command line. The capture process keeps
+    /// making no outbound connection, and the forwarder reads no packet.
+    #[test]
+    fn vcon_forward_refuses_every_capture_flag() {
+        let capture: &[&[&str]] = &[
+            &["-d", "eth0"],
+            &["-I", "x.pcap"],
+            &["--hep-listen", "127.0.0.1:9060"],
+            &["--hep-send", "192.0.2.1:9060"],
+            &["--api", "127.0.0.1:8080"],
+            &["--mcp"],
+            &["--metrics", "127.0.0.1:9090"],
+            &[
+                "--export-vcon-dir",
+                "/srv/spool",
+                "--export-vcon-when",
+                "true",
+            ],
+            &["--export-vcon", "abc"],
+            &["--mint-token"],
+            &["port 5060"],
+        ];
+        for extra in capture {
+            let mut argv = vec!["sipnab"];
+            argv.extend(FORWARD);
+            argv.extend(extra.iter().copied());
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "--vcon-forward accepted {extra:?}"
+            );
+        }
+    }
+
+    /// Each forwarder option names something only the forwarder does, so on
+    /// a capture run it is a mistake to report, and the forwarder itself
+    /// cannot start without a URL or an auth file.
+    #[test]
+    fn vcon_forward_options_need_the_mode_and_the_mode_needs_url_and_auth() {
+        for opt in [
+            &["--vcon-forward-url", "http://127.0.0.1:8000/x"][..],
+            &["--vcon-forward-auth-file", "/etc/x"],
+            &["--vcon-forward-once"],
+            &["--vcon-forward-compat", "vcon-store"],
+            &["--vcon-forward-done", "/srv/done"],
+        ] {
+            let mut argv = vec!["sipnab", "-I", "x.pcap"];
+            argv.extend(opt.iter().copied());
+            assert!(
+                Cli::try_parse_from(&argv).is_err(),
+                "{opt:?} accepted without --vcon-forward"
+            );
+        }
+        assert!(Cli::try_parse_from(["sipnab", "--vcon-forward", "/srv/spool"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "sipnab",
+                "--vcon-forward",
+                "/srv/spool",
+                "--vcon-forward-url",
+                "http://127.0.0.1:8000/x",
+            ])
+            .is_err(),
+            "no auth file"
+        );
+        let mut bad = vec!["sipnab"];
+        bad.extend(FORWARD);
+        bad.extend(["--vcon-forward-compat", "something-else"]);
+        assert!(Cli::try_parse_from(&bad).is_err(), "unknown compat mode");
+    }
 
     // ── --version and the libpcap it runs on (CT6b) ─────────────────────
 

@@ -267,8 +267,14 @@ Next: [REST API and metrics](docs/rest-api.md),
   back to its call, and reads rtpengine's own counters over its control port
   (`--rtpengine-control`), labeled as the relay's report rather than
   sipnab's measurement
-- **vCon export.** Writes one observed call as a vCon, a conversation
-  container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md))
+- **vCon export and delivery.** Writes each observed call as a vCon, a
+  conversation container (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).
+  `--vcon-forward`, a separate process, delivers them to a vCon store such as
+  vcon.store or a self-hosted conserver (in the gnu and macOS builds; the
+  static musl builds lack the `vcon` feature); `--vcon-forward-compat vcon-store`
+  changes only the copy it sends, because vcon.store's validator rejects the
+  string-array `extensions` both vCon drafts define
+  ([Send sipnab's vCons to vcon.store](docs/vcon-store.md))
 - **Export formats.** pcap and pcapng, TXT, JSON, NDJSON, CSV, an HTML page of
   the call flow, Markdown, WAV audio, SIPp XML scenarios and RTP JSON
 - **pcap in and out.** Reads and writes pcap and pcapng, with rotation and
@@ -357,6 +363,43 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 
 [Installation](docs/install.md#build-it-from-source) covers the other builds,
 [cross-compilation](docs/install.md#cross-compilation) included.
+
+## Add it to your voice stack
+
+Step-by-step guides that install your SIP server, OpenSIPS or Kamailio, and
+each piece beside it, then connect sipnab to it. Every command in each guide
+ran on fresh virtual machines, and each page names them.
+
+- **SIP proxy.** OpenSIPS and Kamailio carry your calls, and every other guide
+  builds on them: [Use OpenSIPS](docs/opensips.md) and
+  [run sipnab beside it](docs/opensips-sipnab.md);
+  [Use Kamailio](docs/kamailio.md) and
+  [run sipnab beside it](docs/kamailio-sipnab.md).
+- **Call records.** A vCon server keeps every call as a vCon. OpenSIPS records
+  calls into it over SIPREC, and sipnab can send its own vCons, built from what
+  it saw on the wire. `sipnab --vcon-forward` delivers them, to the server or
+  to vcon.store (in the gnu and macOS builds, which carry the `vcon` feature):
+  [Use a vCon server](docs/vcon-server.md),
+  [run sipnab beside it](docs/vcon-sipnab.md),
+  [send to vcon.store](docs/vcon-store.md).
+- **Attack blocking.** TFPS stops SIP scanners and fraud in the kernel with XDP,
+  and fail2ban bans them with an nftables rule:
+  [Use TFPS](docs/tfps.md) and [run sipnab beside it](docs/tfps-sipnab.md);
+  [Use fail2ban](docs/fail2ban.md) and
+  [run sipnab beside it](docs/fail2ban-sipnab.md).
+- **Media relay.** rtpengine or rtpproxy anchors every call's audio, and sipnab
+  matches the media on the relay with the call it belongs to:
+  [Use rtpengine](docs/rtpengine-relay.md) and
+  [run sipnab beside it](docs/rtpengine-sipnab.md);
+  [Use rtpproxy](docs/rtpproxy-relay.md) and
+  [run sipnab beside it](docs/rtpproxy-sipnab.md).
+- **Call history.** Homer keeps a searchable history of every call your proxy
+  sends it over HEP, and sipnab can join the same feed:
+  [Use Homer](docs/homer.md) and [run sipnab beside it](docs/homer-sipnab.md).
+- **Metrics.** Prometheus and Grafana graph your SIP proxy's statistics, and
+  sipnab adds its own call and media series beside them:
+  [Use Prometheus and Grafana](docs/prometheus.md) and
+  [run sipnab beside it](docs/prometheus-sipnab.md).
 
 ## Where to read next
 

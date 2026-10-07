@@ -465,6 +465,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "calls. With Kamailio, this is how the vCon server gets vCons.",
     ),
     (
+        "docs/vcon-store.md",
+        "vcon-store.md",
+        "Send sipnab's vCons to vcon.store",
+        "Send sipnab's vCons to vcon.store",
+        58,
+        "Forward sipnab's redacted vCons to the hosted vcon.store with "
+        "sipnab --vcon-forward, through the compat mode its validator needs, "
+        "and what the store's signature and consent fields do and do not mean.",
+    ),
+    (
         "docs/tfps.md",
         "tfps.md",
         "Add TFPS to your voice stack",

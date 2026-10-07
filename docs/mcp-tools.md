@@ -1717,7 +1717,7 @@ No parameters. Returns:
 ```jsonc
 {
   "schema_version": 1,
-  "version": "0.5.204",
+  "version": "0.5.205",
   "features": ["api", "hep", "mcp", "native", "tls", "tui"],
   "can_decrypt": true,           // tls
   "can_hep": true,               // hep
@@ -5532,7 +5532,7 @@ dropped frames, a `recording-set` wraps it carrying the CALL's media window, so
 the two clocks stand side by side -- that is the only way the format can say
 "this file is a fragment of that call".
 
-`capture_completeness.media` says which of four things happened, so nobody has
+`capture_completeness.media` says which of five things happened, so nobody has
 to read a missing `recording` object as an answer:
 
 | `media` | What it means |
@@ -5541,6 +5541,7 @@ to read a missing `recording` object as an answer:
 | `refused-over-budget` | sipnab decoded audio and REFUSED to inline it. One probed store answers 204 and drops a payload over 10485760 bytes without telling the producer, so the emitter enforces a 5 MiB budget itself. The audio exists and was not truncated |
 | `none-decodable` | The run decoded no audio. `media_note` reports the measurement -- never that the call was silent |
 | `not-considered` | Nobody asked this export for media. A fact about the export, not about the call |
+| `withheld-by-redaction` | The export ran with `--redact`, and redaction deletes audio rather than replacing it with a token, so the exporter considered none. The Dialog Object is the signaling one. A fact about the export, not about the call. The MCP tools do not redact, so they never write it |
 
 **What the capture MISSED travels with the container, in two places.** vCon has
 no field meaning "this record is incomplete" — `dialog.type: "incomplete"` says

@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 308 | 234 | 39 | 35 | 0 |
+| CLI flags | 319 | 245 | 39 | 35 | 0 |
 | HTTP routes | 41 | 41 | -- | 0 | 0 |
 | MCP tools | 70 | 70 | -- | 0 | 0 |
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +3 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +4 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +94 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +95 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--output` | `-O` | `FILE` | Capture | e2e | `tests/archive_password_prompt_test.rs`, `tests/batch_run_paths_test.rs` +11 |  |  |
@@ -101,7 +101,7 @@ behind them.
 | `--ws-portrange` |  | `RANGE` | Capture | parsed | `src/cli.rs` |  |  |
 | `--multi-device` |  |  | Capture | parsed | `src/cli.rs` |  |  |
 | `--no-rtp` |  |  | Capture | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` |  |  |
-| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +13 |  |  |
+| `--rtp` |  |  | Capture | referenced | `src/app/batch.rs`, `src/app/bootstrap.rs` +14 |  |  |
 | `--no-promisc` | `-p` |  | Capture | e2e | `tests/plugin_example_test.rs` |  |  |
 | `--bpf-file` |  | `FILE` | Capture | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
 | `--capture-tunnels` |  |  | Capture | parsed | `src/cli.rs` |  |  |
@@ -118,11 +118,11 @@ behind them.
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +94 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +95 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/decryption_wrapper_matrix_test.rs` +3 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_masking_test.rs` | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +38 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +39 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--no-resolve` |  |  | Name resolution | referenced | `src/cli.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
@@ -162,15 +162,15 @@ behind them.
 | `--print-yang-module` |  |  | Output | e2e | `tests/yang_module_test.rs` |  |  |
 | `--call-report` |  |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +5 |  |  |
 | `--export-vcon` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
-| `--export-vcon-when` |  | `EXPR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +2 |  |  |
-| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +3 |  |  |
+| `--export-vcon-when` |  | `EXPR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +4 |  |  |
+| `--export-vcon-dir` |  | `DIR` | Output | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +5 |  |  |
 | `--vcon-max-inline-media` |  | `MIB` | Output | parsed | `src/cli.rs` |  |  |
 | `--content-deny-header` |  | `NAME` | Output | parsed | `src/cli.rs` |  |  |
 | `--content-deny-tombstone` |  |  | Output | parsed | `src/cli.rs` |  |  |
 | `--vcon-digest` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` |  |  |
 | `--vcon-out` |  | `PATH` | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/cli_flag_behavior_test.rs` +2 |  |  |
-| `--redact` |  |  | Output | e2e | `tests/batch_run_paths_test.rs` |  |  |
-| `--redact-key-file` |  | `FILE` | Output | e2e | `tests/batch_run_paths_test.rs` |  |  |
+| `--redact` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/vcon_cli_test.rs` +1 |  |  |
+| `--redact-key-file` |  | `FILE` | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/vcon_cli_test.rs` |  |  |
 | `--redact-keep-prefix` |  | `N` | Output | parsed | `src/cli.rs` |  |  |
 | `--redact-map` |  | `FILE` | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` |  |  |
 | `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/cli_options_test.rs` |  |  |
@@ -299,7 +299,7 @@ behind them.
 | `--mcp-signing-key` |  | `KEY` | MCP (Model Context Protocol) | e2e | `tests/mcp_http_test.rs`, `tests/mcp_scope_test.rs` +1 |  |  |
 | `--mcp-signing-key-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_rotation_test.rs` |  |  |
 | `--mcp-revoked-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
-| `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/mcp_token_test.rs` |  |  |
+| `--mcp-token-ttl` |  | `SECS` | MCP (Model Context Protocol) | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--mcp-audit-file` |  | `FILE` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_archive_password_test.rs` +1 |  |  |
 | `--mcp-max-concurrent` |  | `N` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-tools` |  | `LIST` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/mcp_tool_profile_test.rs` |  |  |
@@ -315,7 +315,7 @@ behind them.
 | `--mcp-evidence-ring` |  | `MIB` | MCP (Model Context Protocol) | parsed | `src/cli.rs` |  |  |
 | `--mcp-sampling-budget` |  | `PER_HOUR` | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` |  |  |
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
-| `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +2 |  |  |
+| `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +4 |  |  |
 | `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +4 | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
 | `--mcp-allow-relay-query` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--mcp-allow-tls-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` | **behavior** | default-deny and opt-in effect asserted; the one-line CLI hop is untested |
@@ -386,6 +386,17 @@ behind them.
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
+| `--vcon-forward` |  | `SPOOL_DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-url` |  | `URL` | vCon forwarder | e2e | `tests/doc_commands_run_test.rs`, `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-auth-file` |  | `FILE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-done` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-failed` |  | `DIR` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-replace-url` |  | `TEMPLATE` | vCon forwarder | e2e | `tests/doc_commands_run_test.rs` |  |  |
+| `--vcon-forward-once` |  |  | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-interval` |  | `SECS` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-timeout` |  | `SECS` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-ca` |  | `FILE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
+| `--vcon-forward-compat` |  | `STORE` | vCon forwarder | e2e | `tests/vcon_forward_test.rs` |  |  |
 | `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +17 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/cli_flag_behavior_test.rs` +19 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +4 |  |  |
@@ -425,7 +436,7 @@ behind them.
 | `/v1/report` | exercised | `tests/api_test.rs`, `tests/yang_export_test.rs` |
 | `/v1/runtime` | exercised | `tests/api_test.rs`, `tests/hep_senders_surfaces_test.rs` |
 | `/v1/security/findings` | exercised | `tests/api_test.rs` |
-| `/v1/stats` | exercised | `tests/api_test.rs`, `tests/api_token_test.rs` +3 |
+| `/v1/stats` | exercised | `tests/api_harness_readiness_test.rs`, `tests/api_test.rs` +4 |
 | `/v1/streams` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/streams/{id}` | exercised | `tests/api_operator_flows_test.rs`, `tests/api_test.rs` |
 | `/v1/talkers` | exercised | `tests/api_test.rs`, `tests/openapi_contract_test.rs` |
@@ -478,9 +489,9 @@ behind them.
 | `hep_senders` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `lint_dialog` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_lint_tools_test.rs` +2 |
 | `list_captures` | exercised | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_stdio_test.rs` |
-| `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +15 |
+| `list_dialogs` | exercised | `tests/annotate_cli_test.rs`, `tests/config_wiring_test.rs` +14 |
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
-| `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_media_diagnostics_test.rs` +1 |
+| `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `open_capture` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +5 |
 | `query_relay` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `reconcile_orphans` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +3 |
@@ -496,7 +507,7 @@ behind them.
 | `server_capabilities` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +2 |
 | `show_evidence` | exercised | `tests/mcp_operator_flows_test.rs`, `tests/mcp_stdio_test.rs` |
 | `shutdown_server` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |
-| `siprec_metadata` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_siprec_test.rs` +1 |
+| `siprec_metadata` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `start_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `stop_tls_capture` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_stdio_test.rs` |
 | `tail_dialogs` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_open_capture_test.rs` +3 |

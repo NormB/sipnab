@@ -43,7 +43,8 @@ use sipnab::signals;
 /// Parses CLI arguments, initializes logging, runs the immediate commands
 /// (`--setup-caps`, `--strip-secrets`, `--mint-token`), installs signal and
 /// panic handlers, writes the run provenance record when
-/// `--run-provenance-file` asked for one, loads and validates configuration,
+/// `--run-provenance-file` asked for one, runs the vCon forwarder when
+/// `--vcon-forward` names a spool, loads and validates configuration,
 /// plans the run, launches the capture, and dispatches to the TUI or batch
 /// runner.
 ///
@@ -192,6 +193,13 @@ fn run_validation_steps(cli: &Cli) {
 
     // 4. --mint-token: mint a signed bearer token and exit.
     if let Some(code) = bootstrap::run_mint_token(cli) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
+
+    // 4b. --vcon-forward: deliver a vCon spool to a store, as a process of
+    //     its own. Before the config and before any capture: it reads no
+    //     packet, and clap refused every capture flag beside it.
+    if let Some(code) = bootstrap::run_vcon_forward(cli) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 }
