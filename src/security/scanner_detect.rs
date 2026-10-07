@@ -412,7 +412,7 @@ pub struct ScannerAlert {
 /// this caps is the memory and compile-time cost of a pathological pattern
 /// (a large bounded repetition such as `a{1000}{1000}`), so an untrusted
 /// pattern cannot blow up compilation.
-const REGEX_SIZE_LIMIT: usize = 1_000_000;
+pub const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
 /// Compile one operator-supplied User-Agent pattern, case-insensitively and
 /// size-limited.
