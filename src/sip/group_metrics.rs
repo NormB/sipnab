@@ -352,12 +352,17 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    type TestError = Box<dyn std::error::Error>;
+
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     }
 
-    fn ts() -> chrono::DateTime<Utc> {
-        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    fn ts() -> Result<chrono::DateTime<Utc>, TestError> {
+        Ok(Utc
+            .with_ymd_and_hms(2024, 6, 15, 12, 0, 0)
+            .single()
+            .ok_or("invalid fixture timestamp")?)
     }
 
     fn parse(
@@ -365,7 +370,7 @@ mod tests {
         call_id: &str,
         cseq: &str,
         to_tag: bool,
-    ) -> crate::sip::message::SipMessage {
+    ) -> Result<crate::sip::message::SipMessage, TestError> {
         let to = if to_tag {
             "To: <sip:bob@example.com>;tag=t2"
         } else {
@@ -382,62 +387,62 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(
+        Ok(parse_sip(
             &raw,
-            ts(),
+            ts()?,
             localhost(),
             localhost(),
             5060,
             5060,
             TransportProto::Udp,
-        )
-        .expect("parse")
+        )?)
     }
 
     /// Build an answered or failed INVITE dialog under one Call-ID.
-    fn call(call_id: &str, final_code: u16) -> SipDialog {
+    fn call(call_id: &str, final_code: u16) -> Result<SipDialog, TestError> {
         let invite = parse(
             "INVITE sip:bob@example.com SIP/2.0",
             call_id,
             "1 INVITE",
             false,
-        );
-        let mut d = SipDialog::new(&invite).expect("dialog");
+        )?;
+        let mut d = SipDialog::new(&invite).ok_or("dialog")?;
         let resp = parse(
             &format!("SIP/2.0 {final_code} X"),
             call_id,
             "1 INVITE",
             true,
-        );
+        )?;
         crate::sip::dialog::update_state(&mut d, &resp);
         d.messages.push(resp);
-        d
+        Ok(d)
     }
 
     /// ASR is answered seizures over all seizures, as a percent, and NER credits
     /// a far-end decline (486) that ASR does not. Two answered and one busy
     /// gives ASR 66.67 and NER 100 over three seizures.
     #[test]
-    fn asr_counts_answers_and_ner_credits_the_far_end_decline() {
+    fn asr_counts_answers_and_ner_credits_the_far_end_decline() -> Result<(), TestError> {
         let ss = crate::rtp::stream_store::StreamStore::new(100);
         let delay = MosDelay::from_capture(&ss);
         let mut acc = GroupAccumulator::default();
         for id in ["a@h", "b@h"] {
-            acc.add(&call(id, 200), &[], delay);
+            acc.add(&call(id, 200)?, &[], delay);
         }
-        acc.add(&call("c@h", 486), &[], delay);
+        acc.add(&call("c@h", 486)?, &[], delay);
 
         assert_eq!(acc.dialogs(), 3);
         assert_eq!(acc.value_of("asr"), Some(Ok(200.0 / 3.0)));
         // NER credits the busy: the network delivered all three, the callee
         // declined one, so every seizure was network-effective.
         assert_eq!(acc.value_of("ner"), Some(Ok(100.0)));
+        Ok(())
     }
 
     /// A group with no seizures refuses ASR with the reason rather than
     /// reporting a zero that reads as a failing trunk.
     #[test]
-    fn asr_over_no_seizures_is_refused_not_zero() {
+    fn asr_over_no_seizures_is_refused_not_zero() -> Result<(), TestError> {
         let ss = crate::rtp::stream_store::StreamStore::new(100);
         let mut acc = GroupAccumulator::default();
         // A REGISTER-style dialog: no INVITE, so no seizure.
@@ -448,24 +453,26 @@ mod tests {
                     "r@h",
                     "1 REGISTER",
                     false,
-                );
-                SipDialog::new(&reg).expect("dialog")
+                )?;
+                SipDialog::new(&reg).ok_or("dialog")?
             },
             &[],
             MosDelay::from_capture(&ss),
         );
         match acc.value_of("asr") {
             Some(Err(why)) => assert!(why.contains("final response"), "got {why}"),
-            other => panic!("expected a grounding refusal, got {other:?}"),
+            other => return Err(format!("expected a grounding refusal, got {other:?}").into()),
         }
+        Ok(())
     }
 
     /// An unknown metric name has no extractor, which the caller surfaces as an
     /// internal error rather than a silent zero.
     #[test]
-    fn an_unknown_metric_has_no_extractor() {
+    fn an_unknown_metric_has_no_extractor() -> Result<(), TestError> {
         let acc = GroupAccumulator::default();
         assert_eq!(acc.value_of("throughput"), None);
+        Ok(())
     }
 
     /// Nearest rank names a sample that was actually observed, at both ends.
@@ -474,7 +481,7 @@ mod tests {
     /// `[10, 20, 30, 40]`, a post-dial delay no call in the set ever had — and
     /// these figures are quoted back to a carrier as evidence about real calls.
     #[test]
-    fn percentile_nearest_rank_names_an_observed_sample() {
+    fn percentile_nearest_rank_names_an_observed_sample() -> Result<(), TestError> {
         let samples = [10.0, 20.0, 30.0, 40.0];
         assert_eq!(percentile_nearest_rank(&samples, 50.0), Some(20.0));
         assert_eq!(percentile_nearest_rank(&samples, 95.0), Some(40.0));
@@ -487,25 +494,28 @@ mod tests {
             None,
             "a percentile of nothing is not zero"
         );
+        Ok(())
     }
 
     /// A port is stripped and an address is not. The IPv6 arm is the one that
     /// matters: `[2001:db8::1]` split at its last colon yields `[2001:db8:`,
     /// which is neither a host nor a group anybody could act on.
     #[test]
-    fn host_only_strips_a_port_and_keeps_an_address() {
+    fn host_only_strips_a_port_and_keeps_an_address() -> Result<(), TestError> {
         assert_eq!(host_only("example.com:5060"), "example.com");
         assert_eq!(host_only("example.com"), "example.com");
         assert_eq!(host_only("[2001:db8::1]:5060"), "[2001:db8::1]");
         assert_eq!(host_only("[2001:db8::1]"), "[2001:db8::1]");
         assert_eq!(host_only("2001:db8::1"), "2001:db8::1");
+        Ok(())
     }
 
     /// A value that is not a finite number never reaches the answer as one.
     #[test]
-    fn rounded_refuses_a_value_that_is_not_a_number() {
+    fn rounded_refuses_a_value_that_is_not_a_number() -> Result<(), TestError> {
         assert_eq!(rounded(66.66666), Some(66.67));
         assert_eq!(rounded(f64::NAN), None);
         assert_eq!(rounded(f64::INFINITY), None);
+        Ok(())
     }
 }

@@ -157,13 +157,15 @@ pub fn decode(record: &[u8], layout: &RecordLayout) -> Option<RawRecord> {
 mod tests {
     use super::*;
 
+    type TestError = Box<dyn std::error::Error>;
+
     /// Verbatim from `events/uprobes/<name>/format` on a 6.8 kernel, for a
     /// single-band probe. Real kernel output rather than a guess at its shape.
     const REAL_FORMAT: &str = "name: sipnab_fmt\nID: 1815\nformat:\n\tfield:unsigned short common_type;\toffset:0;\tsize:2;\tsigned:0;\n\tfield:unsigned char common_flags;\toffset:2;\tsize:1;\tsigned:0;\n\tfield:unsigned char common_preempt_count;\toffset:3;\tsize:1;\tsigned:0;\n\tfield:int common_pid;\toffset:4;\tsize:4;\tsigned:1;\n\n\tfield:unsigned long __probe_ip;\toffset:8;\tsize:8;\tsigned:0;\n\tfield:u8 b0[];\toffset:16;\tsize:64;\tsigned:0;\n\tfield:s32 len;\toffset:80;\tsize:4;\tsigned:1;\n";
 
     #[test]
-    fn the_layout_comes_from_what_the_kernel_published() {
-        let l = parse_layout(REAL_FORMAT).expect("real kernel output must parse");
+    fn the_layout_comes_from_what_the_kernel_published() -> Result<(), TestError> {
+        let l = parse_layout(REAL_FORMAT).ok_or("real kernel output must parse")?;
         assert_eq!(l.pid, FieldSpan { offset: 4, size: 4 });
         assert_eq!(
             l.len,
@@ -180,18 +182,19 @@ mod tests {
             }]
         );
         assert_eq!(l.payload_capacity(), 64);
+        Ok(())
     }
 
     /// A multi-band probe's fetches must reassemble in buffer order, not in
     /// whatever order they were listed.
     #[test]
-    fn payload_fetches_are_ordered_by_buffer_position() {
+    fn payload_fetches_are_ordered_by_buffer_position() -> Result<(), TestError> {
         let fmt = "\tfield:int common_pid;\toffset:4;\tsize:4;\tsigned:1;\n\
                    \tfield:u8 b128[];\toffset:144;\tsize:64;\tsigned:0;\n\
                    \tfield:u8 b0[];\toffset:16;\tsize:64;\tsigned:0;\n\
                    \tfield:u8 b64[];\toffset:80;\tsize:64;\tsigned:0;\n\
                    \tfield:s32 len;\toffset:208;\tsize:4;\tsigned:1;\n";
-        let l = parse_layout(fmt).expect("parses");
+        let l = parse_layout(fmt).ok_or("parses")?;
         assert_eq!(
             l.payload.iter().map(|f| f.offset).collect::<Vec<_>>(),
             vec![16, 80, 144],
@@ -199,10 +202,11 @@ mod tests {
              nonsense rather than an obvious failure"
         );
         assert_eq!(l.payload_capacity(), 192);
+        Ok(())
     }
 
     #[test]
-    fn a_layout_missing_a_field_sipnab_needs_is_refused() {
+    fn a_layout_missing_a_field_sipnab_needs_is_refused() -> Result<(), TestError> {
         let no_len = "\tfield:int common_pid;\toffset:4;\tsize:4;\tsigned:1;\n\
                       \tfield:u8 b0[];\toffset:16;\tsize:64;\tsigned:0;\n";
         assert!(
@@ -216,45 +220,49 @@ mod tests {
             parse_layout(no_payload).is_none(),
             "no payload would decode every event to an empty message"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_record_decodes_at_the_published_offsets() {
-        let l = parse_layout(REAL_FORMAT).unwrap();
+    fn a_record_decodes_at_the_published_offsets() -> Result<(), TestError> {
+        let l = parse_layout(REAL_FORMAT).ok_or("parse_layout() returned None")?;
         let mut rec = vec![0u8; 84];
         rec[4..8].copy_from_slice(&1234i32.to_le_bytes());
         rec[16..16 + 6].copy_from_slice(b"INVITE");
         rec[80..84].copy_from_slice(&6i32.to_le_bytes());
 
-        let got = decode(&rec, &l).expect("a full record decodes");
+        let got = decode(&rec, &l).ok_or("a full record decodes")?;
         assert_eq!(got.pid, 1234);
         assert_eq!(got.len, 6);
         assert_eq!(&got.bytes[..6], b"INVITE");
         assert_eq!(got.bytes.len(), 64, "the whole fetch, padding included");
+        Ok(())
     }
 
     /// The acceptance rules then cut it down. This is the join between the two.
     #[test]
-    fn a_decoded_record_reduces_to_only_what_was_written() {
-        let l = parse_layout(REAL_FORMAT).unwrap();
+    fn a_decoded_record_reduces_to_only_what_was_written() -> Result<(), TestError> {
+        let l = parse_layout(REAL_FORMAT).ok_or("parse_layout() returned None")?;
         let mut rec = vec![0xAAu8; 84];
         rec[4..8].copy_from_slice(&1234i32.to_le_bytes());
         rec[16..16 + 6].copy_from_slice(b"INVITE");
         rec[80..84].copy_from_slice(&6i32.to_le_bytes());
 
-        let mut raw = decode(&rec, &l).unwrap();
-        let accepted = super::super::accept(&mut raw.bytes, raw.len).expect("usable");
+        let mut raw = decode(&rec, &l).ok_or("decode() returned None")?;
+        let accepted = super::super::accept(&mut raw.bytes, raw.len).ok_or("usable")?;
         assert_eq!(accepted.bytes, b"INVITE", "never the 64-byte fetch");
         assert!(!accepted.truncated);
+        Ok(())
     }
 
     #[test]
-    fn a_short_record_is_refused_rather_than_decoded_partially() {
-        let l = parse_layout(REAL_FORMAT).unwrap();
+    fn a_short_record_is_refused_rather_than_decoded_partially() -> Result<(), TestError> {
+        let l = parse_layout(REAL_FORMAT).ok_or("parse_layout() returned None")?;
         let rec = vec![0u8; 40];
         assert!(
             decode(&rec, &l).is_none(),
             "a truncated buffer must not become a shorter message"
         );
+        Ok(())
     }
 }
